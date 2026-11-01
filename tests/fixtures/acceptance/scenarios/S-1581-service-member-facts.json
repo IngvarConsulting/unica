@@ -1,0 +1,1077 @@
+{
+  "id": "S-1581-service-member-facts",
+  "name": "service-member-facts",
+  "issue": 1581,
+  "area": "Навигация по исходникам",
+  "task": "Пройти HTTP/SOAP к выданным членам, прочитать девять фактов и технические поля, проверить страницы, два набора, длинные Props и сохранность диагностики без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-service-member-facts",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "h0": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "h1": {
+          "file": "other/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h2": {
+          "file": "other/HTTPServices/edo.xml",
+          "kind": "sha256"
+        },
+        "h3": {
+          "file": "other/WebServices/Exchange.xml",
+          "kind": "sha256"
+        },
+        "h4": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h5": {
+          "file": "src/HTTPServices/Damaged.xml",
+          "kind": "sha256"
+        },
+        "h6": {
+          "file": "src/HTTPServices/LongText.xml",
+          "kind": "sha256"
+        },
+        "h7": {
+          "file": "src/HTTPServices/edo.xml",
+          "kind": "sha256"
+        },
+        "h8": {
+          "file": "src/WebServices/Exchange.xml",
+          "kind": "sha256"
+        },
+        "h9": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.edo"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "maintemplates": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:HTTPService.edo.URLTemplate",
+            "count": 1
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.maintemplates"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "maintemplate": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:HTTPService.edo.URLTemplate.rpc"
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "rpc"
+            },
+            {
+              "language": "en",
+              "content": "RPC en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.maintemplate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainmethods": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/template",
+          "eq": "/rpc"
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainmethods",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainpost": {
+          "pointer": "/data/items/0/at"
+        },
+        "mainmethodCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:HTTPService.edo.URLTemplate.rpc.Method.post"
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Post"
+            },
+            {
+              "language": "en",
+              "content": "Post en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainpost"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Post"
+            },
+            {
+              "language": "en",
+              "content": "Post en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/httpMethod",
+          "eq": "POST"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "rpcPost"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainmethods",
+        "limit": 1,
+        "cursor": "$capture.mainmethodCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:HTTPService.edo.URLTemplate.rpc.Method.get"
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WebService.Exchange"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainoperations": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:WebService.Exchange.Operation",
+            "count": 21
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainoperations",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainupload": {
+          "pointer": "/data/items/0/at"
+        },
+        "mainoperationCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:WebService.Exchange.Operation.Upload"
+        },
+        {
+          "pointer": "/data/items/0/props/DataLockControlMode",
+          "eq": "Managed"
+        },
+        {
+          "pointer": "/data/items/0/props/transactioned",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "eq": "Выполняет выгрузку данных"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainupload"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainparameters": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Upload"
+            },
+            {
+              "language": "en",
+              "content": "Upload en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/DataLockControlMode",
+          "eq": "Managed"
+        },
+        {
+          "pointer": "/data/props/procedure",
+          "eq": "Upload"
+        },
+        {
+          "pointer": "/data/props/nillable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/returnType",
+          "eq": {
+            "namespace": "http://www.w3.org/2001/XMLSchema",
+            "localName": "boolean"
+          }
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 3
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainparameters",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainparam": {
+          "pointer": "/data/items/0/at"
+        },
+        "mainparameterCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:WebService.Exchange.Operation.Upload.Parameter.ExchangePlanName"
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Exchange plan name"
+            },
+            {
+              "language": "en",
+              "content": "Exchange plan name en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainparam"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Exchange plan name"
+            },
+            {
+              "language": "en",
+              "content": "Exchange plan name en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/nillable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/direction",
+          "eq": "in"
+        },
+        {
+          "pointer": "/data/props/type",
+          "eq": {
+            "namespace": "http://www.w3.org/2001/XMLSchema",
+            "localName": "string"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainparameters",
+        "limit": 2,
+        "cursor": "$capture.mainparameterCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:WebService.Exchange.Operation.Upload.Parameter.Error"
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainoperations",
+        "limit": 2,
+        "cursor": "$capture.mainoperationCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:WebService.Exchange.Operation.Operation2"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:WebService.Exchange.Operation.Operation3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:HTTPService.edo"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "othertemplates": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "other:HTTPService.edo.URLTemplate",
+            "count": 1
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.othertemplates"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "othertemplate": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:HTTPService.edo.URLTemplate.rpc"
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Other rpc"
+            },
+            {
+              "language": "en",
+              "content": "RPC en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.othertemplate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "othermethods": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/template",
+          "eq": "/rpc"
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.othermethods",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherpost": {
+          "pointer": "/data/items/0/at"
+        },
+        "othermethodCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:HTTPService.edo.URLTemplate.rpc.Method.post"
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Other Post"
+            },
+            {
+              "language": "en",
+              "content": "Post en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherpost"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Other Post"
+            },
+            {
+              "language": "en",
+              "content": "Post en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/httpMethod",
+          "eq": "POST"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "rpcPost"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.othermethods",
+        "limit": 1,
+        "cursor": "$capture.othermethodCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:HTTPService.edo.URLTemplate.rpc.Method.get"
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:WebService.Exchange"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otheroperations": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "other:WebService.Exchange.Operation",
+            "count": 21
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otheroperations",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherupload": {
+          "pointer": "/data/items/0/at"
+        },
+        "otheroperationCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:WebService.Exchange.Operation.Upload"
+        },
+        {
+          "pointer": "/data/items/0/props/DataLockControlMode",
+          "eq": "Managed"
+        },
+        {
+          "pointer": "/data/items/0/props/transactioned",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "eq": "Other upload"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherupload"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherparameters": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Other Upload"
+            },
+            {
+              "language": "en",
+              "content": "Upload en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/DataLockControlMode",
+          "eq": "Managed"
+        },
+        {
+          "pointer": "/data/props/procedure",
+          "eq": "Upload"
+        },
+        {
+          "pointer": "/data/props/nillable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/returnType",
+          "eq": {
+            "namespace": "http://www.w3.org/2001/XMLSchema",
+            "localName": "boolean"
+          }
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 3
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherparameters",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherparam": {
+          "pointer": "/data/items/0/at"
+        },
+        "otherparameterCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:WebService.Exchange.Operation.Upload.Parameter.ExchangePlanName"
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Other Exchange plan name"
+            },
+            {
+              "language": "en",
+              "content": "Exchange plan name en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherparam"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Other Exchange plan name"
+            },
+            {
+              "language": "en",
+              "content": "Exchange plan name en"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/nillable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/direction",
+          "eq": "in"
+        },
+        {
+          "pointer": "/data/props/type",
+          "eq": {
+            "namespace": "urn:other:service",
+            "localName": "Payload"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherparameters",
+        "limit": 2,
+        "cursor": "$capture.otherparameterCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:WebService.Exchange.Operation.Upload.Parameter.Error"
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otheroperations",
+        "limit": 2,
+        "cursor": "$capture.otheroperationCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:WebService.Exchange.Operation.Operation2"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "other:WebService.Exchange.Operation.Operation3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.LongText.URLTemplate"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:HTTPService.LongText.URLTemplate.Probe"
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/limits/0",
+          "contains": "main:HTTPService.LongText.URLTemplate.Probe.Props.Synonym"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.LongText.URLTemplate.Probe.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.LongText.URLTemplate.Probe.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            },
+            {
+              "language": "en",
+              "content": "long en"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.Damaged.URLTemplate.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/template",
+          "eq": "/bad"
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "details.urlTemplates[0].comment"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:HTTPService.Damaged"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "failed"
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "notEq": []
+        },
+        {
+          "pointer": "/data/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/data/diagnostics/0/field",
+          "eq": "details.urlTemplates[0].comment"
+        },
+        {
+          "pointer": "/data/diagnostics/0/metadataPath",
+          "eq": "HTTPService.Damaged"
+        },
+        {
+          "pointer": "/data/diagnostics/0/severity",
+          "eq": "error"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.h0"
+        },
+        {
+          "path": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h1"
+        },
+        {
+          "path": "other/HTTPServices/edo.xml",
+          "kind": "sha256",
+          "eq": "$capture.h2"
+        },
+        {
+          "path": "other/WebServices/Exchange.xml",
+          "kind": "sha256",
+          "eq": "$capture.h3"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h4"
+        },
+        {
+          "path": "src/HTTPServices/Damaged.xml",
+          "kind": "sha256",
+          "eq": "$capture.h5"
+        },
+        {
+          "path": "src/HTTPServices/LongText.xml",
+          "kind": "sha256",
+          "eq": "$capture.h6"
+        },
+        {
+          "path": "src/HTTPServices/edo.xml",
+          "kind": "sha256",
+          "eq": "$capture.h7"
+        },
+        {
+          "path": "src/WebServices/Exchange.xml",
+          "kind": "sha256",
+          "eq": "$capture.h8"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.h9"
+        }
+      ],
+      "status": "failed",
+      "validators": [
+        "meta"
+      ]
+    }
+  ]
+}

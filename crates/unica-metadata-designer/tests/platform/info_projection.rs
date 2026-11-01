@@ -19,6 +19,81 @@ fn project(xml: &str, kind: MetadataKind, metadata_path: &str) -> serde_json::Va
     serde_json::to_value(details).unwrap()["details"].clone()
 }
 
+/// Compare newly observed facts with XML independently, then keep the exact
+/// technical contract assertions below for the pre-existing fields.
+fn check_service_descriptions(details: &mut serde_json::Value, xml: &str, http: bool) {
+    fn compare(node: roxmltree::Node<'_, '_>, item: &mut serde_json::Value, operation: bool) {
+        let properties = node
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "Properties")
+            .unwrap();
+        let names = if operation {
+            &["Synonym", "Comment", "DataLockControlMode"][..]
+        } else {
+            &["Synonym", "Comment"][..]
+        };
+        let expected = names
+            .iter()
+            .filter_map(|name| {
+                let property = properties
+                    .children()
+                    .find(|n| n.is_element() && n.tag_name().name() == *name)?;
+                let value = if *name == "Synonym" {
+                    let values = property
+                        .children()
+                        .filter(roxmltree::Node::is_element)
+                        .map(|translation| {
+                            let value = |name| {
+                                translation
+                                    .children()
+                                    .find(|n| n.is_element() && n.tag_name().name() == name)
+                                    .and_then(|n| n.text())
+                                    .unwrap_or("")
+                            };
+                            serde_json::json!({"language":value("lang"),"content":value("content")})
+                        })
+                        .collect::<Vec<_>>();
+                    serde_json::json!({"kind":"localizedString","values":values})
+                } else {
+                    serde_json::json!({"kind":"text","value":property.text().unwrap_or("")})
+                };
+                Some(serde_json::json!({"name":name,"value":value}))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(item["properties"], serde_json::json!(expected), "{item:#}");
+        item.as_object_mut().unwrap().remove("properties");
+    }
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let object = document.root_element().first_element_child().unwrap();
+    let children = object
+        .children()
+        .find(|n| n.is_element() && n.tag_name().name() == "ChildObjects")
+        .unwrap();
+    let (root_key, child_key) = if http {
+        ("urlTemplates", "methods")
+    } else {
+        ("operations", "parameters")
+    };
+    for (node, item) in children
+        .children()
+        .filter(roxmltree::Node::is_element)
+        .zip(details[root_key].as_array_mut().unwrap())
+    {
+        compare(node, item, !http);
+        let children = node
+            .children()
+            .find(|n| n.is_element() && n.tag_name().name() == "ChildObjects")
+            .unwrap();
+        for (node, item) in children
+            .children()
+            .filter(roxmltree::Node::is_element)
+            .zip(item[child_key].as_array_mut().unwrap())
+        {
+            compare(node, item, false);
+        }
+    }
+}
+
 /// Фикстура в обоих концах строк. В репозитории она хранится в LF без BOM,
 /// Git для Windows выписывает её с CRLF, а сырая выгрузка 8.3.27 тоже пишет
 /// CRLF (см. `staged_dump_roots`). Поэтому пробы с переводом строки строятся
@@ -177,7 +252,8 @@ fn http_service_details_accept_the_configurator_synonym_and_comment() {
         "/../../tests/fixtures/platform_8_3_27/meta_info/edge/http-service-configurator.xml"
     ));
 
-    let details = project(xml, MetadataKind::HTTPService, "HTTPService.ПроверкаСвязи");
+    let mut details = project(xml, MetadataKind::HTTPService, "HTTPService.ПроверкаСвязи");
+    check_service_descriptions(&mut details, xml, true);
 
     assert_eq!(
         details["urlTemplates"],
@@ -257,11 +333,15 @@ fn http_service_descriptive_properties_still_reject_nested_markup() {
             .unwrap();
 
             assert!(
-                value["details"]["urlTemplates"].is_null(),
+                value["details"]["urlTemplates"]
+                    .as_array()
+                    .is_some_and(|items| items.len() == 2),
                 "{field} ({eol:?}): {value}"
             );
             assert_eq!(diagnostics.len(), 1, "{field} ({eol:?}): {diagnostics:?}");
             assert_eq!(diagnostics[0].field.as_deref(), Some(field));
+            assert_eq!(diagnostics[0].code, MetaDiagnosticCode::ValidationFailed);
+            assert!(!diagnostics[0].message.is_empty());
         }
     }
 }
@@ -314,7 +394,8 @@ fn web_service_details_accept_the_configurator_operation_properties() {
         "/../../tests/fixtures/platform_8_3_27/meta_info/edge/web-service-configurator.xml"
     ));
 
-    let details = project(xml, MetadataKind::WebService, "WebService.ОбменДанными");
+    let mut details = project(xml, MetadataKind::WebService, "WebService.ОбменДанными");
+    check_service_descriptions(&mut details, xml, false);
 
     let xs = |local_name: &str| serde_json::json!({"namespace": "http://www.w3.org/2001/XMLSchema", "localName": local_name});
     assert_eq!(
@@ -420,11 +501,15 @@ fn web_service_operation_properties_still_reject_foreign_content() {
             .unwrap();
 
             assert!(
-                value["details"]["operations"].is_null(),
+                value["details"]["operations"]
+                    .as_array()
+                    .is_some_and(|items| items.len() == 2),
                 "{field} ({eol:?}): {value}"
             );
             assert_eq!(diagnostics.len(), 1, "{field} ({eol:?}): {diagnostics:?}");
             assert_eq!(diagnostics[0].field.as_deref(), Some(field));
+            assert_eq!(diagnostics[0].code, MetaDiagnosticCode::ValidationFailed);
+            assert!(!diagnostics[0].message.is_empty());
         }
     }
 }
