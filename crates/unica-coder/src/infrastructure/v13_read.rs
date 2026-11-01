@@ -1364,7 +1364,33 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let read = self
             .read
             .metadata_local(target, &mut || self.read_checkpoint())?;
-        let local = read.info;
+        let mut local = read.info;
+        for form in local.relations.document_forms.iter_mut().flatten() {
+            let Some(Some(form_target)) = &form.target else {
+                continue;
+            };
+            match self.verify_registered_owner(form_target, admitted) {
+                Ok(()) => {}
+                Err(error)
+                    if error.code() == RefusalCode::NotFound
+                        || error.detail() == Some(RefusalDetail::SourceUnreadable) =>
+                {
+                    local.diagnostics.push(
+                        unica_metadata::MetaDiagnostic::error(
+                            unica_metadata::MetaDiagnosticCode::ValidationFailed,
+                            format!("document form target cannot be read: {error}"),
+                        )
+                        .with_metadata_path(target.clone())
+                        .with_field(format!(
+                            "relations.documentForms.{}",
+                            form.role.relation_name()
+                        )),
+                    );
+                    form.target = None;
+                }
+                Err(error) => return Err(error),
+            }
+        }
         for (kind, children) in [
             (NodeKind::Form, &local.collections.forms),
             (NodeKind::Template, &local.collections.templates),
@@ -1412,7 +1438,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 let field = diagnostic.field.as_deref()?;
                 if diagnostic.severity == MetaDiagnosticSeverity::Warning {
                     return (diagnostic.code == MetaDiagnosticCode::ValidationWarning
-                        && field.starts_with("details."))
+                        && (field.starts_with("details.")
+                            || field.starts_with("relations.documentForms.")))
                     .then(|| {
                         json!({
                             "field": field,

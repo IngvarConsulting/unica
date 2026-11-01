@@ -1,6 +1,9 @@
 ---
 id: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/document_form_relations.rs::document_form_relations_preserve_each_role_and_read_the_returned_form
+  - crates/unica-coder/src/infrastructure/v13_read/tests/document_form_relations.rs::document_form_relations_keep_other_roles_when_one_slot_is_unknown_or_damaged
+  - crates/unica-coder/src/infrastructure/v13_read/tests/document_form_relations.rs::document_form_relations_prove_registration_and_identity_of_each_target
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata.rs::every_reference_of_an_object_answers_in_one_relation_branch
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::a_subsystem_shows_its_content_and_reads_registered_children_at_depth
   - crates/unica-metadata-integration-tests/tests/subsystem_topology.rs::memberships_name_the_listing_subsystem_its_ancestors_and_standard_library_roots

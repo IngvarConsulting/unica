@@ -453,7 +453,14 @@ const METADATA_DETAIL_RELATIONS: &[(&str, &str, &str)] = &[
     ("xdtoPackages", "xdtoPackage", "XDTOPackages"),
 ];
 
-fn metadata_relation_error_field(field: &str) -> Option<String> {
+fn metadata_relation_error_field(field: &str, payload: &Value) -> Option<String> {
+    if let Some(role) = field
+        .strip_prefix("properties.")
+        .and_then(unica_metadata::DocumentFormRole::from_property_name)
+        .filter(|_| payload.get("kind").and_then(Value::as_str) == Some("Document"))
+    {
+        return Some(format!("relations.documentForms.{}", role.relation_name()));
+    }
     if field.starts_with("relations.") {
         return Some(field.to_string());
     }
@@ -475,7 +482,7 @@ fn metadata_relation_error_field(field: &str) -> Option<String> {
 fn metadata_relation_limits(payload: &Value) -> Vec<String> {
     let mut limits = unreadable_entries(payload)
         .filter_map(|(field, message)| {
-            metadata_relation_error_field(field)
+            metadata_relation_error_field(field, payload)
                 .map(|field| format!("{field} не прочитано: {message}"))
         })
         .collect::<Vec<_>>();
@@ -492,6 +499,21 @@ fn metadata_missing_relation_limits(payload: &Value) -> Vec<String> {
         .filter(|(_, value)| value.is_null())
         .map(|(name, _)| format!("relations.{name}"))
         .collect::<Vec<_>>();
+    missing.extend(
+        payload
+            .get("relations")
+            .and_then(|relations| relations.get("documentForms"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|reference| reference.get("target").is_none())
+            .filter_map(|reference| {
+                reference
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .map(|role| format!("relations.documentForms.{role}"))
+            }),
+    );
     if let Some(details) = metadata_details(payload) {
         missing.extend(
             METADATA_DETAIL_RELATIONS
@@ -504,7 +526,7 @@ fn metadata_missing_relation_limits(payload: &Value) -> Vec<String> {
         .into_iter()
         .filter_map(|field| {
             let damaged = unreadable_entries(payload).any(|(candidate, _)| {
-                metadata_relation_error_field(candidate).is_some_and(|candidate| {
+                metadata_relation_error_field(candidate, payload).is_some_and(|candidate| {
                     candidate
                         .strip_prefix(&field)
                         .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
@@ -646,6 +668,19 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
         }))
     };
     let relations = payload.get("relations");
+    for form in relations
+        .and_then(|relations| relations.get("documentForms"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let (Some(role), Some(target)) = (
+            form.get("role").and_then(Value::as_str),
+            form.get("target").and_then(Value::as_str),
+        ) {
+            items.extend(addressed(role, target));
+        }
+    }
     for (field, relation) in [
         ("owners", "owner"),
         ("registerRecords", "registerRecord"),

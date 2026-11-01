@@ -1,4 +1,6 @@
 mod diagnostics;
+mod document_form_relations;
+pub use document_form_relations::*;
 mod event_subscription;
 mod info;
 mod info_properties;
