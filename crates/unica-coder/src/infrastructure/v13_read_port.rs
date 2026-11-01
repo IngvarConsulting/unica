@@ -1225,6 +1225,17 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if matches!(evidence.artifact_kind(), "CommonCommand" | "CommandGroup") {
+            match unica_metadata_designer::command_root_read::CommandRootFacts::read(
+                target,
+                &descriptor,
+            ) {
+                Ok(facts) => facts.publish(&mut payload),
+                Err(message) => {
+                    payload["unreadable"] = json!([{"field":"properties", "message":message}])
+                }
+            }
+        }
         if evidence.artifact_kind() == "StyleItem" {
             unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;

@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.LOGICAL-READER-PARITY
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/command_root_facts.rs::command_root_relations_prove_picture_and_parameter_targets_without_companion_dependency
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::review_rejects_direct_typed_owner_absent_from_configuration_inventory
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::review_rejects_orphan_nested_module_owners_not_registered_by_parent
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::registered_physical_child_with_wrong_descriptor_fails_direct_and_parent_navigation

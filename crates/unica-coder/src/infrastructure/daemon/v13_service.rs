@@ -5233,6 +5233,20 @@ fn run_meta_validator(
         sections: Vec::new(),
         limit: 0,
     };
+    if matches!(
+        request.metadata_path.as_str().split('.').next(),
+        Some("CommonCommand" | "CommandGroup")
+    ) {
+        return crate::infrastructure::metadata_operations::MetadataOperations::command_root_diagnostics(
+            &request, context, cancellation,
+        ).map(|diagnostics| {
+            let passed = diagnostics.iter().all(|diagnostic| diagnostic.severity != unica_metadata::MetaDiagnosticSeverity::Error);
+            (passed, diagnostics.iter().map(|diagnostic| serde_json::to_value(diagnostic).expect("typed diagnostic is serializable")).collect())
+        }).map_err(|failure| Box::new(error_result_detailed(
+            Some(at.to_string()), RefusalDetail::SourceUnreadable,
+            failure.diagnostics.iter().map(|diagnostic| diagnostic.message.as_str()).collect::<Vec<_>>().join("; "),
+        )));
+    }
     let readers = crate::infrastructure::support_state::WorkspaceSupportStateReaderFactory;
     let reader =
         crate::infrastructure::support_state::SupportStateReaderFactory::create(&readers, context);

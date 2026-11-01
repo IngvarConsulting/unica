@@ -652,6 +652,8 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
         ("basedOn", "basedOn"),
         ("inputByString", "inputByString"),
         ("dataLockFields", "dataLockField"),
+        ("commandPicture", "picture"),
+        ("commandParameterTypes", "parameterType"),
     ] {
         let targets = relations
             .and_then(|relations| relations.get(field))

@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 check:
+  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_root_command_profile_preserves_warning_and_error_verdicts
   - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_unmodelled_type_is_a_localized_warning_in_check_and_view
   - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_broken_qualifier_stays_an_error_in_check_and_view
   - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_uuid_attribute_round_trips_as_an_editable_observed_type

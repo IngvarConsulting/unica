@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.METADATA-NODE-PROPERTIES
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/command_root_facts.rs::command_root_facts_preserve_kind_specific_xml_without_default_values
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_completes_six_facts_in_public_collection_and_detail_without_writes
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_compact_limit_preserves_independent_facts
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_reaches_public_collection_and_detail_without_writes

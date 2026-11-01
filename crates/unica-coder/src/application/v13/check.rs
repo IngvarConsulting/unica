@@ -509,6 +509,8 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
         // пуст, и `check` отвечал «читается» — то есть молчал о находках,
         // ради которых его и зовут.
         "Module" | "Body" => vec![CheckStep::Bsl],
+        // A closed read profile, without enabling the metadata writer algebra.
+        "CommonCommand" | "CommandGroup" if facts.named => vec![CheckStep::Meta],
         other if facts.named && unica_metadata::MetadataKind::parse(other).is_ok() => {
             vec![CheckStep::Meta, CheckStep::Bsl]
         }
@@ -1007,6 +1009,31 @@ mod tests {
         let elsewhere = ViewCursorStore::default();
         let foreign = page_root_verdict(&elsewhere, &question, None, first.cursor.as_deref());
         assert_eq!(foreign.diagnostics[0]["code"], "invalid_cursor");
+    }
+
+    #[test]
+    fn root_command_checks_select_only_the_named_closed_profiles() {
+        for kind in ["CommonCommand", "CommandGroup"] {
+            assert!(plan_for_node(kind, NodeFacts::default()).is_empty());
+            assert_eq!(
+                plan_for_node(
+                    kind,
+                    NodeFacts {
+                        named: true,
+                        ..NodeFacts::default()
+                    }
+                ),
+                vec![CheckStep::Meta]
+            );
+        }
+        assert!(plan_for_node(
+            "CommonPicture",
+            NodeFacts {
+                named: true,
+                ..NodeFacts::default()
+            }
+        )
+        .is_empty());
     }
 
     #[test]
