@@ -1,0 +1,1026 @@
+{
+  "id": "S-1580-integration-channels",
+  "name": "integration-channels",
+  "issue": 1580,
+  "area": "Навигация по исходникам",
+  "task": "Пройти от коллекции владельцев к выданным каналам; сверить четыре имени и шесть свойств, пустые строки, false/true, Module, два набора, длинные Props и отсутствие прав записи",
+  "workspace": "tests/fixtures/acceptance/workspace-integration-channels",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "h0": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "h1": {
+          "file": "other/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h2": {
+          "file": "other/IntegrationServices/Bus.xml",
+          "kind": "sha256"
+        },
+        "h3": {
+          "file": "other/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "h4": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h5": {
+          "file": "src/IntegrationServices/Bus.xml",
+          "kind": "sha256"
+        },
+        "h6": {
+          "file": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256"
+        },
+        "h7": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainOwner": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:IntegrationService.Bus"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainOwner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainChannels": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:IntegrationService.Bus.Channel",
+            "count": 4
+          }
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:IntegrationService.Bus.Module",
+            "count": 1
+          }
+        },
+        {
+          "pointer": "/data/props/kind",
+          "eq": "IntegrationService"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainChannels",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainChannel0": {
+          "pointer": "/data/items/0/at"
+        },
+        "mainChannel1": {
+          "pointer": "/data/items/1/at"
+        },
+        "mainCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:IntegrationService.Bus.Channel.input_from_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/items/0/kind",
+          "eq": "Channel"
+        },
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "input_from_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/items/0/props/MessageDirection",
+          "eq": "Receive"
+        },
+        {
+          "pointer": "/data/items/0/props/ReceiveMessageProcessing",
+          "eq": "ProcessInput"
+        },
+        {
+          "pointer": "/data/items/0/props/Transactioned",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/0/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::FreshBus::Main::input_from_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Вход"
+            },
+            {
+              "language": "en",
+              "content": "Input"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:IntegrationService.Bus.Channel.input_from_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/1/kind",
+          "eq": "Channel"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "input_from_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/1/props/MessageDirection",
+          "eq": "Receive"
+        },
+        {
+          "pointer": "/data/items/1/props/ReceiveMessageProcessing",
+          "eq": "ProcessInput"
+        },
+        {
+          "pointer": "/data/items/1/props/Transactioned",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::FreshBus::Main::input_from_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/1/props/Synonym",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainChannels",
+        "limit": 2,
+        "cursor": "$capture.mainCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainChannel2": {
+          "pointer": "/data/items/0/at"
+        },
+        "mainChannel3": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:IntegrationService.Bus.Channel.output_to_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/0/kind",
+          "eq": "Channel"
+        },
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "output_to_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/0/props/MessageDirection",
+          "eq": "Send"
+        },
+        {
+          "pointer": "/data/items/0/props/ReceiveMessageProcessing",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/0/props/Transactioned",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/0/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::FreshBus::Main::output_to_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:IntegrationService.Bus.Channel.output_to_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/items/1/kind",
+          "eq": "Channel"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "output_to_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/items/1/props/MessageDirection",
+          "eq": "Send"
+        },
+        {
+          "pointer": "/data/items/1/props/ReceiveMessageProcessing",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/Transactioned",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/1/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::FreshBus::Main::output_to_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/items/1/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainChannel0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "input_from_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/props/MessageDirection",
+          "eq": "Receive"
+        },
+        {
+          "pointer": "/data/props/Transactioned",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/ReceiveMessageProcessing",
+          "eq": "ProcessInput"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::FreshBus::Main::input_from_SM_normal_priority"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainChannel1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "input_from_SM_high_priority"
+        },
+        {
+          "pointer": "/data/props/MessageDirection",
+          "eq": "Receive"
+        },
+        {
+          "pointer": "/data/props/Transactioned",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/ReceiveMessageProcessing",
+          "eq": "ProcessInput"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::FreshBus::Main::input_from_SM_high_priority"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainChannel2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "output_to_SM_high_priority"
+        },
+        {
+          "pointer": "/data/props/MessageDirection",
+          "eq": "Send"
+        },
+        {
+          "pointer": "/data/props/Transactioned",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/ReceiveMessageProcessing",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::FreshBus::Main::output_to_SM_high_priority"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainChannel3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "output_to_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/props/MessageDirection",
+          "eq": "Send"
+        },
+        {
+          "pointer": "/data/props/Transactioned",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/ReceiveMessageProcessing",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::FreshBus::Main::output_to_SM_normal_priority"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Bus.Module"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainModule": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:IntegrationService.Bus.Module.IntegrationService"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainModule"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:IntegrationService"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherOwner": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:IntegrationService.Bus"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherOwner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherChannels": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "other:IntegrationService.Bus.Channel",
+            "count": 4
+          }
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "other:IntegrationService.Bus.Module",
+            "count": 1
+          }
+        },
+        {
+          "pointer": "/data/props/kind",
+          "eq": "IntegrationService"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherChannels",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherChannel0": {
+          "pointer": "/data/items/0/at"
+        },
+        "otherChannel1": {
+          "pointer": "/data/items/1/at"
+        },
+        "otherCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:IntegrationService.Bus.Channel.input_from_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/items/0/kind",
+          "eq": "Channel"
+        },
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "input_from_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/items/0/props/MessageDirection",
+          "eq": "Receive"
+        },
+        {
+          "pointer": "/data/items/0/props/ReceiveMessageProcessing",
+          "eq": "ProcessOther"
+        },
+        {
+          "pointer": "/data/items/0/props/Transactioned",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/0/props/ExternalIntegrationServiceChannelName",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/limits/0",
+          "contains": "other:IntegrationService.Bus.Channel.input_from_SM_normal_priority.Props.Synonym"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "other:IntegrationService.Bus.Channel.input_from_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/1/kind",
+          "eq": "Channel"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "input_from_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/1/props/MessageDirection",
+          "eq": "Receive"
+        },
+        {
+          "pointer": "/data/items/1/props/ReceiveMessageProcessing",
+          "eq": "ProcessOther"
+        },
+        {
+          "pointer": "/data/items/1/props/Transactioned",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::OtherBus::Main::input_from_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/1/props/Synonym",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherChannels",
+        "limit": 2,
+        "cursor": "$capture.otherCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherChannel2": {
+          "pointer": "/data/items/0/at"
+        },
+        "otherChannel3": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:IntegrationService.Bus.Channel.output_to_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/0/kind",
+          "eq": "Channel"
+        },
+        {
+          "pointer": "/data/items/0/title",
+          "eq": "output_to_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/0/props/MessageDirection",
+          "eq": "Send"
+        },
+        {
+          "pointer": "/data/items/0/props/ReceiveMessageProcessing",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/0/props/Transactioned",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/0/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/0/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::OtherBus::Main::output_to_SM_high_priority"
+        },
+        {
+          "pointer": "/data/items/0/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "other:IntegrationService.Bus.Channel.output_to_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/items/1/kind",
+          "eq": "Channel"
+        },
+        {
+          "pointer": "/data/items/1/title",
+          "eq": "output_to_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/items/1/props/MessageDirection",
+          "eq": "Send"
+        },
+        {
+          "pointer": "/data/items/1/props/ReceiveMessageProcessing",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/Transactioned",
+          "eq": true
+        },
+        {
+          "pointer": "/data/items/1/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/items/1/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::OtherBus::Main::output_to_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/items/1/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherChannel0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "input_from_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/props/MessageDirection",
+          "eq": "Receive"
+        },
+        {
+          "pointer": "/data/props/Transactioned",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/ReceiveMessageProcessing",
+          "eq": "ProcessOther"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherChannel1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "input_from_SM_high_priority"
+        },
+        {
+          "pointer": "/data/props/MessageDirection",
+          "eq": "Receive"
+        },
+        {
+          "pointer": "/data/props/Transactioned",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/ReceiveMessageProcessing",
+          "eq": "ProcessOther"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::OtherBus::Main::input_from_SM_high_priority"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherChannel2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "output_to_SM_high_priority"
+        },
+        {
+          "pointer": "/data/props/MessageDirection",
+          "eq": "Send"
+        },
+        {
+          "pointer": "/data/props/Transactioned",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/ReceiveMessageProcessing",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::OtherBus::Main::output_to_SM_high_priority"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherChannel3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "output_to_SM_normal_priority"
+        },
+        {
+          "pointer": "/data/props/MessageDirection",
+          "eq": "Send"
+        },
+        {
+          "pointer": "/data/props/Transactioned",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/ReceiveMessageProcessing",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::OtherBus::Main::output_to_SM_normal_priority"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:IntegrationService.Bus.Module"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherModule": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:IntegrationService.Bus.Module.IntegrationService"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherModule"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:IntegrationService.Bus.Channel.input_from_SM_normal_priority.Props.ExternalIntegrationServiceChannelName"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceChannelName",
+          "eq": "e1c::ЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖЖ"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:IntegrationService.Bus.Channel.input_from_SM_normal_priority.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:IntegrationService.Bus.Channel.input_from_SM_normal_priority.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            },
+            {
+              "language": "en",
+              "content": "Other input"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.h0"
+        },
+        {
+          "path": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h1"
+        },
+        {
+          "path": "other/IntegrationServices/Bus.xml",
+          "kind": "sha256",
+          "eq": "$capture.h2"
+        },
+        {
+          "path": "other/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.h3"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h4"
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "sha256",
+          "eq": "$capture.h5"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.h6"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.h7"
+        }
+      ]
+    }
+  ]
+}

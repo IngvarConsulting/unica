@@ -2,6 +2,7 @@ mod diagnostics;
 mod event_subscription;
 mod info;
 mod info_properties;
+pub mod integration_channels;
 mod integrity;
 mod member_read_profile;
 mod observed_types;

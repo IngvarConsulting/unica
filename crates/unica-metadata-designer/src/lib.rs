@@ -1,4 +1,5 @@
 //! Designer codecs for metadata and its supplier-support state.
+pub mod integration_channels;
 pub mod layout;
 pub mod support;
 

@@ -32,6 +32,7 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "libraryRoots",
     // Поля, которые читатель не смог спроецировать (см. `metadata_payload`).
     "unreadable",
+    "integrationChannels",
 ];
 
 /// Скаляры корня объекта метаданных в его `props`.
@@ -190,7 +191,11 @@ fn project_metadata(
                     }
                     _ => value.and_then(Value::as_array).map_or(0, Vec::len),
                 };
-                let declared = platform_kinds.contains(&kind.as_str());
+                let declared = platform_kinds.contains(&kind.as_str())
+                    || (*kind == NodeKind::Channel
+                        && payload.get("kind").and_then(Value::as_str)
+                            == Some("IntegrationService")
+                        && value.is_some_and(Value::is_array));
                 (count > 0 || declared)
                     .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             })
@@ -352,6 +357,46 @@ fn project_metadata(
             ),
             collection.as_array().cloned().unwrap_or_default(),
         )));
+    }
+    if first.kind() == NodeKind::Channel
+        && payload.get("kind").and_then(Value::as_str) == Some("IntegrationService")
+    {
+        if first.name().is_none() && suffix.len() == 1 {
+            return Ok(NodeViewData::Collection(CollectionView::new(
+                NodeView::new(address.to_string(), "Channel", "Channels", Map::new())
+                    .with_limits(unreadable_limits(payload)),
+                metadata_items(address, first.kind(), collection, payload, member_profile),
+            )));
+        }
+        if first.name().is_some_and(|name| {
+            payload
+                .get("integrationChannels")
+                .and_then(|facts| facts.get("unavailableNames"))
+                .and_then(Value::as_array)
+                .is_some_and(|names| names.iter().any(|value| value.as_str() == Some(name)))
+        }) {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "channel identity is unavailable or ambiguous",
+            ));
+        }
+        if first.name().is_some_and(|name| {
+            !collection.as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .any(|item| item.get("name").and_then(Value::as_str) == Some(name))
+            })
+        }) && payload
+            .get("integrationChannels")
+            .and_then(|facts| facts.get("identityIncomplete"))
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "channel membership is incomplete because an identity cannot be read",
+            ));
+        }
     }
     if first.name().is_none() && suffix.len() == 1 {
         return Ok(NodeViewData::Collection(CollectionView::new(
@@ -529,6 +574,11 @@ fn unreadable_limits(payload: &Value) -> Vec<String> {
 fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
     let (prefix, property) = match kind {
         NodeKind::PredefinedItem => ("predefinedItems", None),
+        NodeKind::Channel
+            if payload.get("kind").and_then(Value::as_str) == Some("IntegrationService") =>
+        {
+            ("collections.channels", None)
+        }
         NodeKind::UrlTemplate => ("details.urlTemplates", None),
         NodeKind::Operation => ("details.operations", None),
         NodeKind::StandardAttribute => {
@@ -590,6 +640,7 @@ fn metadata_branch_kinds() -> &'static [NodeKind] {
         NodeKind::Recalculation,
         NodeKind::Operation,
         NodeKind::UrlTemplate,
+        NodeKind::Channel,
         NodeKind::Form,
         NodeKind::Command,
         NodeKind::Template,
@@ -615,6 +666,11 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
         NodeKind::Recalculation => collections.get("recalculations"),
         NodeKind::EnumValue => collections.get("enumValues"),
         NodeKind::Column => collections.get("columns"),
+        NodeKind::Channel
+            if payload.get("kind").and_then(Value::as_str) == Some("IntegrationService") =>
+        {
+            payload.get("integrationChannels")?.get("items")
+        }
         NodeKind::Form => collections.get("forms"),
         NodeKind::Template => collections.get("templates"),
         NodeKind::Command => collections.get("commands"),
@@ -863,6 +919,32 @@ fn metadata_item_node(
     let mut limits = dropped_by_size(item, &props, address, |probe| {
         selected_scalar_props(probe, ITEM_SCALAR_KEYS)
     });
+    if matches!(address.segments(),[owner,channel] if owner.kind()==NodeKind::IntegrationService && owner.name().is_some() && channel.kind()==NodeKind::Channel && channel.name().is_some())
+    {
+        for property in item
+            .get("properties")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(name) = property.get("name").and_then(Value::as_str).filter(|name| {
+                unica_metadata::integration_channels::INTEGRATION_CHANNEL_PROPERTIES.contains(name)
+            }) else {
+                continue;
+            };
+            if let Some(value) = property.get("value") {
+                place_prop(
+                    &mut props,
+                    &mut limits,
+                    address,
+                    name,
+                    value,
+                    true,
+                    &format!("channel property {name}"),
+                );
+            }
+        }
+    }
     if kind == NodeKind::StandardAttribute {
         let tabular = address
             .segments()
