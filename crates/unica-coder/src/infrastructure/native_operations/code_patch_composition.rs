@@ -26,7 +26,7 @@ use unica_source_contract::proposal::{
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_designer::code_owner::prove_staged_code_owner;
 use unica_source_designer::module_layout::{
-    module_relative, module_source_address, platform_xml_module_identity,
+    module_relative, module_source_address, platform_xml_module_identity_for_source,
 };
 use unica_workspace::compile_transaction::CompileTransaction;
 
@@ -139,13 +139,14 @@ fn plan_one_code_operation(
         )
         .at_path(&at_path)
     })?;
-    let identity = platform_xml_module_identity(&relative).map_err(|_| {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            "module layout does not round-trip through the Platform XML mapper",
-        )
-        .at_path(&at_path)
-    })?;
+    let identity = platform_xml_module_identity_for_source(&relative, authority.source_kind())
+        .map_err(|_| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "module layout does not round-trip through the Platform XML mapper",
+            )
+            .at_path(&at_path)
+        })?;
     if identity.address != target {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::Postcondition,
@@ -164,6 +165,7 @@ fn plan_one_code_operation(
     prove_staged_code_support(
         staged,
         authority.support_policy_mode(),
+        authority.source_kind(),
         &owner_bytes,
         &at_path,
     )?;

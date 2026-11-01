@@ -18,6 +18,20 @@ impl OperationApplicability {
     pub fn matches(self, site: &OperationSite<'_>) -> bool {
         let segments = site.segments();
         let terminal = site.terminal();
+        let external_kind = match site.source().kind() {
+            unica_source_contract::SourceSetKind::ExternalProcessor => {
+                Some(NodeKind::ExternalDataProcessor)
+            }
+            unica_source_contract::SourceSetKind::ExternalReport => Some(NodeKind::ExternalReport),
+            _ => None,
+        };
+        if let Some(kind) = external_kind {
+            if !matches!(segments, [owner, module, ..]
+                if owner.kind() == kind && module.kind() == NodeKind::Module && module.name() == Some("Object"))
+            {
+                return false;
+            }
+        }
         match self {
             Self::CodeInsert => {
                 site.route() == RouteClass::Module

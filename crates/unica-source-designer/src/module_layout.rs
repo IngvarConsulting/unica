@@ -52,6 +52,36 @@ pub fn platform_xml_module_identity(relative: &Path) -> Result<PlatformXmlModule
     module_layout_for_relative(relative).map(|(_, identity)| identity)
 }
 
+/// The source kind selects its existing reverse mapper. External writes
+/// currently address object modules; their artifact owns its root descriptor.
+pub fn platform_xml_module_identity_for_source(
+    relative: &Path,
+    source_kind: SourceSetKind,
+) -> Result<PlatformXmlModuleIdentity, String> {
+    if !matches!(
+        source_kind,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return platform_xml_module_identity(relative);
+    }
+    let address = external_module_metadata_address(relative, source_kind)
+        .ok_or_else(unsupported_module_layout)?;
+    let parts = address.split('.').collect::<Vec<_>>();
+    let [kind, name, "ObjectModule"] = parts.as_slice() else {
+        return Err(unsupported_module_layout());
+    };
+    let owner = format!("{kind}.{name}");
+    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner)
+        .map_err(|e| e.to_string())?;
+    let descriptor = metadata_descriptor_relative(&target, source_kind)?;
+    module_identity(
+        address,
+        owner,
+        PlatformXmlModuleRole::ObjectModule,
+        vec![descriptor],
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PlatformXmlModuleLayoutFamily {
     RootApplication,

@@ -4082,11 +4082,14 @@ fn shared_apply_plan_error_and_effect_contract_is_complete() {
         "error-provider-unavailable",
         b"Procedure Base()\nEndProcedure\n",
     );
+    // An admitted external collection cannot map a configuration module.
+    // Public family admission rejects this owner earlier; exercise the
+    // private planner's closed error projection here.
     fs::write(
-            unsupported.root.join("v8project.yaml"),
-            "format: DESIGNER\nsource-set:\n  - name: main\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n",
-        )
-        .unwrap();
+        unsupported.root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: EXTERNAL_DATA_PROCESSORS\n    path: src\n",
+    )
+    .unwrap();
     let context = WorkspaceContext {
         cwd: unsupported.root.clone(),
         workspace_root: unsupported.root.clone(),
@@ -4120,14 +4123,20 @@ fn shared_apply_plan_error_and_effect_contract_is_complete() {
             &unica_work_control::cancellation::CancellationToken::new(),
         )
         .unwrap();
-    let provider = admission
-        .code_planning_authority(&binding)
-        .err()
-        .expect("unsupported admitted source unexpectedly issued Code planning authority");
+    let provider = plan_admitted_code(
+        &admission,
+        &binding,
+        &[staged_replace(
+            "main:CommonModule.Sample.Method.Base",
+            "Procedure Base()\nEndProcedure",
+            None,
+        )],
+    )
+    .unwrap_err();
     assert_closed_code_error(
         &provider,
         ApplyPlanErrorKind::ProviderUnavailable,
-        None,
+        Some("ops[0].args.at"),
         &unsupported.root,
     );
     unsupported.cleanup();

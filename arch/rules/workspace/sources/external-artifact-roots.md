@@ -1,6 +1,8 @@
 ---
 id: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 check:
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/external_code_tests.rs::external_object_code_publishes_for_erf_and_epf_without_touching_neighbors
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/external_code_tests.rs::external_code_token_retains_its_bsl_and_specific_owner_descriptor
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::retained_external_inventory_is_cancellable
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::retained_external_inventory_crosses_former_aggregate_bytes_without_losing_owners
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::retained_external_inventory_reads_malformed_tail_after_former_aggregate_bytes
@@ -28,6 +30,12 @@ check:
 Для такого набора не требуется `Configuration.xml`; его корень не объявляет
 модули исполнения конфигурации. Повреждённое или неоднозначное описание
 артефакта вызывает явный отказ чтения состава.
+
+Правка объектного модуля через `apply` доказывает конкретного владельца:
+его описатель, вид, имя и формат входят во входы плана вместе с BSL.
+Предпросмотр не пишет исходники, а публикация по токену сохраняет остальные
+артефакты. Файл `Ext/ParentConfigurations.bin` в корне набора внешних
+артефактов не задаёт их поддержку.
 
 Описатели читаются и разбираются последовательно. Уже прочитанный объём
 не уменьшает допустимость следующего описателя: сумма байтов не ограничивает

@@ -1,5 +1,3 @@
-use crate::domain::apply::SourceSetWriteSupport;
-
 mod borrow;
 pub(crate) mod dcs_mxl;
 pub(crate) mod form_resource;
@@ -194,6 +192,12 @@ fn refuse_targets_on_locked_vendor_objects(
     };
     use unica_source_contract::proposal::SupportPolicyMode;
 
+    if matches!(
+        binding.source_kind(),
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+    ) {
+        return Ok(None);
+    }
     let deny = match admission.support_policy_mode() {
         SupportPolicyMode::Deny => true,
         SupportPolicyMode::Warn => false,
@@ -529,7 +533,7 @@ fn batch_effects_as_provisional(
         .collect()
 }
 
-/// Политику записи семейства задаёт `SourceSetWriteSupport`; предварительная
+/// Политику записи задаёт типизированная операция; предварительная
 /// проверка `apply`, планировщик и словарь `can` спрашивают одного владельца.
 /// Запись реестра для вызова: общее имя (`attribute.add` и `command.add`
 /// объекта и формы, #1465) выбирает её адрес вызова, как предварительная
@@ -555,13 +559,23 @@ fn validate_platform_xml_binding(
     operation: &str,
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
+    if let Some(descriptor) = crate::domain::apply::operation_registry().lookup(operation) {
+        validate_platform_xml_descriptor(binding, descriptor, op_index)?;
+    }
+    Ok(())
+}
+
+fn validate_platform_xml_descriptor(
+    binding: &ProviderRootBinding,
+    descriptor: unica_operations::OperationDescriptor,
+    op_index: usize,
+) -> Result<(), ApplyPlanError> {
     let traits = crate::domain::apply::source_set_traits_of_source(
         binding.source_kind(),
         binding.source_format(),
         binding.source_profile(),
     );
-    let writes = crate::application::v13::apply::dispatch_family(operation)
-        .is_none_or(|family| traits.writes(family));
+    let writes = descriptor.writes_source(traits);
     if !writes {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::ProviderUnavailable,
@@ -586,7 +600,7 @@ fn refuse_misplaced_operation(
     else {
         return Ok(());
     };
-    validate_platform_xml_binding(binding, operation.name(), op_index)?;
+    validate_platform_xml_descriptor(binding, descriptor, op_index)?;
     let traits = crate::domain::apply::source_set_traits_of_source(
         binding.source_kind(),
         binding.source_format(),
@@ -697,7 +711,7 @@ fn parse_family_operation(
     }
     let parsed = match descriptor.family() {
         OperationFamily::Metadata | OperationFamily::Properties => {
-            validate_platform_xml_binding(binding, operation.name(), op_index)?;
+            validate_platform_xml_descriptor(binding, descriptor, op_index)?;
             let parsed = unica_metadata_designer::decode::parse_metadata_plan_operation_in(
                 Some(descriptor),
                 operation.name(),
@@ -1317,6 +1331,9 @@ mod inherited_content_tests;
 
 #[cfg(test)]
 mod object_integrity_tests;
+
+#[cfg(test)]
+mod external_code_tests;
 
 #[cfg(test)]
 mod tests {

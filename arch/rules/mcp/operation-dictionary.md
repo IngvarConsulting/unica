@@ -1,6 +1,7 @@
 ---
 id: INV.WIRE.V13-CAN-DICTIONARY
 check:
+  - crates/unica-coder/src/domain/apply.rs::external_object_code_has_one_family_owned_source_admission
   - crates/unica-coder/src/domain/apply.rs::implemented_operations_have_contracts_and_target_skeletons_have_no_empty_address
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::code_contract_context_matrix_matches_staged_parser_and_previews_without_writes
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::subsystem_interface_contracts_preview_all_operations_without_source_writes
