@@ -1225,6 +1225,21 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "FilterCriterion" {
+            match unica_metadata_designer::filter_criterion_read::FilterCriterionFacts::read(
+                target,
+                &descriptor,
+            ) {
+                Ok(facts) => facts.publish(&mut payload),
+                Err(message) => {
+                    payload["relations"]["filterCriterionContent"] = Value::Null;
+                    payload["unreadable"] = json!([
+                        {"field":"relations.filterCriterionContent", "message":message},
+                        {"field":"properties.UseStandardCommands", "message":message},
+                    ]);
+                }
+            }
+        }
         if evidence.artifact_kind() == "StyleItem" {
             unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;

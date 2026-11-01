@@ -1,0 +1,1853 @@
+{
+  "id": "S-1615-filter-criterion-content",
+  "name": "filter-criterion-content",
+  "issue": 1615,
+  "area": "Навигация по исходникам",
+  "task": "Восемь Content ссылок с полным владельцем/табличной частью и true/false; Relation через returned addresses, targets, пустота/отсутствие/повтор/повреждение, 75 строк с cursor, два набора и Module без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-filter-criterion-content",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "h0": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "h1": {
+          "file": "other/Catalogs/СделкиСКлиентами.xml",
+          "kind": "sha256"
+        },
+        "h2": {
+          "file": "other/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h3": {
+          "file": "other/FilterCriteria/ВзаимодействияКонтакта.xml",
+          "kind": "sha256"
+        },
+        "h4": {
+          "file": "src/Catalogs/СделкиСКлиентами.xml",
+          "kind": "sha256"
+        },
+        "h5": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h6": {
+          "file": "src/Documents/Встреча.xml",
+          "kind": "sha256"
+        },
+        "h7": {
+          "file": "src/Documents/ЗапланированноеВзаимодействие.xml",
+          "kind": "sha256"
+        },
+        "h8": {
+          "file": "src/Documents/ТелефонныйЗвонок.xml",
+          "kind": "sha256"
+        },
+        "h9": {
+          "file": "src/Documents/ЭлектронноеПисьмоВходящее.xml",
+          "kind": "sha256"
+        },
+        "h10": {
+          "file": "src/Documents/ЭлектронноеПисьмоИсходящее.xml",
+          "kind": "sha256"
+        },
+        "h11": {
+          "file": "src/FilterCriteria/BadBoolean.xml",
+          "kind": "sha256"
+        },
+        "h12": {
+          "file": "src/FilterCriteria/Dangling.xml",
+          "kind": "sha256"
+        },
+        "h13": {
+          "file": "src/FilterCriteria/Duplicate.xml",
+          "kind": "sha256"
+        },
+        "h14": {
+          "file": "src/FilterCriteria/DuplicateContainer.xml",
+          "kind": "sha256"
+        },
+        "h15": {
+          "file": "src/FilterCriteria/Empty.xml",
+          "kind": "sha256"
+        },
+        "h16": {
+          "file": "src/FilterCriteria/Foreign.xml",
+          "kind": "sha256"
+        },
+        "h17": {
+          "file": "src/FilterCriteria/Many.xml",
+          "kind": "sha256"
+        },
+        "h18": {
+          "file": "src/FilterCriteria/Missing.xml",
+          "kind": "sha256"
+        },
+        "h19": {
+          "file": "src/FilterCriteria/Partial.xml",
+          "kind": "sha256"
+        },
+        "h20": {
+          "file": "src/FilterCriteria/ВзаимодействияКонтакта.xml",
+          "kind": "sha256"
+        },
+        "h21": {
+          "file": "src/FilterCriteria/ВзаимодействияКонтакта/Ext/ManagerModule.bsl",
+          "kind": "sha256"
+        },
+        "h22": {
+          "file": "src/FilterCriteria/УчастиеВСделках.xml",
+          "kind": "sha256"
+        },
+        "h23": {
+          "file": "src/FilterCriteria/УчастиеВСделках/Ext/ManagerModule.bsl",
+          "kind": "sha256"
+        },
+        "h24": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FilterCriterion"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:FilterCriterion.ВзаимодействияКонтакта"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:FilterCriterion.УчастиеВСделках"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:FilterCriterion.Empty"
+        },
+        {
+          "pointer": "/data/items/3/at",
+          "eq": "main:FilterCriterion.Missing"
+        },
+        {
+          "pointer": "/data/items/4/at",
+          "eq": "main:FilterCriterion.Partial"
+        },
+        {
+          "pointer": "/data/items/5/at",
+          "eq": "main:FilterCriterion.Duplicate"
+        },
+        {
+          "pointer": "/data/items/6/at",
+          "eq": "main:FilterCriterion.DuplicateContainer"
+        },
+        {
+          "pointer": "/data/items/7/at",
+          "eq": "main:FilterCriterion.Dangling"
+        },
+        {
+          "pointer": "/data/items/8/at",
+          "eq": "main:FilterCriterion.Foreign"
+        },
+        {
+          "pointer": "/data/items/9/at",
+          "eq": "main:FilterCriterion.Many"
+        },
+        {
+          "pointer": "/data/items/10/at",
+          "eq": "main:FilterCriterion.BadBoolean"
+        }
+      ],
+      "captures": {
+        "owner0": {
+          "pointer": "/data/items/0/at"
+        },
+        "owner1": {
+          "pointer": "/data/items/1/at"
+        },
+        "owner2": {
+          "pointer": "/data/items/2/at"
+        },
+        "owner3": {
+          "pointer": "/data/items/3/at"
+        },
+        "owner4": {
+          "pointer": "/data/items/4/at"
+        },
+        "owner5": {
+          "pointer": "/data/items/5/at"
+        },
+        "owner6": {
+          "pointer": "/data/items/6/at"
+        },
+        "owner7": {
+          "pointer": "/data/items/7/at"
+        },
+        "owner8": {
+          "pointer": "/data/items/8/at"
+        },
+        "owner9": {
+          "pointer": "/data/items/9/at"
+        },
+        "owner10": {
+          "pointer": "/data/items/10/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": true
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/props/Vendor",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "props.set"
+          }
+        }
+      ],
+      "captures": {
+        "relation0": {
+          "pointer": "/data/branches/0/at"
+        },
+        "modules0": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relation0",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "target0_0": {
+          "pointer": "/data/items/0/at"
+        },
+        "target0_1": {
+          "pointer": "/data/items/1/at"
+        },
+        "cursor0_0": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relation0",
+        "limit": 2,
+        "cursor": "$capture.cursor0_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоВходящее.Attribute.ОтправительКонтакт",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "target0_2": {
+          "pointer": "/data/items/0/at"
+        },
+        "target0_3": {
+          "pointer": "/data/items/1/at"
+        },
+        "cursor0_1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relation0",
+        "limit": 2,
+        "cursor": "$capture.cursor0_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоИсходящее.TabularSection.ПолучателиПисьма.Attribute.Контакт",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ],
+      "captures": {
+        "target0_4": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target0_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Контакт"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target0_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Контакт"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target0_2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "АбонентКонтакт"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target0_3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.ЭлектронноеПисьмоВходящее.Attribute.ОтправительКонтакт"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "ОтправительКонтакт"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target0_4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Document.ЭлектронноеПисьмоИсходящее.TabularSection.ПолучателиПисьма.Attribute.Контакт"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Контакт"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.modules0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/role",
+          "eq": "Manager"
+        }
+      ],
+      "captures": {
+        "module0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.module0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        },
+        {
+          "pointer": "/data/props/ownerKind",
+          "eq": "FilterCriterion"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/props/Vendor",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "props.set"
+          }
+        }
+      ],
+      "captures": {
+        "relation1": {
+          "pointer": "/data/branches/0/at"
+        },
+        "modules1": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relation1",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.Партнер",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "target1_0": {
+          "pointer": "/data/items/0/at"
+        },
+        "target1_1": {
+          "pointer": "/data/items/1/at"
+        },
+        "cursor1_0": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relation1",
+        "limit": 2,
+        "cursor": "$capture.cursor1_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.КонтактноеЛицо",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ],
+      "captures": {
+        "target1_2": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target1_0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.СделкиСКлиентами.Attribute.Партнер"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Партнер"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target1_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.Партнер"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Партнер"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target1_2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.КонтактноеЛицо"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "КонтактноеЛицо"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.modules1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/role",
+          "eq": "Manager"
+        }
+      ],
+      "captures": {
+        "module1": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.module1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Module"
+        },
+        {
+          "pointer": "/data/props/ownerKind",
+          "eq": "FilterCriterion"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "extraRelation2": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extraRelation2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "filterCriterionContent"
+        }
+      ],
+      "captures": {
+        "extraRelation3": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extraRelation3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "filterCriterionContent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "filterCriterionContent"
+        }
+      ],
+      "captures": {
+        "extraRelation4": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extraRelation4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "filterCriterionContent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "extraRelation5": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extraRelation5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner6"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "filterCriterionContent"
+        }
+      ],
+      "captures": {
+        "extraRelation6": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extraRelation6"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "filterCriterionContent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner7"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "extraRelation7": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extraRelation7"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Catalog.Gone.Attribute.Missing",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Missing",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner8"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "filterCriterionContent"
+        }
+      ],
+      "captures": {
+        "extraRelation8": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extraRelation8"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "filterCriterionContent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner9"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 75
+        }
+      ],
+      "captures": {
+        "manyRelation": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.manyRelation",
+        "limit": 17
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоВходящее.Attribute.ОтправительКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоИсходящее.TabularSection.ПолучателиПисьма.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.КонтактноеЛицо",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоВходящее.Attribute.ОтправительКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоИсходящее.TabularSection.ПолучателиПисьма.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.КонтактноеЛицо",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "manyCursor0": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.manyRelation",
+        "limit": 17,
+        "cursor": "$capture.manyCursor0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоВходящее.Attribute.ОтправительКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоИсходящее.TabularSection.ПолучателиПисьма.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.КонтактноеЛицо",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоВходящее.Attribute.ОтправительКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоИсходящее.TabularSection.ПолучателиПисьма.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.КонтактноеЛицо",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "manyCursor1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.manyRelation",
+        "limit": 17,
+        "cursor": "$capture.manyCursor1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоВходящее.Attribute.ОтправительКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоИсходящее.TabularSection.ПолучателиПисьма.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.КонтактноеЛицо",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоВходящее.Attribute.ОтправительКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоИсходящее.TabularSection.ПолучателиПисьма.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.КонтактноеЛицо",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "manyCursor2": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.manyRelation",
+        "limit": 17,
+        "cursor": "$capture.manyCursor2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоВходящее.Attribute.ОтправительКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоИсходящее.TabularSection.ПолучателиПисьма.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.КонтактноеЛицо",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоВходящее.Attribute.ОтправительКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоИсходящее.TabularSection.ПолучателиПисьма.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.КонтактноеЛицо",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоВходящее.Attribute.ОтправительКонтакт",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "manyCursor3": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.manyRelation",
+        "limit": 17,
+        "cursor": "$capture.manyCursor3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Document.ЭлектронноеПисьмоИсходящее.TabularSection.ПолучателиПисьма.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.Партнер",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.СделкиСКлиентами.TabularSection.ПартнерыИКонтактныеЛица.Attribute.КонтактноеЛицо",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ЗапланированноеВзаимодействие.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "content",
+              "at": "main:Document.ТелефонныйЗвонок.Attribute.АбонентКонтакт",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner10"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "UseStandardCommands"
+        }
+      ],
+      "captures": {
+        "boolRelation": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.boolRelation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Document.Встреча.TabularSection.Участники.Attribute.Контакт",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:FilterCriterion"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherOwner": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherOwner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/UseStandardCommands",
+          "eq": false
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "otherRelation": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherRelation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "other:Catalog.СделкиСКлиентами.Attribute.Партнер",
+              "kind": "Attribute"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "otherTarget": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherTarget"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "other:Catalog.СделкиСКлиентами.Attribute.Партнер"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.h0"
+        },
+        {
+          "path": "other/Catalogs/СделкиСКлиентами.xml",
+          "kind": "sha256",
+          "eq": "$capture.h1"
+        },
+        {
+          "path": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h2"
+        },
+        {
+          "path": "other/FilterCriteria/ВзаимодействияКонтакта.xml",
+          "kind": "sha256",
+          "eq": "$capture.h3"
+        },
+        {
+          "path": "src/Catalogs/СделкиСКлиентами.xml",
+          "kind": "sha256",
+          "eq": "$capture.h4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h5"
+        },
+        {
+          "path": "src/Documents/Встреча.xml",
+          "kind": "sha256",
+          "eq": "$capture.h6"
+        },
+        {
+          "path": "src/Documents/ЗапланированноеВзаимодействие.xml",
+          "kind": "sha256",
+          "eq": "$capture.h7"
+        },
+        {
+          "path": "src/Documents/ТелефонныйЗвонок.xml",
+          "kind": "sha256",
+          "eq": "$capture.h8"
+        },
+        {
+          "path": "src/Documents/ЭлектронноеПисьмоВходящее.xml",
+          "kind": "sha256",
+          "eq": "$capture.h9"
+        },
+        {
+          "path": "src/Documents/ЭлектронноеПисьмоИсходящее.xml",
+          "kind": "sha256",
+          "eq": "$capture.h10"
+        },
+        {
+          "path": "src/FilterCriteria/BadBoolean.xml",
+          "kind": "sha256",
+          "eq": "$capture.h11"
+        },
+        {
+          "path": "src/FilterCriteria/Dangling.xml",
+          "kind": "sha256",
+          "eq": "$capture.h12"
+        },
+        {
+          "path": "src/FilterCriteria/Duplicate.xml",
+          "kind": "sha256",
+          "eq": "$capture.h13"
+        },
+        {
+          "path": "src/FilterCriteria/DuplicateContainer.xml",
+          "kind": "sha256",
+          "eq": "$capture.h14"
+        },
+        {
+          "path": "src/FilterCriteria/Empty.xml",
+          "kind": "sha256",
+          "eq": "$capture.h15"
+        },
+        {
+          "path": "src/FilterCriteria/Foreign.xml",
+          "kind": "sha256",
+          "eq": "$capture.h16"
+        },
+        {
+          "path": "src/FilterCriteria/Many.xml",
+          "kind": "sha256",
+          "eq": "$capture.h17"
+        },
+        {
+          "path": "src/FilterCriteria/Missing.xml",
+          "kind": "sha256",
+          "eq": "$capture.h18"
+        },
+        {
+          "path": "src/FilterCriteria/Partial.xml",
+          "kind": "sha256",
+          "eq": "$capture.h19"
+        },
+        {
+          "path": "src/FilterCriteria/ВзаимодействияКонтакта.xml",
+          "kind": "sha256",
+          "eq": "$capture.h20"
+        },
+        {
+          "path": "src/FilterCriteria/ВзаимодействияКонтакта/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.h21"
+        },
+        {
+          "path": "src/FilterCriteria/УчастиеВСделках.xml",
+          "kind": "sha256",
+          "eq": "$capture.h22"
+        },
+        {
+          "path": "src/FilterCriteria/УчастиеВСделках/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.h23"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.h24"
+        }
+      ]
+    }
+  ]
+}

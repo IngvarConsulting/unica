@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.LOGICAL-QUESTION-COMPLETENESS
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/filter_criterion_content.rs::filter_criterion_declarations_keep_dangling_targets_and_follow_real_nested_targets
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::every_reader_rejects_an_extra_unconsumed_address_tail
   - crates/unica-coder/src/infrastructure/daemon/server.rs::a_retired_read_filter_routes_next_to_the_address_that_replaced_it
 ---

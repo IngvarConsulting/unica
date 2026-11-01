@@ -199,7 +199,9 @@ fn project_metadata(
         if matches!(address.segments(), [owner] if owner.kind() == NodeKind::ScheduledJob) {
             branches.push(BranchRef::new(format!("{address}.Schedule"), 1));
         }
-        if !relations.is_empty() {
+        let declared_content = matches!(address.segments(), [owner] if owner.kind() == NodeKind::FilterCriterion)
+            && payload["relations"].get("filterCriterionContent").is_some();
+        if !relations.is_empty() || declared_content {
             branches.push(BranchRef::new(
                 format!("{}.{}", address, NodeKind::Relation.as_str()),
                 relations.len(),
@@ -659,6 +661,24 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
         for target in targets.into_iter().flatten() {
             if let Some(value) = target.get("value").and_then(Value::as_str) {
                 items.extend(addressed(relation, value));
+            }
+        }
+    }
+    // FilterCriterion lists declarations, including unresolved targets and
+    // repeated entries. ExchangePlan's distinct content model stays unchanged.
+    if address
+        .segments()
+        .first()
+        .is_some_and(|owner| owner.kind() == NodeKind::FilterCriterion)
+    {
+        for target in relations
+            .and_then(|relations| relations.get("filterCriterionContent"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(value) = target.get("value").and_then(Value::as_str) {
+                items.extend(addressed("content", value));
             }
         }
     }
