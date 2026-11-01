@@ -295,3 +295,78 @@ fn document_form_relations_preserve_whole_owner_refusal_for_damaged_registered_o
         }
     }
 }
+
+#[test]
+fn document_form_relations_omit_unreadable_foreign_form_content_and_keep_other_roles() {
+    for missing in [true, false] {
+        let fixture = RealReaderFixture::new();
+        let catalog = fixture.source.join("Catalogs/Items.xml");
+        write(
+            &catalog,
+            &fs::read_to_string(&catalog)
+                .unwrap()
+                .replace("</ChildObjects>", "<Form>Good</Form></ChildObjects>"),
+        );
+        let descriptor =
+            fs::read_to_string(fixture.source.join("Catalogs/Items/Forms/ItemForm.xml"))
+                .unwrap()
+                .replace("<Name>ItemForm</Name>", "<Name>Good</Name>");
+        write(
+            &fixture.source.join("Catalogs/Items/Forms/Good.xml"),
+            &descriptor,
+        );
+        let content = fixture
+            .source
+            .join("Catalogs/Items/Forms/ItemForm/Ext/Form.xml");
+        write(
+            &fixture
+                .source
+                .join("Catalogs/Items/Forms/Good/Ext/Form.xml"),
+            &fs::read_to_string(&content).unwrap(),
+        );
+        if missing {
+            fs::remove_file(&content).unwrap();
+        } else {
+            write(&content, "<Form>broken");
+        }
+        install(&fixture,"<DefaultObjectForm>Catalog.Items.Form.ItemForm</DefaultObjectForm><DefaultListForm>Catalog.Items.Form.Good</DefaultListForm>");
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        let service = fixture.view_service();
+        let broken = service.view(ViewRequest::new("main:Catalog.Items.Form.ItemForm").unwrap());
+        assert!(!broken.ok);
+        let result = service.view(ViewRequest::new("main:Document.Order.Relation").unwrap());
+        assert!(result.ok, "{:?}", refusal_codes(&result));
+        let data = result.data.unwrap();
+        let good = data["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["relation"] == "defaultListForm")
+            .unwrap();
+        let followed = service.view(ViewRequest::new(good["at"].as_str().unwrap()).unwrap());
+        assert!(followed.ok, "{:?}", refusal_codes(&followed));
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
+
+        assert!(
+            !data["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["relation"] == "defaultObjectForm"),
+            "{data:#}"
+        );
+        assert!(data["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["relation"] == "defaultListForm"));
+        assert!(data["limits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|l| l.as_str().is_some_and(|v| v.contains("defaultObjectForm"))));
+    }
+}

@@ -1369,7 +1369,15 @@ impl<'a> LogicalViewReadAuthority<'a> {
             let Some(Some(form_target)) = &form.target else {
                 continue;
             };
-            match self.verify_registered_owner(form_target, admitted) {
+            // Штатный читатель проверяет содержимое формы. Composition-кэш
+            // уже удерживается чтением документа, поэтому обращаемся к порту.
+            match self
+                .verify_registered_owner(form_target, admitted)
+                .and_then(|()| {
+                    self.read
+                        .form_data(form_target, &mut || self.read_checkpoint())
+                        .map(|_| ())
+                }) {
                 Ok(()) => {}
                 Err(error)
                     if error.code() == RefusalCode::NotFound
