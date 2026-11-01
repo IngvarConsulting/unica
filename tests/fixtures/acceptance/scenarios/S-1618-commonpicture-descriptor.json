@@ -1,0 +1,471 @@
+{
+  "id": "S-1618-commonpicture-descriptor",
+  "name": "commonpicture-descriptor",
+  "issue": 1618,
+  "area": "Навигация по исходникам",
+  "task": "Прочитать XML факты общих картинок через выданные адреса: false/true, PNG/ZIP, отсутствие, локальное повреждение, независимые наборы и длинное составное Props; сохранить байты без чтения payload",
+  "workspace": "tests/fixtures/acceptance/workspace-commonpicture-descriptor",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "h0": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "h1": {
+          "file": "other/CommonPictures/A_Png.xml",
+          "kind": "sha256"
+        },
+        "h2": {
+          "file": "other/CommonPictures/A_Png/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "h3": {
+          "file": "other/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h4": {
+          "file": "src/CommonPictures/A_Png.xml",
+          "kind": "sha256"
+        },
+        "h5": {
+          "file": "src/CommonPictures/A_Png/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "h6": {
+          "file": "src/CommonPictures/B_Zip.xml",
+          "kind": "sha256"
+        },
+        "h7": {
+          "file": "src/CommonPictures/B_Zip/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "h8": {
+          "file": "src/CommonPictures/C_AbsentFlag.xml",
+          "kind": "sha256"
+        },
+        "h9": {
+          "file": "src/CommonPictures/C_AbsentFlag/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "h10": {
+          "file": "src/CommonPictures/D_Missing.xml",
+          "kind": "sha256"
+        },
+        "h11": {
+          "file": "src/CommonPictures/E_Damaged.xml",
+          "kind": "sha256"
+        },
+        "h12": {
+          "file": "src/CommonPictures/E_Damaged/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "h13": {
+          "file": "src/CommonPictures/F_Long.xml",
+          "kind": "sha256"
+        },
+        "h14": {
+          "file": "src/CommonPictures/F_Long/Ext/Picture.xml",
+          "kind": "sha256"
+        },
+        "h15": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h16": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mainA_Png": {
+          "pointer": "/data/items/0/at"
+        },
+        "mainB_Zip": {
+          "pointer": "/data/items/1/at"
+        },
+        "mainC_AbsentFlag": {
+          "pointer": "/data/items/2/at"
+        },
+        "mainD_Missing": {
+          "pointer": "/data/items/3/at"
+        },
+        "mainE_Damaged": {
+          "pointer": "/data/items/4/at"
+        },
+        "mainF_Long": {
+          "pointer": "/data/items/5/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonPicture.A_Png"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:CommonPicture.B_Zip"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:CommonPicture.C_AbsentFlag"
+        },
+        {
+          "pointer": "/data/items/3/at",
+          "eq": "main:CommonPicture.D_Missing"
+        },
+        {
+          "pointer": "/data/items/4/at",
+          "eq": "main:CommonPicture.E_Damaged"
+        },
+        {
+          "pointer": "/data/items/5/at",
+          "eq": "main:CommonPicture.F_Long"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainA_Png"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "CommonPicture"
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/Picture",
+          "eq": {
+            "Abs": "Picture.png",
+            "LoadTransparent": false
+          }
+        },
+        {
+          "pointer": "/data/props/Vendor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainB_Zip"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "CommonPicture"
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/Picture",
+          "eq": {
+            "Abs": "Picture.zip",
+            "LoadTransparent": true
+          }
+        },
+        {
+          "pointer": "/data/props/Vendor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainC_AbsentFlag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "CommonPicture"
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Picture",
+          "eq": {
+            "Abs": "opaque.custom"
+          }
+        },
+        {
+          "pointer": "/data/props/Vendor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainD_Missing"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "CommonPicture"
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/Picture",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Vendor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainE_Damaged"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "CommonPicture"
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/Picture",
+          "eq": {
+            "LoadTransparent": false
+          }
+        },
+        {
+          "pointer": "/data/props/Vendor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mainF_Long"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "CommonPicture"
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/Picture",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/Vendor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:CommonPicture",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherA_Png": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "other:CommonPicture.A_Png"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherA_Png"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "CommonPicture"
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/Picture",
+          "eq": {
+            "Abs": "different.zip",
+            "LoadTransparent": true
+          }
+        },
+        {
+          "pointer": "/data/props/Vendor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.F_Long.Props.Picture"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Picture",
+          "eq": {
+            "Abs": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "LoadTransparent": false
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.h0",
+          "path": "README.md"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h1",
+          "path": "other/CommonPictures/A_Png.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h2",
+          "path": "other/CommonPictures/A_Png/Ext/Picture.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h3",
+          "path": "other/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h4",
+          "path": "src/CommonPictures/A_Png.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h5",
+          "path": "src/CommonPictures/A_Png/Ext/Picture.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h6",
+          "path": "src/CommonPictures/B_Zip.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h7",
+          "path": "src/CommonPictures/B_Zip/Ext/Picture.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h8",
+          "path": "src/CommonPictures/C_AbsentFlag.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h9",
+          "path": "src/CommonPictures/C_AbsentFlag/Ext/Picture.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h10",
+          "path": "src/CommonPictures/D_Missing.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h11",
+          "path": "src/CommonPictures/E_Damaged.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h12",
+          "path": "src/CommonPictures/E_Damaged/Ext/Picture.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h13",
+          "path": "src/CommonPictures/F_Long.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h14",
+          "path": "src/CommonPictures/F_Long/Ext/Picture.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h15",
+          "path": "src/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.h16",
+          "path": "v8project.yaml"
+        }
+      ]
+    }
+  ]
+}
