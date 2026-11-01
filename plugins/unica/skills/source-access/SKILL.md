@@ -216,6 +216,12 @@ allowed-tools:
 | Подсистема | `Subsystem.<Имя>` → `Interface` → `Command` |
 | Методы модуля | `<объект>.Module.<Роль>` → `Method`, `Region`, `Event`, `Body` |
 
+У общей картинки `CommonPicture` свойства `AvailabilityForAppearance` и
+`Picture` показывают явно заданные XML-факты. `Picture` содержит `Abs`
+и `LoadTransparent` из сопутствующего XML: ссылка `Abs` не означает, что
+содержимое PNG или ZIP прочитано. Повреждённые независимые поля отмечаются
+в `limits`; крупное значение доступно через `.Props.Picture`.
+
 Поддержка поставщика приходит в `props.support` объекта — читай её перед любой
 правкой объекта на замке и решай через release-support, а не правкой напрямую.
 

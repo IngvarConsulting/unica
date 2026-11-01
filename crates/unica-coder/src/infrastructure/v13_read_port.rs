@@ -1225,6 +1225,22 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "CommonPicture" {
+            let relative = self.attached_resource_relative(target, "Picture.xml")?;
+            let companion = self.read_relative_whole(&relative);
+            let companion = match &companion {
+                Ok(bytes) => Ok(bytes.as_slice()),
+                Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => {
+                    Err(error.to_string())
+                }
+                Err(error) => return Err(error.clone()),
+            };
+            unica_metadata_designer::commonpicture_read::enrich(
+                &descriptor,
+                companion,
+                &mut payload,
+            );
+        }
         if evidence.artifact_kind() == "StyleItem" {
             unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
