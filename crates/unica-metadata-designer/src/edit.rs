@@ -1403,6 +1403,11 @@ pub fn apply_typed_properties(
                     Some("values.CodeSeries"),
                 ));
             }
+            if matches!(value, MetaPropertyValue::String(value)
+                if unica_xml_format::read::direct_text(property).trim() == value)
+            {
+                continue;
+            }
         }
         let replacement = match (key, value) {
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {

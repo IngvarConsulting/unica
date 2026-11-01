@@ -229,6 +229,59 @@ mod tests {
         assert_eq!(AddressedFields::None.caller_field("elements[0].name"), None);
         assert_eq!(AddressedFields::Items.caller_field("names[0]"), None);
     }
+
+    fn code_series_plan(
+        raw: &str,
+    ) -> Result<unica_workspace::apply::ApplyStagedState, super::ApplyPlanError> {
+        let config =
+            RU_CONFIGURATION_XML.replace("<Document>Order</Document>", "<Catalog>Sales</Catalog>");
+        let owner = format!("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Catalog uuid=\"11111111-1111-4111-8111-111111111111\"><Properties><Name>Sales</Name>{raw}</Properties><ChildObjects/></Catalog></MetaDataObject>");
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", &config),
+            ("Catalogs/Sales.xml", &owner),
+        ]);
+        let operation = fixture.parse(
+            "props.set",
+            json!({"at":"main:Catalog.Sales","values":{"CodeSeries":"WholeCatalog"}}),
+            0,
+        );
+        let admission = fixture.admission();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let result = plan_metadata_batch_owned_for_test(
+            admission.staged_state().unwrap(),
+            authority,
+            &[operation],
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.binding.source_root().join("Catalogs/Sales.xml"))
+                .unwrap(),
+            owner
+        );
+        result.map(|(staged, _)| staged)
+    }
+
+    #[test]
+    fn canonical_code_series_equivalent_assignment_has_no_planned_writes() {
+        for raw in [
+            "<CodeSeries>Whole&#67;atalog</CodeSeries>",
+            "<CodeSeries>Whole<!-- keep -->Catalog</CodeSeries>",
+            "<md:CodeSeries xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\">WholeCatalog</md:CodeSeries>",
+        ] {
+            assert!(code_series_plan(raw).unwrap().planned_changes().is_empty(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn canonical_code_series_rejects_foreign_and_attributed_source_leaves() {
+        for raw in [
+            "<f:CodeSeries xmlns:f=\"urn:foreign\">WholeCatalog</f:CodeSeries>",
+            "<CodeSeries extra=\"damaged\">WholeCatalog</CodeSeries>",
+        ] {
+            assert!(code_series_plan(raw).is_err(), "{raw}");
+        }
+    }
     #[test]
     fn metadata_parser_rejects_unknown_and_misplaced_fields_at_the_exact_operation_path() {
         let fixture = MetadataFixture::new();

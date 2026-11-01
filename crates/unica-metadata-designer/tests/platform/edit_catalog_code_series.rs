@@ -59,3 +59,17 @@ fn catalog_code_series_does_not_repair_missing_or_damaged_input() {
         assert_eq!(image, before);
     }
 }
+
+#[test]
+fn catalog_code_series_equivalent_value_preserves_xml_spelling() {
+    for value in [
+        "<CodeSeries>Whole&#67;atalog</CodeSeries>",
+        "<CodeSeries>Whole<!-- keep -->Catalog</CodeSeries>",
+        "<md:CodeSeries xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\">WholeCatalog</md:CodeSeries>",
+    ] {
+        let before = catalog().replace("<CodeSeries>WholeCatalog</CodeSeries>", value);
+        let mut image = before.clone();
+        apply_typed_properties(&mut image, &changes("WholeCatalog"), "ru").unwrap();
+        assert_eq!(image, before, "{value}");
+    }
+}
