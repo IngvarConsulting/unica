@@ -1,3 +1,4 @@
+mod lsp_host;
 pub(crate) mod protocol;
 #[cfg(test)]
 #[path = "../../../tests/platform/receipt_join_freshness.rs"]

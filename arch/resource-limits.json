@@ -6855,6 +6855,198 @@
       "derived": true
     },
     {
+      "id": "lsp.platform-context-retry-delay",
+      "class": "retry",
+      "resource": "Задержка перед повторной загрузкой глобального контекста платформы для completion после неудачной загрузки.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs",
+        "symbol": "PLATFORM_CONTEXT_RETRY_DELAY"
+      },
+      "expr": "Duration::from_secs(60)",
+      "value": 60000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2178",
+      "problem": null,
+      "onReach": "следующий запрос completion снова запускает загрузку; до неё список помечен isIncomplete",
+      "issue": "#2178",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.completion-inference-depth",
+      "class": "format",
+      "resource": "Глубина вывода типа переменной для completion после точки: цепочка циклов и присваиваний, по которой ищется объект и его табличная часть.",
+      "unit": "depth",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/lsp_features.rs",
+        "symbol": "INFERENCE_DEPTH"
+      },
+      "expr": "4",
+      "value": 4,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/lsp_features.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2178",
+      "problem": "цепочка глубже предела не выводится",
+      "onReach": "неполный ответ, а не отказ: completion отдаёт найденные имена без членов объекта, тип которого не выведен (политика #1312)",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.provider-budget",
+      "class": "deadline",
+      "resource": "Срок, который поставщик символов (bsl-analyzer) получает на один запрос редактора.",
+      "unit": "ms",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs",
+        "symbol": "LSP_PROVIDER_BUDGET"
+      },
+      "expr": "Duration::from_secs(30)",
+      "value": 30000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/lsp_host.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2177",
+      "problem": null,
+      "onReach": "поставщик отвечает «не готово», ответ редактору помечен неполным",
+      "issue": "#2177",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.editor-analysis-entries",
+      "class": "retention",
+      "resource": "Число сохранённых текстов модулей, для которых демон держит анализ кода для редактора: готовый или ждущий очереди.",
+      "unit": "count",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs",
+        "symbol": "MAX_EDITOR_ANALYSIS_ENTRIES"
+      },
+      "expr": "256",
+      "value": 256,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2176",
+      "problem": null,
+      "onReach": "вытесняется самый старый готовый анализ, если готовых нет — самый старый ждущий очереди; документ показывает «анализ кода ещё идёт» до следующего запроса",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.editor-diagnostics",
+      "class": "result",
+      "resource": "Находок в одном ответе диагностик документа редактору.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs",
+        "symbol": "MAX_EDITOR_DIAGNOSTICS"
+      },
+      "expr": "1000",
+      "value": 1000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2176",
+      "problem": null,
+      "onReach": "показываются первые находки по тексту, ответ помечается неполным с пробелом `capped`",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.editor-analysis-concurrency",
+      "class": "concurrency",
+      "resource": "Анализов кода, одновременно идущих для редактора во всём демоне.",
+      "unit": "count",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs",
+        "symbol": "MAX_CONCURRENT_EDITOR_ANALYSES"
+      },
+      "expr": "2",
+      "value": 2,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2176",
+      "problem": null,
+      "onReach": "следующий анализ ждёт в очереди; редактор пока видит пробел «анализ кода ещё идёт»",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.editor-analysis-retry",
+      "class": "retry",
+      "resource": "Через сколько неполный анализ кода модуля повторяется для тех, кто его ждал.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs",
+        "symbol": "EDITOR_ANALYSIS_RETRY_DELAY"
+      },
+      "expr": "Duration::from_secs(30)",
+      "value": 30000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/lsp_diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2176",
+      "problem": null,
+      "onReach": "ждавшим анализа сообщается снова, и следующий их запрос запускает анализ заново",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.wire-result-id-bytes",
+      "class": "format",
+      "resource": "Длина идентификатора прежнего ответа диагностик в протоколе LSP демона.",
+      "unit": "bytes",
+      "scope": "record",
+      "source": {
+        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "symbol": "MAX_LSP_RESULT_ID_BYTES"
+      },
+      "expr": "128",
+      "value": 128,
+      "applied": [
+        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2176",
+      "problem": null,
+      "onReach": "кадр отвергается ответом invalid_request",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "bsl-types.array-element-window",
       "class": "format",
       "resource": "Сколько символов после «Массив из» на странице справки просматривается в поисках ссылки на тип элемента массива.",

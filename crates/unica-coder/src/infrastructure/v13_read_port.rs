@@ -220,8 +220,6 @@ impl ProviderReadAuthority {
     }
 
     /// Reads modules of `documents` from their open buffers.
-    // The LSP route (#2173) builds its reads with this.
-    #[allow(dead_code)]
     pub(crate) fn with_documents(mut self, documents: SessionDocuments) -> Self {
         self.documents = (!documents.is_empty()).then_some(documents);
         self
@@ -500,6 +498,31 @@ impl ProviderReadAuthority {
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
     ) -> Result<Arc<RegistrationIndex>, ViewError> {
         self.artifacts.registrations(&self.root, checkpoint)
+    }
+
+    /// The names of every registered object of `kind` (`Catalog`), sorted.
+    /// A large root descriptor is read through the streamed index.
+    pub(crate) fn registered_names(
+        &self,
+        kind: &str,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<Vec<String>, ViewError> {
+        if self.configuration_xml_requires_streaming() {
+            return self
+                .streamed_configuration_registration_index(checkpoint)?
+                .names_for_kind(kind, checkpoint);
+        }
+        let payload = self.configuration_payload_with_checkpoint(&mut || checkpoint())?;
+        let mut names = payload["registeredObjects"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|object| object["kind"] == kind)
+            .filter_map(|object| object["name"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 
     /// Preserve the established parser and its full compatibility behavior

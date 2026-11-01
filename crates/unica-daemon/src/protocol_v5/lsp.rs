@@ -5,6 +5,7 @@
 //! разбирает служба LSP за портом [`crate::lsp_lane::LspHost`].
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fmt;
 use uuid::Uuid;
 
@@ -18,6 +19,8 @@ const MAX_LSP_FOLDER_NAME_BYTES: usize = 1024;
 const MAX_LSP_LANGUAGE_ID_BYTES: usize = 64;
 /// Сообщение уведомления редактору.
 const MAX_LSP_LOG_MESSAGE_BYTES: usize = 4 * 1024;
+/// Идентификатор отчёта диагностик, который редактор возвращает серверу.
+const MAX_LSP_RESULT_ID_BYTES: usize = 128;
 
 /// Сессия LSP: выдаётся демоном на `lsp_open` и живёт, пока открыто
 /// соединение, на котором она открыта.
@@ -90,18 +93,100 @@ pub enum V5LspCall {
     /// без файла на диске.
     #[serde(rename = "workspace/textDocumentContent")]
     TextDocumentContent { uri: String },
+    #[serde(rename = "textDocument/documentSymbol")]
+    DocumentSymbol { uri: String },
+    #[serde(rename = "textDocument/foldingRange")]
+    FoldingRange { uri: String },
+    #[serde(rename = "textDocument/semanticTokens/full")]
+    SemanticTokensFull { uri: String },
+    #[serde(rename = "textDocument/signatureHelp")]
+    SignatureHelp {
+        uri: String,
+        position: V5LspPosition,
+    },
+    #[serde(rename = "textDocument/completion")]
+    Completion {
+        uri: String,
+        position: V5LspPosition,
+    },
+    /// Элемент, который служба выдала в `completion`, как его вернул
+    /// редактор: документ служба записала в его `data`.
+    #[serde(rename = "completionItem/resolve")]
+    CompletionResolve { item: Value },
+    #[serde(rename = "textDocument/definition")]
+    Definition {
+        uri: String,
+        position: V5LspPosition,
+    },
+    #[serde(rename = "textDocument/references")]
+    References {
+        uri: String,
+        position: V5LspPosition,
+    },
+    #[serde(rename = "textDocument/prepareCallHierarchy")]
+    PrepareCallHierarchy {
+        uri: String,
+        position: V5LspPosition,
+    },
+    /// Элемент иерархии, который служба выдала в `prepareCallHierarchy`.
+    #[serde(rename = "callHierarchy/incomingCalls")]
+    IncomingCalls { item: Value },
+    #[serde(rename = "callHierarchy/outgoingCalls")]
+    OutgoingCalls { item: Value },
+    /// Диагностики документа (#2176); `previous_result_id` — отчёт, который
+    /// у редактора уже есть.
+    #[serde(rename = "textDocument/diagnostic")]
+    Diagnostic {
+        uri: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous_result_id: Option<String>,
+    },
 }
 
 impl V5LspCall {
     /// Документ, к состоянию которого относится ответ.
     pub fn document_uri(&self) -> Option<&str> {
         match self {
-            Self::Hover { uri, .. } | Self::TextDocumentContent { uri } => Some(uri),
+            Self::Hover { uri, .. }
+            | Self::TextDocumentContent { uri }
+            | Self::DocumentSymbol { uri }
+            | Self::FoldingRange { uri }
+            | Self::SemanticTokensFull { uri }
+            | Self::SignatureHelp { uri, .. }
+            | Self::Completion { uri, .. }
+            | Self::Definition { uri, .. }
+            | Self::References { uri, .. }
+            | Self::PrepareCallHierarchy { uri, .. }
+            | Self::Diagnostic { uri, .. } => Some(uri),
+            Self::CompletionResolve { .. }
+            | Self::IncomingCalls { .. }
+            | Self::OutgoingCalls { .. } => None,
         }
     }
 
     fn validate(&self) -> Result<(), String> {
-        validate_uri(self.document_uri().unwrap_or_default())
+        if let Self::Diagnostic {
+            previous_result_id: Some(id),
+            ..
+        } = self
+        {
+            if id.len() > MAX_LSP_RESULT_ID_BYTES {
+                return Err("v5 lsp diagnostic result id exceeds its limit".to_string());
+            }
+        }
+        match self {
+            Self::CompletionResolve { item }
+            | Self::IncomingCalls { item }
+            | Self::OutgoingCalls { item }
+                if item.is_object() =>
+            {
+                Ok(())
+            }
+            Self::CompletionResolve { .. }
+            | Self::IncomingCalls { .. }
+            | Self::OutgoingCalls { .. } => Err("v5 lsp item must be an object".to_string()),
+            _ => validate_uri(self.document_uri().unwrap_or_default()),
+        }
     }
 }
 
@@ -132,6 +217,8 @@ pub enum V5LspNotification {
         version: i32,
         changes: Vec<V5LspContentChange>,
     },
+    #[serde(rename = "textDocument/didSave")]
+    DidSave { uri: String },
     #[serde(rename = "textDocument/didClose")]
     DidClose { uri: String },
 }
@@ -139,7 +226,10 @@ pub enum V5LspNotification {
 impl V5LspNotification {
     pub fn document_uri(&self) -> &str {
         match self {
-            Self::DidOpen { uri, .. } | Self::DidChange { uri, .. } | Self::DidClose { uri } => uri,
+            Self::DidOpen { uri, .. }
+            | Self::DidChange { uri, .. }
+            | Self::DidSave { uri }
+            | Self::DidClose { uri } => uri,
         }
     }
 
@@ -151,7 +241,7 @@ impl V5LspNotification {
             Self::DidOpen { language_id, .. } => {
                 validate_short_text(language_id, MAX_LSP_LANGUAGE_ID_BYTES, "v5 lsp language id")
             }
-            Self::DidChange { .. } | Self::DidClose { .. } => Ok(()),
+            Self::DidChange { .. } | Self::DidSave { .. } | Self::DidClose { .. } => Ok(()),
         }
     }
 }
@@ -171,6 +261,7 @@ impl fmt::Debug for V5LspNotification {
                 .field("version", version)
                 .field("changes", &changes.len())
                 .finish_non_exhaustive(),
+            Self::DidSave { .. } => formatter.write_str("V5LspDidSave"),
             Self::DidClose { .. } => formatter.write_str("V5LspDidClose"),
         }
     }
@@ -185,14 +276,37 @@ pub enum V5LspTextSync {
     Incremental,
 }
 
-/// Возможности, которые служба готова обслужить сейчас.
+/// Как редактор получает диагностики документов. Редактору, который сам
+/// запрашивает их, служба не рассылает их при правке.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum V5LspDiagnosticsDelivery {
+    Push,
+    Pull,
+}
+
+/// Возможности, которые служба готова обслужить сейчас.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct V5LspCapabilities {
     pub text_document_sync: V5LspTextSync,
     pub hover: bool,
     /// `workspace/textDocumentContent` для адресов `unica://`.
     pub text_document_content: bool,
+    pub document_symbols: bool,
+    pub folding_ranges: bool,
+    pub signature_help: bool,
+    /// `completion` с `completionItem/resolve`.
+    pub completion: bool,
+    pub definition: bool,
+    pub references: bool,
+    pub call_hierarchy: bool,
+    /// `textDocument/diagnostic` и `publishDiagnostics` (#2176).
+    #[serde(default)]
+    pub diagnostics: bool,
+    /// Легенда `semanticTokens/full`, если служба их выдаёт.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_tokens_legend: Option<Value>,
 }
 
 impl V5LspCapabilities {
@@ -200,6 +314,15 @@ impl V5LspCapabilities {
         text_document_sync: V5LspTextSync::None,
         hover: false,
         text_document_content: false,
+        document_symbols: false,
+        folding_ranges: false,
+        signature_help: false,
+        completion: false,
+        definition: false,
+        references: false,
+        call_hierarchy: false,
+        diagnostics: false,
+        semantic_tokens_legend: None,
     };
 }
 
@@ -269,6 +392,10 @@ pub enum V5LspFailure {
     Unavailable,
     /// Рабочая папка не открылась как рабочая область Unica.
     WorkspaceUnavailable,
+    /// Адрес не называет модуль, доступный этому соединению.
+    DocumentUnknown,
+    /// Ничего не найдено, пока источник ответа не готов: это не «нет».
+    Incomplete,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,6 +414,10 @@ pub enum V5LspOutcome {
     /// Текст документа.
     Text {
         text: String,
+    },
+    /// Результат метода LSP, который построил код Unica; `null` — ответа нет.
+    Json {
+        value: Value,
     },
     /// Запрос отменён до ответа; его результат не выдаётся.
     Cancelled {},
@@ -316,6 +447,16 @@ pub enum V5LspServerNotification {
         level: V5LspMessageLevel,
         message: String,
     },
+    /// Параметры `textDocument/publishDiagnostics`, собранные кодом Unica.
+    /// `analysed` — закончился фоновый анализ, а не правка документа:
+    /// редактору, который сам запрашивает диагностики, это повод запросить
+    /// их заново.
+    PublishDiagnostics {
+        uri: String,
+        params: Value,
+        #[serde(default)]
+        analysed: bool,
+    },
 }
 
 impl V5LspServerNotification {
@@ -325,6 +466,7 @@ impl V5LspServerNotification {
                 Err("v5 lsp log message exceeds its limit".to_string())
             }
             Self::LogMessage { .. } => Ok(()),
+            Self::PublishDiagnostics { uri, .. } => validate_uri(uri),
         }
     }
 }
