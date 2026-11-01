@@ -199,7 +199,11 @@ fn project_metadata(
         if matches!(address.segments(), [owner] if owner.kind() == NodeKind::ScheduledJob) {
             branches.push(BranchRef::new(format!("{address}.Schedule"), 1));
         }
-        if !relations.is_empty() {
+        let declared_readable = functional_declaration_field(address).is_some_and(|(field, _)| {
+            payload["relations"].get(field).is_some()
+                && !functional_use_unavailable(address, payload)
+        });
+        if !relations.is_empty() || declared_readable {
             branches.push(BranchRef::new(
                 format!("{}.{}", address, NodeKind::Relation.as_str()),
                 relations.len(),
@@ -291,6 +295,19 @@ fn project_metadata(
             return Err(ViewError::new(
                 RefusalCode::NotFound,
                 "the relation branch lists targets; read the target at its own address",
+            ));
+        }
+        if functional_use_unavailable(address, payload)
+            && metadata_relations(address, payload).is_empty()
+        {
+            let reasons = metadata_relation_limits(payload);
+            return Err(ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                if reasons.is_empty() {
+                    "FunctionalOptionsParameter.Use is required and cannot be read".to_string()
+                } else {
+                    reasons.join("; ")
+                },
             ));
         }
         return Ok(NodeViewData::Collection(CollectionView::new(
@@ -634,6 +651,26 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
 /// Поэтому имя связи становится полем элемента, а не отдельной ветвью на
 /// каждое имя: девять ветвей ради девяти имён — это девять новых видов узлов
 /// там, где хватает поля.
+fn functional_declaration_field(
+    address: &QualifiedAddress,
+) -> Option<(&'static str, &'static str)> {
+    match address.segments().first()?.kind() {
+        NodeKind::FunctionalOption => Some(("functionalOptionContent", "content")),
+        NodeKind::FunctionalOptionsParameter => Some(("functionalParameterUse", "use")),
+        _ => None,
+    }
+}
+
+fn functional_use_unavailable(address: &QualifiedAddress, payload: &Value) -> bool {
+    address
+        .segments()
+        .first()
+        .is_some_and(|owner| owner.kind() == NodeKind::FunctionalOptionsParameter)
+        && payload["relations"]
+            .get("functionalParameterUse")
+            .is_none_or(|value| value.as_array().is_none_or(Vec::is_empty))
+}
+
 fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value> {
     let mut items = Vec::new();
     let addressed = |relation: &str, target: &str| {
@@ -659,6 +696,19 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
         for target in targets.into_iter().flatten() {
             if let Some(value) = target.get("value").and_then(Value::as_str) {
                 items.extend(addressed(relation, value));
+            }
+        }
+    }
+    // These are declarations. The ExchangePlan content/autoRecord model is separate.
+    if let Some((field, role)) = functional_declaration_field(address) {
+        for reference in relations
+            .and_then(|relations| relations.get(field))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(value) = reference.get("value").and_then(Value::as_str) {
+                items.extend(addressed(role, value));
             }
         }
     }

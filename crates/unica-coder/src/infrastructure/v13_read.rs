@@ -1054,6 +1054,12 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         .job_schedule(target, &mut || self.read_checkpoint())?;
                     return Ok(json!({"properties": schedule}));
                 }
+                if matches!(
+                    target.as_str().split('.').next(),
+                    Some("FunctionalOption" | "FunctionalOptionsParameter")
+                ) {
+                    return self.uncached_typed_payload_for(route, admitted);
+                }
                 let key = TypedPayloadCacheKey {
                     revision: RevisionCacheKey {
                         source_set_identity: admitted.source_set_identity.clone(),
@@ -1357,6 +1363,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
                 payload["unreadable"] = json!([{"field":"properties.Synonym", "message":message}]);
             }
             return Ok(payload);
+        }
+        if matches!(kind, "FunctionalOption" | "FunctionalOptionsParameter") {
+            let registrations = self
+                .read
+                .streamed_configuration_registration_index(&|| self.read_checkpoint())?;
+            let (_, name) = target
+                .as_str()
+                .split_once('.')
+                .expect("root metadata target");
+            if !registrations.contains(kind, name, &|| self.read_checkpoint())? {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "functional declaration owner is no longer registered",
+                ));
+            }
+            return self.read.identity_metadata_payload(target);
         }
         if MetadataKind::parse(kind).is_err() {
             return self.read.identity_metadata_payload(target);

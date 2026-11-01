@@ -1225,6 +1225,27 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if matches!(
+            evidence.artifact_kind(),
+            "FunctionalOption" | "FunctionalOptionsParameter"
+        ) {
+            match unica_metadata_designer::functional_option_read::FunctionalOptionFacts::read(
+                target,
+                &descriptor,
+            ) {
+                Ok(facts) => facts.publish(&mut payload),
+                Err(message) => {
+                    let field = if evidence.artifact_kind() == "FunctionalOption" {
+                        "functionalOptionContent"
+                    } else {
+                        "functionalParameterUse"
+                    };
+                    payload["relations"][field] = Value::Null;
+                    payload["unreadable"] =
+                        json!([{"field":format!("relations.{field}"), "message":message}]);
+                }
+            }
+        }
         if evidence.artifact_kind() == "StyleItem" {
             unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;

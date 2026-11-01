@@ -1,0 +1,2413 @@
+{
+  "id": "S-1600-functional-option-links",
+  "name": "functional-option-links",
+  "issue": 1600,
+  "area": "Навигация по исходникам",
+  "task": "Пять владельцев6Content+7Use: полные декларации/targets/roles, tiny cursor,61строка, повторы/partial/dangling, emptyContent vs invalidUse8.3.27, два набора без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-functional-option-links",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "h0": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "h1": {
+          "file": "other/Catalogs/Организации.xml",
+          "kind": "sha256"
+        },
+        "h2": {
+          "file": "other/Catalogs/Склады.xml",
+          "kind": "sha256"
+        },
+        "h3": {
+          "file": "other/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h4": {
+          "file": "other/FunctionalOptions/ВестиСведенияДляДекларацийАлкоВРознице.xml",
+          "kind": "sha256"
+        },
+        "h5": {
+          "file": "other/FunctionalOptionsParameters/Склад.xml",
+          "kind": "sha256"
+        },
+        "h6": {
+          "file": "src/Catalogs/ЛицензииПоставщиковАлкогольнойПродукции.xml",
+          "kind": "sha256"
+        },
+        "h7": {
+          "file": "src/Catalogs/Организации.xml",
+          "kind": "sha256"
+        },
+        "h8": {
+          "file": "src/Catalogs/Склады.xml",
+          "kind": "sha256"
+        },
+        "h9": {
+          "file": "src/CommonCommands/ОткрытьКаталогРасширений.xml",
+          "kind": "sha256"
+        },
+        "h10": {
+          "file": "src/CommonCommands/ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции.xml",
+          "kind": "sha256"
+        },
+        "h11": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h12": {
+          "file": "src/FunctionalOptions/Dangling.xml",
+          "kind": "sha256"
+        },
+        "h13": {
+          "file": "src/FunctionalOptions/Duplicate.xml",
+          "kind": "sha256"
+        },
+        "h14": {
+          "file": "src/FunctionalOptions/Empty.xml",
+          "kind": "sha256"
+        },
+        "h15": {
+          "file": "src/FunctionalOptions/Many.xml",
+          "kind": "sha256"
+        },
+        "h16": {
+          "file": "src/FunctionalOptions/Missing.xml",
+          "kind": "sha256"
+        },
+        "h17": {
+          "file": "src/FunctionalOptions/Partial.xml",
+          "kind": "sha256"
+        },
+        "h18": {
+          "file": "src/FunctionalOptions/Repeat.xml",
+          "kind": "sha256"
+        },
+        "h19": {
+          "file": "src/FunctionalOptions/ВестиСведенияДляДекларацийАлкоВРознице.xml",
+          "kind": "sha256"
+        },
+        "h20": {
+          "file": "src/FunctionalOptions/ИспользованиеКаталогаРасширенийВМоделиСервиса.xml",
+          "kind": "sha256"
+        },
+        "h21": {
+          "file": "src/FunctionalOptions/ИспользоватьДанныеКонтрагентаФизическогоЛицаКонтекст.xml",
+          "kind": "sha256"
+        },
+        "h22": {
+          "file": "src/FunctionalOptionsParameters/AllBad.xml",
+          "kind": "sha256"
+        },
+        "h23": {
+          "file": "src/FunctionalOptionsParameters/Dangling.xml",
+          "kind": "sha256"
+        },
+        "h24": {
+          "file": "src/FunctionalOptionsParameters/Duplicate.xml",
+          "kind": "sha256"
+        },
+        "h25": {
+          "file": "src/FunctionalOptionsParameters/Empty.xml",
+          "kind": "sha256"
+        },
+        "h26": {
+          "file": "src/FunctionalOptionsParameters/Foreign.xml",
+          "kind": "sha256"
+        },
+        "h27": {
+          "file": "src/FunctionalOptionsParameters/Missing.xml",
+          "kind": "sha256"
+        },
+        "h28": {
+          "file": "src/FunctionalOptionsParameters/Partial.xml",
+          "kind": "sha256"
+        },
+        "h29": {
+          "file": "src/FunctionalOptionsParameters/Repeat.xml",
+          "kind": "sha256"
+        },
+        "h30": {
+          "file": "src/FunctionalOptionsParameters/Организация.xml",
+          "kind": "sha256"
+        },
+        "h31": {
+          "file": "src/FunctionalOptionsParameters/Склад.xml",
+          "kind": "sha256"
+        },
+        "h32": {
+          "file": "src/InformationRegisters/ДокументыФизическихЛиц.xml",
+          "kind": "sha256"
+        },
+        "h33": {
+          "file": "src/InformationRegisters/НастройкиАдресныхСкладов.xml",
+          "kind": "sha256"
+        },
+        "h34": {
+          "file": "src/InformationRegisters/НастройкиСистемыНалогообложения.xml",
+          "kind": "sha256"
+        },
+        "h35": {
+          "file": "src/InformationRegisters/НастройкиУчетаНДС.xml",
+          "kind": "sha256"
+        },
+        "h36": {
+          "file": "src/InformationRegisters/НастройкиУчетаУСН.xml",
+          "kind": "sha256"
+        },
+        "h37": {
+          "file": "src/InformationRegisters/УчетнаяПолитикаФинансовогоУчета.xml",
+          "kind": "sha256"
+        },
+        "h38": {
+          "file": "src/Reports/ЖурналУчетаРозничнойПродажиАлкогольнойПродукции.xml",
+          "kind": "sha256"
+        },
+        "h39": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:FunctionalOption.ВестиСведенияДляДекларацийАлкоВРознице"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:FunctionalOption.ИспользованиеКаталогаРасширенийВМоделиСервиса"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:FunctionalOption.ИспользоватьДанныеКонтрагентаФизическогоЛицаКонтекст"
+        },
+        {
+          "pointer": "/data/items/3/at",
+          "eq": "main:FunctionalOption.Empty"
+        },
+        {
+          "pointer": "/data/items/4/at",
+          "eq": "main:FunctionalOption.Missing"
+        },
+        {
+          "pointer": "/data/items/5/at",
+          "eq": "main:FunctionalOption.Partial"
+        },
+        {
+          "pointer": "/data/items/6/at",
+          "eq": "main:FunctionalOption.Repeat"
+        },
+        {
+          "pointer": "/data/items/7/at",
+          "eq": "main:FunctionalOption.Many"
+        },
+        {
+          "pointer": "/data/items/8/at",
+          "eq": "main:FunctionalOption.Dangling"
+        },
+        {
+          "pointer": "/data/items/9/at",
+          "eq": "main:FunctionalOption.Duplicate"
+        }
+      ],
+      "captures": {
+        "o0": {
+          "pointer": "/data/items/0/at"
+        },
+        "o1": {
+          "pointer": "/data/items/1/at"
+        },
+        "o2": {
+          "pointer": "/data/items/2/at"
+        },
+        "o3": {
+          "pointer": "/data/items/3/at"
+        },
+        "o4": {
+          "pointer": "/data/items/4/at"
+        },
+        "o5": {
+          "pointer": "/data/items/5/at"
+        },
+        "o6": {
+          "pointer": "/data/items/6/at"
+        },
+        "o7": {
+          "pointer": "/data/items/7/at"
+        },
+        "o8": {
+          "pointer": "/data/items/8/at"
+        },
+        "o9": {
+          "pointer": "/data/items/9/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOptionsParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:FunctionalOptionsParameter.Склад"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:FunctionalOptionsParameter.Организация"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:FunctionalOptionsParameter.Empty"
+        },
+        {
+          "pointer": "/data/items/3/at",
+          "eq": "main:FunctionalOptionsParameter.Missing"
+        },
+        {
+          "pointer": "/data/items/4/at",
+          "eq": "main:FunctionalOptionsParameter.AllBad"
+        },
+        {
+          "pointer": "/data/items/5/at",
+          "eq": "main:FunctionalOptionsParameter.Partial"
+        },
+        {
+          "pointer": "/data/items/6/at",
+          "eq": "main:FunctionalOptionsParameter.Duplicate"
+        },
+        {
+          "pointer": "/data/items/7/at",
+          "eq": "main:FunctionalOptionsParameter.Foreign"
+        },
+        {
+          "pointer": "/data/items/8/at",
+          "eq": "main:FunctionalOptionsParameter.Repeat"
+        },
+        {
+          "pointer": "/data/items/9/at",
+          "eq": "main:FunctionalOptionsParameter.Dangling"
+        }
+      ],
+      "captures": {
+        "p0": {
+          "pointer": "/data/items/0/at"
+        },
+        "p1": {
+          "pointer": "/data/items/1/at"
+        },
+        "p2": {
+          "pointer": "/data/items/2/at"
+        },
+        "p3": {
+          "pointer": "/data/items/3/at"
+        },
+        "p4": {
+          "pointer": "/data/items/4/at"
+        },
+        "p5": {
+          "pointer": "/data/items/5/at"
+        },
+        "p6": {
+          "pointer": "/data/items/6/at"
+        },
+        "p7": {
+          "pointer": "/data/items/7/at"
+        },
+        "p8": {
+          "pointer": "/data/items/8/at"
+        },
+        "p9": {
+          "pointer": "/data/items/9/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "kind": "FunctionalOption"
+          }
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "props.set"
+          }
+        }
+      ],
+      "captures": {
+        "ro0": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ro0",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "CommonCommand"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "o0target0": {
+          "pointer": "/data/items/0/at"
+        },
+        "o0target1": {
+          "pointer": "/data/items/1/at"
+        },
+        "o0cursor0": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ro0",
+        "limit": 2,
+        "cursor": "$capture.o0cursor0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "Report"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ],
+      "captures": {
+        "o0target2": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o0target0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Catalog"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o0target1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "CommonCommand"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o0target2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Report"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "kind": "FunctionalOption"
+          }
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "props.set"
+          }
+        }
+      ],
+      "captures": {
+        "ro1": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ro1",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОткрытьКаталогРасширений",
+              "kind": "CommonCommand"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ],
+      "captures": {
+        "o1target0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o1target0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonCommand.ОткрытьКаталогРасширений"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "CommonCommand"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "kind": "FunctionalOption"
+          }
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "props.set"
+          }
+        }
+      ],
+      "captures": {
+        "ro2": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ro2",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица",
+              "kind": "Command"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ],
+      "captures": {
+        "o2target0": {
+          "pointer": "/data/items/0/at"
+        },
+        "o2target1": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o2target0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Command"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o2target1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Command"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "kind": "FunctionalOptionsParameter"
+          }
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "props.set"
+          }
+        }
+      ],
+      "captures": {
+        "rp0": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rp0",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "use",
+              "at": "main:Catalog.Склады",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "use",
+              "at": "main:InformationRegister.НастройкиАдресныхСкладов.Dimension.Склад",
+              "kind": "Dimension"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ],
+      "captures": {
+        "p0target0": {
+          "pointer": "/data/items/0/at"
+        },
+        "p0target1": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p0target0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Склады"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Catalog"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p0target1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:InformationRegister.НастройкиАдресныхСкладов.Dimension.Склад"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Dimension"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "kind": "FunctionalOptionsParameter"
+          }
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 5
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "props.set"
+          }
+        }
+      ],
+      "captures": {
+        "rp1": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rp1",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "use",
+              "at": "main:Catalog.Организации",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "use",
+              "at": "main:InformationRegister.УчетнаяПолитикаФинансовогоУчета.Dimension.Организация",
+              "kind": "Dimension"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "p1target0": {
+          "pointer": "/data/items/0/at"
+        },
+        "p1target1": {
+          "pointer": "/data/items/1/at"
+        },
+        "p1cursor0": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rp1",
+        "limit": 2,
+        "cursor": "$capture.p1cursor0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "use",
+              "at": "main:InformationRegister.НастройкиСистемыНалогообложения.Dimension.Организация",
+              "kind": "Dimension"
+            },
+            {
+              "relation": "use",
+              "at": "main:InformationRegister.НастройкиУчетаНДС.Dimension.Организация",
+              "kind": "Dimension"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "p1target2": {
+          "pointer": "/data/items/0/at"
+        },
+        "p1target3": {
+          "pointer": "/data/items/1/at"
+        },
+        "p1cursor1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rp1",
+        "limit": 2,
+        "cursor": "$capture.p1cursor1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "use",
+              "at": "main:InformationRegister.НастройкиУчетаУСН.Dimension.Организация",
+              "kind": "Dimension"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ],
+      "captures": {
+        "p1target4": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p1target0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Организации"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Catalog"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p1target1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:InformationRegister.УчетнаяПолитикаФинансовогоУчета.Dimension.Организация"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Dimension"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p1target2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:InformationRegister.НастройкиСистемыНалогообложения.Dimension.Организация"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Dimension"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p1target3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:InformationRegister.НастройкиУчетаНДС.Dimension.Организация"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Dimension"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p1target4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:InformationRegister.НастройкиУчетаУСН.Dimension.Организация"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Dimension"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "rxo3": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rxo3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "functionalOptionContent"
+        }
+      ],
+      "captures": {
+        "rxo4": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rxo4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "functionalOptionContent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "functionalOptionContent"
+        }
+      ],
+      "captures": {
+        "rxo5": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rxo5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Catalog.Склады",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "functionalOptionContent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o6"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "rxo6": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rxo6"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o8"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "rxo8": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rxo8"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.Gone",
+              "kind": "CommonCommand"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o9"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "functionalOptionContent"
+        }
+      ],
+      "captures": {
+        "rxo9": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rxo9"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "functionalOptionContent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.o7"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 61
+        }
+      ],
+      "captures": {
+        "many": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.many",
+        "limit": 13
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "Report"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОткрытьКаталогРасширений",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "Report"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОткрытьКаталогРасширений",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "manyCursor0": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.many",
+        "limit": 13,
+        "cursor": "$capture.manyCursor0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "Report"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОткрытьКаталогРасширений",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "Report"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОткрытьКаталогРасширений",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "CommonCommand"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "manyCursor1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.many",
+        "limit": 13,
+        "cursor": "$capture.manyCursor1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "Report"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОткрытьКаталогРасширений",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "Report"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОткрытьКаталогРасширений",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "Report"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "manyCursor2": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.many",
+        "limit": 13,
+        "cursor": "$capture.manyCursor2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОткрытьКаталогРасширений",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "Report"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОткрытьКаталогРасширений",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "Report"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОткрытьКаталогРасширений",
+              "kind": "CommonCommand"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        }
+      ],
+      "captures": {
+        "manyCursor3": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.many",
+        "limit": 13,
+        "cursor": "$capture.manyCursor3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:Report.ЖурналУчетаРозничнойПродажиАлкогольнойПродукции",
+              "kind": "Report"
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonCommand.ОткрытьКаталогРасширений",
+              "kind": "CommonCommand"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыКонтрагентаФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:InformationRegister.ДокументыФизическихЛиц.Command.ДокументыПартнераФизическогоЛица",
+              "kind": "Command"
+            },
+            {
+              "relation": "content",
+              "at": "main:Catalog.ЛицензииПоставщиковАлкогольнойПродукции",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "explicitly empty"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "absent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "Use entry"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p6"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "duplicate"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p7"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "Use entry"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "rxp5": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rxp5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "use",
+              "at": "main:Catalog.Склады",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "functionalParameterUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p8"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        }
+      ],
+      "captures": {
+        "rxp8": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rxp8"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "use",
+              "at": "main:Catalog.Склады",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "use",
+              "at": "main:Catalog.Склады",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.p9"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "rxp9": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rxp9"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "use",
+              "at": "main:InformationRegister.Gone.Dimension.Missing",
+              "kind": "Dimension"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOptionsParameter.Empty.Relation"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:FunctionalOption"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherOption": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherOption"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "otherOptionRelation": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherOptionRelation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "other:Catalog.Склады",
+              "kind": "Catalog"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "otherOptionTarget": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherOptionTarget"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "other:Catalog.Склады"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:FunctionalOptionsParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "otherParameter": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherParameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "otherParameterRelation": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherParameterRelation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "use",
+              "at": "other:Catalog.Организации",
+              "kind": "Catalog"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "otherParameterTarget": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.otherParameterTarget"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "other:Catalog.Организации"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.h0"
+        },
+        {
+          "path": "other/Catalogs/Организации.xml",
+          "kind": "sha256",
+          "eq": "$capture.h1"
+        },
+        {
+          "path": "other/Catalogs/Склады.xml",
+          "kind": "sha256",
+          "eq": "$capture.h2"
+        },
+        {
+          "path": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h3"
+        },
+        {
+          "path": "other/FunctionalOptions/ВестиСведенияДляДекларацийАлкоВРознице.xml",
+          "kind": "sha256",
+          "eq": "$capture.h4"
+        },
+        {
+          "path": "other/FunctionalOptionsParameters/Склад.xml",
+          "kind": "sha256",
+          "eq": "$capture.h5"
+        },
+        {
+          "path": "src/Catalogs/ЛицензииПоставщиковАлкогольнойПродукции.xml",
+          "kind": "sha256",
+          "eq": "$capture.h6"
+        },
+        {
+          "path": "src/Catalogs/Организации.xml",
+          "kind": "sha256",
+          "eq": "$capture.h7"
+        },
+        {
+          "path": "src/Catalogs/Склады.xml",
+          "kind": "sha256",
+          "eq": "$capture.h8"
+        },
+        {
+          "path": "src/CommonCommands/ОткрытьКаталогРасширений.xml",
+          "kind": "sha256",
+          "eq": "$capture.h9"
+        },
+        {
+          "path": "src/CommonCommands/ОтчетЖурналУчетаРозничнойПродажиАлкогольнойПродукции.xml",
+          "kind": "sha256",
+          "eq": "$capture.h10"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h11"
+        },
+        {
+          "path": "src/FunctionalOptions/Dangling.xml",
+          "kind": "sha256",
+          "eq": "$capture.h12"
+        },
+        {
+          "path": "src/FunctionalOptions/Duplicate.xml",
+          "kind": "sha256",
+          "eq": "$capture.h13"
+        },
+        {
+          "path": "src/FunctionalOptions/Empty.xml",
+          "kind": "sha256",
+          "eq": "$capture.h14"
+        },
+        {
+          "path": "src/FunctionalOptions/Many.xml",
+          "kind": "sha256",
+          "eq": "$capture.h15"
+        },
+        {
+          "path": "src/FunctionalOptions/Missing.xml",
+          "kind": "sha256",
+          "eq": "$capture.h16"
+        },
+        {
+          "path": "src/FunctionalOptions/Partial.xml",
+          "kind": "sha256",
+          "eq": "$capture.h17"
+        },
+        {
+          "path": "src/FunctionalOptions/Repeat.xml",
+          "kind": "sha256",
+          "eq": "$capture.h18"
+        },
+        {
+          "path": "src/FunctionalOptions/ВестиСведенияДляДекларацийАлкоВРознице.xml",
+          "kind": "sha256",
+          "eq": "$capture.h19"
+        },
+        {
+          "path": "src/FunctionalOptions/ИспользованиеКаталогаРасширенийВМоделиСервиса.xml",
+          "kind": "sha256",
+          "eq": "$capture.h20"
+        },
+        {
+          "path": "src/FunctionalOptions/ИспользоватьДанныеКонтрагентаФизическогоЛицаКонтекст.xml",
+          "kind": "sha256",
+          "eq": "$capture.h21"
+        },
+        {
+          "path": "src/FunctionalOptionsParameters/AllBad.xml",
+          "kind": "sha256",
+          "eq": "$capture.h22"
+        },
+        {
+          "path": "src/FunctionalOptionsParameters/Dangling.xml",
+          "kind": "sha256",
+          "eq": "$capture.h23"
+        },
+        {
+          "path": "src/FunctionalOptionsParameters/Duplicate.xml",
+          "kind": "sha256",
+          "eq": "$capture.h24"
+        },
+        {
+          "path": "src/FunctionalOptionsParameters/Empty.xml",
+          "kind": "sha256",
+          "eq": "$capture.h25"
+        },
+        {
+          "path": "src/FunctionalOptionsParameters/Foreign.xml",
+          "kind": "sha256",
+          "eq": "$capture.h26"
+        },
+        {
+          "path": "src/FunctionalOptionsParameters/Missing.xml",
+          "kind": "sha256",
+          "eq": "$capture.h27"
+        },
+        {
+          "path": "src/FunctionalOptionsParameters/Partial.xml",
+          "kind": "sha256",
+          "eq": "$capture.h28"
+        },
+        {
+          "path": "src/FunctionalOptionsParameters/Repeat.xml",
+          "kind": "sha256",
+          "eq": "$capture.h29"
+        },
+        {
+          "path": "src/FunctionalOptionsParameters/Организация.xml",
+          "kind": "sha256",
+          "eq": "$capture.h30"
+        },
+        {
+          "path": "src/FunctionalOptionsParameters/Склад.xml",
+          "kind": "sha256",
+          "eq": "$capture.h31"
+        },
+        {
+          "path": "src/InformationRegisters/ДокументыФизическихЛиц.xml",
+          "kind": "sha256",
+          "eq": "$capture.h32"
+        },
+        {
+          "path": "src/InformationRegisters/НастройкиАдресныхСкладов.xml",
+          "kind": "sha256",
+          "eq": "$capture.h33"
+        },
+        {
+          "path": "src/InformationRegisters/НастройкиСистемыНалогообложения.xml",
+          "kind": "sha256",
+          "eq": "$capture.h34"
+        },
+        {
+          "path": "src/InformationRegisters/НастройкиУчетаНДС.xml",
+          "kind": "sha256",
+          "eq": "$capture.h35"
+        },
+        {
+          "path": "src/InformationRegisters/НастройкиУчетаУСН.xml",
+          "kind": "sha256",
+          "eq": "$capture.h36"
+        },
+        {
+          "path": "src/InformationRegisters/УчетнаяПолитикаФинансовогоУчета.xml",
+          "kind": "sha256",
+          "eq": "$capture.h37"
+        },
+        {
+          "path": "src/Reports/ЖурналУчетаРозничнойПродажиАлкогольнойПродукции.xml",
+          "kind": "sha256",
+          "eq": "$capture.h38"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.h39"
+        }
+      ]
+    }
+  ]
+}
