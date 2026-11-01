@@ -1,6 +1,7 @@
 ---
 id: CTR.SOURCE.LOGICAL-NODE-VIEW-SHAPE
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/xdto_imports.rs::xdto_import_pages_preserve_large_lists_and_one_indivisible_uri_without_addresses
   - crates/unica-coder/src/domain/node_view.rs::node_view_has_exactly_seven_common_slots_and_omits_empty_optional_slots
   - crates/unica-coder/src/domain/node_view.rs::only_a_collection_adds_items_and_data_rows_do_not_gain_addresses
 ---

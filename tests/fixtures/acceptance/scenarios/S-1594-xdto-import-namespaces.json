@@ -1,0 +1,987 @@
+{
+  "id": "S-1594-xdto-import-namespaces",
+  "name": "xdto-import-namespaces",
+  "issue": 1594,
+  "area": "Навигация по исходникам",
+  "task": "Прочитать все явные URI импортов XDTO через выданную ветвь и страницы, сопоставить внешний тип, отличить пустой список от неполноты без записи и выдуманных адресов",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-imports",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "h0": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "h1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h2": {
+          "file": "src/XDTOPackages/AliasB/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "h3": {
+          "file": "src/XDTOPackages/AliasB.xml",
+          "kind": "sha256"
+        },
+        "h4": {
+          "file": "src/XDTOPackages/DamagedImport/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "h5": {
+          "file": "src/XDTOPackages/DamagedImport.xml",
+          "kind": "sha256"
+        },
+        "h6": {
+          "file": "src/XDTOPackages/DataArtefacts_Files_1_0_0_1/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "h7": {
+          "file": "src/XDTOPackages/DataArtefacts_Files_1_0_0_1.xml",
+          "kind": "sha256"
+        },
+        "h8": {
+          "file": "src/XDTOPackages/NoImports/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "h9": {
+          "file": "src/XDTOPackages/NoImports.xml",
+          "kind": "sha256"
+        },
+        "h10": {
+          "file": "src/XDTOPackages/UnknownImports/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "h11": {
+          "file": "src/XDTOPackages/UnknownImports.xml",
+          "kind": "sha256"
+        },
+        "h12": {
+          "file": "src/XDTOPackages/egais_EGCommonV3/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "h13": {
+          "file": "src/XDTOPackages/egais_EGCommonV3.xml",
+          "kind": "sha256"
+        },
+        "h14": {
+          "file": "src/XDTOPackages/egais_ProductRef/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "h15": {
+          "file": "src/XDTOPackages/egais_ProductRef.xml",
+          "kind": "sha256"
+        },
+        "h16": {
+          "file": "src/XDTOPackages/АгрегацияМОТП/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "h17": {
+          "file": "src/XDTOPackages/АгрегацияМОТП.xml",
+          "kind": "sha256"
+        },
+        "h18": {
+          "file": "src/XDTOPackages/УправлениеПриложениями/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "h19": {
+          "file": "src/XDTOPackages/УправлениеПриложениями.xml",
+          "kind": "sha256"
+        },
+        "h20": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.DataArtefacts_Files_1_0_0_1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:XDTOPackage.DataArtefacts_Files_1_0_0_1.Import",
+            "count": 1
+          }
+        },
+        {
+          "pointer": "/data/props/imports",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "imports0": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.imports0",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "namespace": "http://www.1c.ru/1cFresh/Data/Dump/1.0.2.1"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.DataArtefacts_Files_1_0_0_1.Type.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/base/namespace",
+          "eq": "http://www.1c.ru/1cFresh/Data/Dump/1.0.2.1"
+        },
+        {
+          "pointer": "/data/props/base/local",
+          "eq": "Base"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.DataArtefacts_Files_1_0_0_1.Namespace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/namespace",
+          "eq": "urn:imports:DataArtefacts_Files_1_0_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.УправлениеПриложениями"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:XDTOPackage.УправлениеПриложениями.Import",
+            "count": 2
+          }
+        },
+        {
+          "pointer": "/data/props/imports",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "imports1": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.imports1",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "namespace": "http://www.1c.ru/SaaS/Messages"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ],
+      "captures": {
+        "page10": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.imports1",
+        "limit": 1,
+        "cursor": "$capture.page10"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "namespace": "http://v8.1c.ru/8.1/data/core"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.УправлениеПриложениями.Type.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/base/namespace",
+          "eq": "http://www.1c.ru/SaaS/Messages"
+        },
+        {
+          "pointer": "/data/props/base/local",
+          "eq": "Base"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.УправлениеПриложениями.Namespace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/namespace",
+          "eq": "urn:imports:УправлениеПриложениями"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.egais_EGCommonV3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:XDTOPackage.egais_EGCommonV3.Import",
+            "count": 1
+          }
+        },
+        {
+          "pointer": "/data/props/imports",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "imports2": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.imports2",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "namespace": "http://fsrar.ru/WEGAIS/Common"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.egais_EGCommonV3.Type.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/base/namespace",
+          "eq": "http://fsrar.ru/WEGAIS/Common"
+        },
+        {
+          "pointer": "/data/props/base/local",
+          "eq": "Base"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.egais_EGCommonV3.Namespace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/namespace",
+          "eq": "urn:imports:egais_EGCommonV3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.egais_ProductRef"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:XDTOPackage.egais_ProductRef.Import",
+            "count": 2
+          }
+        },
+        {
+          "pointer": "/data/props/imports",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "imports3": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.imports3",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "namespace": "http://fsrar.ru/WEGAIS/Common"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ],
+      "captures": {
+        "page30": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.imports3",
+        "limit": 1,
+        "cursor": "$capture.page30"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "namespace": "http://fsrar.ru/WEGAIS/ClientRef"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.egais_ProductRef.Type.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/base/namespace",
+          "eq": "http://fsrar.ru/WEGAIS/Common"
+        },
+        {
+          "pointer": "/data/props/base/local",
+          "eq": "Base"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.egais_ProductRef.Namespace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/namespace",
+          "eq": "urn:imports:egais_ProductRef"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.АгрегацияМОТП"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:XDTOPackage.АгрегацияМОТП.Import",
+            "count": 1
+          }
+        },
+        {
+          "pointer": "/data/props/imports",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "imports4": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.imports4",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "namespace": "http://ismotp.crptech.ru/types"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.АгрегацияМОТП.Type.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/base/namespace",
+          "eq": "http://ismotp.crptech.ru/types"
+        },
+        {
+          "pointer": "/data/props/base/local",
+          "eq": "Base"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.АгрегацияМОТП.Namespace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/namespace",
+          "eq": "urn:imports:АгрегацияМОТП"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.NoImports"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:XDTOPackage.NoImports.Import",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branchNoImports": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchNoImports"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.UnknownImports"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:XDTOPackage.UnknownImports.Import",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branchUnknownImports": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchUnknownImports"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "notEq": []
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.DamagedImport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:XDTOPackage.DamagedImport.Import",
+            "count": 1
+          }
+        }
+      ],
+      "captures": {
+        "branchDamagedImport": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchDamagedImport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "namespace": null
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits",
+          "notEq": []
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.AliasB"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:XDTOPackage.AliasB.Import",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "branchAliasB": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branchAliasB"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "namespace": "http://www.1c.ru/SaaS/Messages"
+            },
+            {
+              "namespace": "http://v8.1c.ru/8.1/data/core"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.AliasB.Type.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/base/namespace",
+          "eq": "http://www.1c.ru/SaaS/Messages"
+        },
+        {
+          "pointer": "/data/props/base/local",
+          "eq": "Base"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.NoImports.Import",
+        "ops": [
+          {
+            "op": "objectType.add",
+            "args": {
+              "values": {
+                "name": "MustNotBePlanned"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `objectType.add` does not apply to Import `main:XDTOPackage.NoImports.Import`; it applies at `main:XDTOPackage.NoImports`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "README.md",
+          "kind": "sha256",
+          "eq": "$capture.h0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h1"
+        },
+        {
+          "path": "src/XDTOPackages/AliasB/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.h2"
+        },
+        {
+          "path": "src/XDTOPackages/AliasB.xml",
+          "kind": "sha256",
+          "eq": "$capture.h3"
+        },
+        {
+          "path": "src/XDTOPackages/DamagedImport/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.h4"
+        },
+        {
+          "path": "src/XDTOPackages/DamagedImport.xml",
+          "kind": "sha256",
+          "eq": "$capture.h5"
+        },
+        {
+          "path": "src/XDTOPackages/DataArtefacts_Files_1_0_0_1/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.h6"
+        },
+        {
+          "path": "src/XDTOPackages/DataArtefacts_Files_1_0_0_1.xml",
+          "kind": "sha256",
+          "eq": "$capture.h7"
+        },
+        {
+          "path": "src/XDTOPackages/NoImports/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.h8"
+        },
+        {
+          "path": "src/XDTOPackages/NoImports.xml",
+          "kind": "sha256",
+          "eq": "$capture.h9"
+        },
+        {
+          "path": "src/XDTOPackages/UnknownImports/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.h10"
+        },
+        {
+          "path": "src/XDTOPackages/UnknownImports.xml",
+          "kind": "sha256",
+          "eq": "$capture.h11"
+        },
+        {
+          "path": "src/XDTOPackages/egais_EGCommonV3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.h12"
+        },
+        {
+          "path": "src/XDTOPackages/egais_EGCommonV3.xml",
+          "kind": "sha256",
+          "eq": "$capture.h13"
+        },
+        {
+          "path": "src/XDTOPackages/egais_ProductRef/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.h14"
+        },
+        {
+          "path": "src/XDTOPackages/egais_ProductRef.xml",
+          "kind": "sha256",
+          "eq": "$capture.h15"
+        },
+        {
+          "path": "src/XDTOPackages/АгрегацияМОТП/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.h16"
+        },
+        {
+          "path": "src/XDTOPackages/АгрегацияМОТП.xml",
+          "kind": "sha256",
+          "eq": "$capture.h17"
+        },
+        {
+          "path": "src/XDTOPackages/УправлениеПриложениями/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.h18"
+        },
+        {
+          "path": "src/XDTOPackages/УправлениеПриложениями.xml",
+          "kind": "sha256",
+          "eq": "$capture.h19"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.h20"
+        }
+      ]
+    }
+  ]
+}

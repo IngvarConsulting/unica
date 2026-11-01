@@ -1,0 +1,1 @@
+<package xmlns="http://v8.1c.ru/8.1/xdto" targetNamespace="urn:imports:AliasB"><import namespace="http://www.1c.ru/SaaS/Messages"/><import namespace="http://v8.1c.ru/8.1/data/core"/><objectType name="Probe" xmlns:other="http://www.1c.ru/SaaS/Messages" base="other:Base"/></package>

@@ -982,6 +982,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "location",
             "targetNamespace",
             "imports",
+            "importReadLimits",
             "counts",
             "globalProperties",
             "types",
@@ -1548,6 +1549,22 @@ fn interface_commands(interface: &Value) -> Vec<Value> {
     commands.into_values().map(Value::Object).collect()
 }
 
+fn xdto_import_limits(payload: &Value) -> Vec<String> {
+    let mut limits = payload
+        .get("importReadLimits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if payload.get("imports").and_then(Value::as_array).is_none() {
+        limits
+            .push("import observations are unavailable; list completeness is unknown".to_string());
+    }
+    limits
+}
+
 fn project_xdto(
     address: &QualifiedAddress,
     payload: &Value,
@@ -1573,7 +1590,13 @@ fn project_xdto(
             .get("globalProperties")
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
-        let mut branches = Vec::new();
+        let mut branches = vec![BranchRef::new(
+            format!("{address}.Import"),
+            payload
+                .get("imports")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len),
+        )];
         if payload
             .get("targetNamespace")
             .and_then(Value::as_str)
@@ -1601,10 +1624,27 @@ fn project_xdto(
                     .unwrap_or("XDTO"),
                 props,
             )
-            .with_branches(branches),
+            .with_branches(branches)
+            .with_limits(xdto_import_limits(payload)),
         ));
     }
     let segment = &suffix[0];
+    if segment.kind() == NodeKind::Import {
+        if segment.name().is_some() || suffix.len() != 1 {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "XDTO Import lists anonymous namespace declarations; it has no child nodes",
+            ));
+        }
+        let rows = payload.get("imports").and_then(Value::as_array).into_iter().flatten()
+            .map(|import| json!({"namespace": import.get("namespace").cloned().unwrap_or(Value::Null)}))
+            .collect();
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Import", "Imports", Map::new())
+                .with_limits(xdto_import_limits(payload)),
+            rows,
+        )));
+    }
     if segment.kind() == NodeKind::Namespace && segment.name().is_none() {
         let namespace = payload
             .get("targetNamespace")
