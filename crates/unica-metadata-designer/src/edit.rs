@@ -1387,6 +1387,28 @@ pub fn apply_typed_properties(
                 Some("values"),
             )
         })?;
+        if *key == MetaPropertyKey::CodeSeries {
+            let values = METADATA_PROPERTY_SPECS
+                .iter()
+                .find(|spec| spec.key == *key && spec.allowed_kinds.contains(&kind))
+                .expect("property registry was resolved above")
+                .enum_values;
+            if unica_xml_format::read::child_elements(properties, tag).len() != 1
+                || property.children().any(|node| node.is_element())
+                || !values.contains(&unica_xml_format::read::direct_text(property).trim())
+            {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "CodeSeries is damaged or duplicated; restore a confirmed working state before changing it",
+                    Some("values.CodeSeries"),
+                ));
+            }
+            if matches!(value, MetaPropertyValue::String(value)
+                if unica_xml_format::read::direct_text(property).trim() == value)
+            {
+                continue;
+            }
+        }
         let replacement = match (key, value) {
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {
                 if previous_type
@@ -3670,3 +3692,7 @@ mod dimension_deny_tests;
 #[cfg(test)]
 #[path = "../tests/platform/edit_attribute_copy.rs"]
 mod attribute_copy_tests;
+
+#[cfg(test)]
+#[path = "../tests/platform/edit_catalog_code_series.rs"]
+mod catalog_code_series_tests;
