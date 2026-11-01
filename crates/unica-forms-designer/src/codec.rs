@@ -1355,9 +1355,14 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
     form_children(attrs, "Attribute")
         .into_iter()
         .map(|attr| {
-            let type_name = form_child(attr, "Type")
-                .map(form_format_type)
-                .and_then(form_info_optional);
+            let type_name = crate::column_add::observed_value_table_type(attr).or_else(|| {
+                form_child(attr, "Type")
+                    .map(form_format_type)
+                    .and_then(form_info_optional)
+                    // The display formatter alone does not prove the table's
+                    // namespace or complete type shape for column creation.
+                    .filter(|type_name| type_name != "ValueTable")
+            });
             let main_table = (type_name.as_deref() == Some("DynamicList"))
                 .then(|| form_child(attr, "Settings").and_then(|s| form_child_text(s, "MainTable")))
                 .flatten();

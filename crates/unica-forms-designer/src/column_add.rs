@@ -50,17 +50,27 @@ fn verify_table(attribute: Node<'_, '_>) -> Result<(), ColumnAddError> {
     }
     let member = members[0];
     let value = unica_xml_format::read::direct_text(member);
-    let qname = value.trim().split_once(':');
+    let value = value.trim();
+    let (prefix, local) = value
+        .split_once(':')
+        .map_or((None, value), |(prefix, local)| (Some(prefix), local));
     if !member.has_tag_name((CORE, "Type"))
         || member.attributes().len() != 0
         || member.children().any(|n| n.is_element())
-        || !qname.is_some_and(|(prefix, local)| {
-            local == "ValueTable" && member.lookup_namespace_uri(Some(prefix)) == Some(CORE)
-        })
+        || local != "ValueTable"
+        || member.lookup_namespace_uri(prefix) != Some(CORE)
     {
         return Err(invalid("Attribute must have exactly the ValueTable type"));
     }
     Ok(())
+}
+
+/// The column-add route recognizes the table by QName URI, independently of
+/// the prefix used by the source. Other observed types keep their read profile.
+pub(crate) fn observed_value_table_type(attribute: Node<'_, '_>) -> Option<String> {
+    verify_table(attribute)
+        .ok()
+        .map(|()| "ValueTable".to_string())
 }
 
 fn emit(
@@ -230,6 +240,72 @@ mod tests {
         format!("\u{feff}<Form xmlns=\"{FORM}\" xmlns:v8=\"{CORE}\" xmlns:cfg=\"urn:conflicting\"><ChildItems><InputField id=\"2\"><DataPath>A.Old</DataPath></InputField></ChildItems>\r\n<Attributes>{attributes}</Attributes></Form>")
     }
     const OLD: &str = "<Column name=\"Old\" id=\"7\"><Type><v8:FutureType strange=\"true\">opaque</v8:FutureType></Type></Column>";
+    #[test]
+    fn observed_valuetable_type_resolves_only_a_valid_core_qname() {
+        let plain = form(&table("Rows", ""));
+        let alias = plain
+            .replace("xmlns:v8=", "xmlns:core=")
+            .replace("v8:", "core:");
+        let observed = crate::codec::parse_form_attributes_xml(&alias).unwrap();
+        assert_eq!(observed[0].type_name.as_deref(), Some("ValueTable"));
+        for xml in [
+            alias.replace(CORE, "urn:foreign"),
+            alias.replace("core:ValueTable", "core:ValueTree"),
+            alias.replace(
+                "<core:Type>core:ValueTable</core:Type>",
+                "<core:Type>core:ValueTable</core:Type><core:Unknown/>",
+            ),
+            alias.replace(
+                "<core:Type>core:ValueTable</core:Type>",
+                "<core:Type>core:ValueTable<core:Nested/></core:Type>",
+            ),
+        ] {
+            let document = Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+            let attribute = document
+                .descendants()
+                .find(|node| node.has_tag_name((FORM, "Attribute")))
+                .unwrap();
+            assert_eq!(observed_value_table_type(attribute), None, "{xml}");
+        }
+    }
+
+    #[test]
+    fn form_reader_preserves_healthy_collection_columns_across_qname_spellings() {
+        let mut observations = Vec::new();
+        for value_type in [
+            "<v8:Type>v8:ValueTable</v8:Type>",
+            "<core:Type xmlns:core=\"http://v8.1c.ru/8.1/data/core\">core:ValueTable</core:Type>",
+            "<Type xmlns=\"http://v8.1c.ru/8.1/data/core\">ValueTable</Type>",
+        ] {
+            let xml = format!(
+                r#"<Form xmlns="{FORM}" xmlns:v8="{CORE}" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Attributes><Attribute name="Rows" id="1"><Type>{value_type}</Type><Columns><Column name="Ref" id="1"><Type><v8:Type>cfg:CatalogRef.Items</v8:Type></Type></Column><Column name="Amount" id="2"><Type><v8:Type>xs:decimal</v8:Type><v8:NumberQualifiers><v8:Digits>10</v8:Digits><v8:FractionDigits>2</v8:FractionDigits><v8:AllowedSign>Any</v8:AllowedSign></v8:NumberQualifiers></Type></Column></Columns></Attribute><Attribute name="Tree" id="2"><Type><v8:Type>v8:ValueTree</v8:Type></Type><Columns><Column name="Text" id="1"><Type><v8:Type>xs:string</v8:Type><v8:StringQualifiers><v8:Length>20</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers></Type></Column></Columns></Attribute></Attributes></Form>"#
+            );
+            let data = crate::codec::parse_form_info_xml(
+                &xml,
+                "Main".into(),
+                String::new(),
+                unica_metadata::support_state::ObjectSupportData {
+                    state: unica_metadata::support_state::ObjectSupportState::NotSupported,
+                    direct_edit_safe: Some(true),
+                },
+            )
+            .unwrap();
+            let observed = serde_json::to_value(data.attributes).unwrap();
+            assert_eq!(
+                observed,
+                serde_json::json!([
+                    {"name":"Rows","type":"ValueTable","isMain":false,"mainTable":null,"columns":[
+                        {"name":"Ref","type":"CatalogRef.Items"},
+                        {"name":"Amount","type":"decimal(10,2)"}]},
+                    {"name":"Tree","type":"ValueTree","isMain":false,"mainTable":null,"columns":[
+                        {"name":"Text","type":"string(20)"}]}
+                ])
+            );
+            observations.push(observed);
+        }
+        assert!(observations.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
     #[test]
     fn two_tables_have_independent_ids_and_retain_unsupported_bytes() {
         let before = form(
