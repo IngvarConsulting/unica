@@ -1170,6 +1170,33 @@ impl ProviderReadAuthority {
         let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
+        if evidence.artifact_kind() == "IntegrationService" {
+            let name = evidence.artifact_name().ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "IntegrationService has no proved name",
+                )
+            })?;
+            let facts = unica_metadata_designer::integration_channels::read(&descriptor, name)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+            let mut unreadable = payload
+                .get("unreadable")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
+            unreadable.extend(
+                facts
+                    .limits
+                    .iter()
+                    .map(|limit| json!({"field":limit.field,"message":limit.message})),
+            );
+            if !unreadable.is_empty() {
+                payload["unreadable"] = json!(unreadable);
+            }
+            payload["integrationChannels"] = serde_json::to_value(facts).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        }
         if evidence.artifact_kind() == "DocumentNumerator" {
             match unica_metadata_designer::numerator_read::read(&descriptor) {
                 Ok(facts) => {
