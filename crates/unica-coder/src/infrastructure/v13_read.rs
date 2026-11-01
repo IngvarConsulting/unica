@@ -2200,6 +2200,25 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         LogicalViewReadAuthority::read_checkpoint(self)
     }
 
+    fn module_text_revision(&self, at: &QualifiedAddress) -> Result<Option<String>, ViewError> {
+        let route = route_logical_address(at, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        if route.reader() != LogicalReader::Module {
+            return Ok(None);
+        }
+        let Some(capability) = route.module() else {
+            return Ok(None);
+        };
+        if at.segments().last().map(|segment| segment.kind()) != Some(NodeKind::Body) {
+            return Ok(None);
+        }
+        let (module_at, _) = module_prefix(at, self.profile, capability)?;
+        let target = module_source_address(&module_at, capability)?;
+        self.read
+            .module_text_revision(&target, || self.read_checkpoint())
+            .map(Some)
+    }
+
     fn read_module_text(
         &self,
         at: &QualifiedAddress,

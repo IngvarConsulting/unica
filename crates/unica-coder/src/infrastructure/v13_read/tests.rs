@@ -2177,6 +2177,37 @@ fn module_body_returns_the_source_text_byte_for_byte() {
     }
 }
 
+/// #2225: a Body — of the module, of a line range or of a method — answers
+/// with the revision of its module's text: the SHA-256 of the file bytes,
+/// which `code.replace` checks in `ifRev`. Only a change of the module's
+/// bytes changes it, a byte order mark included.
+#[test]
+fn every_body_of_a_module_answers_with_the_revision_of_its_text() {
+    let fixture = RealReaderFixture::new();
+    let module = fixture
+        .source
+        .join("Reports/ParityReport/Forms/MainForm/Ext/Form/Module.bsl");
+    let base = "main:Report.ParityReport.Form.MainForm.Module.Form";
+    let source = "Процедура А()\r\n\tВозврат;\r\nКонецПроцедуры\r\n";
+    let rev = |at: &str| {
+        let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
+        assert!(result.ok, "view must succeed at {at}");
+        result.rev.unwrap()
+    };
+    for bytes in [source.to_owned(), format!("\u{feff}{source}")] {
+        fs::write(&module, &bytes).unwrap();
+        let expected = unica_bsl::text::module_text_revision(bytes.as_bytes());
+        assert_eq!(rev(&format!("{base}.Body")), expected);
+        assert_eq!(rev(&format!("{base}.Body#L1-L2")), expected);
+        assert_eq!(rev(&format!("{base}.Method.А.Body")), expected);
+    }
+    assert_ne!(
+        unica_bsl::text::module_text_revision(source.as_bytes()),
+        unica_bsl::text::module_text_revision(format!("\u{feff}{source}").as_bytes()),
+        "a byte order mark alone is a change of the text"
+    );
+}
+
 #[test]
 fn view_never_returns_module_text_above_the_largest_host_budget() {
     let fixture = RealReaderFixture::new();
@@ -3774,7 +3805,7 @@ pub(crate) fn template_bodies_are_read_only_when_the_template_node_is_addressed(
         "main:Report.ParityReport.Template",
     ] {
         let result = service.view(ViewRequest::new(at).unwrap());
-        assert!(result.ok, "{at}: {:?}", result.diagnostics);
+        assert!(result.ok, "view must succeed at {at}");
     }
     let node = service.view(ViewRequest::new("main:Report.ParityReport.Template.Print").unwrap());
     assert!(
