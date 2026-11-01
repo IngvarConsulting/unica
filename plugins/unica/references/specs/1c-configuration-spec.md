@@ -896,7 +896,7 @@ ChildObjects: `Form` (формы), `Command` (команды).
 
 ChildObjects содержат `IntegrationServiceChannel` (каналы) — inline-определения с uuid, InternalInfo и Properties (Name, ExternalIntegrationServiceChannelName, MessageDirection: `Send`/`Receive`, ReceiveMessageProcessing, Transactioned).
 
-Публичное чтение выдаёт встроенные каналы ветвью `<набор>:IntegrationService.<Имя>.Channel`. Имя канала задаёт его адрес и заголовок; закрытые свойства чтения — `Synonym`, `Comment`, `ExternalIntegrationServiceChannelName`, `MessageDirection`, `ReceiveMessageProcessing`, `Transactioned`. Отдельного файла `Channel.xml` нет; наблюдения не означают проверку исполнения или право записи.
+Публичное чтение выдаёт встроенные каналы ветвью `<набор>:IntegrationService.<Имя>.Channel`. Имя канала задаёт его адрес и заголовок; доступные для чтения свойства — `Synonym`, `Comment`, `ExternalIntegrationServiceChannelName`, `MessageDirection`, `ReceiveMessageProcessing`, `Transactioned`. Отдельного файла `Channel.xml` нет; наблюдения не означают проверку исполнения или право записи.
 
 ### 6.14. XDTOPackage — XDTO-пакет
 
