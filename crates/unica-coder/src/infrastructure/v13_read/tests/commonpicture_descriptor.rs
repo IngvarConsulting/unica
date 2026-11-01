@@ -152,3 +152,62 @@ fn commonpicture_descriptor_whole_picture_retains_the_compound_reference() {
         json!({"Abs":reference,"LoadTransparent":false})
     );
 }
+
+#[test]
+fn commonpicture_descriptor_refreshes_companion_under_the_same_owner_identity() {
+    let f = RealReaderFixture::new();
+    let path = install(
+        &f,
+        "<AvailabilityForAppearance>false</AvailabilityForAppearance>",
+        "<r:Abs>Picture.png</r:Abs><r:LoadTransparent>false</r:LoadTransparent>",
+    );
+    let service = f.view_service();
+    let first = service.view(ViewRequest::new(OWNER).unwrap());
+    assert_eq!(
+        first.data.unwrap()["props"]["Picture"]["LoadTransparent"],
+        false
+    );
+    write(
+        &path,
+        &fs::read_to_string(&path)
+            .unwrap()
+            .replace("<r:LoadTransparent>false", "<r:LoadTransparent>true"),
+    );
+    let second = service.view(ViewRequest::new(OWNER).unwrap());
+    assert_eq!(
+        second.data.unwrap()["props"]["Picture"]["LoadTransparent"],
+        true
+    );
+}
+
+#[test]
+fn commonpicture_descriptor_observes_companion_recovery_without_recreating_service() {
+    let f = RealReaderFixture::new();
+    let path = install(
+        &f,
+        "<AvailabilityForAppearance>false</AvailabilityForAppearance>",
+        "<r:Abs>Picture.png</r:Abs><r:LoadTransparent>false</r:LoadTransparent>",
+    );
+    let original = fs::read_to_string(&path).unwrap();
+    let service = f.view_service();
+    for content in [
+        None,
+        Some(original.as_str()),
+        Some("<ExtPicture>"),
+        Some(original.as_str()),
+    ] {
+        match content {
+            Some(text) => write(&path, text),
+            None => fs::remove_file(&path).unwrap(),
+        }
+        let result = service.view(ViewRequest::new(OWNER).unwrap());
+        assert!(result.ok);
+        let node = result.data.unwrap();
+        assert_eq!(node["props"]["AvailabilityForAppearance"], false);
+        assert_eq!(
+            node["props"].get("Picture").is_some(),
+            content == Some(original.as_str()),
+            "{node}"
+        );
+    }
+}

@@ -1054,6 +1054,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         .job_schedule(target, &mut || self.read_checkpoint())?;
                     return Ok(json!({"properties": schedule}));
                 }
+                // CommonPicture includes a fixed XML companion whose bytes can
+                // change independently of the admitted owner identity.
+                if target.as_str().split('.').next() == Some("CommonPicture") {
+                    return self.uncached_typed_payload_for(route, admitted);
+                }
                 let key = TypedPayloadCacheKey {
                     revision: RevisionCacheKey {
                         source_set_identity: admitted.source_set_identity.clone(),
