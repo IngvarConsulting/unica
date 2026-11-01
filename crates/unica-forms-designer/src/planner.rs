@@ -17,6 +17,10 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 #[derive(Debug, Clone)]
 pub enum FormEditStep {
     Definition(Value),
+    AddColumns {
+        attribute: String,
+        columns: Vec<crate::column_add::ColumnAddition>,
+    },
     Move {
         request: crate::form_move::FormItemMove,
         location: String,
@@ -27,6 +31,8 @@ pub enum FormEditStep {
 /// записи: отсутствующий даёт `not_found`, а не правку другого узла.
 #[derive(Debug, Clone)]
 pub enum FormEditSubject {
+    /// The column writer checks this data attribute before publishing.
+    DataAttribute,
     /// Форма или элемент, на который пишется событие или реквизит.
     Node(Vec<String>),
     /// Форма или элемент-контейнер, куда добавляются элементы.
@@ -37,6 +43,7 @@ pub enum FormEditSubject {
 impl FormEditSubject {
     fn items(&self) -> &[String] {
         match self {
+            Self::DataAttribute => &[],
             Self::Node(items) | Self::Container(items) | Self::Removed(items) => items,
         }
     }
@@ -49,6 +56,7 @@ pub struct FormTarget {
     items: Vec<String>,
     /// Событие формы или последнего элемента цепочки.
     event: Option<String>,
+    attribute: Option<String>,
 }
 /// Элемент формы по цепочке имён от корня, как её адресует `view`.
 pub fn form_item_at<'a>(
@@ -104,6 +112,9 @@ pub fn check_form_edit_subject(
     definitions: &[FormEditStep],
     op_index: usize,
 ) -> Result<(), ApplyPlanError> {
+    if matches!(subject, FormEditSubject::DataAttribute) {
+        return Ok(());
+    }
     let at_path = format!("ops[{op_index}].args.at");
     let elements = form_items_of(xml_text).map_err(|error| {
         ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error).at_path(at_path.clone())
@@ -206,8 +217,18 @@ pub fn form_target(
             .map(str::to_string)
             .ok_or_else(|| bad(op_index, "at", format!("the {what} must be named")))
     };
-    let (form, items, event) = match rest {
-        [] => (None, Vec::new(), None),
+    let (form, items, event, attribute) = match rest {
+        [] => (None, Vec::new(), None, None),
+        [form, attribute]
+            if form.kind() == NodeKind::Form && attribute.kind() == NodeKind::Attribute =>
+        {
+            (
+                Some(named(form, "form")?),
+                Vec::new(),
+                None,
+                Some(named(attribute, "attribute")?),
+            )
+        }
         [form, tail @ ..] if form.kind() == NodeKind::Form => {
             let (items, event) = match tail {
                 [items @ .., last] if last.kind() == NodeKind::Event => {
@@ -225,7 +246,7 @@ pub fn form_target(
                     }
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            (Some(named(form, "form")?), items, event)
+            (Some(named(form, "form")?), items, event, None)
         }
         _ => return Err(bad(op_index, "at", FORM_ADDRESS_SHAPE)),
     };
@@ -234,6 +255,7 @@ pub fn form_target(
         form,
         items,
         event,
+        attribute,
     })
 }
 pub fn form_purpose(
@@ -538,25 +560,37 @@ pub fn parse_form_operation(
     let address =
         unica_source_contract::proposal::input::qualified_target(args, op_index, source_set_name)?;
     let target = form_target(&address, op_index)?;
+    if target.attribute.is_some()
+        && !unica_forms::applicability::is_form_attribute(address.segments())
+    {
+        return Err(bad(
+            op_index,
+            "at",
+            "a data attribute requires an owner with managed forms",
+        ));
+    }
     // Узел, на котором исполняется операция, — ровно её `at`: элемент и
     // событие задаются адресом, а операция другого узла отказывает, а не
     // пишет молча в форму, элемент или владельца (#1351, #1355).
-    let placed = match operation {
-        FormOperation::Add | FormOperation::Set => target.form.is_none(),
-        FormOperation::ItemAdd => target.form.is_some() && target.event.is_none(),
-        FormOperation::ItemRemove | FormOperation::ItemMove => {
-            !target.items.is_empty() && target.event.is_none()
-        }
-        FormOperation::EventBind => target.event.is_some(),
-        FormOperation::Remove
-        | FormOperation::AttributeAdd
-        | FormOperation::CommandAdd
-        | FormOperation::PropsSet => {
-            target.form.is_some() && target.items.is_empty() && target.event.is_none()
-        }
-    };
+    let placed = (target.attribute.is_none() || operation == FormOperation::ColumnAdd)
+        && match operation {
+            FormOperation::ColumnAdd => target.attribute.is_some(),
+            FormOperation::Add | FormOperation::Set => target.form.is_none(),
+            FormOperation::ItemAdd => target.form.is_some() && target.event.is_none(),
+            FormOperation::ItemRemove | FormOperation::ItemMove => {
+                !target.items.is_empty() && target.event.is_none()
+            }
+            FormOperation::EventBind => target.event.is_some(),
+            FormOperation::Remove
+            | FormOperation::AttributeAdd
+            | FormOperation::CommandAdd
+            | FormOperation::PropsSet => {
+                target.form.is_some() && target.items.is_empty() && target.event.is_none()
+            }
+        };
     if !placed {
         let shape = match operation {
+            FormOperation::ColumnAdd => "the existing ValueTable attribute `Owner.Name.Form.F.Attribute.A`",
             FormOperation::Add | FormOperation::Set => "the form owner `Owner.Name`, not a form",
             FormOperation::ItemAdd => {
                 "the form `Owner.Name.Form.F` or its item `….Item.A[.Item.B…]` that receives the elements"
@@ -645,6 +679,34 @@ pub fn parse_form_operation(
         })
     };
     match operation {
+        FormOperation::ColumnAdd => {
+            let form = form_of(&target)?;
+            let attribute = target.attribute.expect("placement proved an attribute");
+            let columns = args["items"]
+                .as_array()
+                .expect("column contract proved items")
+                .iter()
+                .map(|item| crate::column_add::ColumnAddition {
+                    name: item["name"]
+                        .as_str()
+                        .expect("column contract proved name")
+                        .to_string(),
+                    type_name: form_attribute_type(
+                        item["type"].as_str().expect("column contract proved type"),
+                    ),
+                    title: item
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                })
+                .collect();
+            Ok(FormPlan::FormEdit {
+                owner: target.owner,
+                form,
+                subject: FormEditSubject::DataAttribute,
+                definitions: vec![FormEditStep::AddColumns { attribute, columns }],
+            })
+        }
         FormOperation::AttributeAdd => parse_form_root_addition(
             target,
             args,
@@ -1522,6 +1584,28 @@ pub fn stage_form_edit(
     for step in definitions {
         let definition = match step {
             FormEditStep::Definition(definition) => definition,
+            FormEditStep::AddColumns { attribute, columns } => {
+                if columns.iter().any(|column| column.title.is_some()) && lang.is_none() {
+                    lang = Some(unica_source_designer::language::staged_text_language(
+                        staged,
+                        authority.source_kind(),
+                        op_index,
+                    )?);
+                }
+                crate::column_add::apply(&mut xml_text, attribute, columns, lang.as_deref())
+                    .map_err(|error| {
+                        let (kind, message) = match error {
+                            crate::column_add::ColumnAddError::Missing(message) => {
+                                (ApplyPlanErrorKind::NotFound, message)
+                            }
+                            crate::column_add::ColumnAddError::Invalid(message) => {
+                                (ApplyPlanErrorKind::BadValue, message)
+                            }
+                        };
+                        ApplyPlanError::new(kind, message).at_path(args_path.clone())
+                    })?;
+                continue;
+            }
             FormEditStep::Move { request, location } => {
                 xml_text = crate::form_move::move_item(&xml_text, request).map_err(|error| {
                     ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(
@@ -1564,7 +1648,11 @@ pub fn stage_form_edit(
     let is_move = definitions
         .iter()
         .any(|step| matches!(step, FormEditStep::Move { .. }));
-    let postimage = if is_move && !preimage.starts_with(UTF8_BOM) {
+    let preserves_bytes = is_move
+        || definitions
+            .iter()
+            .any(|step| matches!(step, FormEditStep::AddColumns { .. }));
+    let postimage = if preserves_bytes && !preimage.starts_with(UTF8_BOM) {
         xml_text.as_bytes().to_vec()
     } else {
         with_bom(&xml_text)
@@ -1758,5 +1846,72 @@ mod attribute_type_tests {
         ] {
             assert_eq!(form_attribute_type(input), expected, "{input}");
         }
+    }
+}
+
+#[cfg(test)]
+mod column_add_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn column_add_targets_only_an_existing_form_data_attribute() {
+        let at = "main:Catalog.Items.Form.Main.Attribute.Rows";
+        let args = json!({"at":at,"items":[{"name":"Added","type":"Boolean","title":"New"}]});
+        let plan = parse_form_operation(
+            FormOperation::ColumnAdd,
+            args.as_object().unwrap(),
+            0,
+            "main",
+        )
+        .unwrap();
+        let FormPlan::FormEdit {
+            subject: FormEditSubject::DataAttribute,
+            definitions,
+            ..
+        } = plan
+        else {
+            panic!("expected data attribute plan");
+        };
+        let [FormEditStep::AddColumns { attribute, columns }] = definitions.as_slice() else {
+            panic!("expected column addition");
+        };
+        assert_eq!(attribute, "Rows");
+        assert_eq!(columns[0].name, "Added");
+        assert_eq!(columns[0].title.as_deref(), Some("New"));
+        for at in [
+            "main:Catalog.Items.Form.Main",
+            "main:Catalog.Items.Form.Main.Attribute.Rows.Column",
+            "main:Catalog.Items.Form.Main.Item.Rows",
+            "main:DefinedType.Existing.Form.Main.Attribute.Rows",
+        ] {
+            let args = json!({"at":at,"items":[{"name":"Added","type":"Boolean"}]});
+            assert!(
+                parse_form_operation(
+                    FormOperation::ColumnAdd,
+                    args.as_object().unwrap(),
+                    0,
+                    "main"
+                )
+                .is_err(),
+                "{at}"
+            );
+        }
+        let args = json!({"at":at,"values":{"Width":20}});
+        assert!(parse_form_operation(
+            FormOperation::PropsSet,
+            args.as_object().unwrap(),
+            0,
+            "main"
+        )
+        .is_err());
+        let args = json!({"at":at,"items":[{"name":"Added","type":"Boolean","id":42}]});
+        assert!(parse_form_operation(
+            FormOperation::ColumnAdd,
+            args.as_object().unwrap(),
+            0,
+            "main"
+        )
+        .is_err());
     }
 }

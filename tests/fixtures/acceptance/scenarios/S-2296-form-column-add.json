@@ -1,0 +1,417 @@
+{
+  "id": "S-2296-form-column-add",
+  "issue": 2296,
+  "area": "Формы",
+  "task": "Добавить колонки к двум существующим ValueTable, сохранить прежние IDs и привязки, атомарно отказать при конфликте",
+  "workspace": "tests/fixtures/acceptance/workspace-form-column-add",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Scalar"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "column.add"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Tree"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "column.add"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.FirstRows.Column.Enabled"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: form Column `Enabled` was not found",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Items.Form.Main.Attribute.FirstRows.Can.column.add"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.FirstRows.Can.column.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "initial": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Scalar",
+        "ops": [
+          {
+            "op": "column.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Rejected",
+                  "type": "Boolean"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `column.add` does not apply to Attribute `main:Catalog.Items.Form.Main.Attribute.Scalar`; it addresses `DocumentJournal.Name` or `Kind.Name.Form",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Tree",
+        "ops": [
+          {
+            "op": "column.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Rejected",
+                  "type": "Boolean"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `column.add` does not apply to Attribute `main:Catalog.Items.Form.Main.Attribute.Tree`; it addresses `DocumentJournal.Name` or `Kind.Name.Form.F",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main",
+        "ops": [
+          {
+            "op": "column.add",
+            "args": {
+              "at": "main:Catalog.Items.Form.Main.Attribute.FirstRows",
+              "items": [
+                {
+                  "name": "Enabled",
+                  "type": "Boolean",
+                  "title": "Активно"
+                }
+              ]
+            }
+          },
+          {
+            "op": "column.add",
+            "args": {
+              "at": "main:Catalog.Items.Form.Main.Attribute.SecondRows",
+              "items": [
+                {
+                  "name": "Additional",
+                  "type": "CatalogRef.Additional"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"FirstRows\"][@id=\"3\"]/{http://v8.1c.ru/8.3/xcf/logform}Columns/{http://v8.1c.ru/8.3/xcf/logform}Column[@name=\"Enabled\"][@id=\"3\"]/{http://v8.1c.ru/8.3/xcf/logform}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:boolean"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"FirstRows\"][@id=\"3\"]/{http://v8.1c.ru/8.3/xcf/logform}Columns/{http://v8.1c.ru/8.3/xcf/logform}Column[@name=\"Enabled\"][@id=\"3\"]/{http://v8.1c.ru/8.3/xcf/logform}Title/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Активно"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"SecondRows\"][@id=\"11\"]/{http://v8.1c.ru/8.3/xcf/logform}Columns/{http://v8.1c.ru/8.3/xcf/logform}Column[@name=\"Additional\"][@id=\"10\"]/{http://v8.1c.ru/8.3/xcf/logform}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "cfg:CatalogRef.Additional"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"FirstRows\"][@id=\"3\"]/{http://v8.1c.ru/8.3/xcf/logform}Columns/{http://v8.1c.ru/8.3/xcf/logform}Column[@name=\"Original\"][@id=\"2\"]/{http://v8.1c.ru/8.3/xcf/logform}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "cfg:CatalogRef.Existing"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"SecondRows\"][@id=\"11\"]/{http://v8.1c.ru/8.3/xcf/logform}Columns/{http://v8.1c.ru/8.3/xcf/logform}Column[@name=\"Original\"][@id=\"9\"]/{http://v8.1c.ru/8.3/xcf/logform}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "cfg:CatalogRef.Existing"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Table/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}InputField/{http://v8.1c.ru/8.3/xcf/logform}DataPath",
+          "eq": [
+            "FirstRows.Original",
+            "SecondRows.Original"
+          ]
+        }
+      ],
+      "captures": {
+        "added": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.FirstRows.Column.Enabled"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "boolean"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.SecondRows.Column.Additional"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "CatalogRef.Additional"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main",
+        "ops": [
+          {
+            "op": "column.add",
+            "args": {
+              "at": "main:Catalog.Items.Form.Main.Attribute.FirstRows",
+              "items": [
+                {
+                  "name": "Transient",
+                  "type": "Boolean"
+                }
+              ]
+            }
+          },
+          {
+            "op": "column.add",
+            "args": {
+              "at": "main:Catalog.Items.Form.Main.Attribute.SecondRows",
+              "items": [
+                {
+                  "name": "Original",
+                  "type": "Boolean"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Column `Original` already exists",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.added"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.FirstRows",
+        "ops": [
+          {
+            "op": "column.add",
+            "args": {
+              "at": "main:Catalog.Items.Form.Main.Attribute.FirstRows",
+              "items": [
+                {
+                  "name": "Later",
+                  "type": "Boolean"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.added"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Width": 60
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "concurrent": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Catalogs/Items/Forms/Main/Ext/Form.xml; input `Catalogs/Items/Forms/Main/Ext/Form.xml`: source write target; the plan retains i",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.concurrent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.FirstRows.Column.Enabled"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "boolean"
+        }
+      ]
+    }
+  ]
+}
