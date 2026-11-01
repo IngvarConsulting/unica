@@ -10,6 +10,7 @@ mod form_conditional_appearance;
 mod form_item_bindings;
 mod form_support;
 mod job_schedule;
+mod journal_column_references;
 mod metadata;
 mod metadata_declaration_diagnostics;
 mod numerator_read_profile;

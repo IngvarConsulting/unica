@@ -109,6 +109,8 @@ pub enum MetadataMutationCapability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaElementData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column_references: Option<ColumnReferenceFacts>,
     pub name: String,
     #[serde(skip_serializing_if = "is_false")]
     pub incomplete: bool,
@@ -131,6 +133,26 @@ pub struct MetaElementData {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub property_limits: Vec<String>,
     pub attributes: Vec<MetaElementData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnReferenceFacts {
+    pub targets: Option<Vec<ColumnAttributeReference>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ColumnAttributeReference {
+    pub owner: MetadataAddress,
+    pub attribute: String,
+}
+
+impl std::fmt::Display for ColumnAttributeReference {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.Attribute.{}", self.owner, self.attribute)
+    }
 }
 
 fn is_false(value: &bool) -> bool {

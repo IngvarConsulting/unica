@@ -1054,32 +1054,41 @@ impl<'a> LogicalViewReadAuthority<'a> {
                         .job_schedule(target, &mut || self.read_checkpoint())?;
                     return Ok(json!({"properties": schedule}));
                 }
-                let key = TypedPayloadCacheKey {
-                    revision: RevisionCacheKey {
-                        source_set_identity: admitted.source_set_identity.clone(),
-                        revision: admitted.revision.clone(),
-                    },
-                    reader: route.reader(),
-                    target: target.as_str().to_string(),
-                    // Кэш ключуется адресом предмета, а содержимое ячеек
-                    // читается тем же предметом другим разбором. Без этого
-                    // различия на запрос с текстом вернулась бы нагрузка
-                    // без текста, отложенная структурным чтением.
-                    detail: match route.reader() {
-                        LogicalReader::Xdto => {
-                            named_segment(route.at(), NodeKind::Type).map(str::to_string)
-                        }
-                        LogicalReader::Mxl => mxl_content_requested(route)
-                            .then(|| NodeKind::Body.as_str().to_string()),
-                        // Вложенная подсистема — другой файл под той же
-                        // корневой целью.
-                        LogicalReader::Subsystem | LogicalReader::Interface => {
-                            (!route.nested_subsystems().is_empty())
-                                .then(|| route.nested_subsystems().join("."))
-                        }
-                        _ => None,
-                    },
-                };
+                let key =
+                    TypedPayloadCacheKey {
+                        revision: RevisionCacheKey {
+                            source_set_identity: admitted.source_set_identity.clone(),
+                            revision: admitted.revision.clone(),
+                        },
+                        reader: route.reader(),
+                        target: target.as_str().to_string(),
+                        // Кэш ключуется адресом предмета, а содержимое ячеек
+                        // читается тем же предметом другим разбором. Без этого
+                        // различия на запрос с текстом вернулась бы нагрузка
+                        // без текста, отложенная структурным чтением.
+                        detail: match route.reader() {
+                            LogicalReader::Metadata
+                                if route.at().segments().first().is_some_and(|part| {
+                                    part.kind() == NodeKind::DocumentJournal
+                                }) =>
+                            {
+                                named_segment(route.at(), NodeKind::Column)
+                                    .map(|name| format!("Column.{name}"))
+                            }
+                            LogicalReader::Xdto => {
+                                named_segment(route.at(), NodeKind::Type).map(str::to_string)
+                            }
+                            LogicalReader::Mxl => mxl_content_requested(route)
+                                .then(|| NodeKind::Body.as_str().to_string()),
+                            // Вложенная подсистема — другой файл под той же
+                            // корневой целью.
+                            LogicalReader::Subsystem | LogicalReader::Interface => {
+                                (!route.nested_subsystems().is_empty())
+                                    .then(|| route.nested_subsystems().join("."))
+                            }
+                            _ => None,
+                        },
+                    };
                 let mut cache = self.typed_payloads.lock().map_err(|_| {
                     ViewError::detailed(
                         RefusalDetail::CachePoisoned,
@@ -1364,7 +1373,64 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let read = self
             .read
             .metadata_local(target, &mut || self.read_checkpoint())?;
-        let local = read.info;
+        let mut local = read.info;
+        if local.kind == MetadataKind::DocumentJournal {
+            if let Some(name) = named_segment(route.at(), NodeKind::Column) {
+                let matches = local
+                    .collections
+                    .columns
+                    .iter()
+                    .filter(|column| column.name == name)
+                    .count();
+                for column in local
+                    .collections
+                    .columns
+                    .iter_mut()
+                    .filter(|column| column.name == name)
+                {
+                    let Some(facts) = &mut column.column_references else {
+                        continue;
+                    };
+                    if matches != 1 {
+                        facts.targets = None;
+                        facts
+                            .limits
+                            .push("References belong to an ambiguous column identity".to_string());
+                        continue;
+                    }
+                    if let Some(targets) = &mut facts.targets {
+                        let mut proved = Vec::new();
+                        for reference in targets.iter() {
+                            self.read_checkpoint()?;
+                            let owner = &reference.owner;
+                            let proof =
+                                self.verify_registered_owner(owner, admitted)
+                                    .and_then(|()| {
+                                        self.read.prove_column_attribute_target(
+                                            owner,
+                                            reference,
+                                            &mut || self.read_checkpoint(),
+                                        )
+                                    });
+                            match proof {
+                                Ok(()) => proved.push(reference.clone()),
+                                Err(error)
+                                    if error.code() == RefusalCode::NotFound
+                                        || error.detail()
+                                            == Some(RefusalDetail::SourceUnreadable) =>
+                                {
+                                    facts.limits.push(format!(
+                                        "References target `{reference}` cannot be proved: {error}"
+                                    ))
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        *targets = proved;
+                    }
+                }
+            }
+        }
         for (kind, children) in [
             (NodeKind::Form, &local.collections.forms),
             (NodeKind::Template, &local.collections.templates),

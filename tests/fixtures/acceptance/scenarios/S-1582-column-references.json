@@ -1,0 +1,543 @@
+{
+  "id": "S-1582-column-references",
+  "name": "column-references",
+  "issue": 1582,
+  "area": "Навигация по исходникам",
+  "task": "Пройти из журнала через колонку к пяти источникам, прочитать выданный реквизит, проверить страницы, пустую колонку и независимость наборов без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-column-references",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "h0": {
+          "file": "other/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h1": {
+          "file": "other/DocumentJournals/Receipts.xml",
+          "kind": "sha256"
+        },
+        "h2": {
+          "file": "other/Documents/Correction.xml",
+          "kind": "sha256"
+        },
+        "h3": {
+          "file": "other/Documents/GiftReturn.xml",
+          "kind": "sha256"
+        },
+        "h4": {
+          "file": "other/Documents/GiftSale.xml",
+          "kind": "sha256"
+        },
+        "h5": {
+          "file": "other/Documents/Return.xml",
+          "kind": "sha256"
+        },
+        "h6": {
+          "file": "other/Documents/Sale.xml",
+          "kind": "sha256"
+        },
+        "h7": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h8": {
+          "file": "src/DocumentJournals/Receipts.xml",
+          "kind": "sha256"
+        },
+        "h9": {
+          "file": "src/Documents/Correction.xml",
+          "kind": "sha256"
+        },
+        "h10": {
+          "file": "src/Documents/GiftReturn.xml",
+          "kind": "sha256"
+        },
+        "h11": {
+          "file": "src/Documents/GiftSale.xml",
+          "kind": "sha256"
+        },
+        "h12": {
+          "file": "src/Documents/Return.xml",
+          "kind": "sha256"
+        },
+        "h13": {
+          "file": "src/Documents/Sale.xml",
+          "kind": "sha256"
+        },
+        "h14": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentJournal.Receipts"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:DocumentJournal.Receipts.Column",
+            "count": 9
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentJournal.Receipts.Column"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "colmain": {
+          "pointer": "/data/items/8/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/8/at",
+          "eq": "main:DocumentJournal.Receipts.Column.Status"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.colmain"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "relmain": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:DocumentJournal.Receipts.Column.Status.Relation",
+            "count": 5
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relmain",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "reference",
+              "at": "main:Document.Sale.Attribute.Status",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "reference",
+              "at": "main:Document.Return.Attribute.Status",
+              "kind": "Attribute"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "cursormain0": {
+          "pointer": "/cursor"
+        },
+        "targetmain": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relmain",
+        "limit": 2,
+        "cursor": "$capture.cursormain0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "reference",
+              "at": "main:Document.GiftSale.Attribute.Status",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "reference",
+              "at": "main:Document.GiftReturn.Attribute.Status",
+              "kind": "Attribute"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "cursormain1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relmain",
+        "limit": 2,
+        "cursor": "$capture.cursormain1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "reference",
+              "at": "main:Document.Correction.Attribute.Status",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetmain"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Attribute"
+        },
+        {
+          "pointer": "/data/props/comment",
+          "eq": "src"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentJournal.Receipts.Column.Other0.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:DocumentJournal.Receipts"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "other:DocumentJournal.Receipts.Column",
+            "count": 9
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:DocumentJournal.Receipts.Column"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "colother": {
+          "pointer": "/data/items/8/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/8/at",
+          "eq": "other:DocumentJournal.Receipts.Column.Status"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.colother"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "relother": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "other:DocumentJournal.Receipts.Column.Status.Relation",
+            "count": 5
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relother",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "reference",
+              "at": "other:Document.Sale.Attribute.Status",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "reference",
+              "at": "other:Document.Return.Attribute.Status",
+              "kind": "Attribute"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "cursorother0": {
+          "pointer": "/cursor"
+        },
+        "targetother": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relother",
+        "limit": 2,
+        "cursor": "$capture.cursorother0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "reference",
+              "at": "other:Document.GiftSale.Attribute.Status",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "reference",
+              "at": "other:Document.GiftReturn.Attribute.Status",
+              "kind": "Attribute"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "cursorother1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relother",
+        "limit": 2,
+        "cursor": "$capture.cursorother1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "reference",
+              "at": "other:Document.Correction.Attribute.Status",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetother"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Attribute"
+        },
+        {
+          "pointer": "/data/props/comment",
+          "eq": "other"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:DocumentJournal.Receipts.Column.Other0.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h0"
+        },
+        {
+          "path": "other/DocumentJournals/Receipts.xml",
+          "kind": "sha256",
+          "eq": "$capture.h1"
+        },
+        {
+          "path": "other/Documents/Correction.xml",
+          "kind": "sha256",
+          "eq": "$capture.h2"
+        },
+        {
+          "path": "other/Documents/GiftReturn.xml",
+          "kind": "sha256",
+          "eq": "$capture.h3"
+        },
+        {
+          "path": "other/Documents/GiftSale.xml",
+          "kind": "sha256",
+          "eq": "$capture.h4"
+        },
+        {
+          "path": "other/Documents/Return.xml",
+          "kind": "sha256",
+          "eq": "$capture.h5"
+        },
+        {
+          "path": "other/Documents/Sale.xml",
+          "kind": "sha256",
+          "eq": "$capture.h6"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h7"
+        },
+        {
+          "path": "src/DocumentJournals/Receipts.xml",
+          "kind": "sha256",
+          "eq": "$capture.h8"
+        },
+        {
+          "path": "src/Documents/Correction.xml",
+          "kind": "sha256",
+          "eq": "$capture.h9"
+        },
+        {
+          "path": "src/Documents/GiftReturn.xml",
+          "kind": "sha256",
+          "eq": "$capture.h10"
+        },
+        {
+          "path": "src/Documents/GiftSale.xml",
+          "kind": "sha256",
+          "eq": "$capture.h11"
+        },
+        {
+          "path": "src/Documents/Return.xml",
+          "kind": "sha256",
+          "eq": "$capture.h12"
+        },
+        {
+          "path": "src/Documents/Sale.xml",
+          "kind": "sha256",
+          "eq": "$capture.h13"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.h14"
+        }
+      ]
+    }
+  ]
+}

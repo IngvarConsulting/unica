@@ -19,6 +19,7 @@ pub mod format_contract;
 
 pub mod edit;
 
+pub mod column_references;
 pub mod info;
 pub mod numerator_read;
 pub mod session_parameter_comment;
