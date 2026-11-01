@@ -1203,6 +1203,9 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "IntegrationService" {
+            enrich_integration_service_address(&mut payload, &descriptor);
+        }
         if evidence.artifact_kind() == "SessionParameter" {
             match unica_metadata_designer::session_parameter_comment::read_comment(&descriptor) {
                 Ok(Some(comment)) => {
@@ -2181,6 +2184,28 @@ pub(crate) fn companion_owner(
     MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &path).ok()
 }
 
+fn enrich_integration_service_address(payload: &mut Value, descriptor: &[u8]) {
+    match unica_metadata_designer::integration_service_address::read(descriptor) {
+        Ok(Some(address)) => {
+            payload["properties"] = json!([{
+                "key": "ExternalIntegrationServiceAddress",
+                "value": unica_metadata::MetaObservedPropertyValue::Text { value: address },
+            }]);
+        }
+        Ok(None) => {}
+        Err(message) => {
+            let mut unreadable = payload["unreadable"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            unreadable.push(
+                json!({"field":"properties.ExternalIntegrationServiceAddress", "message":message}),
+            );
+            payload["unreadable"] = json!(unreadable);
+        }
+    }
+}
+
 /// The whole regular file under `root`, read in chunks without a size limit.
 fn read_whole_relative(root: &SourceDirectory, relative: &Path) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -2469,5 +2494,39 @@ mod export_path_tests {
             super::encode_export_path_components(components),
             Ok("Reports/ParityReport/Forms/MainForm.xml".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod integration_service_address_enrichment_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_address_preserves_independent_facts_and_read_limits() {
+        let descriptor = br#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses"><IntegrationService><Properties><Name>Service</Name><ExternalIntegrationServiceAddress><Nested/></ExternalIntegrationServiceAddress></Properties></IntegrationService></MetaDataObject>"#;
+        let existing_limit = json!({"field": "collections.channels", "message": "ChildObjects is absent; channel completeness is unknown"});
+        let mut payload = json!({
+            "kind": "IntegrationService",
+            "name": "Service",
+            "properties": [{"key": "OtherFact", "value": "retained"}],
+            "integrationChannels": {"items": null},
+            "unreadable": [existing_limit.clone()],
+        });
+        let original = payload.clone();
+        enrich_integration_service_address(&mut payload, descriptor);
+        for field in ["kind", "name", "properties", "integrationChannels"] {
+            assert_eq!(payload[field], original[field], "independent {field}");
+        }
+        let unreadable = payload["unreadable"].as_array().unwrap();
+        assert_eq!(unreadable.len(), 2, "{payload:#}");
+        assert_eq!(unreadable[0], existing_limit);
+        assert_eq!(
+            unreadable[1]["field"],
+            "properties.ExternalIntegrationServiceAddress"
+        );
+        assert!(unreadable[1]["message"]
+            .as_str()
+            .unwrap()
+            .contains("malformed"));
     }
 }

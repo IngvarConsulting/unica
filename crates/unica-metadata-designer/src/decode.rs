@@ -88,6 +88,7 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
+    IntegrationService(unica_metadata::property_input::IntegrationServicePropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
     Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
@@ -1103,6 +1104,10 @@ pub fn parse_properties(
                 addressed: None,
             });
         }
+        unica_metadata::property_input::PropertiesIntent::IntegrationService(values) => (
+            "IntegrationServices",
+            DescriptorPropertyChanges::IntegrationService(values),
+        ),
         unica_metadata::property_input::PropertiesIntent::Role(values) => {
             ("Roles", DescriptorPropertyChanges::Role(values))
         }
