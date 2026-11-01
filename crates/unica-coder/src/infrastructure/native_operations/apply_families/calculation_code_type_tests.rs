@@ -542,3 +542,22 @@ fn calculation_chart_extension_code_type_requires_complete_local_composition() {
             .contains("<CodeType>Number</CodeType>")
     );
 }
+
+#[test]
+fn calculation_chart_equivalent_code_type_preserves_lexical_bytes_without_reading_companion() {
+    let fixture = Fixture::new();
+    let descriptor = String::from_utf8(fixture.bytes(DESCRIPTOR))
+        .unwrap()
+        .replace(
+            "<CodeType>String</CodeType>",
+            "<CodeType>Str&#105;ng<!--keep--></CodeType>",
+        );
+    fixture.write(DESCRIPTOR, descriptor);
+    fixture.write(PREDEFINED, b"unchanged unsupported companion");
+    let before = tree_snapshot(&fixture.0.source_dir());
+    let staged = fixture
+        .plan(vec![code_type("String")])
+        .expect("the current semantic CodeType must be a no-op");
+    assert!(staged.planned_changes().is_empty());
+    assert_eq!(tree_snapshot(&fixture.0.source_dir()), before);
+}

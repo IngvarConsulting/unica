@@ -1388,6 +1388,17 @@ pub fn apply_typed_properties(
             )
         })?;
         let replacement = match (key, value) {
+            (MetaPropertyKey::CodeType, MetaPropertyValue::String(value))
+                if kind == MetadataKind::ChartOfCalculationTypes
+                    && matches!(
+                        super::info_projection::observe_meta_info_property(properties, kind, tag),
+                        Ok(Some(MetaInfoPropertyValue::String(current))) if current == *value
+                    ) =>
+            {
+                // An equivalent mode preserves its lexical bytes and does not
+                // turn a no-op into a change requiring companion validation.
+                continue;
+            }
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {
                 if previous_type
                     .as_ref()
