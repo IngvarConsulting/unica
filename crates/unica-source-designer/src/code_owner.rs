@@ -129,11 +129,55 @@ fn prove_staged_external_code_owner(
         .map_err(|_| invalid_code_owner(at_path))?;
     require_code_owner_format(&evidence, expected_format, &step.relative, at_path)?;
     if evidence.artifact_kind() != step.expected_kind
-        || evidence.artifact_name() != step.expected_name.as_deref()
+        || !external_owner_has_exact_name(&bytes, step.expected_name.as_deref())
     {
         return Err(invalid_code_owner(at_path));
     }
     Ok(vec![bytes])
+}
+
+fn external_owner_has_exact_name(bytes: &[u8], expected: Option<&str>) -> bool {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let Ok(document) = roxmltree::Document::parse(text) else {
+        return false;
+    };
+    let Some(artifact) = document.root_element().first_element_child() else {
+        return false;
+    };
+    // Count by local name before checking the namespace: a foreign namesake
+    // must not turn damaged owner identity into authority to write code.
+    let properties = artifact
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+        .collect::<Vec<_>>();
+    let [properties] = properties.as_slice() else {
+        return false;
+    };
+    if !properties.has_tag_name((MD, "Properties")) {
+        return false;
+    }
+    let names = properties
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Name")
+        .collect::<Vec<_>>();
+    let [name] = names.as_slice() else {
+        return false;
+    };
+    if !name.has_tag_name((MD, "Name"))
+        || name.attributes().len() != 0
+        || name.children().any(|node| node.is_element())
+    {
+        return false;
+    }
+    let text = name
+        .children()
+        .filter(|node| node.is_text())
+        .filter_map(|node| node.text())
+        .collect::<String>();
+    Some(text.as_str()) == expected
 }
 
 /// The refusal names the owner file, the version it records and the

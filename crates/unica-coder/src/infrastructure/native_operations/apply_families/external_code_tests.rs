@@ -318,6 +318,80 @@ fn external_code_refuses_nested_modules_and_the_wrong_artifact_kind() {
 }
 
 #[test]
+fn external_code_refuses_ambiguous_and_non_scalar_owner_names() {
+    let mut accepted = Vec::new();
+    for name in [
+        "<Name>Sales</Name><Name>Other</Name>",
+        "<Name>Sales</Name><Name xmlns=\"urn:foreign\">Other</Name>",
+        "<Name>Sales<Nested/></Name>",
+        "<Name> Sales </Name>",
+        "<Name xmlns=\"urn:foreign\">Sales</Name>",
+        "<Name role=\"owner\">Sales</Name>",
+    ] {
+        let fixture = Fixture::new(SourceSetKind::ExternalReport);
+        let owner = fixture.source.join("Sales.xml");
+        let original = std::fs::read_to_string(&owner).unwrap();
+        std::fs::write(&owner, original.replace("<Name>Sales</Name>", name)).unwrap();
+        let before = tree_snapshot(&fixture.source);
+        let request = fixture.request(&fixture.at);
+        let admission = fixture.admission(&request);
+        let result = plan_hidden_v13_apply(&request, &fixture.binding, &admission);
+        if result.is_ok() {
+            accepted.push(name);
+        }
+        assert_eq!(tree_snapshot(&fixture.source), before);
+    }
+    assert!(
+        accepted.is_empty(),
+        "ambiguous owners authorized code previews: {accepted:?}"
+    );
+}
+
+#[test]
+fn external_code_refuses_duplicate_owner_properties() {
+    let fixture = Fixture::new(SourceSetKind::ExternalReport);
+    let owner = fixture.source.join("Sales.xml");
+    let original = std::fs::read_to_string(&owner).unwrap();
+    std::fs::write(
+        &owner,
+        original.replace(
+            "</Properties>",
+            "</Properties><Properties><Name>Other</Name></Properties>",
+        ),
+    )
+    .unwrap();
+    let before = tree_snapshot(&fixture.source);
+    let request = fixture.request(&fixture.at);
+    let admission = fixture.admission(&request);
+    assert!(plan_hidden_v13_apply(&request, &fixture.binding, &admission).is_err());
+    assert_eq!(tree_snapshot(&fixture.source), before);
+}
+
+#[test]
+fn external_code_accepts_comments_within_the_exact_owner_name() {
+    for kind in [
+        SourceSetKind::ExternalReport,
+        SourceSetKind::ExternalProcessor,
+    ] {
+        let fixture = Fixture::new(kind);
+        let owner = fixture.source.join(format!("{}.xml", fixture.name));
+        let original = std::fs::read_to_string(&owner).unwrap();
+        let (first, last) = fixture.name.split_at(2);
+        std::fs::write(
+            &owner,
+            format!("\u{feff}{}", original.trim_start_matches('\u{feff}')).replace(
+                &format!("<Name>{}</Name>", fixture.name),
+                &format!("<Name>{first}<!-- retained -->{last}</Name>"),
+            ),
+        )
+        .unwrap();
+        let request = fixture.request(&fixture.at);
+        let admission = fixture.admission(&request);
+        assert!(plan_hidden_v13_apply(&request, &fixture.binding, &admission).is_ok());
+    }
+}
+
+#[test]
 fn external_code_cannot_publish_through_a_replaced_collection_root() {
     let fixture = Fixture::new(SourceSetKind::ExternalReport);
     let token = fixture.save();
