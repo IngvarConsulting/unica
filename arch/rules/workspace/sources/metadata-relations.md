@@ -1,6 +1,9 @@
 ---
 id: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/numerator_read_profile.rs::document_numerator_relation_reaches_the_registered_target_without_writes
+  - crates/unica-coder/src/infrastructure/v13_read/tests/numerator_read_profile.rs::document_numerator_relation_preserves_unknown_empty_and_damaged_observations
+  - crates/unica-coder/src/infrastructure/v13_read/tests/numerator_read_profile.rs::document_numerator_relation_requires_local_registration_and_descriptor_identity
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata.rs::every_reference_of_an_object_answers_in_one_relation_branch
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::a_subsystem_shows_its_content_and_reads_registered_children_at_depth
   - crates/unica-metadata-integration-tests/tests/subsystem_topology.rs::memberships_name_the_listing_subsystem_its_ancestors_and_standard_library_roots

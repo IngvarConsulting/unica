@@ -1364,7 +1364,35 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let read = self
             .read
             .metadata_local(target, &mut || self.read_checkpoint())?;
-        let local = read.info;
+        let mut local = read.info;
+        if let Some(Some(numerators)) = &local.relations.numerator {
+            for numerator in numerators {
+                let target_numerator =
+                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &numerator.value)
+                        .map_err(|error| {
+                            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                        })?;
+                match self.verify_registered_owner(&target_numerator, admitted) {
+                    Ok(()) => {}
+                    Err(error)
+                        if error.code() == RefusalCode::NotFound
+                            || error.detail() == Some(RefusalDetail::SourceUnreadable) =>
+                    {
+                        local.diagnostics.push(
+                            unica_metadata::MetaDiagnostic::error(
+                                unica_metadata::MetaDiagnosticCode::ValidationFailed,
+                                format!("document numerator target cannot be read: {error}"),
+                            )
+                            .with_metadata_path(target.clone())
+                            .with_field("relations.numerator"),
+                        );
+                        local.relations.numerator = Some(None);
+                        break;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
         for (kind, children) in [
             (NodeKind::Form, &local.collections.forms),
             (NodeKind::Template, &local.collections.templates),

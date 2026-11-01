@@ -119,3 +119,175 @@ fn numerator_read_profile_preserves_identity_when_the_new_frame_observation_fail
         .iter()
         .any(|v| v.as_str().is_some_and(|s| s.contains("Properties"))));
 }
+
+#[test]
+fn document_numerator_relation_reaches_the_registered_target_without_writes() {
+    let fixture = RealReaderFixture::new();
+    install(&fixture, "<NumberType>String</NumberType>");
+    let path = fixture.source.join("Documents/Order.xml");
+    write(
+        &path,
+        &fs::read_to_string(&path).unwrap().replace(
+            "<Name>Order</Name>",
+            "<Name>Order</Name><Numerator>DocumentNumerator.Нумератор</Numerator>",
+        ),
+    );
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let service = fixture.view_service();
+    let owner = service.view(ViewRequest::new("main:Document.Order").unwrap());
+    assert!(owner.ok);
+    let owner = owner.data.unwrap();
+    assert_eq!(owner["props"]["Numerator"], "DocumentNumerator.Нумератор");
+    assert!(owner["branches"]
+        .as_array()
+        .unwrap()
+        .contains(&json!({"at":"main:Document.Order.Relation", "count":3})));
+    let mut cursor = None;
+    let mut items = Vec::new();
+    loop {
+        let mut request = ViewRequest::new("main:Document.Order.Relation")
+            .unwrap()
+            .with_limit(1)
+            .unwrap();
+        if let Some(value) = cursor.take() {
+            request = request.with_cursor(value);
+        }
+        let page = service.view(request);
+        assert!(page.ok);
+        items.extend(page.data.unwrap()["items"].as_array().unwrap().clone());
+        cursor = page.cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(items.len(), 3);
+    let expected = json!({"relation":"numerator", "at":OWNER, "kind":"DocumentNumerator"});
+    assert_eq!(items.iter().filter(|item| **item == expected).count(), 1);
+    assert!(
+        service
+            .view(ViewRequest::new(expected["at"].as_str().unwrap()).unwrap())
+            .ok
+    );
+    assert!(
+        !service
+            .view(ViewRequest::new("main:Document.Order.Relation.Нумератор").unwrap())
+            .ok
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
+}
+
+#[test]
+fn document_numerator_relation_preserves_unknown_empty_and_damaged_observations() {
+    for (raw, limited) in [
+        ("", true),
+        ("<Numerator/>", false),
+        (
+            "<Numerator>DocumentNumerator.Нумератор</Numerator><Numerator/>",
+            true,
+        ),
+        (
+            "<Numerator xmlns=\"urn:foreign\">DocumentNumerator.Нумератор</Numerator>",
+            true,
+        ),
+        (
+            "<Numerator><Nested>DocumentNumerator.Нумератор</Nested></Numerator>",
+            true,
+        ),
+        ("<Numerator>Catalog.Items</Numerator>", true),
+        (
+            "<Numerator>DocumentNumerator.Нумератор.Extra.X</Numerator>",
+            true,
+        ),
+        ("<Numerator>DocumentNumerator.Missing</Numerator>", true),
+    ] {
+        let fixture = RealReaderFixture::new();
+        install(&fixture, "<NumberType>String</NumberType>");
+        let path = fixture.source.join("Documents/Order.xml");
+        write(
+            &path,
+            &fs::read_to_string(&path)
+                .unwrap()
+                .replace("<Name>Order</Name>", &format!("<Name>Order</Name>{raw}")),
+        );
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        let service = fixture.view_service();
+        for at in ["main:Document.Order", "main:Document.Order.Relation"] {
+            let result = service.view(ViewRequest::new(at).unwrap());
+            assert!(result.ok, "{raw}: {:?}", refusal_codes(&result));
+            let node = result.data.unwrap();
+            let has_limit = node["limits"].as_array().is_some_and(|limits| {
+                limits.iter().any(|limit| {
+                    limit.as_str().is_some_and(|text| {
+                        text.contains("numerator") || text.contains("Numerator")
+                    })
+                })
+            });
+            assert_eq!(has_limit, limited, "{raw}: {at}");
+            if at.ends_with("Relation") {
+                let items = node["items"].as_array().unwrap();
+                assert_eq!(items.len(), 2);
+                assert!(!items.iter().any(|item| item["relation"] == "numerator"));
+            } else {
+                assert_eq!(node["props"]["kind"], "Document");
+            }
+        }
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
+    }
+}
+
+#[test]
+fn document_numerator_relation_requires_local_registration_and_descriptor_identity() {
+    for variant in ["unregistered", "missing", "foreign-name", "foreign-kind"] {
+        let fixture = RealReaderFixture::new();
+        let numerator = install(&fixture, "<NumberType>String</NumberType>");
+        let path = fixture.source.join("Documents/Order.xml");
+        write(
+            &path,
+            &fs::read_to_string(&path).unwrap().replace(
+                "<Name>Order</Name>",
+                "<Name>Order</Name><Numerator>DocumentNumerator.Нумератор</Numerator>",
+            ),
+        );
+        match variant {
+            "unregistered" => {
+                let path = fixture.source.join("Configuration.xml");
+                write(
+                    &path,
+                    &fs::read_to_string(&path)
+                        .unwrap()
+                        .replace("<DocumentNumerator>Нумератор</DocumentNumerator>", ""),
+                );
+            }
+            "missing" => fs::remove_file(&numerator).unwrap(),
+            "foreign-name" => write(
+                &numerator,
+                &fs::read_to_string(&numerator)
+                    .unwrap()
+                    .replace("<Name>Нумератор</Name>", "<Name>Other</Name>"),
+            ),
+            "foreign-kind" => write(
+                &numerator,
+                &fs::read_to_string(&numerator)
+                    .unwrap()
+                    .replace("DocumentNumerator", "Catalog"),
+            ),
+            _ => unreachable!(),
+        }
+        let service = fixture.view_service();
+        let result = service.view(ViewRequest::new("main:Document.Order.Relation").unwrap());
+        assert!(result.ok, "{variant}: {:?}", refusal_codes(&result));
+        let node = result.data.unwrap();
+        assert_eq!(node["items"].as_array().unwrap().len(), 2, "{variant}");
+        assert!(node["limits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|limit| limit.as_str().unwrap().contains("numerator")));
+    }
+}

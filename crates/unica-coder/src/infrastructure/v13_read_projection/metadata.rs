@@ -454,6 +454,9 @@ const METADATA_DETAIL_RELATIONS: &[(&str, &str, &str)] = &[
 ];
 
 fn metadata_relation_error_field(field: &str) -> Option<String> {
+    if field == "properties.Numerator" {
+        return Some("relations.numerator".to_string());
+    }
     if field.starts_with("relations.") {
         return Some(field.to_string());
     }
@@ -647,6 +650,7 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
     };
     let relations = payload.get("relations");
     for (field, relation) in [
+        ("numerator", "numerator"),
         ("owners", "owner"),
         ("registerRecords", "registerRecord"),
         ("basedOn", "basedOn"),

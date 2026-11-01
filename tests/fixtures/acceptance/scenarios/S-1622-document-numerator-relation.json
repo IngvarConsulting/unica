@@ -1,0 +1,772 @@
+{
+  "id": "S-1622-document-numerator-relation",
+  "name": "document-numerator-relation",
+  "issue": 1622,
+  "area": "Навигация по исходникам",
+  "task": "Прочитать связь документа с нумератором, продолжить пагинацию и проверить изоляцию двух наборов без изменения исходников",
+  "workspace": "tests/fixtures/acceptance/workspace-document-numerator-relation",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "h0": {
+          "kind": "sha256",
+          "file": "other/Catalogs/Items.xml"
+        },
+        "h1": {
+          "kind": "sha256",
+          "file": "other/Configuration.xml"
+        },
+        "h2": {
+          "kind": "sha256",
+          "file": "other/DocumentNumerators/Shared.xml"
+        },
+        "h3": {
+          "kind": "sha256",
+          "file": "other/Documents/Invoice.xml"
+        },
+        "h4": {
+          "kind": "sha256",
+          "file": "other/Documents/Order.xml"
+        },
+        "h5": {
+          "kind": "sha256",
+          "file": "other/Documents/Return.xml"
+        },
+        "h6": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Items.xml"
+        },
+        "h7": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "h8": {
+          "kind": "sha256",
+          "file": "src/DocumentNumerators/Shared.xml"
+        },
+        "h9": {
+          "kind": "sha256",
+          "file": "src/Documents/Invoice.xml"
+        },
+        "h10": {
+          "kind": "sha256",
+          "file": "src/Documents/Order.xml"
+        },
+        "h11": {
+          "kind": "sha256",
+          "file": "src/Documents/Return.xml"
+        },
+        "h12": {
+          "kind": "sha256",
+          "file": "v8project.yaml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Order"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Numerator",
+          "eq": "DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:Document.Order.Relation",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "relationmainDocumentOrder": {
+          "pointer": "/data/branches/5/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationmainDocumentOrder",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "numerator",
+              "at": "main:DocumentNumerator.Shared",
+              "kind": "DocumentNumerator"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetmainOrder": {
+          "pointer": "/data/items/0/at"
+        },
+        "cursormainOrder": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationmainDocumentOrder",
+        "limit": 1,
+        "cursor": "$capture.cursormainOrder"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "basedOn",
+              "at": "main:Catalog.Items",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetmainOrder"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/props/NumberType",
+          "eq": "String"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Invoice"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Numerator",
+          "eq": "DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:Document.Invoice.Relation",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "relationmainDocumentInvoice": {
+          "pointer": "/data/branches/5/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationmainDocumentInvoice",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "numerator",
+              "at": "main:DocumentNumerator.Shared",
+              "kind": "DocumentNumerator"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetmainInvoice": {
+          "pointer": "/data/items/0/at"
+        },
+        "cursormainInvoice": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationmainDocumentInvoice",
+        "limit": 1,
+        "cursor": "$capture.cursormainInvoice"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "basedOn",
+              "at": "main:Catalog.Items",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetmainInvoice"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/props/NumberType",
+          "eq": "String"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Return"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Numerator",
+          "eq": "DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:Document.Return.Relation",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "relationmainDocumentReturn": {
+          "pointer": "/data/branches/5/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationmainDocumentReturn",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "numerator",
+              "at": "main:DocumentNumerator.Shared",
+              "kind": "DocumentNumerator"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetmainReturn": {
+          "pointer": "/data/items/0/at"
+        },
+        "cursormainReturn": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationmainDocumentReturn",
+        "limit": 1,
+        "cursor": "$capture.cursormainReturn"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "basedOn",
+              "at": "main:Catalog.Items",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetmainReturn"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "main:DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/props/NumberType",
+          "eq": "String"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:Document.Order"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Numerator",
+          "eq": "DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "other:Document.Order.Relation",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "relationotherDocumentOrder": {
+          "pointer": "/data/branches/5/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationotherDocumentOrder",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "numerator",
+              "at": "other:DocumentNumerator.Shared",
+              "kind": "DocumentNumerator"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetotherOrder": {
+          "pointer": "/data/items/0/at"
+        },
+        "cursorotherOrder": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationotherDocumentOrder",
+        "limit": 1,
+        "cursor": "$capture.cursorotherOrder"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "basedOn",
+              "at": "other:Catalog.Items",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetotherOrder"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "other:DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/props/NumberType",
+          "eq": "Number"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:Document.Invoice"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Numerator",
+          "eq": "DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "other:Document.Invoice.Relation",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "relationotherDocumentInvoice": {
+          "pointer": "/data/branches/5/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationotherDocumentInvoice",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "numerator",
+              "at": "other:DocumentNumerator.Shared",
+              "kind": "DocumentNumerator"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetotherInvoice": {
+          "pointer": "/data/items/0/at"
+        },
+        "cursorotherInvoice": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationotherDocumentInvoice",
+        "limit": 1,
+        "cursor": "$capture.cursorotherInvoice"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "basedOn",
+              "at": "other:Catalog.Items",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetotherInvoice"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "other:DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/props/NumberType",
+          "eq": "Number"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:Document.Return"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Numerator",
+          "eq": "DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "other:Document.Return.Relation",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "relationotherDocumentReturn": {
+          "pointer": "/data/branches/5/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationotherDocumentReturn",
+        "limit": 1
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "numerator",
+              "at": "other:DocumentNumerator.Shared",
+              "kind": "DocumentNumerator"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "targetotherReturn": {
+          "pointer": "/data/items/0/at"
+        },
+        "cursorotherReturn": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.relationotherDocumentReturn",
+        "limit": 1,
+        "cursor": "$capture.cursorotherReturn"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "basedOn",
+              "at": "other:Catalog.Items",
+              "kind": "Catalog"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.targetotherReturn"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "other:DocumentNumerator.Shared"
+        },
+        {
+          "pointer": "/data/props/NumberType",
+          "eq": "Number"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Order.Relation.Shared"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "other/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.h0"
+        },
+        {
+          "path": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h1"
+        },
+        {
+          "path": "other/DocumentNumerators/Shared.xml",
+          "kind": "sha256",
+          "eq": "$capture.h2"
+        },
+        {
+          "path": "other/Documents/Invoice.xml",
+          "kind": "sha256",
+          "eq": "$capture.h3"
+        },
+        {
+          "path": "other/Documents/Order.xml",
+          "kind": "sha256",
+          "eq": "$capture.h4"
+        },
+        {
+          "path": "other/Documents/Return.xml",
+          "kind": "sha256",
+          "eq": "$capture.h5"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.h6"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h7"
+        },
+        {
+          "path": "src/DocumentNumerators/Shared.xml",
+          "kind": "sha256",
+          "eq": "$capture.h8"
+        },
+        {
+          "path": "src/Documents/Invoice.xml",
+          "kind": "sha256",
+          "eq": "$capture.h9"
+        },
+        {
+          "path": "src/Documents/Order.xml",
+          "kind": "sha256",
+          "eq": "$capture.h10"
+        },
+        {
+          "path": "src/Documents/Return.xml",
+          "kind": "sha256",
+          "eq": "$capture.h11"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.h12"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: the relation branch lists targets; read the target at its own address"
+    }
+  ]
+}

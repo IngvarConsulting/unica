@@ -208,7 +208,20 @@ pub fn typed_relations(
         }
         Err(_) => Default::default(),
     };
+    let numerator =
+        (owner_kind == MetadataKind::Document).then(|| match document_numerator(properties) {
+            Ok(value) => value,
+            Err(error) => {
+                diagnostics.push(
+                    MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, error.message)
+                        .with_metadata_path(target.clone())
+                        .with_field("relations.numerator"),
+                );
+                None
+            }
+        });
     MetaRelationsData {
+        numerator,
         content: (owner_kind == MetadataKind::ExchangePlan).then_some(None),
         owners,
         register_records,
@@ -219,6 +232,44 @@ pub fn typed_relations(
         source_type_ids: source.type_ids,
     }
 }
+fn document_numerator(
+    properties: Option<roxmltree::Node<'_, '_>>,
+) -> Result<Option<Vec<MetaRelationTargetData>>, crate::info_projection::ProjectionError> {
+    let Some(properties) = properties else {
+        return Ok(None);
+    };
+    let Some(value) = crate::info_projection::observe_meta_info_property(
+        properties,
+        MetadataKind::Document,
+        "Numerator",
+    )?
+    else {
+        return Ok(None);
+    };
+    let MetaInfoPropertyValue::String(value) = value else {
+        unreachable!("Numerator has a string read profile");
+    };
+    if value.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
+        .ok()
+        .filter(|address| {
+            let parts = address.segments().collect::<Vec<_>>();
+            parts.len() == 2 && parts[0] == "DocumentNumerator"
+        })
+        .ok_or_else(|| {
+            crate::info_projection::ProjectionError::from((
+                "properties.Numerator".to_string(),
+                "document numerator must name a DocumentNumerator".to_string(),
+            ))
+        })?;
+    Ok(Some(vec![MetaRelationTargetData {
+        kind: "object".to_string(),
+        value: address.to_string(),
+    }]))
+}
+
 pub fn typed_elements_with_diagnostics(
     xml: &str,
     parent: Option<roxmltree::Node<'_, '_>>,

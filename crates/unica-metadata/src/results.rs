@@ -184,6 +184,8 @@ pub struct MetaExchangeContentItem {
 #[serde(rename_all = "camelCase")]
 pub struct MetaRelationsData {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub numerator: Option<Option<Vec<MetaRelationTargetData>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<Option<Vec<MetaExchangeContentItem>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owners: Option<Option<Vec<MetaRelationTargetData>>>,
