@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.LOGICAL-QUESTION-COMPLETENESS
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/functional_option_links.rs::functional_declarations_preserve_dangling_targets_and_reject_extra_relation_tail
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::every_reader_rejects_an_extra_unconsumed_address_tail
   - crates/unica-coder/src/infrastructure/daemon/server.rs::a_retired_read_filter_routes_next_to_the_address_that_replaced_it
 ---

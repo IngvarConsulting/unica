@@ -114,3 +114,6 @@ tests/fixtures/platform_8_3_27/job_schedule/*.xml -text -whitespace
 # Spliced by tests with newline-prefixed patterns; keep their LF bytes on every host.
 /tests/fixtures/platform_8_3_27/mxl/** -text -whitespace
 /tests/fixtures/unica_mcp_script_parity/dcs-validate/** -text -whitespace
+
+# Native 8.3.27 readback distinguishes accepted XML from mandatory Use semantics.
+/tests/fixtures/platform_8_3_27/functional_option_links/** -text whitespace=cr-at-eol

@@ -7909,3 +7909,5 @@ fn an_open_buffer_is_read_in_place_of_its_module_file_and_the_file_is_untouched(
         .join("Ext/Module.bsl")
         .exists());
 }
+
+mod functional_option_links;

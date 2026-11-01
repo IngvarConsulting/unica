@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.LOGICAL-BRANCH-COUNT
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/functional_option_links.rs::functional_option_empty_content_and_unavailable_parameter_use_are_distinct
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::configuration_root_branch_counts_match_every_reachable_collection
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::module_capability_parents_expose_canonical_module_collections
 ---
