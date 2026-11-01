@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.INCOMPLETE-METADATA-READ
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/service_member_facts.rs::service_member_damage_limits_only_the_named_fact_and_keeps_owner_diagnostics
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_damage_is_local_in_owner_row_and_detail
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_empty_set_reads_as_absence_but_an_empty_translation_survives
   - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_damage_limits_only_the_named_fact_in_owner_row_and_detail

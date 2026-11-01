@@ -1,4 +1,4 @@
-use super::{MetadataKind, ObservedMetadataType};
+use super::{MetaDiagnostic, MetadataKind, ObservedMetadataType};
 use serde::{Deserialize, Serialize};
 use unica_address::source_target::MetadataAddress;
 
@@ -20,6 +20,8 @@ pub struct MetaCalculationSchedule {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaHttpMethod {
+    #[serde(flatten)]
+    pub descriptive: MetaServiceMemberProperties,
     pub name: String,
     pub http_method: String,
     pub handler: String,
@@ -28,6 +30,8 @@ pub struct MetaHttpMethod {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaHttpUrlTemplate {
+    #[serde(flatten)]
+    pub descriptive: MetaServiceMemberProperties,
     pub name: String,
     pub template: String,
     pub methods: Vec<MetaHttpMethod>,
@@ -167,6 +171,8 @@ pub enum MetaTransferDirection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaWebServiceParameter {
+    #[serde(flatten)]
+    pub descriptive: MetaServiceMemberProperties,
     pub name: String,
     pub r#type: MetaExpandedName,
     pub nillable: bool,
@@ -176,6 +182,8 @@ pub struct MetaWebServiceParameter {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaWebServiceOperation {
+    #[serde(flatten)]
+    pub descriptive: MetaServiceMemberProperties,
     pub name: String,
     pub return_type: MetaExpandedName,
     pub nillable: bool,
@@ -305,3 +313,178 @@ pub const META_STANDARD_ATTRIBUTE_PROPERTY_NAMES: &[&str] = &[
     "Mask",
     "ChoiceParameters",
 ];
+
+/// Closed observations of descriptive properties on HTTP and SOAP members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaServiceMemberProperties {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<MetaObservedProperty>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub property_diagnostics: Vec<MetaDiagnostic>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetaServiceMemberContext {
+    URLTemplate,
+    HTTPMethod,
+    Operation,
+    Parameter,
+}
+
+impl MetaServiceMemberContext {
+    pub const fn property_names(self) -> &'static [&'static str] {
+        match self {
+            Self::Operation => &["Synonym", "Comment", "DataLockControlMode"],
+            Self::URLTemplate | Self::HTTPMethod | Self::Parameter => &["Synonym", "Comment"],
+        }
+    }
+}
+
+impl MetaServiceMemberContext {
+    /// These indexed member facts are checked by the reader rather than the
+    /// structural validator. Ownership includes the root kind and whole field.
+    pub fn owns_diagnostic(diagnostic: &MetaDiagnostic) -> bool {
+        let Some(path) = diagnostic.metadata_path.as_ref() else {
+            return false;
+        };
+        let parts = path.segments().collect::<Vec<_>>();
+        let [kind, _] = parts.as_slice() else {
+            return false;
+        };
+        let Some(field) = diagnostic.field.as_deref() else {
+            return false;
+        };
+        fn indexed<'a>(field: &'a str, prefix: &str) -> Option<&'a str> {
+            let (index, rest) = field.strip_prefix(prefix)?.split_once(']')?;
+            let number = index.parse::<usize>().ok()?;
+            (number.to_string() == index).then_some(rest)
+        }
+        let (context, key) = match *kind {
+            "HTTPService" => {
+                let Some(rest) = indexed(field, "details.urlTemplates[") else {
+                    return false;
+                };
+                if rest.starts_with(".methods[") {
+                    let Some(key) = indexed(rest, ".methods[") else {
+                        return false;
+                    };
+                    (Self::HTTPMethod, key)
+                } else {
+                    (Self::URLTemplate, rest)
+                }
+            }
+            "WebService" => {
+                let Some(rest) = indexed(field, "details.operations[") else {
+                    return false;
+                };
+                if rest.starts_with(".parameters[") {
+                    let Some(key) = indexed(rest, ".parameters[") else {
+                        return false;
+                    };
+                    (Self::Parameter, key)
+                } else {
+                    (Self::Operation, rest)
+                }
+            }
+            _ => return false,
+        };
+        match key {
+            ".synonym" | ".comment" => true,
+            ".dataLockControlMode" => context == Self::Operation,
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod service_member_diagnostic_tests {
+    use super::*;
+    use crate::MetaDiagnosticCode;
+    use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
+
+    #[test]
+    fn service_diagnostic_profile_owns_exactly_nine_fields_of_the_matching_owner() {
+        for (owner, fields) in [
+            (
+                "HTTPService.API",
+                vec![
+                    "details.urlTemplates[0].synonym",
+                    "details.urlTemplates[0].comment",
+                    "details.urlTemplates[12].methods[3].synonym",
+                    "details.urlTemplates[12].methods[3].comment",
+                ],
+            ),
+            (
+                "WebService.API",
+                vec![
+                    "details.operations[0].synonym",
+                    "details.operations[0].comment",
+                    "details.operations[0].dataLockControlMode",
+                    "details.operations[9].parameters[3].synonym",
+                    "details.operations[9].parameters[3].comment",
+                ],
+            ),
+        ] {
+            for field in fields {
+                let diagnostic =
+                    MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, "cause")
+                        .with_metadata_path(
+                            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, owner).unwrap(),
+                        )
+                        .with_field(field);
+                assert!(
+                    MetaServiceMemberContext::owns_diagnostic(&diagnostic),
+                    "{owner}:{field}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn service_diagnostic_profile_rejects_foreign_roots_fields_indices_and_tails() {
+        for (owner, field) in [
+            ("Catalog.API", "details.urlTemplates[0].comment"),
+            ("WebService.API", "details.urlTemplates[0].comment"),
+            ("HTTPService.API", "details.operations[0].comment"),
+            (
+                "HTTPService.API.Form.Form",
+                "details.urlTemplates[0].comment",
+            ),
+            ("HTTPService.API", "details.urlTemplates[0].name"),
+            (
+                "HTTPService.API",
+                "details.urlTemplates[0].methods[0].handler",
+            ),
+            (
+                "WebService.API",
+                "details.operations[0].parameters[0].dataLockControlMode",
+            ),
+            (
+                "WebService.API",
+                "details.operations[0].dataLockControlMode.extra",
+            ),
+            ("WebService.API", "details.operations[].comment"),
+            ("WebService.API", "details.operations[-1].comment"),
+            ("WebService.API", "details.operations[01].comment"),
+            ("WebService.API", "details.operations[+1].comment"),
+            ("WebService.API", "details.operations[0]].comment"),
+            ("WebService.API", "properties.Comment"),
+        ] {
+            let diagnostic =
+                MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, "cause")
+                    .with_metadata_path(
+                        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, owner).unwrap(),
+                    )
+                    .with_field(field);
+            assert!(
+                !MetaServiceMemberContext::owns_diagnostic(&diagnostic),
+                "{owner}:{field}"
+            );
+        }
+        assert!(!MetaServiceMemberContext::owns_diagnostic(
+            &MetaDiagnostic::error(MetaDiagnosticCode::ProviderUnavailable, "cause")
+                .with_field("details.operations[0].comment")
+        ));
+    }
+}

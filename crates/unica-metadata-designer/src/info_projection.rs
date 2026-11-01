@@ -1,3 +1,4 @@
+mod service_member_properties;
 #[cfg(any(test, feature = "test-support"))]
 use roxmltree::Document;
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
@@ -8,9 +9,9 @@ use unica_metadata::{
     MetaCharacteristicValues, MetaDiagnostic, MetaDiagnosticCode, MetaExpandedName, MetaHttpMethod,
     MetaHttpUrlTemplate, MetaInfoDeclarations, MetaInfoDetails, MetaInfoPropertyValueKind,
     MetaLocalizedText, MetaObservedProperty, MetaObservedPropertyValue, MetaScheduledMethod,
-    MetaStandardAttribute, MetaStandardTabularSection, MetaTransferDirection,
-    MetaWebServiceOperation, MetaWebServiceParameter, MetaXdtoPackage, MetadataKind, NumberSign,
-    ObservedMetadataType, ObservedMetadataTypeVariant, StringLengthMode,
+    MetaServiceMemberContext, MetaStandardAttribute, MetaStandardTabularSection,
+    MetaTransferDirection, MetaWebServiceOperation, MetaWebServiceParameter, MetaXdtoPackage,
+    MetadataKind, NumberSign, ObservedMetadataType, ObservedMetadataTypeVariant, StringLengthMode,
     META_INFO_PROPERTY_PROFILE,
 };
 use unica_xml_format::names::xml_ncname_is_valid;
@@ -885,7 +886,22 @@ pub fn project_meta_info_details(
                     .collect::<Result<Vec<_>, _>>()
             });
             let url_templates = match url_templates {
-                Some(Ok(value)) => Some(value),
+                Some(Ok(value)) => {
+                    for member in &value {
+                        for facts in std::iter::once(&member.descriptive)
+                            .chain(member.methods.iter().map(|method| &method.descriptive))
+                        {
+                            diagnostics.extend(
+                                facts
+                                    .property_diagnostics
+                                    .iter()
+                                    .cloned()
+                                    .map(|d| d.with_metadata_path(target.clone())),
+                            );
+                        }
+                    }
+                    Some(value)
+                }
                 Some(Err(error)) => {
                     diagnostic(error, diagnostics);
                     None
@@ -919,7 +935,25 @@ pub fn project_meta_info_details(
                     .collect::<Result<Vec<_>, _>>()
             });
             let operations = match operations {
-                Some(Ok(value)) => Some(value),
+                Some(Ok(value)) => {
+                    for member in &value {
+                        for facts in std::iter::once(&member.descriptive).chain(
+                            member
+                                .parameters
+                                .iter()
+                                .map(|parameter| &parameter.descriptive),
+                        ) {
+                            diagnostics.extend(
+                                facts
+                                    .property_diagnostics
+                                    .iter()
+                                    .cloned()
+                                    .map(|d| d.with_metadata_path(target.clone())),
+                            );
+                        }
+                    }
+                    Some(value)
+                }
                 Some(Err(error)) => {
                     diagnostic(error, diagnostics);
                     None
@@ -2711,35 +2745,6 @@ pub fn parse_bool(value: &str, field: impl Into<String>) -> Result<bool, Project
     }
 }
 
-/// Синоним и комментарий вложенного объекта платформа пишет всегда, даже
-/// пустыми (`<Comment/>`). В ответ они не попадают, но разметка внутри них
-/// означает чужую структуру и отклоняется, а не пропускается молча.
-pub fn ensure_nested_descriptive_properties(
-    properties: roxmltree::Node<'_, '_>,
-    field: &str,
-) -> Result<(), ProjectionError> {
-    if let Some(synonym) = direct_md_child(properties, "Synonym") {
-        if !meta_info_property_value_is_valid(
-            synonym,
-            MetaInfoPropertyValueKind::LegacyLocalizedString,
-        ) {
-            return Err(ProjectionError::malformed(
-                format!("{field}.synonym"),
-                "nested metadata synonym is malformed",
-            ));
-        }
-    }
-    if let Some(comment) = direct_md_child(properties, "Comment") {
-        if !strict_text_leaf_is_valid(comment) {
-            return Err(ProjectionError::malformed(
-                format!("{field}.comment"),
-                "nested metadata comment contains nested markup",
-            ));
-        }
-    }
-    Ok(())
-}
-
 pub fn parse_http_template(
     node: roxmltree::Node<'_, '_>,
     index: usize,
@@ -2749,12 +2754,12 @@ pub fn parse_http_template(
     let properties = direct_md_child(node, "Properties").ok_or_else(|| {
         ProjectionError::unsupported(base.clone(), "URL template has no Properties")
     })?;
-    ensure_unique_direct_md_children(
+    service_member_properties::ensure_structure(
         properties,
-        &["Name", "Synonym", "Comment", "Template"],
+        &["Name", "Template"],
         &base,
+        MetaServiceMemberContext::URLTemplate,
     )?;
-    ensure_nested_descriptive_properties(properties, &base)?;
     let name = required_child_text(properties, "Name", format!("{base}.name"))?;
     if !unica_metadata::identifier::is_1c_identifier(&name) {
         return Err(ProjectionError::malformed(
@@ -2779,12 +2784,12 @@ pub fn parse_http_template(
             let properties = direct_md_child(method, "Properties").ok_or_else(|| {
                 ProjectionError::unsupported(field.clone(), "HTTP method has no Properties")
             })?;
-            ensure_unique_direct_md_children(
+            service_member_properties::ensure_structure(
                 properties,
-                &["Name", "Synonym", "Comment", "HTTPMethod", "Handler"],
+                &["Name", "HTTPMethod", "Handler"],
                 &field,
+                MetaServiceMemberContext::HTTPMethod,
             )?;
-            ensure_nested_descriptive_properties(properties, &field)?;
             let name = required_child_text(properties, "Name", format!("{field}.name"))?;
             let http_method =
                 required_child_text(properties, "HTTPMethod", format!("{field}.httpMethod"))?;
@@ -2806,6 +2811,11 @@ pub fn parse_http_template(
                 ));
             }
             Ok(MetaHttpMethod {
+                descriptive: service_member_properties::read(
+                    properties,
+                    &field,
+                    MetaServiceMemberContext::HTTPMethod,
+                ),
                 name,
                 http_method,
                 handler,
@@ -2813,6 +2823,11 @@ pub fn parse_http_template(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(MetaHttpUrlTemplate {
+        descriptive: service_member_properties::read(
+            properties,
+            &base,
+            MetaServiceMemberContext::URLTemplate,
+        ),
         name,
         template,
         methods,
@@ -3034,39 +3049,18 @@ pub fn parse_web_operation(
             "Web service operation has no Properties".to_string(),
         )
     })?;
-    ensure_unique_direct_md_children(
+    service_member_properties::ensure_structure(
         properties,
         &[
             "Name",
-            "Synonym",
-            "Comment",
             "XDTOReturningValueType",
             "Nillable",
             "Transactioned",
             "ProcedureName",
-            "DataLockControlMode",
         ],
         &base,
+        MetaServiceMemberContext::Operation,
     )?;
-    ensure_nested_descriptive_properties(properties, &base)?;
-    // Режим блокировок Конфигуратор пишет у каждой операции; в ответ он
-    // не попадает, но значение вне перечисления платформы отклоняется.
-    if direct_md_child(properties, "DataLockControlMode").is_some() {
-        let mode = required_child_text(
-            properties,
-            "DataLockControlMode",
-            format!("{base}.dataLockControlMode"),
-        )?;
-        if !crate::validation::meta_validate_property_enum("DataLockControlMode")
-            .contains(&mode.as_str())
-        {
-            return Err(ProjectionError::malformed(
-                format!("{base}.dataLockControlMode"),
-                "Web service operation data lock control mode is outside the platform enum"
-                    .to_string(),
-            ));
-        }
-    }
     let name = required_child_text(properties, "Name", format!("{base}.name"))?;
     let return_node = direct_md_child(properties, "XDTOReturningValueType").ok_or_else(|| {
         ProjectionError::unsupported(
@@ -3120,6 +3114,11 @@ pub fn parse_web_operation(
             })
             .collect::<Result<Vec<_>, _>>()?;
     Ok(MetaWebServiceOperation {
+        descriptive: service_member_properties::read(
+            properties,
+            &base,
+            MetaServiceMemberContext::Operation,
+        ),
         name,
         return_type,
         nillable,
@@ -3142,19 +3141,12 @@ pub fn parse_web_parameter(
             "Web service parameter has no Properties".to_string(),
         )
     })?;
-    ensure_unique_direct_md_children(
+    service_member_properties::ensure_structure(
         properties,
-        &[
-            "Name",
-            "Synonym",
-            "Comment",
-            "XDTOValueType",
-            "Nillable",
-            "TransferDirection",
-        ],
+        &["Name", "XDTOValueType", "Nillable", "TransferDirection"],
         &base,
+        MetaServiceMemberContext::Parameter,
     )?;
-    ensure_nested_descriptive_properties(properties, &base)?;
     let name = required_child_text(properties, "Name", format!("{base}.name"))?;
     let type_node = direct_md_child(properties, "XDTOValueType").ok_or_else(|| {
         ProjectionError::unsupported(
@@ -3192,6 +3184,11 @@ pub fn parse_web_parameter(
         ));
     }
     Ok(MetaWebServiceParameter {
+        descriptive: service_member_properties::read(
+            properties,
+            &base,
+            MetaServiceMemberContext::Parameter,
+        ),
         name,
         r#type,
         nillable,

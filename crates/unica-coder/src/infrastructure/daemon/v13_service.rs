@@ -5188,6 +5188,9 @@ fn run_native_validator(
 /// формулировка той же находки ответ не дополняет; тип, значения и свойства
 /// элементов коллекций видит только читатель.
 fn reader_only_finding(diagnostic: &unica_metadata::MetaDiagnostic) -> bool {
+    if unica_metadata::MetaServiceMemberContext::owns_diagnostic(diagnostic) {
+        return true;
+    }
     let validator_owned = diagnostic.code
         == unica_metadata::MetaDiagnosticCode::ProviderUnavailable
         || diagnostic.field.as_deref().is_some_and(|field| {

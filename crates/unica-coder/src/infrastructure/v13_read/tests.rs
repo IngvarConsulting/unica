@@ -13,6 +13,7 @@ mod job_schedule;
 mod metadata;
 mod metadata_declaration_diagnostics;
 mod numerator_read_profile;
+mod service_member_facts;
 mod session_parameter_comment;
 mod structured_property_names;
 mod support;

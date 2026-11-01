@@ -863,6 +863,46 @@ fn metadata_item_node(
     let mut limits = dropped_by_size(item, &props, address, |probe| {
         selected_scalar_props(probe, ITEM_SCALAR_KEYS)
     });
+    if let Some(context) = service_member_context(address) {
+        for property in item
+            .get("properties")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(name) = property
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| context.property_names().contains(name))
+            else {
+                continue;
+            };
+            if let Some(value) = property.get("value") {
+                place_prop(
+                    &mut props,
+                    &mut limits,
+                    address,
+                    name,
+                    value,
+                    true,
+                    &format!("service member property {name}"),
+                );
+            }
+        }
+        limits.extend(
+            item.get("propertyDiagnostics")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|diagnostic| {
+                    Some(format!(
+                        "{} не прочитано: {}",
+                        diagnostic.get("field")?.as_str()?,
+                        diagnostic.get("message")?.as_str()?
+                    ))
+                }),
+        );
+    }
     if kind == NodeKind::StandardAttribute {
         let tabular = address
             .segments()
@@ -1096,6 +1136,44 @@ pub(crate) fn borrowing_props(
         }
     }
     props
+}
+
+fn service_member_context(
+    address: &QualifiedAddress,
+) -> Option<unica_metadata::MetaServiceMemberContext> {
+    use unica_metadata::MetaServiceMemberContext as Context;
+    let segments = address.segments();
+    if segments.iter().any(|part| part.name().is_none()) {
+        return None;
+    }
+    match segments {
+        [owner, template]
+            if owner.kind() == NodeKind::HttpService
+                && template.kind() == NodeKind::UrlTemplate =>
+        {
+            Some(Context::URLTemplate)
+        }
+        [owner, template, method]
+            if owner.kind() == NodeKind::HttpService
+                && template.kind() == NodeKind::UrlTemplate
+                && method.kind() == NodeKind::Method =>
+        {
+            Some(Context::HTTPMethod)
+        }
+        [owner, operation]
+            if owner.kind() == NodeKind::WebService && operation.kind() == NodeKind::Operation =>
+        {
+            Some(Context::Operation)
+        }
+        [owner, operation, parameter]
+            if owner.kind() == NodeKind::WebService
+                && operation.kind() == NodeKind::Operation
+                && parameter.kind() == NodeKind::Parameter =>
+        {
+            Some(Context::Parameter)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
