@@ -124,7 +124,8 @@ fn rlm_provider_state_root_with(
 }
 
 fn neutral_provider_state_root() -> Option<PathBuf> {
-    neutral_provider_state_root_with(|name| std::env::var_os(name))
+    let root = neutral_provider_state_root_with(|name| std::env::var_os(name))?;
+    Some(unica_workspace::state_fs::state_root_with_resolved_ancestors(&root).unwrap_or(root))
 }
 
 fn neutral_provider_state_root_with(
