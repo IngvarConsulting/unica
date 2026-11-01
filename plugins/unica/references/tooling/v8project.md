@@ -45,7 +45,15 @@ source-set:
 infobases:
   origin:
     connection: 'File=build/ib'
+tools:
+  platform:
+    version: '8.3.27'
 ```
+
+`unica.view {}` offers this content in `setup.local` while the file is absent.
+A version line such as `8.3.27` leaves the build free. Without `tools.platform`
+in either file the runner chooses the platform version itself, and
+`unica.check {}` reports the warning `config.platform_unpinned`.
 
 The infobase belongs in `v8project.local.yaml`: which infobase a checkout is
 attached to is known to the machine, not to the project. v8-runner 0.15 reads
