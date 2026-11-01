@@ -65,6 +65,14 @@ pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Valu
             .expect("root property schema is always an object")
             .remove("unconstrained");
     }
+    for spec in METADATA_PROPERTY_SPECS
+        .iter()
+        .filter(|spec| spec.key == crate::MetaPropertyKey::Synonym)
+    {
+        if let Some(entry) = root_properties.get_mut(spec.public_name) {
+            *entry = crate::properties::localized_value_schema();
+        }
+    }
     root_properties
 }
 

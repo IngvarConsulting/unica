@@ -111,7 +111,7 @@
                       }
                     }
                   ],
-                  "synonym": "New member",
+                  "synonym": "ru = 'New member'",
                   "comment": "new member comment"
                 }
               ]
@@ -236,7 +236,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "ca2ab1b357d9894bb27bf21f00d464898ae8535151059d5e53d18de1cfe8f6a9"
+          "eq": "f5b6bdafbef96bd8ec3f9e8c12db571987afd7a7ea31013e94737e08e591bfb4"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -299,7 +299,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewSection"
           ]
@@ -307,7 +307,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "new member comment"
           ]
@@ -315,7 +315,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "New member"
           ]
@@ -323,39 +323,39 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
           "eq": [
-            "f9889e86-ac13-4f6d-b301-3b40864fdea1"
+            "b044d087-15f4-404c-8c02-30aaa140bd88"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
           "eq": [
-            "bef97cdd-9964-4659-9fa9-1159434466d8"
+            "87887878-598b-4949-b000-8cb9a9b17668"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
           "eq": [
-            "afc7df59-0f90-4b76-8559-b5b6378a8893"
+            "76fec437-afac-4161-b476-74c4edfb71bf"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
           "eq": [
-            "cbdadbf8-95e3-41ac-b2fa-0f825ffe4721"
+            "5dc2084a-362f-427a-9cd2-dac8c1075327"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "Amount"
           ]
@@ -363,7 +363,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
           "eq": [
             "xs:decimal"
           ]
@@ -371,7 +371,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
           "eq": [
             "10"
           ]
@@ -379,7 +379,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
           "eq": [
             "2"
           ]
@@ -412,7 +412,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "ca2ab1b357d9894bb27bf21f00d464898ae8535151059d5e53d18de1cfe8f6a9"
+          "eq": "f5b6bdafbef96bd8ec3f9e8c12db571987afd7a7ea31013e94737e08e591bfb4"
         }
       ]
     },
@@ -426,7 +426,7 @@
             "args": {
               "values": {
                 "newName": "NewSectionRenamed",
-                "synonym": "Renamed member",
+                "synonym": "ru = 'Renamed member'",
                 "comment": "updated member comment"
               }
             }
@@ -458,7 +458,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "ca2ab1b357d9894bb27bf21f00d464898ae8535151059d5e53d18de1cfe8f6a9"
+          "eq": "f5b6bdafbef96bd8ec3f9e8c12db571987afd7a7ea31013e94737e08e591bfb4"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -521,7 +521,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewSection"
           ]
@@ -529,7 +529,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "new member comment"
           ]
@@ -537,7 +537,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "New member"
           ]
@@ -545,39 +545,39 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
           "eq": [
-            "f9889e86-ac13-4f6d-b301-3b40864fdea1"
+            "b044d087-15f4-404c-8c02-30aaa140bd88"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
           "eq": [
-            "bef97cdd-9964-4659-9fa9-1159434466d8"
+            "87887878-598b-4949-b000-8cb9a9b17668"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
           "eq": [
-            "afc7df59-0f90-4b76-8559-b5b6378a8893"
+            "76fec437-afac-4161-b476-74c4edfb71bf"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSection\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
           "eq": [
-            "cbdadbf8-95e3-41ac-b2fa-0f825ffe4721"
+            "5dc2084a-362f-427a-9cd2-dac8c1075327"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "Amount"
           ]
@@ -585,7 +585,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
           "eq": [
             "xs:decimal"
           ]
@@ -593,7 +593,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
           "eq": [
             "10"
           ]
@@ -601,7 +601,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
           "eq": [
             "2"
           ]
@@ -638,7 +638,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "b74ac9063c19482730d58978211bf9007cb5fa12acf5d341f23dbd0100fc5ebd"
+          "eq": "00f3feee757991b0e0aa9675153ffb3a1b1f647719479f060b577c69a0fe9856"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -701,7 +701,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewSectionRenamed"
           ]
@@ -709,7 +709,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "updated member comment"
           ]
@@ -717,7 +717,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "Renamed member"
           ]
@@ -725,39 +725,39 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
           "eq": [
-            "f9889e86-ac13-4f6d-b301-3b40864fdea1"
+            "b044d087-15f4-404c-8c02-30aaa140bd88"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
           "eq": [
-            "bef97cdd-9964-4659-9fa9-1159434466d8"
+            "87887878-598b-4949-b000-8cb9a9b17668"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
           "eq": [
-            "afc7df59-0f90-4b76-8559-b5b6378a8893"
+            "76fec437-afac-4161-b476-74c4edfb71bf"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
           "eq": [
-            "cbdadbf8-95e3-41ac-b2fa-0f825ffe4721"
+            "5dc2084a-362f-427a-9cd2-dac8c1075327"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "Amount"
           ]
@@ -765,7 +765,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
           "eq": [
             "xs:decimal"
           ]
@@ -773,7 +773,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
           "eq": [
             "10"
           ]
@@ -781,7 +781,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
           "eq": [
             "2"
           ]
@@ -814,7 +814,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "b74ac9063c19482730d58978211bf9007cb5fa12acf5d341f23dbd0100fc5ebd"
+          "eq": "00f3feee757991b0e0aa9675153ffb3a1b1f647719479f060b577c69a0fe9856"
         }
       ]
     },
@@ -853,7 +853,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "b74ac9063c19482730d58978211bf9007cb5fa12acf5d341f23dbd0100fc5ebd"
+          "eq": "00f3feee757991b0e0aa9675153ffb3a1b1f647719479f060b577c69a0fe9856"
         },
         {
           "path": "src/Catalogs/Items.xml",
@@ -916,7 +916,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewSectionRenamed"
           ]
@@ -924,7 +924,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "updated member comment"
           ]
@@ -932,7 +932,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "Renamed member"
           ]
@@ -940,39 +940,39 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
           "eq": [
-            "f9889e86-ac13-4f6d-b301-3b40864fdea1"
+            "b044d087-15f4-404c-8c02-30aaa140bd88"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSection.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
           "eq": [
-            "bef97cdd-9964-4659-9fa9-1159434466d8"
+            "87887878-598b-4949-b000-8cb9a9b17668"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}TypeId",
           "eq": [
-            "afc7df59-0f90-4b76-8559-b5b6378a8893"
+            "76fec437-afac-4161-b476-74c4edfb71bf"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}InternalInfo/{http://v8.1c.ru/8.3/xcf/readable}GeneratedType[@name=\"CatalogTabularSectionRow.Items.NewSectionRenamed\"]/{http://v8.1c.ru/8.3/xcf/readable}ValueId",
           "eq": [
-            "cbdadbf8-95e3-41ac-b2fa-0f825ffe4721"
+            "5dc2084a-362f-427a-9cd2-dac8c1075327"
           ]
         },
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "Amount"
           ]
@@ -980,7 +980,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
           "eq": [
             "xs:decimal"
           ]
@@ -988,7 +988,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
           "eq": [
             "10"
           ]
@@ -996,7 +996,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"9192b3b3-b347-4fce-b573-a5be2a37f210\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"0999575f-0584-48ad-ae8b-7e04fe5eed57\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
           "eq": [
             "2"
           ]
@@ -1096,7 +1096,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"0d255e13-6103-4574-a304-d2bee388fae6\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection[@uuid=\"586e02f3-1943-46c3-80ed-1ffce8232b94\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": []
         }
       ]

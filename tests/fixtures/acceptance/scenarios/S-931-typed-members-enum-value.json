@@ -96,7 +96,7 @@
               "items": [
                 {
                   "name": "NewValue",
-                  "synonym": "New member",
+                  "synonym": "ru = 'New member'",
                   "comment": "new member comment"
                 }
               ]
@@ -221,7 +221,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "28375a47b4ecd12afd710ddf0834cdb9d3d32974f29d0f6b6ec39300311431a5"
+          "eq": "5d145e7f2ddb5e13842f35c3976d79355008c7567ce8e2c1410b094ea2c4168f"
         },
         {
           "path": "src/Enums/LanguageAware.xml",
@@ -284,7 +284,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewValue"
           ]
@@ -292,7 +292,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "new member comment"
           ]
@@ -300,7 +300,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "New member"
           ]
@@ -333,7 +333,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "28375a47b4ecd12afd710ddf0834cdb9d3d32974f29d0f6b6ec39300311431a5"
+          "eq": "5d145e7f2ddb5e13842f35c3976d79355008c7567ce8e2c1410b094ea2c4168f"
         }
       ]
     },
@@ -347,7 +347,7 @@
             "args": {
               "values": {
                 "newName": "NewValueRenamed",
-                "synonym": "Renamed member",
+                "synonym": "ru = 'Renamed member'",
                 "comment": "updated member comment"
               }
             }
@@ -379,7 +379,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "28375a47b4ecd12afd710ddf0834cdb9d3d32974f29d0f6b6ec39300311431a5"
+          "eq": "5d145e7f2ddb5e13842f35c3976d79355008c7567ce8e2c1410b094ea2c4168f"
         },
         {
           "path": "src/Enums/LanguageAware.xml",
@@ -442,7 +442,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewValue"
           ]
@@ -450,7 +450,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "new member comment"
           ]
@@ -458,7 +458,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "New member"
           ]
@@ -495,7 +495,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "83000bc2040eee4ea0e72545db3ec3727a28ad30325bbd655fbbca38fdb1511b"
+          "eq": "4cefd42b1556a7a5ead82bbffef29520f25b9be915ea11fb68397fc1e982fa25"
         },
         {
           "path": "src/Enums/LanguageAware.xml",
@@ -558,7 +558,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewValueRenamed"
           ]
@@ -566,7 +566,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "updated member comment"
           ]
@@ -574,7 +574,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "Renamed member"
           ]
@@ -607,7 +607,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "83000bc2040eee4ea0e72545db3ec3727a28ad30325bbd655fbbca38fdb1511b"
+          "eq": "4cefd42b1556a7a5ead82bbffef29520f25b9be915ea11fb68397fc1e982fa25"
         }
       ]
     },
@@ -646,7 +646,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "sha256",
-          "eq": "83000bc2040eee4ea0e72545db3ec3727a28ad30325bbd655fbbca38fdb1511b"
+          "eq": "4cefd42b1556a7a5ead82bbffef29520f25b9be915ea11fb68397fc1e982fa25"
         },
         {
           "path": "src/Enums/LanguageAware.xml",
@@ -709,7 +709,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewValueRenamed"
           ]
@@ -717,7 +717,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "updated member comment"
           ]
@@ -725,7 +725,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "Renamed member"
           ]
@@ -825,7 +825,7 @@
         {
           "path": "src/Enums/LanguageAware.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"5dd8f897-2e33-4f5c-8982-1f363751d636\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Enum/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}EnumValue[@uuid=\"0aecb7f7-01fe-4253-943a-1f428e1dbbca\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": []
         }
       ]

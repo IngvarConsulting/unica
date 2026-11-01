@@ -3985,7 +3985,7 @@ pub(crate) mod tests {
                 None,
                 vec![MetaElementUpdateInput {
                     name: "Print".into(),
-                    synonym: Some("Print".into()),
+                    synonym: Some(vec![unica_metadata::LocalizedItem::new("ru", "Print")]),
                     ..MetaElementUpdateInput::default()
                 }],
             )
@@ -4007,7 +4007,10 @@ pub(crate) mod tests {
             None,
             vec![MetaElementUpdateInput {
                 name: "Print".into(),
-                synonym: Some("Печатная форма".into()),
+                synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                    "ru",
+                    "Печатная форма",
+                )]),
                 ..MetaElementUpdateInput::default()
             }],
         )
@@ -4078,7 +4081,10 @@ pub(crate) mod tests {
             None,
             vec![MetaElementUpdateInput {
                 name: "Print".into(),
-                synonym: Some("Печатная форма".into()),
+                synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                    "ru",
+                    "Печатная форма",
+                )]),
                 ..MetaElementUpdateInput::default()
             }],
         )
@@ -5373,7 +5379,10 @@ pub(crate) mod tests {
                         None,
                         vec![MetaElementUpdateInput {
                             name: "Missing".into(),
-                            synonym: Some("must not upsert".into()),
+                            synonym: Some(vec![unica_metadata::LocalizedItem::new(
+                                "ru",
+                                "must not upsert",
+                            )]),
                             ..MetaElementUpdateInput::default()
                         }],
                     )

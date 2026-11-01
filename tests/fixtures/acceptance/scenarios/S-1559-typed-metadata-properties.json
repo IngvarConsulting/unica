@@ -160,16 +160,7 @@
         },
         {
           "pointer": "/data/items/1/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Настройки представления суммы прописью"
-            },
-            {
-              "language": "en",
-              "content": "Amount spelling settings & presentation"
-            }
-          ]
+          "eq": "ru = 'Настройки представления суммы прописью'; en = 'Amount spelling settings & presentation'"
         },
         {
           "pointer": "/data/items/0/props/synonym",
@@ -339,16 +330,7 @@
         },
         {
           "pointer": "/data/props/ToolTip",
-          "eq": [
-            {
-              "language": "ru",
-              "content": "Настройки представления суммы прописью"
-            },
-            {
-              "language": "en",
-              "content": "Amount spelling settings & presentation"
-            }
-          ]
+          "eq": "ru = 'Настройки представления суммы прописью'; en = 'Amount spelling settings & presentation'"
         }
       ],
       "fileAssertions": [

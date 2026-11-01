@@ -693,6 +693,11 @@ pub fn parse_template_set(
                     .at_path(location.clone())
             })?;
         }
+        if field == "synonym" {
+            unica_metadata::parse_nstr(text).map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(location.clone())
+            })?;
+        }
         check_input_field(values_shape, field, value, &location)?;
     }
     Ok(MetadataPlanKind::TemplateSet {

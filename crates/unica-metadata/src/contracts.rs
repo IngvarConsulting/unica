@@ -126,7 +126,7 @@ fn metadata_element_base_fields() -> &'static Map<String, Value> {
     FIELDS.get_or_init(|| Map::from_iter([
         ("name".into(), json!({"type":"string","minLength":1})),
         ("newName".into(), json!({"type":"string","minLength":1})),
-        ("synonym".into(), json!({"type":"string"})),
+        ("synonym".into(), crate::localized_value_schema()),
         ("comment".into(), json!({"type":"string"})),
         ("type".into(), metadata_type_schema()),
         ("required".into(), json!({"type":"boolean"})),
@@ -389,7 +389,7 @@ pub fn metadata_member_set(
         },
         effect: "Change the listed fields of the member; newName renames it. Unlisted fields stay.",
         notes: "The member is named by its address, not by values.name. Read the member first. Cross-field rules — fillValue must match the member type — are checked by the planner, not by this schema.",
-        example_args: json!({"values":{"synonym":"Sample"}}),
+        example_args: json!({"values":{"synonym":"ru = 'Sample'"}}),
         help: METADATA_HELP,
         format_validators: &[],
     }
@@ -613,7 +613,7 @@ pub fn metadata_template_set() -> OperationContract {
                 (
                     "values",
                     json!({"type":"object","additionalProperties":false,"minProperties":1,
-            "properties":{"synonym":{"type":"string"},"comment":{"type":"string"},
+            "properties":{"synonym":crate::localized_value_schema(),"comment":{"type":"string"},
                 "templateType":{"type":"string","enum":crate::MetaTemplateKind::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>()}}}),
                 ),
             ],
@@ -623,7 +623,7 @@ pub fn metadata_template_set() -> OperationContract {
         effect:
             "Change the listed properties of the template descriptor. Unlisted properties stay.",
         notes: "The template is named by its address; there is no name argument.",
-        example_args: json!({"values":{"synonym":"Sample"}}),
+        example_args: json!({"values":{"synonym":"ru = 'Sample'"}}),
         help: METADATA_HELP,
         format_validators: &[],
     }

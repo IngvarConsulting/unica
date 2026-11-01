@@ -106,7 +106,7 @@
                       }
                     ]
                   },
-                  "synonym": "New member",
+                  "synonym": "ru = 'New member'",
                   "comment": "new member comment"
                 }
               ]
@@ -231,7 +231,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "54b62879250974f14408a066249d59e9709f944ddff5397eeea29bec8bee77f9"
+          "eq": "d4a325cbae9eb05a628252c8fcf71ea7fd51f5a03c4e4417cd7d1ce3e7d15fa3"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -294,7 +294,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewResource"
           ]
@@ -302,7 +302,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "new member comment"
           ]
@@ -310,7 +310,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "New member"
           ]
@@ -318,7 +318,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
           "eq": [
             "xs:decimal"
           ]
@@ -326,7 +326,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
           "eq": [
             "10"
           ]
@@ -334,7 +334,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
           "eq": [
             "2"
           ]
@@ -342,7 +342,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
           "eq": [
             "Any"
           ]
@@ -375,7 +375,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "54b62879250974f14408a066249d59e9709f944ddff5397eeea29bec8bee77f9"
+          "eq": "d4a325cbae9eb05a628252c8fcf71ea7fd51f5a03c4e4417cd7d1ce3e7d15fa3"
         }
       ]
     },
@@ -389,7 +389,7 @@
             "args": {
               "values": {
                 "newName": "NewResourceRenamed",
-                "synonym": "Renamed member",
+                "synonym": "ru = 'Renamed member'",
                 "comment": "updated member comment"
               }
             }
@@ -421,7 +421,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "54b62879250974f14408a066249d59e9709f944ddff5397eeea29bec8bee77f9"
+          "eq": "d4a325cbae9eb05a628252c8fcf71ea7fd51f5a03c4e4417cd7d1ce3e7d15fa3"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -484,7 +484,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewResource"
           ]
@@ -492,7 +492,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "new member comment"
           ]
@@ -500,7 +500,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "New member"
           ]
@@ -508,7 +508,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
           "eq": [
             "xs:decimal"
           ]
@@ -516,7 +516,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
           "eq": [
             "10"
           ]
@@ -524,7 +524,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
           "eq": [
             "2"
           ]
@@ -532,7 +532,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
           "eq": [
             "Any"
           ]
@@ -569,7 +569,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "5b40735739bc32782c34e9e75885e127a103d2c29f050bcc3a2bcdc3988e42b2"
+          "eq": "cdeef57e7a4f007610ab7a7ad50d73ed938e881ca9fb4d65c3e35881aaecbb11"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -632,7 +632,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewResourceRenamed"
           ]
@@ -640,7 +640,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "updated member comment"
           ]
@@ -648,7 +648,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "Renamed member"
           ]
@@ -656,7 +656,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
           "eq": [
             "xs:decimal"
           ]
@@ -664,7 +664,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
           "eq": [
             "10"
           ]
@@ -672,7 +672,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
           "eq": [
             "2"
           ]
@@ -680,7 +680,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
           "eq": [
             "Any"
           ]
@@ -713,7 +713,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "5b40735739bc32782c34e9e75885e127a103d2c29f050bcc3a2bcdc3988e42b2"
+          "eq": "cdeef57e7a4f007610ab7a7ad50d73ed938e881ca9fb4d65c3e35881aaecbb11"
         }
       ]
     },
@@ -752,7 +752,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "sha256",
-          "eq": "5b40735739bc32782c34e9e75885e127a103d2c29f050bcc3a2bcdc3988e42b2"
+          "eq": "cdeef57e7a4f007610ab7a7ad50d73ed938e881ca9fb4d65c3e35881aaecbb11"
         },
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
@@ -815,7 +815,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": [
             "NewResourceRenamed"
           ]
@@ -823,7 +823,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Comment",
           "eq": [
             "updated member comment"
           ]
@@ -831,7 +831,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
           "eq": [
             "Renamed member"
           ]
@@ -839,7 +839,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
           "eq": [
             "xs:decimal"
           ]
@@ -847,7 +847,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}Digits",
           "eq": [
             "10"
           ]
@@ -855,7 +855,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}FractionDigits",
           "eq": [
             "2"
           ]
@@ -863,7 +863,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}NumberQualifiers/{http://v8.1c.ru/8.1/data/core}AllowedSign",
           "eq": [
             "Any"
           ]
@@ -963,7 +963,7 @@
         {
           "path": "src/InformationRegisters/CorpusRegister.xml",
           "kind": "xml",
-          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"09962529-c1dd-4a5f-856c-459054adac8f\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}InformationRegister/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Resource[@uuid=\"254841d0-8b30-492d-8dd2-05ca68d8bca0\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
           "eq": []
         }
       ]

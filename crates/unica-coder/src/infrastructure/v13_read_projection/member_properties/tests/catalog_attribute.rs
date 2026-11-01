@@ -253,21 +253,18 @@ fn tooltip_observations(value: Value) -> Value {
 #[test]
 fn catalog_attribute_provider_tooltip_publishes_localized_values_in_row_and_detail() {
     let values = json!([
-        {"language": "ru", "content": " Подсказка & текст "},
+        {"language": "ru", "content": " Подсказка & 'текст' "},
         {"language": "en", "content": ""},
-        {"language": " custom language ", "content": "Line 1\nLine 2"},
-        {"language": "", "content": "Empty language is not inferred"}
+        {"language": "custom-language_2", "content": "Line 1\nLine 2"}
     ]);
-    let value = json!({"kind": "localizedString", "values": values.clone()});
+    let value = json!({"kind": "localizedString", "values": values});
     for node in attribute_views(payload(tooltip_observations(value))) {
-        // Translations arrive as nested JSON in source order, not as a
-        // string and not under the observation wrapper.
-        assert_eq!(node["props"]["ToolTip"], values, "{node}");
-        assert!(
-            serde_json::to_string(&node["props"]["ToolTip"])
-                .unwrap()
-                .len()
-                <= 2048
+        // Translations arrive as one NStr string in source order, not under
+        // the observation wrapper (INV.SOURCE.LOCALIZED-STRING-NSTR).
+        assert_eq!(
+            node["props"]["ToolTip"],
+            "ru = ' Подсказка & ''текст'' '; en = ''; custom-language_2 = 'Line 1\nLine 2'",
+            "{node}"
         );
         assert!(node["limits"].as_array().is_none_or(Vec::is_empty));
         for (name, expected, _) in ENUMS {
@@ -300,6 +297,14 @@ fn catalog_attribute_provider_tooltip_rejects_wrong_shapes_and_duplicate_languag
             {"language": "ru", "content": "first"},
             {"language": "ru", "content": "second"}
         ]}),
+        // NStr has no form for these codes: a write would refuse them, so a
+        // read does not publish them either, and no language is inferred.
+        json!({"kind": "localizedString", "values": [
+            {"language": " custom language ", "content": "Line 1\nLine 2"}
+        ]}),
+        json!({"kind": "localizedString", "values": [
+            {"language": "", "content": "Empty language is not inferred"}
+        ]}),
         json!("flattened"),
         Value::Null,
     ] {
@@ -316,20 +321,19 @@ fn catalog_attribute_provider_tooltip_rejects_wrong_shapes_and_duplicate_languag
 
 #[test]
 fn catalog_attribute_provider_tooltip_obeys_the_utf8_compact_property_boundary() {
-    // The bound applies to the published value: the translations array.
-    let empty = json!([{"language": "ru", "content": ""}]);
-    let available = 2048 - serde_json::to_string(&empty).unwrap().len();
+    // The bound applies to the published value: the NStr string, counted in
+    // UTF-8 bytes.
+    let available = 2048 - "ru = ''".len();
     let content = format!("{}{}", "я".repeat(available / 2), "x".repeat(available % 2));
     let values = json!([{"language": "ru", "content": content}]);
-    let value = json!({"kind": "localizedString", "values": values.clone()});
+    let value = json!({"kind": "localizedString", "values": values});
     for node in attribute_views(payload(tooltip_observations(value))) {
-        assert_eq!(node["props"]["ToolTip"], values, "{node}");
         assert_eq!(
-            serde_json::to_string(&node["props"]["ToolTip"])
-                .unwrap()
-                .len(),
-            2048
+            node["props"]["ToolTip"],
+            format!("ru = '{content}'"),
+            "{node}"
         );
+        assert_eq!(node["props"]["ToolTip"].as_str().unwrap().len(), 2048);
     }
     let value = json!({"kind": "localizedString", "values": [{"language": "ru", "content": format!("{content}x")}]});
     assert_bad_fact_is_local(payload(tooltip_observations(value)), "ToolTip");
