@@ -2103,6 +2103,61 @@ mod tests {
     }
 
     #[test]
+    fn bsl_analyzer_structured_budgeted_search_keeps_hits_as_partial() {
+        let answer = json!({
+            "action": "search_code", "schema_version": "8", "budget_exhausted": true,
+            "shown": 1, "total": 50,
+            "hits": [{"rank": 1, "modality": "L", "path": "CommonModules/Sales/Ext/Module.bsl",
+                "line_start": 42, "line_end": 58, "symbol": "Post", "kind": "procedure",
+                "graph_id": "method/common/Sales/Post", "snippet": "Procedure Post()"}]
+        });
+        let section = super::parse_bsl_analyzer_search(
+            &answer.to_string(),
+            &context(),
+            200,
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.status, ProviderSectionStatus::Partial);
+        assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
+        assert_eq!(section.hits.len(), 1);
+        assert_eq!(section.hits[0].line, 42);
+        assert_eq!(section.hits[0].symbol.as_deref(), Some("Post"));
+        assert_eq!(section.hits[0].snippet, "Procedure Post()");
+    }
+
+    #[test]
+    fn bsl_analyzer_structured_search_rejects_untrusted_and_invalid_hits() {
+        let valid = json!({"rank": 1, "modality": "L", "path": "CommonModules/Sales/Ext/Module.bsl",
+            "line_start": 42, "line_end": 58, "symbol": "Post", "kind": "procedure", "snippet": "Post()"});
+        let mut unsafe_hit = valid.clone();
+        unsafe_hit["path"] = json!("../outside/Secret.bsl");
+        let answer = json!({"action": "search_code", "schema_version": "8", "budget_exhausted": true,
+            "shown": 2, "total": 50, "hits": [valid, unsafe_hit]});
+        let section = super::parse_bsl_analyzer_search(
+            &answer.to_string(),
+            &context(),
+            200,
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.status, ProviderSectionStatus::Partial);
+        assert_eq!(section.hits.len(), 1);
+        assert!(!serde_json::to_string(&section)
+            .unwrap()
+            .contains("Secret.bsl"));
+
+        let mut invalid_count = answer;
+        invalid_count["shown"] = json!(3);
+        let section = super::parse_bsl_analyzer_search(
+            &invalid_count.to_string(),
+            &context(),
+            200,
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(section.hits.is_empty());
+    }
+
+    #[test]
     fn bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion() {
         let section = super::parse_bsl_analyzer_search(
             "#1 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n\
@@ -2144,6 +2199,39 @@ mod tests {
         assert_eq!(section.status, ProviderSectionStatus::Unavailable);
         assert!(section.diagnostics.join(" ").contains("metadataPath"));
         assert!(client.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn bsl_analyzer_budgeted_search_omits_unrelated_stderr() {
+        let answer = json!({"action":"search_code", "schema_version":"8", "budget_exhausted":true,
+            "shown":1, "total":50, "hits":[{"path":"CommonModules/Sales/Ext/Module.bsl",
+            "line_start":1, "line_end":2, "symbol":"Post", "kind":"procedure", "modality":"L", "snippet":"Post()"}]});
+        let client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: McpToolOutput {
+                result_text: answer.to_string(),
+                stderr: "private/path secret-marker".to_string(),
+            },
+        };
+        let section = BslAnalyzerProvider::new(
+            &client,
+            crate::infrastructure::analysis_composition::source_bindings(),
+        )
+        .search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 200,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(15)),
+            &CancellationToken::new(),
+        );
+        assert_eq!(section.status, ProviderSectionStatus::Partial);
+        assert_eq!(section.hits.len(), 1);
+        assert!(section.diagnostics.iter().any(|d| d.contains("budget")));
+        assert!(!serde_json::to_string(&section)
+            .unwrap()
+            .contains("secret-marker"));
     }
 
     #[test]

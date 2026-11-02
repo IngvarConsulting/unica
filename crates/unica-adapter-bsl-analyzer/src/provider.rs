@@ -375,9 +375,16 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                             termination.code
                                 == unica_code_intelligence::model::SearchTerminationCode::DependencyPending
                         }),
-                    ProviderSectionStatus::Partial
-                    | ProviderSectionStatus::Unavailable
-                    | ProviderSectionStatus::Failed => true,
+                    ProviderSectionStatus::Partial => {
+                        !serde_json::from_str::<Value>(output.result_text.trim())
+                            .ok()
+                            .is_some_and(|value| {
+                                value.get("action").and_then(Value::as_str) == Some("search_code")
+                                    && value.get("schema_version").and_then(Value::as_str) == Some("8")
+                                    && value.get("budget_exhausted").and_then(Value::as_bool) == Some(true)
+                            })
+                    }
+                    ProviderSectionStatus::Unavailable | ProviderSectionStatus::Failed => true,
                 };
                 if retain_stderr && !output.stderr.trim().is_empty() {
                     section
@@ -561,6 +568,12 @@ pub fn parse_bsl_analyzer_search(
             )
             .expect("dependency-pending bsl-analyzer section is valid");
         }
+        if envelope.get("action").and_then(Value::as_str) == Some("search_code")
+            && envelope.get("schema_version").and_then(Value::as_str) == Some("8")
+            && envelope.get("budget_exhausted").and_then(Value::as_bool) == Some(true)
+        {
+            return parse_budgeted_search(&envelope, context, cancellation, bindings);
+        }
         return failed_section(
             ProviderId::BslAnalyzer,
             format!("unexpected bsl-analyzer search envelope: {trimmed}"),
@@ -671,6 +684,109 @@ pub fn parse_bsl_analyzer_search(
             diagnostics,
         )
     };
+    section.unwrap_or_else(|error| {
+        ProviderSearchSection::failed(ProviderId::BslAnalyzer.identity(), error)
+    })
+}
+
+fn parse_budgeted_search(
+    envelope: &Value,
+    context: &CodeIntelligenceContext,
+    cancellation: &CancellationToken,
+    bindings: SearchSourceBindings,
+) -> ProviderSearchSection {
+    let Some(rows) = envelope.get("hits").and_then(Value::as_array) else {
+        return failed_section(
+            ProviderId::BslAnalyzer,
+            "invalid structured search hits".into(),
+        );
+    };
+    if envelope.get("shown").and_then(Value::as_u64) != Some(rows.len() as u64) {
+        return failed_section(
+            ProviderId::BslAnalyzer,
+            "invalid structured search count".into(),
+        );
+    }
+    let mut locations =
+        SearchLocationProjector::with_resolver(context, cancellation, bindings.resolver);
+    let mut hits = Vec::new();
+    let mut discarded = false;
+    for row in rows {
+        let parsed = (|| -> Result<ProviderSearchHit, String> {
+            let path = row
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or("missing path")?;
+            let line = row
+                .get("line_start")
+                .and_then(Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| *n > 0)
+                .ok_or("invalid line")?;
+            let end_line = row
+                .get("line_end")
+                .and_then(Value::as_u64)
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| *n >= line)
+                .ok_or("invalid end line")?;
+            let symbol = row
+                .get("symbol")
+                .and_then(Value::as_str)
+                .ok_or("missing symbol")?;
+            let kind = row
+                .get("kind")
+                .and_then(Value::as_str)
+                .ok_or("missing kind")?;
+            let modality = row
+                .get("modality")
+                .and_then(Value::as_str)
+                .ok_or("missing modality")?;
+            let snippet = row
+                .get("snippet")
+                .and_then(Value::as_str)
+                .ok_or("missing snippet")?;
+            let mut attributes = Map::new();
+            attributes.insert("modality".into(), json!(modality));
+            if let Some(graph_id) = row.get("graph_id").and_then(Value::as_str) {
+                attributes.insert("graphId".into(), json!(graph_id));
+            }
+            Ok(ProviderSearchHit {
+                rank: Some(hits.len() + 1),
+                provider_score: None,
+                location: locations.project(Path::new(path))?,
+                line,
+                end_line: Some(end_line),
+                symbol: Some(symbol.to_owned()),
+                kind: Some(kind.to_owned()),
+                snippet: snippet.to_owned(),
+                attributes,
+            })
+        })();
+        match parsed {
+            Ok(hit) => hits.push(hit),
+            Err(error) if error.starts_with(CANCELLED_PREFIX) => {
+                return failed_section(ProviderId::BslAnalyzer, error)
+            }
+            Err(_) => discarded = true,
+        }
+    }
+    if hits.is_empty() {
+        return failed_section(
+            ProviderId::BslAnalyzer,
+            "structured search returned no valid hits".into(),
+        );
+    }
+    let mut diagnostics = vec!["bsl-analyzer output truncated to fit its budget".to_string()];
+    if discarded {
+        diagnostics.push("some bsl-analyzer search hits could not be read".to_string());
+    }
+    let section = ProviderSearchSection::partial(
+        ProviderId::BslAnalyzer.identity(),
+        SearchRanking::Provider,
+        SearchOrdering::Provider,
+        hits,
+        diagnostics,
+    );
     section.unwrap_or_else(|error| {
         ProviderSearchSection::failed(ProviderId::BslAnalyzer.identity(), error)
     })
