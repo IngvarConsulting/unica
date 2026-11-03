@@ -1232,6 +1232,29 @@ impl ProviderReadAuthority {
         Ok(payload)
     }
 
+    pub(crate) fn wsreference_payload(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
+        // Prove the admitted descriptor's identity before opening its companion.
+        let mut payload = self.identity_metadata_payload(target)?;
+        let relative = self.attached_resource_relative(target, "WSDefinition.xml")?;
+        let definition = match self.read_optional_relative_with_checkpoint(&relative, checkpoint)? {
+            Some(bytes) => unica_metadata_designer::wsdl_read::read(&bytes, checkpoint)?,
+            None => unica_metadata::wsdl::Definition::unavailable(
+                "local WSDL companion WSDefinition.xml is absent; its declarations are unknown",
+            ),
+        };
+        payload["wsdlDefinition"] = serde_json::to_value(definition).map_err(|error| {
+            ViewError::new(
+                RefusalCode::InvalidResult,
+                format!("cannot serialize local WSDL observation: {error}"),
+            )
+        })?;
+        Ok(payload)
+    }
+
     pub(crate) fn metadata_owner_evidence(
         &self,
         target: &MetadataAddress,
