@@ -1351,10 +1351,20 @@ impl<'a> LogicalViewReadAuthority<'a> {
             let facts = self.read.common_template_facts(target)?;
             let mut payload = self.read.identity_metadata_payload(target)?;
             payload["synonym"] = json!(facts.synonym);
-            payload["properties"] =
-                json!([{"key":"TemplateType", "value":facts.template_type.descriptor_value()}]);
+            let property =
+                json!({"key":"TemplateType", "value":facts.template_type.descriptor_value()});
+            if let Some(properties) = payload["properties"].as_array_mut() {
+                properties.push(property);
+            } else {
+                payload["properties"] = json!([property]);
+            }
             if let Some(message) = facts.unreadable_synonym {
-                payload["unreadable"] = json!([{"field":"properties.Synonym", "message":message}]);
+                let finding = json!({"field":"properties.Synonym", "message":message});
+                if let Some(unreadable) = payload["unreadable"].as_array_mut() {
+                    unreadable.push(finding);
+                } else {
+                    payload["unreadable"] = json!([finding]);
+                }
             }
             return Ok(payload);
         }

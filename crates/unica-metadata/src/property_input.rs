@@ -41,6 +41,10 @@ pub struct ConfigurationPropertyChanges {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
     Metadata(MetaPropertyChanges),
+    CommentOnly {
+        kind: unica_address::address::NodeKind,
+        comment: String,
+    },
     Role(RolePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
@@ -283,6 +287,12 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::CommentOnly(kind) => PropertiesIntent::CommentOnly {
+                    kind,
+                    comment: values_reader
+                        .string(DescriptorProperty::Comment)?
+                        .ok_or_else(|| invalid(&values_path, "Comment is required"))?,
+                },
                 PropertiesSite::Metadata(kind) => {
                     // Preserve Metadata's existing conversion diagnostics and
                     // structured Type model, then verify the shared shape.

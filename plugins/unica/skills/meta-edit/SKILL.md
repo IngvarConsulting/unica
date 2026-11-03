@@ -54,6 +54,18 @@ allowed-tools:
 операции (`argsSchema` подробного `can`). Общие прикладные правила — в
 [соглашениях по метаданным](../../references/platform/metadata-conventions.md).
 
+`props.set` изменяет только строковый `Comment` у существующих
+`CommonAttribute`, `FunctionalOption`, `FunctionalOptionsParameter`,
+`SessionParameter`, `FilterCriterion`, `SettingsStorage`, `CommonCommand`,
+`CommandGroup`, `CommonForm`, `CommonTemplate`, `CommonPicture`, `Language`,
+`IntegrationService`, `DocumentNumerator`, `WSReference`, `XDTOPackage`,
+`StyleItem`, `Sequence` и `Style`. Для общей формы адресуй дескриптор
+`main:CommonForm.<Имя>.Metadata`; остальные владельцы адресуются как
+`main:<Вид>.<Имя>`. Например, `{"values":{"Comment":"Назначение параметра"}}`;
+пустая строка очищает комментарий. Имя `comment` — допустимый псевдоним,
+одновременно оба написания не передаются. Отсутствующий, неоднозначный
+или составной `Comment` требует исправления исходного дескриптора.
+
 **Член создаётся на владельце, а изменяется и удаляется по своему адресу.**
 `*.add` адресует того, кому член принадлежит, и несёт новые элементы в
 `items`: `attribute.add` с `at: "main:Catalog.Валюты"` добавляет реквизит

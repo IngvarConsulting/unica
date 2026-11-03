@@ -45,6 +45,7 @@ properties_operations!(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertiesSite {
     Metadata(MetadataKind),
+    CommentOnly(NodeKind),
     Role,
     Subsystem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
@@ -92,6 +93,7 @@ macro_rules! descriptor_properties {
                         match self { $(Self::$field => $extension),+ }
                     }
                     PropertiesSite::Metadata(_) => false,
+                    PropertiesSite::CommentOnly(_) => self == Self::Comment,
                 }
             }
         }
@@ -191,6 +193,10 @@ impl PropertiesSite {
     /// the owner's write profile; a nested subsystem owns a descriptor of its
     /// own and the subsystem profile with it.
     pub fn from_address(at: &QualifiedAddress) -> Option<Self> {
+        if let Some(owner) = at.form_metadata_owner() {
+            return (owner.segments().len() == 1)
+                .then_some(Self::CommentOnly(NodeKind::CommonForm));
+        }
         if at.segments().len() > 1
             && at
                 .segments()
@@ -206,6 +212,24 @@ impl PropertiesSite {
         match owner.kind() {
             NodeKind::Role => Some(Self::Role),
             NodeKind::Subsystem => Some(Self::Subsystem),
+            NodeKind::CommonAttribute
+            | NodeKind::FunctionalOption
+            | NodeKind::FunctionalOptionsParameter
+            | NodeKind::SessionParameter
+            | NodeKind::FilterCriterion
+            | NodeKind::SettingsStorage
+            | NodeKind::CommonCommand
+            | NodeKind::CommandGroup
+            | NodeKind::CommonTemplate
+            | NodeKind::CommonPicture
+            | NodeKind::Language
+            | NodeKind::IntegrationService
+            | NodeKind::DocumentNumerator
+            | NodeKind::WsReference
+            | NodeKind::XdtoPackage
+            | NodeKind::StyleItem
+            | NodeKind::Sequence
+            | NodeKind::Style => Some(Self::CommentOnly(owner.kind())),
             kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
         }
     }
@@ -222,7 +246,7 @@ impl PropertiesSite {
         let mut groups = Vec::new();
         match self {
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
-            Self::Role | Self::Subsystem | Self::Configuration { .. } => {
+            Self::Role | Self::Subsystem | Self::Configuration { .. } | Self::CommentOnly(_) => {
                 for field in self.descriptor_fields() {
                     let schema = match field.kind() {
                         DescriptorPropertyKind::String => json!({"type":"string"}),
@@ -260,6 +284,8 @@ impl PropertiesOperation {
                 target: match site {
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
+                    PropertiesSite::CommentOnly(NodeKind::CommonForm) => "The existing common form descriptor at `<set>:CommonForm.Name.Metadata`.",
+                    PropertiesSite::CommentOnly(_) => "The existing named root metadata descriptor at `<set>:Kind.Name`. This profile changes only Comment.",
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
@@ -269,7 +295,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::CommentOnly(_) => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -320,6 +346,93 @@ mod tests {
     use super::*;
 
     #[test]
+    fn additional_root_comments_have_a_closed_string_only_profile() {
+        for kind in [
+            "CommonAttribute",
+            "FunctionalOption",
+            "FunctionalOptionsParameter",
+            "SessionParameter",
+            "FilterCriterion",
+            "SettingsStorage",
+            "CommonCommand",
+            "CommandGroup",
+            "CommonForm",
+            "CommonTemplate",
+            "CommonPicture",
+            "Language",
+            "IntegrationService",
+            "DocumentNumerator",
+            "WSReference",
+            "XDTOPackage",
+            "StyleItem",
+            "Sequence",
+            "Style",
+        ] {
+            let at = if kind == "CommonForm" {
+                format!("main:{kind}.Probe.Metadata")
+            } else {
+                format!("main:{kind}.Probe")
+            };
+            let site = PropertiesSite::from_address(&QualifiedAddress::parse(&at).unwrap())
+                .unwrap_or_else(|| panic!("missing comment profile for {at}"));
+            let schema = PropertiesOperation::Set.contract(site).schema;
+            let properties = schema["properties"]["values"]["properties"]
+                .as_object()
+                .unwrap();
+            assert_eq!(properties.len(), 2, "{at}: {properties:?}");
+            for alias in ["Comment", "comment"] {
+                assert_eq!(properties[alias], json!({"type":"string"}));
+                assert!(
+                    crate::property_input::decode_properties(
+                        PropertiesOperation::Set,
+                        site,
+                        &json!({"values":{alias:"Текст & < >\n"}}),
+                        "args"
+                    )
+                    .is_ok(),
+                    "{at}"
+                );
+            }
+            for values in [
+                json!({"Name":"Renamed"}),
+                json!({"Synonym":"Label"}),
+                json!({"Comment":null}),
+                json!({"Comment":1}),
+                json!({"Comment":"A","comment":"A"}),
+                json!({"Unknown":"x"}),
+                json!({}),
+            ] {
+                assert!(
+                    crate::property_input::decode_properties(
+                        PropertiesOperation::Set,
+                        site,
+                        &json!({"values":values}),
+                        "args"
+                    )
+                    .is_err(),
+                    "{at}: {values}"
+                );
+            }
+        }
+        for at in [
+            "main:ExternalDataSource.Probe",
+            "main:Interface.Probe",
+            "main:CommonForm.Probe",
+            "main:CommonForm.Probe.Metadata.Body",
+            "main:CommonAttribute",
+            "main:CommonAttribute.Probe.Attribute.Child",
+        ] {
+            assert!(
+                QualifiedAddress::parse(at)
+                    .ok()
+                    .and_then(|at| PropertiesSite::from_address(&at))
+                    .is_none(),
+                "{at}"
+            );
+        }
+    }
+
+    #[test]
     fn registration_and_context_cover_only_current_descriptor_owners() {
         let operation = PropertiesOperation::Set;
         assert_eq!(PropertiesOperation::ALL, &[operation]);
@@ -352,7 +465,10 @@ mod tests {
             ("main:Subsystem.Sales", Some(PropertiesSite::Subsystem)),
             ("main:Configuration", None),
             ("main:Catalog", None),
-            ("main:CommonForm.Card.Metadata", None),
+            (
+                "main:CommonForm.Card.Metadata",
+                Some(PropertiesSite::CommentOnly(NodeKind::CommonForm)),
+            ),
             ("main:Catalog.Items.Attribute.Code", None),
             (
                 "main:Subsystem.Sales.Subsystem.Child",

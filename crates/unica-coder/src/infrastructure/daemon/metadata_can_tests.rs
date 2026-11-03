@@ -1,5 +1,7 @@
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
+#[path = "metadata_can_tests/root_comments.rs"]
+mod root_comments;
 
 use super::actor_capacity_tests::direct_v5;
 use super::*;

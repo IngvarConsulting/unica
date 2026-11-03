@@ -234,7 +234,7 @@ def isolated_environment(plugin, state):
     return environment
 
 
-def completed_delivery_call(server, tool, arguments, label):
+def completed_delivery_call(server, tool, arguments, label, *, retry_pending_index=True):
     """Observe Task identity; retry only the provider's typed pending index."""
     deadline = time.monotonic() + 120
     def invoke(next_tool, next_args):
@@ -256,6 +256,8 @@ def completed_delivery_call(server, tool, arguments, label):
             task_id = current
             next_tool, next_args = "unica.task.result", {"taskId": task_id, "waitMs": 7000}
         else:
+            if not retry_pending_index:
+                return response
             sections = (result.get("data") or {}).get("matches") or []
             if not (result.get("ok") is False and len(sections) == 1
                     and sections[0].get("role") == "symbol"

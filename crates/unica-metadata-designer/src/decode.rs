@@ -88,6 +88,7 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
+    CommentOnly { kind: NodeKind, comment: String },
     Role(unica_metadata::property_input::RolePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
     Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
@@ -1095,6 +1096,15 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::CommentOnly { kind, comment } => {
+            let directory = unica_source_designer::layout::metadata_kind(kind.as_str())
+                .expect("comment owner has a Designer layout")
+                .directory;
+            (
+                directory,
+                DescriptorPropertyChanges::CommentOnly { kind, comment },
+            )
+        }
         unica_metadata::property_input::PropertiesIntent::Metadata(values) => {
             let (target, _) = metadata_owner(&target, op_index)?;
             return Ok(MetadataPlanKind::Edit {

@@ -1389,6 +1389,14 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::CommentOnly { kind, comment } => {
+            let text = crate::descriptor_comment::set_comment(&source, *kind, name, comment)
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?;
+            (*kind, text)
+        }
         DescriptorPropertyChanges::Role(unica_metadata::property_input::RolePropertyChanges {
             synonym,
             comment,
@@ -1550,11 +1558,17 @@ fn stage_descriptor_properties(
             (NodeKind::Configuration, text)
         }
     };
-    let postimage = unica_source_designer::registration::preserve_descriptor_image(
-        &preimage,
-        &source,
-        &postimage_text,
-    );
+    let postimage = if matches!(changes, DescriptorPropertyChanges::CommentOnly { .. }) {
+        let mut image = preimage[..preimage.len() - source.len()].to_vec();
+        image.extend_from_slice(postimage_text.as_bytes());
+        image
+    } else {
+        unica_source_designer::registration::preserve_descriptor_image(
+            &preimage,
+            &source,
+            &postimage_text,
+        )
+    };
     if postimage == preimage {
         return Ok(());
     }

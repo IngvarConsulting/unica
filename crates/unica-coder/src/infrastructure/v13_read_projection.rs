@@ -977,6 +977,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "drawingCount",
         ],
         LogicalReader::Xdto => &[
+            "Comment",
+            "commentError",
             "sourceSet",
             "metadataPath",
             "location",
@@ -1559,6 +1561,21 @@ fn project_xdto(
             NodeKind::XdtoPackage,
             payload,
         );
+        let mut limits = Vec::new();
+        if let Some(comment) = payload.get("Comment") {
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                "Comment",
+                comment,
+                false,
+                "metadata comment",
+            );
+        }
+        if let Some(message) = payload.get("commentError").and_then(Value::as_str) {
+            limits.push(format!("Comment: {message}"));
+        }
         if let Some(counts) = payload.get("counts") {
             props.extend(selected_scalar_props(
                 counts,
@@ -1601,7 +1618,8 @@ fn project_xdto(
                     .unwrap_or("XDTO"),
                 props,
             )
-            .with_branches(branches),
+            .with_branches(branches)
+            .with_limits(limits),
         ));
     }
     let segment = &suffix[0];
@@ -2603,6 +2621,31 @@ mod interface_command_tests {
 #[cfg(test)]
 mod composite_prop_tests {
     use super::*;
+
+    #[test]
+    fn xdto_root_comment_keeps_empty_damage_and_whole_value_reading() {
+        let address = QualifiedAddress::parse("main:XDTOPackage.Contracts").unwrap();
+        let node = |payload: &Value| {
+            validate_reader_payload(LogicalReader::Xdto, payload).unwrap();
+            let NodeViewData::Node(node) = project_xdto(&address, payload, &[]).unwrap() else {
+                panic!("package root must be a node");
+            };
+            serde_json::to_value(node).unwrap()
+        };
+        assert_eq!(node(&json!({"Comment":""}))["props"]["Comment"], "");
+        let damaged = node(&json!({"commentError":"duplicate canonical Comment"}));
+        assert!(damaged["props"].get("Comment").is_none());
+        assert!(damaged["limits"][0].as_str().unwrap().contains("Comment"));
+        let payload = json!({"Comment":"Я".repeat(MAX_COMPACT_PROP_BYTES)});
+        let compact = node(&payload);
+        assert!(compact["props"].get("Comment").is_none());
+        assert!(compact["limits"][0]
+            .as_str()
+            .unwrap()
+            .contains(".Props.Comment"));
+        let whole = with_whole_prop("Comment", || node(&payload));
+        assert_eq!(whole["props"]["Comment"], payload["Comment"]);
+    }
 
     /// #2159: a form declaration whose properties fit one by one but not
     /// together is named by its whole address and read there in full.

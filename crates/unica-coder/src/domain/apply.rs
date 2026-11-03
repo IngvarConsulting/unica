@@ -777,11 +777,19 @@ mod tests {
         ] {
             let at = address(raw);
             let site = operation_site(&at, traits).unwrap();
-            assert!(registry.copyable_skeletons(&site).is_empty(), "{raw}");
+            let comment_descriptor = raw == "main:CommonForm.Main.Metadata";
+            assert_eq!(
+                registry.copyable_skeletons(&site).len(),
+                usize::from(comment_descriptor),
+                "{raw}"
+            );
             for operation in registry.descriptors() {
-                assert!(
-                    !operation.applies_at(&site),
-                    "{} must not write through {raw}",
+                assert_eq!(
+                    operation.applies_at(&site),
+                    comment_descriptor
+                        && operation.operation::<PropertiesOperation>()
+                            == Some(PropertiesOperation::Set),
+                    "{} applicability at {raw}",
                     operation.name()
                 );
             }
