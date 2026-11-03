@@ -9,6 +9,7 @@ mod form;
 mod form_conditional_appearance;
 mod form_item_bindings;
 mod form_support;
+mod interface_reference_kind;
 mod job_schedule;
 mod metadata;
 mod metadata_declaration_diagnostics;
