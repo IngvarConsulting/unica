@@ -1301,7 +1301,7 @@ XML-элемент: `<Task>`.
 ```xml
 <NumberType>String</NumberType>
 <NumberLength>14</NumberLength>
-<TaskNumberAutoPrefix>BusinessProcessNumber</TaskNumberAutoPrefix>  <!-- Автопрефикс -->
+<TaskNumberAutoPrefix>BusinessProcessNumber</TaskNumberAutoPrefix>  <!-- DontUse | BusinessProcessNumber; props.set существующей Task -->
 <DescriptionLength>150</DescriptionLength>
 <Addressing>InformationRegister.ИсполнителиЗадач</Addressing>     <!-- Регистр адресации -->
 <MainAddressingAttribute>Task.ЗадачаИсполнителя.AddressingAttribute.Исполнитель</MainAddressingAttribute>

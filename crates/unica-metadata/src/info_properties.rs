@@ -444,6 +444,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         RootUrl => kind == HTTPService,
         Namespace => kind == WebService,
         NumberLength | NumberType => matches!(kind, Document | BusinessProcess | Task),
+        TaskNumberAutoPrefix => kind == Task,
         CheckUnique => matches!(
             kind,
             Catalog

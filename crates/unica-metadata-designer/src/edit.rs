@@ -3611,6 +3611,10 @@ fn collapse_children(
 }
 
 #[cfg(test)]
+#[path = "task_number_auto_prefix_tests.rs"]
+mod task_number_auto_prefix_tests;
+
+#[cfg(test)]
 mod legacy_inline_collapse_tests {
     use super::collapse_legacy_inline_children;
 
