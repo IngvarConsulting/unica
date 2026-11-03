@@ -2,6 +2,7 @@ use super::test_support::*;
 use super::*;
 use crate::platform::testing::*;
 use crate::policy_evidence::*;
+use crate::test_support::CapabilitySkip;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -134,6 +135,61 @@ pub fn workspace_actor_capabilities_enforce_identity_physical_and_bounded_public
 ) {
     let _policy_scope = policies_scope(policies);
 
+    let root = temp_root("active-capability-contract");
+    let source = root.join("src");
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(source.join("Module.bsl"), "test").unwrap();
+    std::fs::write(outside.join("Secret.bsl"), "outside").unwrap();
+    let context = context(&root);
+    assert!(WorkspaceIdentity::new(
+        &context,
+        [
+            source_input("main", &source),
+            source_input("alias", &source)
+        ],
+        "profile",
+    )
+    .is_err());
+    let identity =
+        WorkspaceIdentity::new(&context, [source_input("main", &source)], "profile").unwrap();
+    let first = super::WorkspaceActor::<(), ()>::new(identity.clone(), context.clone())
+        .map(bind_actor)
+        .unwrap();
+    let second = super::WorkspaceActor::<(), ()>::new(identity, context)
+        .map(bind_actor)
+        .unwrap();
+    let binding = first.bind_provider_root("main", &source).unwrap();
+
+    assert!(second.read(&binding, |_| Ok(())).is_err());
+    assert!(second.validate_binding(&binding).is_err());
+
+    let displaced = root.join("src-displaced");
+    let replacement = source.clone();
+    let external = first.read(&binding, |root| {
+        let output = std::fs::read(root.join("Module.bsl")).map_err(|error| error.to_string())?;
+        std::fs::rename(root, &displaced).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(&replacement).map_err(|error| error.to_string())?;
+        Ok(output)
+    });
+    assert!(external.is_err());
+    assert!(first.validate_binding(&binding).is_err());
+    assert!(first
+        .admit_apply(
+            &binding,
+            None,
+            true,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+        )
+        .is_err());
+    let _ = std::fs::remove_dir_all(root);
+}
+pub fn workspace_actor_rejects_nested_directory_link_read(
+    policies: crate::policies::WorkspacePolicies,
+) -> Result<(), CapabilitySkip> {
+    let _policy_scope = policies_scope(policies);
     use crate::platform::testing::{
         create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
     };
@@ -169,35 +225,25 @@ pub fn workspace_actor_capabilities_enforce_identity_physical_and_bounded_public
     assert!(second.validate_binding(&binding).is_err());
 
     let nested = source.join("Nested");
-    if matches!(
+    if !matches!(
         create_directory_link_fixture_for_test(&outside, &nested).unwrap(),
         FileLinkFixtureOutcome::Created
     ) {
+        std::fs::remove_dir_all(&root).unwrap();
+        return Err(CapabilitySkip {
+            capability: "symlink",
+            reason: "nested source escape fixture needs directory links",
+        });
+    }
+    {
         assert!(first
             .read_relative_file(&binding, Path::new("Nested/Secret.bsl"), 1024)
             .is_err());
     }
 
-    let displaced = root.join("src-displaced");
-    let replacement = source.clone();
-    let external = first.read(&binding, |root| {
-        let output = std::fs::read(root.join("Module.bsl")).map_err(|error| error.to_string())?;
-        std::fs::rename(root, &displaced).map_err(|error| error.to_string())?;
-        std::fs::create_dir_all(&replacement).map_err(|error| error.to_string())?;
-        Ok(output)
-    });
-    assert!(external.is_err());
-    assert!(first.validate_binding(&binding).is_err());
-    assert!(first
-        .admit_apply(
-            &binding,
-            None,
-            true,
-            ProviderDeadline::from_budget(Duration::from_secs(5)),
-            &CancellationToken::new(),
-        )
-        .is_err());
-    let _ = std::fs::remove_dir_all(root);
+    std::fs::remove_dir_all(root).unwrap();
+
+    Ok(())
 }
 
 pub fn borrow_dependency_revision_rejects_parent_change_since_preview(
@@ -2373,9 +2419,41 @@ pub fn retained_apply_publication_preserves_exact_typed_causes_end_to_end(
     fixture.cleanup();
 }
 
-pub fn prepared_apply_cache_authority_diagnostic_never_exposes_absolute_root(
+pub fn prepared_apply_cache_authority_allows_unchanged_root(
     policies: crate::policies::WorkspacePolicies,
 ) {
+    let _policy_scope = policies_scope(policies);
+
+    let (fixture, binding) = publish_cache_fixture("cache-authority-redaction");
+    let cache_root = fixture.root.join(".build/unica");
+    let admitted = fixture
+        .actor
+        .admit_apply(
+            &binding,
+            None,
+            false,
+            ProviderDeadline::from_budget(Duration::from_secs(5)),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    let state = admitted.staged_state().unwrap();
+    let prepared = admitted.prepare(state).unwrap();
+    let displaced = fixture.root.join("cache-displaced");
+    let retained_identity = path_identity_for_test(&cache_root)
+        .unwrap()
+        .expect("cache root identity must be available on supported CI platforms");
+    assert_eq!(
+        path_identity_for_test(&cache_root).unwrap().as_deref(),
+        Some(retained_identity.as_str())
+    );
+    assert!(!displaced.exists());
+    fixture.actor.publish_prepared_apply(prepared).unwrap();
+    fixture.cleanup();
+}
+
+pub fn prepared_apply_cache_authority_diagnostic_never_exposes_absolute_root(
+    policies: crate::policies::WorkspacePolicies,
+) -> Result<(), CapabilitySkip> {
     let _policy_scope = policies_scope(policies);
 
     let (fixture, binding) = publish_cache_fixture("cache-authority-redaction");
@@ -2413,18 +2491,21 @@ pub fn prepared_apply_cache_authority_diagnostic_never_exposes_absolute_root(
             );
         }
         RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
-            eprintln!(
-                "[SKIPPED FIXTURE] cache-root replacement is prevented by its retained handle"
-            );
             assert_eq!(
                 path_identity_for_test(&cache_root).unwrap().as_deref(),
                 Some(retained_identity.as_str())
             );
             assert!(!displaced.exists());
             fixture.actor.publish_prepared_apply(prepared).unwrap();
+            fixture.cleanup();
+            return Err(CapabilitySkip {
+                capability: "rename-under-open-handle",
+                reason: "cache redaction attack requires replacing a retained root",
+            });
         }
     }
     fixture.cleanup();
+    Ok(())
 }
 
 pub fn cache_preimage_races_fail_closed_and_preserve_foreign_names(
@@ -5114,9 +5195,22 @@ pub fn apply_policy_exact_file_rejects_byte_change_and_rename_replacement(
 pub fn apply_policy_stable_deny_evidence_allows_unrelated_dry_run_and_real_publication(
     policies: crate::policies::WorkspacePolicies,
 ) {
+    assert_stable_deny_evidence(policies, &["wrong-kind", "oversized"]).unwrap();
+}
+
+pub fn apply_policy_stable_unreadable_deny_evidence_allows_publication(
+    policies: crate::policies::WorkspacePolicies,
+) -> Result<(), CapabilitySkip> {
+    assert_stable_deny_evidence(policies, &["unreadable"])
+}
+
+fn assert_stable_deny_evidence(
+    policies: crate::policies::WorkspacePolicies,
+    categories: &[&str],
+) -> Result<(), CapabilitySkip> {
     let _policy_scope = policies_scope(policies);
 
-    for category in ["wrong-kind", "oversized", "unreadable"] {
+    for &category in categories {
         for dry_run in [true, false] {
             let fixture = actor_fixture(
                 &format!(
@@ -5138,11 +5232,11 @@ pub fn apply_policy_stable_deny_evidence_allows_unrelated_dry_run_and_real_publi
                 "unreadable" => {
                     std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
                     if !set_unix_mode_for_test(&policy, 0o000).unwrap() {
-                        eprintln!(
-                                "[SKIPPED FIXTURE] unreadable support-policy publication requires Unix permission bits"
-                            );
                         fixture.cleanup();
-                        continue;
+                        return Err(CapabilitySkip {
+                            capability: "unix-permission-bits",
+                            reason: "unreadable support-policy fixture requires Unix modes",
+                        });
                     }
                     true
                 }
@@ -5205,6 +5299,7 @@ pub fn apply_policy_stable_deny_evidence_allows_unrelated_dry_run_and_real_publi
             fixture.cleanup();
         }
     }
+    Ok(())
 }
 
 pub fn apply_policy_category_and_identity_transitions_are_rejected(
@@ -5243,52 +5338,72 @@ pub fn apply_policy_category_and_identity_transitions_are_rejected(
         super::ApplyPublicationErrorKind::ContainmentIdentity
     );
     wrong_kind.cleanup();
+}
 
+pub fn apply_policy_symlink_transition_is_rejected(
+    policies: crate::policies::WorkspacePolicies,
+) -> Result<(), CapabilitySkip> {
+    let _policy_scope = policies_scope(policies);
     let symlink = actor_fixture("apply-policy-symlink", &["src"]);
     let policy = symlink.root.join(".v8-project.json");
     let target = symlink.root.join("linked-policy.json");
     std::fs::write(&target, br#"{"editingAllowedCheck":"off"}"#).unwrap();
     let link_outcome = create_file_link_fixture_for_test(&target, &policy).unwrap();
     match link_outcome {
-            FileLinkFixtureOutcome::Created => {
-                let binding = symlink
+        FileLinkFixtureOutcome::Created => {
+            let binding = symlink
+                .actor
+                .bind_provider_root("src", &symlink.roots[0])
+                .unwrap();
+            let admission = symlink
+                .actor
+                .admit_apply(
+                    &binding,
+                    None,
+                    true,
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
+            let state = admission.staged_state().unwrap();
+            let prepared = admission.prepare(state).unwrap();
+            std::fs::remove_file(&policy).unwrap();
+            std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
+            assert_eq!(
+                symlink
                     .actor
-                    .bind_provider_root("src", &symlink.roots[0])
-                    .unwrap();
-                let admission = symlink
-                    .actor
-                    .admit_apply(
-                        &binding,
-                        None,
-                        true,
-                        ProviderDeadline::from_budget(Duration::from_secs(5)),
-                        &CancellationToken::new(),
-                    )
-                    .unwrap();
-                assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
-                let state = admission.staged_state().unwrap();
-                let prepared = admission.prepare(state).unwrap();
-                std::fs::remove_file(&policy).unwrap();
-                std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
-                assert_eq!(
-                    symlink
-                        .actor
-                        .publish_prepared_apply(prepared)
-                        .unwrap_err()
-                        .kind(),
-                    super::ApplyPublicationErrorKind::ContainmentIdentity
-                );
-            }
-            FileLinkFixtureOutcome::Unsupported => eprintln!(
-                "[SKIPPED FIXTURE] support-policy symlink transition is unsupported on this platform"
-            ),
-            FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => eprintln!(
-                "[SKIPPED FIXTURE] support-policy symlink transition needs an unavailable Windows privilege"
-            ),
+                    .publish_prepared_apply(prepared)
+                    .unwrap_err()
+                    .kind(),
+                super::ApplyPublicationErrorKind::ContainmentIdentity
+            );
         }
+        FileLinkFixtureOutcome::Unsupported
+        | FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
+            symlink.cleanup();
+            return Err(CapabilitySkip {
+                capability: "symlink",
+                reason: "support-policy transition needs file links",
+            });
+        }
+    }
     symlink.cleanup();
 
-    if can_swap_named_child_behind_retained_handle_for_test() {
+    Ok(())
+}
+
+pub fn apply_policy_oversized_identity_transition_is_rejected(
+    policies: crate::policies::WorkspacePolicies,
+) -> Result<(), CapabilitySkip> {
+    let _policy_scope = policies_scope(policies);
+    if !can_swap_named_child_behind_retained_handle_for_test() {
+        return Err(CapabilitySkip {
+            capability: "rename-under-open-handle",
+            reason: "oversized policy transition needs replacement of a retained file",
+        });
+    }
+    {
         let oversized = actor_fixture("apply-policy-oversized-identity", &["src"]);
         let policy = oversized.root.join(".v8-project.json");
         std::fs::write(&policy, vec![b' '; 32 * 1024 * 1024 + 1]).unwrap();
@@ -5320,16 +5435,26 @@ pub fn apply_policy_category_and_identity_transitions_are_rejected(
             super::ApplyPublicationErrorKind::ContainmentIdentity
         );
         oversized.cleanup();
-    } else {
-        eprintln!(
-                "[SKIPPED FIXTURE] oversized support-policy identity replacement is unsupported while a retained handle is open"
-            );
     }
 
+    Ok(())
+}
+
+pub fn apply_policy_unreadable_transition_is_rejected(
+    policies: crate::policies::WorkspacePolicies,
+) -> Result<(), CapabilitySkip> {
+    let _policy_scope = policies_scope(policies);
     let unreadable = actor_fixture("apply-policy-unreadable-transition", &["src"]);
     let policy = unreadable.root.join(".v8-project.json");
     std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
-    if set_unix_mode_for_test(&policy, 0o000).unwrap() {
+    if !set_unix_mode_for_test(&policy, 0o000).unwrap() {
+        unreadable.cleanup();
+        return Err(CapabilitySkip {
+            capability: "unix-permission-bits",
+            reason: "unreadable policy transition needs Unix modes",
+        });
+    }
+    {
         let binding = unreadable
             .actor
             .bind_provider_root("src", &unreadable.roots[0])
@@ -5356,12 +5481,9 @@ pub fn apply_policy_category_and_identity_transitions_are_rejected(
                 .kind(),
             super::ApplyPublicationErrorKind::ContainmentIdentity
         );
-    } else {
-        eprintln!(
-            "[SKIPPED FIXTURE] unreadable support-policy transition requires Unix permission bits"
-        );
     }
     unreadable.cleanup();
+    Ok(())
 }
 
 pub fn apply_policy_dry_run_churn_is_write_free_and_returns_no_receipt(
@@ -6113,11 +6235,23 @@ pub fn apply_policy_warn_off_deny_database_and_malformed_match_v12(
         assert_eq!(admission.support_policy_mode(), expected, "size={size}");
     }
     bounded.cleanup();
+}
 
+pub fn apply_policy_unreadable_mode_matches_v12(
+    policies: crate::policies::WorkspacePolicies,
+) -> Result<(), CapabilitySkip> {
+    let _policy_scope = policies_scope(policies);
     let unreadable = actor_fixture("apply-policy-mode-unreadable", &["src"]);
     let policy = unreadable.root.join(".v8-project.json");
     std::fs::write(&policy, br#"{"editingAllowedCheck":"off"}"#).unwrap();
-    if set_unix_mode_for_test(&policy, 0o000).unwrap() {
+    if !set_unix_mode_for_test(&policy, 0o000).unwrap() {
+        unreadable.cleanup();
+        return Err(CapabilitySkip {
+            capability: "unix-permission-bits",
+            reason: "unreadable policy mode needs Unix modes",
+        });
+    }
+    {
         let binding = unreadable
             .actor
             .bind_provider_root("src", &unreadable.roots[0])
@@ -6135,10 +6269,9 @@ pub fn apply_policy_warn_off_deny_database_and_malformed_match_v12(
         assert_eq!(admission.support_policy_mode(), SupportPolicyMode::Deny);
         drop(admission);
         assert!(set_unix_mode_for_test(&policy, 0o600).unwrap());
-    } else {
-        eprintln!("[SKIPPED FIXTURE] unreadable support-policy mode requires Unix permission bits");
     }
     unreadable.cleanup();
+    Ok(())
 }
 
 pub fn retained_apply_support_policy_evidence_does_not_add_a_third_writer_participant(

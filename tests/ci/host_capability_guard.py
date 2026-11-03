@@ -1,10 +1,11 @@
-"""Detector for tests that exit early on a missing host capability (#1893).
+"""Detector for tests that silently omit host-dependent checks (#1893, #1925).
 
 A test that needs a host capability (symlinks, a case-insensitive volume,
 Unix permission bits...) reports its absence through
 `unica_process::test_support::skip_without_host_capability` and returns
 right after it. Any other early exit next to a capability probe is a silent
-PASS. The probe registry below is closed: a new helper that answers "can this
+PASS. Positive gates that omit assertions are checked too, including local
+aliases of the probe result. The probe registry below is closed: a new helper that answers "can this
 host do X" is added here, so its callers are checked too.
 """
 from __future__ import annotations
@@ -38,6 +39,7 @@ CAPABILITY_PROBES = (
     "canonical_delivery_fixture_binary",
 )
 PROBE = re.compile(r"\b(?:" + "|".join(CAPABILITY_PROBES) + r")\b|\bsymlink\s*\(|\b1314\b")
+ASSERTION_PROBE = re.compile(PROBE.pattern + r"|\b(?:hard_link_count|file_identity_for_test)\b")
 EXIT = re.compile(r"\b(?:return|continue)\b")
 WINDOW_LINES = 15
 # A contract in a crate without the helper returns a typed skip instead;
@@ -61,15 +63,71 @@ def without_strings(code: str) -> str:
     return _boundary._mask_non_code(code)
 
 
+def partial_capability_assertions(body: str) -> bool:
+    """Find positive capability gates whose other path omits the assertions.
+
+    Track local probe aliases, so moving the probe away from the assertion
+    does not hide the gate. Balanced blocks keep a neighbouring skip from
+    excusing a different conditional branch.
+    """
+    aliases: set[str] = set()
+    assignments = list(re.finditer(r"\blet\s+(?:mut\s+)?(\w+)\s*=\s*([^;]+);", body))
+    while True:
+        added = {m[1] for m in assignments if ASSERTION_PROBE.search(m[2]) or
+                 any(re.search(rf"\b{re.escape(alias)}\b", m[2]) for alias in aliases)}
+        if added <= aliases:
+            break
+        aliases |= added
+    for match in re.finditer(r"\bif\s+([^{};]+)\{", body):
+        condition = match[1].strip()
+        if "=>" in condition:
+            continue
+        # Selecting path syntax alone is not a capability gate. Combining it
+        # with a real probe must still be checked.
+        condition_probes = [probe for probe in ASSERTION_PROBE.finditer(condition)
+                            if probe.group() != "MAIN_SEPARATOR"]
+        if re.search(r"\bMAIN_SEPARATOR\s*==", condition) and not condition_probes and not any(
+                re.search(rf"\b{re.escape(alias)}\b", condition) for alias in aliases):
+            continue
+        if not (ASSERTION_PROBE.search(condition) or
+                any(re.search(rf"\b{re.escape(alias)}\b", condition) for alias in aliases)):
+            continue
+        # Negative guards are checked by the exit detector below. Comparisons
+        # of identities are assertions about the API, not availability probes.
+        positive = (condition in aliases or
+                    any(re.search(rf"(?:^|&&|\|\|)\s*\(*\s*{re.escape(alias)}\s*\)*(?:\s*$|\s*(?:&&|\|\|))", condition)
+                        for alias in aliases) or
+                    any(re.fullmatch(rf"{re.escape(alias)}\s*\.is_(?:some|ok)\s*\(\s*\)", condition)
+                        for alias in aliases) or
+                    re.match(r"let\s+(?:Some|Ok)\s*\(", condition) or
+                    "::Created" in condition or
+                    (ASSERTION_PROBE.search(condition) and not re.search(r"!|is_(?:err|none)\s*\(|!=", condition)))
+        if not positive:
+            continue
+        opening = match.end() - 1
+        guarded = _skips.block(body, opening)
+        if not re.search(r"\b(?:assert(?:_eq|_ne)?|expect)\b", guarded):
+            continue
+        rest = body[opening + len(guarded):]
+        fallback = re.match(r"\s*else\s*(?=\{)", rest)
+        other = _skips.block(rest, fallback.end()) if fallback else ""
+        if not SKIP.search(other) and not re.search(r"\b(?:assert(?:_eq|_ne)?|panic|unreachable)\s*!", other):
+            return True
+    return False
+
+
 def offenses(text: str, path: str) -> list[str]:
-    """`path::function` of every test function that exits early beside a capability probe."""
+    """`path::function` of tests with silent exits or partial capability assertions."""
     code = without_strings(text)
     found = []
     for item in _skips.functions(code):
         if not (_skips.is_test(item) or in_test_file(path)):
             continue
         body = item["body"]
-        if not PROBE.search(body):
+        if not ASSERTION_PROBE.search(body):
+            continue
+        if partial_capability_assertions(body):
+            found.append(f"{path}::{item['name']}")
             continue
         previous_exit = 0
         for exit_match in EXIT.finditer(body):
