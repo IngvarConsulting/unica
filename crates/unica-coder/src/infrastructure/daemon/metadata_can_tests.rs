@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/quick_choice.rs"]
+mod quick_choice;
+
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
 
