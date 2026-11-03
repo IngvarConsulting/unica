@@ -794,12 +794,13 @@ pub(super) fn read_configuration_root(
     panels: Value,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<StreamedConfigurationRoot, ViewError> {
-    let state = parse_configuration_owner(file, checkpoint)?;
+    let state = parse_configuration_owner(file, RootRead::Facts, checkpoint)?;
     let RootState {
         properties,
         version,
         total_objects,
         registrations,
+        information_writer,
         ..
     } = state;
     let mut counts = BTreeMap::<String, usize>::new();
@@ -822,7 +823,8 @@ pub(super) fn read_configuration_root(
     })?;
     let property = |name: &str| properties.get(name).cloned();
     let optional = |name: &str| property(name).filter(|value| !value.is_empty());
-    let payload = json!({
+    let (information, property_limits) = information_from_events(information_writer)?;
+    let mut payload = json!({
         "format": version,
         "name": property("Name").unwrap_or_default(),
         "synonym": optional("Synonym"),
@@ -852,6 +854,19 @@ pub(super) fn read_configuration_root(
         "interface": interface,
         "panels": panels,
     });
+    payload["properties"]
+        .as_object_mut()
+        .expect("root properties were built as an object")
+        .extend(
+            serde_json::to_value(information)
+                .map_err(|error| source_unreadable(&error.to_string()))?
+                .as_object()
+                .expect("information properties serialize as an object")
+                .clone(),
+        );
+    if !property_limits.is_empty() {
+        payload["propertyLimits"] = json!(property_limits);
+    }
     Ok(StreamedConfigurationRoot { payload, counts })
 }
 
@@ -859,12 +874,18 @@ pub(crate) fn read_configuration_registration_index(
     file: impl Read + Seek,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<RegistrationIndex, ViewError> {
-    let state = parse_configuration_owner(file, checkpoint)?;
+    let state = parse_configuration_owner(file, RootRead::Registrations, checkpoint)?;
     RegistrationIndex::from_sorter(state.registrations, checkpoint)
+}
+
+enum RootRead {
+    Facts,
+    Registrations,
 }
 
 fn parse_configuration_owner(
     mut file: impl Read + Seek,
+    purpose: RootRead,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<RootState, ViewError> {
     skip_leading_boms(&mut file, checkpoint)?;
@@ -907,6 +928,9 @@ fn parse_configuration_owner(
                 ));
             }
         };
+        if matches!(purpose, RootRead::Facts) {
+            state.capture_information(&event)?;
+        }
         match event {
             XmlEvent::StartDocument { .. } => {}
             XmlEvent::StartElement {
@@ -939,6 +963,46 @@ fn parse_configuration_owner(
         ));
     }
     Ok(state)
+}
+
+fn information_write_error(error: xml::writer::Error) -> ViewError {
+    ViewError::detailed(
+        RefusalDetail::BackendBroken,
+        format!("information property event projection failed: {error}"),
+    )
+}
+
+fn information_from_events(
+    writer: Option<xml::writer::EventWriter<Vec<u8>>>,
+) -> Result<
+    (
+        unica_metadata::configuration::CfInformationProperties,
+        Vec<String>,
+    ),
+    ViewError,
+> {
+    let Some(mut writer) = writer else {
+        return Ok((
+            unica_metadata::configuration::CfInformationProperties::default(),
+            Vec::new(),
+        ));
+    };
+    writer
+        .write(xml::writer::XmlEvent::end_element())
+        .map_err(information_write_error)?;
+    let text = String::from_utf8(writer.into_inner())
+        .map_err(|error| source_unreadable(&error.to_string()))?;
+    // The event parser has already normalized literal XML line endings. Any
+    // remaining CR came from a character reference; keep that distinction
+    // through the second XML parse (the writer leaves CR literal in PCDATA).
+    let text = text.replace('\r', "&#13;");
+    let document =
+        roxmltree::Document::parse(&text).map_err(|error| source_unreadable(&error.to_string()))?;
+    Ok(
+        unica_metadata_designer::configuration::parse_information_properties(
+            document.root_element(),
+        ),
+    )
 }
 
 fn source_unreadable(message: &str) -> ViewError {
@@ -998,6 +1062,8 @@ struct RootState {
     saw_first_child_objects: bool,
     version: String,
     properties: BTreeMap<String, String>,
+    information_writer: Option<xml::writer::EventWriter<Vec<u8>>>,
+    information_depth: usize,
     total_objects: usize,
     registrations: RegistrationSorter,
 }
@@ -1008,6 +1074,46 @@ impl RootState {
             registrations: RegistrationSorter::new(),
             ..Self::default()
         }
+    }
+
+    fn capture_information(&mut self, event: &XmlEvent) -> Result<(), ViewError> {
+        if let XmlEvent::StartElement { name, .. } = event {
+            let direct_information = self.ignored_depth == 0
+                && matches!(
+                    self.stack.last().map(|frame| &frame.role),
+                    Some(FrameRole::Properties)
+                )
+                && unica_metadata_designer::configuration::INFORMATION_PROPERTY_NAMES
+                    .contains(&name.local_name.as_str());
+            if self.information_depth != 0 || direct_information {
+                if self.information_writer.is_none() {
+                    let mut writer = xml::writer::EmitterConfig::new()
+                        .write_document_declaration(false)
+                        .create_writer(Vec::new());
+                    writer
+                        .write(xml::writer::XmlEvent::start_element("Properties").default_ns(MD_NS))
+                        .map_err(information_write_error)?;
+                    self.information_writer = Some(writer);
+                }
+                self.information_depth = self
+                    .information_depth
+                    .checked_add(1)
+                    .ok_or_else(|| source_unreadable("XML depth overflow"))?;
+            }
+        }
+        if self.information_depth != 0 {
+            if let Some(writer_event) = event.as_writer_event() {
+                self.information_writer
+                    .as_mut()
+                    .expect("capture depth owns a writer")
+                    .write(writer_event)
+                    .map_err(information_write_error)?;
+            }
+            if matches!(event, XmlEvent::EndElement { .. }) {
+                self.information_depth -= 1;
+            }
+        }
+        Ok(())
     }
 
     fn start(

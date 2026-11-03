@@ -45,6 +45,14 @@ pub struct CfInfoProperties {
     pub comment: Option<String>,
     pub name_prefix: Option<String>,
     pub update_catalog_address: Option<String>,
+    #[serde(flatten)]
+    pub information: CfInformationProperties,
+}
+
+/// The closed information profile shared by bounded and streamed readers.
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfInformationProperties {
     pub use_managed_form_in_ordinary_application: Option<bool>,
     pub use_ordinary_form_in_managed_application: Option<bool>,
     pub brief_information: Option<Vec<crate::MetaLocalizedText>>,

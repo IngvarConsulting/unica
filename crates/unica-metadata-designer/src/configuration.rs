@@ -192,6 +192,49 @@ fn information_text(
     (!values.is_empty()).then_some(values)
 }
 
+pub const INFORMATION_PROPERTY_NAMES: &[&str] = &[
+    "UseManagedFormInOrdinaryApplication",
+    "UseOrdinaryFormInManagedApplication",
+    "BriefInformation",
+    "DetailedInformation",
+    "Copyright",
+    "VendorInformationAddress",
+    "ConfigurationInformationAddress",
+];
+
+/// Observe the same seven facts regardless of how the owner was read.
+pub fn parse_information_properties(
+    properties: roxmltree::Node<'_, '_>,
+) -> (CfInformationProperties, Vec<String>) {
+    let mut limits = Vec::new();
+    let information = CfInformationProperties {
+        use_managed_form_in_ordinary_application: information_flag(
+            properties,
+            "UseManagedFormInOrdinaryApplication",
+            &mut limits,
+        ),
+        use_ordinary_form_in_managed_application: information_flag(
+            properties,
+            "UseOrdinaryFormInManagedApplication",
+            &mut limits,
+        ),
+        brief_information: information_text(properties, "BriefInformation", &mut limits),
+        detailed_information: information_text(properties, "DetailedInformation", &mut limits),
+        copyright: information_text(properties, "Copyright", &mut limits),
+        vendor_information_address: information_text(
+            properties,
+            "VendorInformationAddress",
+            &mut limits,
+        ),
+        configuration_information_address: information_text(
+            properties,
+            "ConfigurationInformationAddress",
+            &mut limits,
+        ),
+    };
+    (information, limits)
+}
+
 pub fn parse_cf_info_xml(
     text: &str,
     support: ConfigurationSupportData,
@@ -241,7 +284,7 @@ pub fn parse_cf_info_xml(
                 })
         })
         .collect();
-    let mut property_limits = Vec::new();
+    let (information, property_limits) = parse_information_properties(props);
     let data = CfInfoData {
         format: version.to_string(),
         name: cf_prop_text(props, "Name"),
@@ -278,33 +321,7 @@ pub fn parse_cf_info_xml(
             comment: optional(cf_prop_text(props, "Comment")),
             name_prefix: optional(cf_prop_text(props, "NamePrefix")),
             update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
-            use_managed_form_in_ordinary_application: information_flag(
-                props,
-                "UseManagedFormInOrdinaryApplication",
-                &mut property_limits,
-            ),
-            use_ordinary_form_in_managed_application: information_flag(
-                props,
-                "UseOrdinaryFormInManagedApplication",
-                &mut property_limits,
-            ),
-            brief_information: information_text(props, "BriefInformation", &mut property_limits),
-            detailed_information: information_text(
-                props,
-                "DetailedInformation",
-                &mut property_limits,
-            ),
-            copyright: information_text(props, "Copyright", &mut property_limits),
-            vendor_information_address: information_text(
-                props,
-                "VendorInformationAddress",
-                &mut property_limits,
-            ),
-            configuration_information_address: information_text(
-                props,
-                "ConfigurationInformationAddress",
-                &mut property_limits,
-            ),
+            information,
         },
         property_limits,
         child_objects: counts

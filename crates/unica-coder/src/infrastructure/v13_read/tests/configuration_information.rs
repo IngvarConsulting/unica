@@ -184,3 +184,30 @@ fn configuration_information_absence_and_empty_translations_do_not_invent_values
             .is_none_or(|limits| limits.as_array().is_some_and(Vec::is_empty)));
     }
 }
+
+#[test]
+fn configuration_information_is_identical_in_bounded_and_streamed_reads() {
+    for extra in [
+        "<UseManagedFormInOrdinaryApplication>false</UseManagedFormInOrdinaryApplication><UseOrdinaryFormInManagedApplication>true</UseOrdinaryFormInManagedApplication><BriefInformation><v8:item><v8:lang>ru</v8:lang><v8:content>Кратко &amp; точно</v8:content></v8:item><v8:item><v8:lang>en</v8:lang><v8:content/></v8:item></BriefInformation><DetailedInformation/><Copyright><v8:item><v8:lang>en</v8:lang><v8:content>Author 2026</v8:content></v8:item></Copyright><VendorInformationAddress><v8:item><v8:lang>ru</v8:lang><v8:content>https://vendor.example</v8:content></v8:item></VendorInformationAddress><ConfigurationInformationAddress><v8:item><v8:lang>en</v8:lang><v8:content>https://product.example</v8:content></v8:item></ConfigurationInformationAddress>",
+        "<UseManagedFormInOrdinaryApplication>false</UseManagedFormInOrdinaryApplication><UseManagedFormInOrdinaryApplication>true</UseManagedFormInOrdinaryApplication><BriefInformation>bare</BriefInformation>",
+        "<BriefInformation><v8:item><v8:lang>ru</v8:lang><v8:content>A&#13;B&#10;C&#9;D<![CDATA[<literal>]]><!--split-->E</v8:content></v8:item></BriefInformation>",
+        "<BriefInformation xmlns=\"urn:foreign\"><v8:item><v8:lang>ru</v8:lang><v8:content>Text</v8:content></v8:item></BriefInformation><DetailedInformation extra=\"bad\"/>",
+        "<BriefInformation><v8:item><v8:lang>ru</v8:lang><v8:content>One</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>Two</v8:content></v8:item></BriefInformation><UseManagedFormInOrdinaryApplication><Nested>true</Nested></UseManagedFormInOrdinaryApplication>",
+        "<Future><BriefInformation><v8:item><v8:lang>ru</v8:lang><v8:content>Ignored</v8:content></v8:item></BriefInformation></Future>",
+        "",
+
+    ] {
+        let fixture = RealReaderFixture::new();
+        let path = install(&fixture, extra);
+        let bounded = fixture.view_service().view(ViewRequest::new("main:Configuration").unwrap());
+        assert!(bounded.ok);
+        if extra.contains("&#13;") {
+            assert_eq!(bounded.data.as_ref().unwrap()["props"]["properties"]["briefInformation"][0]["content"], "A\rB\nC\tD<literal>E");
+        }
+        let xml = fs::read_to_string(&path).unwrap();
+        write(&path, &xml.replace("</MetaDataObject>", &format!("<!--{}--></MetaDataObject>", "x".repeat(8 * 1024 * 1024))));
+        let streamed = fixture.view_service().view(ViewRequest::new("main:Configuration").unwrap());
+        assert!(streamed.ok);
+        assert_eq!(streamed.data, bounded.data);
+    }
+}
