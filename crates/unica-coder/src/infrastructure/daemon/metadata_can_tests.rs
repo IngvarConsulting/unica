@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/document_sequence_filling.rs"]
+mod document_sequence_filling;
+
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
 

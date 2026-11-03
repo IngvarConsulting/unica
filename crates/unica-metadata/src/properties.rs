@@ -44,6 +44,7 @@ pub enum MetaPropertyKey {
     Periodicity,
     PostInPrivilegedMode,
     Posting,
+    SequenceFilling,
     Predefined,
     Privileged,
     QuickChoice,
@@ -327,6 +328,7 @@ const INFORMATION_REGISTER_PERIODICITY_VALUES: &[&str] = &[
     "RecorderPosition",
 ];
 const CALCULATION_REGISTER_PERIODICITY_VALUES: &[&str] = &["Day", "Month", "Quarter", "Year"];
+const SEQUENCE_FILLING_VALUES: &[&str] = &["AutoFill", "AutoFillOff"];
 const POSTING_VALUES: &[&str] = &["Allow", "Deny"];
 const REGISTER_RECORDS_DELETION_VALUES: &[&str] =
     &["AutoDelete", "AutoDeleteOnUnpost", "AutoDeleteOff"];
@@ -578,6 +580,13 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::PostInPrivilegedMode,
         MetaPropertyValueKind::Boolean,
         DOCUMENT_KINDS,
+    ),
+    enum_property(
+        "SequenceFilling",
+        "SequenceFilling",
+        MetaPropertyKey::SequenceFilling,
+        DOCUMENT_KINDS,
+        SEQUENCE_FILLING_VALUES,
     ),
     enum_property(
         "Posting",
@@ -892,6 +901,27 @@ mod tests {
                 "{property_name} for {}",
                 kind.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn document_sequence_filling_has_a_closed_enum_and_owner() {
+        for value in ["AutoFill", "AutoFillOff"] {
+            assert_property_kind_matrix(
+                "SequenceFilling",
+                MetaPropertyValue::String(value.into()),
+                &[MetadataKind::Document],
+            );
+        }
+        for value in [
+            MetaPropertyValue::String("Automatic".into()),
+            MetaPropertyValue::Boolean(false),
+        ] {
+            assert!(MetaPropertyChanges::convert(
+                MetadataKind::Document,
+                vec![MetaPropertyInput::new("SequenceFilling", value)]
+            )
+            .is_err());
         }
     }
 
