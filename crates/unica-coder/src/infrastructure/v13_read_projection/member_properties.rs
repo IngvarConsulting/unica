@@ -41,6 +41,7 @@ pub(super) fn project(
         let value = match value {
             Some(MetaObservedPropertyValue::UnsignedInteger { value }) => Some(Value::from(value)),
             Some(MetaObservedPropertyValue::Text { value }) => Some(Value::String(value)),
+            Some(MetaObservedPropertyValue::Boolean { value }) => Some(Value::Bool(value)),
             // Пустой набор переводов — значения нет, свойство не публикуется.
             Some(MetaObservedPropertyValue::LocalizedString { values }) if values.is_empty() => {
                 continue;

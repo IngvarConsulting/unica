@@ -592,14 +592,16 @@ const TYPED_COMMAND_STORAGE_PROFILE: TypedChildStorageProfile = TypedChildStorag
 /// template always carries a synonym.
 pub fn typed_operations_write_multilingual_text(operations: &[MetaEditOperation]) -> bool {
     operations.iter().any(|operation| match operation {
-        MetaEditOperation::SetProperties { values } => values
-            .entries()
-            .iter()
-            .any(|(key, _)| *key == MetaPropertyKey::Synonym),
+        MetaEditOperation::SetProperties { values } => values.entries().iter().any(|(key, _)| {
+            matches!(
+                key,
+                MetaPropertyKey::Synonym | MetaPropertyKey::Format | MetaPropertyKey::EditFormat
+            )
+        }),
         MetaEditOperation::Add { .. } => true,
-        MetaEditOperation::Update { elements, .. } => {
-            elements.iter().any(|element| element.synonym.is_some())
-        }
+        MetaEditOperation::Update { elements, .. } => elements.iter().any(|element| {
+            element.synonym.is_some() || element.input_settings.writes_localized_text()
+        }),
         // A copy carries the source's own translations, never new text.
         MetaEditOperation::Remove { .. }
         | MetaEditOperation::Copy { .. }
@@ -1353,11 +1355,19 @@ pub fn apply_typed_properties(
             None,
         )
     })?;
-    let previous_type = if changes
-        .entries()
-        .iter()
-        .any(|(key, _)| *key == MetaPropertyKey::Type)
-    {
+    let previous_type = if changes.entries().iter().any(|(key, _)| {
+        matches!(
+            key,
+            MetaPropertyKey::Type
+                | MetaPropertyKey::PasswordMode
+                | MetaPropertyKey::MultiLine
+                | MetaPropertyKey::ExtendedEdit
+                | MetaPropertyKey::Mask
+                | MetaPropertyKey::MarkNegatives
+                | MetaPropertyKey::Format
+                | MetaPropertyKey::EditFormat
+        )
+    }) {
         Some(super::info_projection::parse_observed_metadata_type_node(
             properties,
         )?)
@@ -1387,6 +1397,43 @@ pub fn apply_typed_properties(
                 Some("values"),
             )
         })?;
+        if let Some(setting) = MetadataInputSetting::from_xml_name(tag) {
+            let final_type = changes
+                .entries()
+                .iter()
+                .find_map(|(key, value)| match (key, value) {
+                    (MetaPropertyKey::Type, MetaPropertyValue::Type(ty)) => Some(ty.clone()),
+                    _ => None,
+                })
+                .map(Ok)
+                .unwrap_or_else(|| {
+                    MetadataType::try_from(previous_type.clone().expect("input settings read Type"))
+                })?;
+            let setting_value = match value {
+                MetaPropertyValue::Boolean(value) => MetadataInputValue::Boolean(*value),
+                MetaPropertyValue::String(value) => MetadataInputValue::Text(value.clone()),
+                _ => {
+                    return Err(typed_diagnostic(
+                        MetaDiagnosticCode::InvalidArguments,
+                        "input setting has the wrong value type",
+                        Some(tag),
+                    ))
+                }
+            };
+            for (replacement_range, replacement) in crate::input_settings::replacements(
+                parsed_body,
+                properties,
+                &final_type,
+                &[(setting, setting_value)],
+                lang,
+            )? {
+                replacements.push((
+                    replacement_range.start - range.start..replacement_range.end - range.start,
+                    replacement,
+                ));
+            }
+            continue;
+        }
         let replacement = match (key, value) {
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {
                 if previous_type
@@ -1967,6 +2014,57 @@ pub fn update_typed_element(
         )
     })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    if !update.input_settings.0.is_empty() {
+        let current_type = parse_typed_metadata_type_at_element(xml_text, range.clone())?;
+        let final_type = update.r#type.as_ref().unwrap_or(&current_type);
+        let doc = Document::parse(xml_text).map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "metadata XML is damaged",
+                None,
+            )
+        })?;
+        let node = doc
+            .descendants()
+            .find(|node| node.is_element() && node.range() == range)
+            .expect("resolved element");
+        let containers: Vec<_> = node
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+            .collect();
+        let [properties] = containers.as_slice() else {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "field Properties is missing or duplicated",
+                None,
+            ));
+        };
+        if properties.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+            || properties.attributes().len() != 0
+        {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "field Properties is damaged",
+                None,
+            ));
+        }
+        let mut replacements = crate::input_settings::replacements(
+            xml_text,
+            *properties,
+            final_type,
+            &update.input_settings.0,
+            lang,
+        )?;
+        replacements.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+        for (replacement_range, replacement) in replacements {
+            properties_text.replace_range(
+                replacement_range.start - range.start - properties_range.start
+                    ..replacement_range.end - range.start - properties_range.start,
+                &replacement,
+            );
+        }
+    }
+
     if let Some(metadata_type) = &update.r#type {
         let fill_value = match &update.fill_value {
             Some(fill_value) => Some(fill_value.clone()),

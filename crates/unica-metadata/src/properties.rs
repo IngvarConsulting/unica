@@ -5,6 +5,13 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum MetaPropertyKey {
+    PasswordMode,
+    MultiLine,
+    ExtendedEdit,
+    Mask,
+    MarkNegatives,
+    Format,
+    EditFormat,
     Type,
     Synonym,
     Comment,
@@ -340,6 +347,48 @@ const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "T
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
+    property(
+        "PasswordMode",
+        MetaPropertyKey::PasswordMode,
+        MetaPropertyValueKind::Boolean,
+        &[MetadataKind::Constant],
+    ),
+    property(
+        "MultiLine",
+        MetaPropertyKey::MultiLine,
+        MetaPropertyValueKind::Boolean,
+        &[MetadataKind::Constant],
+    ),
+    property(
+        "ExtendedEdit",
+        MetaPropertyKey::ExtendedEdit,
+        MetaPropertyValueKind::Boolean,
+        &[MetadataKind::Constant],
+    ),
+    property(
+        "Mask",
+        MetaPropertyKey::Mask,
+        MetaPropertyValueKind::String,
+        &[MetadataKind::Constant],
+    ),
+    property(
+        "MarkNegatives",
+        MetaPropertyKey::MarkNegatives,
+        MetaPropertyValueKind::Boolean,
+        &[MetadataKind::Constant],
+    ),
+    property(
+        "Format",
+        MetaPropertyKey::Format,
+        MetaPropertyValueKind::String,
+        &[MetadataKind::Constant],
+    ),
+    property(
+        "EditFormat",
+        MetaPropertyKey::EditFormat,
+        MetaPropertyValueKind::String,
+        &[MetadataKind::Constant],
+    ),
     property(
         "Type",
         MetaPropertyKey::Type,
@@ -1190,6 +1239,37 @@ mod tests {
                 "Correspondence",
                 MetaPropertyValue::Boolean(true),
                 &[AccountingRegister],
+            ),
+            (
+                "PasswordMode",
+                MetaPropertyValue::Boolean(true),
+                &[Constant],
+            ),
+            ("MultiLine", MetaPropertyValue::Boolean(true), &[Constant]),
+            (
+                "ExtendedEdit",
+                MetaPropertyValue::Boolean(true),
+                &[Constant],
+            ),
+            (
+                "Mask",
+                MetaPropertyValue::String(String::new()),
+                &[Constant],
+            ),
+            (
+                "MarkNegatives",
+                MetaPropertyValue::Boolean(true),
+                &[Constant],
+            ),
+            (
+                "Format",
+                MetaPropertyValue::String(String::new()),
+                &[Constant],
+            ),
+            (
+                "EditFormat",
+                MetaPropertyValue::String(String::new()),
+                &[Constant],
             ),
             (
                 "DefaultPresentation",

@@ -670,6 +670,7 @@ mod tests {
                         position: None,
                         indexing: None,
                         deny_incomplete_values: Some(true),
+                        input_settings: Default::default(),
                     }],
                 },
             )

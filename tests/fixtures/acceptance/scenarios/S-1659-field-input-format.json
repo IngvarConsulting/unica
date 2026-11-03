@@ -1,0 +1,4149 @@
+{
+  "id": "S-1659-field-input-format",
+  "issue": 1659,
+  "area": "Реквизиты и состав",
+  "task": "Изменить режимы ввода строк и чисел у реквизита, колонки ТЧ и константы с сохранением переводов и проверкой конфликта.",
+  "workspace": "tests/fixtures/acceptance/workspace-field-input-format",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/passwordMode/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/multiLine/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/extendedEdit/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/mask/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b0_0_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "passwordMode": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b0_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}PasswordMode",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PasswordMode",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}PasswordMode",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b0_0_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "passwordMode": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b0_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}PasswordMode",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PasswordMode",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}PasswordMode",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b0_1_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "multiLine": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b0_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}MultiLine",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MultiLine",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}MultiLine",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b0_1_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "multiLine": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b0_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}MultiLine",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MultiLine",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}MultiLine",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b0_2_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "extendedEdit": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b0_2_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}ExtendedEdit",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExtendedEdit",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}ExtendedEdit",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b0_2_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "extendedEdit": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b0_2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}ExtendedEdit",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExtendedEdit",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}ExtendedEdit",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b0_3_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "mask": "999-999"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b0_3_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}Mask",
+          "eq": [
+            "999-999"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Mask",
+          "eq": "999-999"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}Mask",
+          "eq": [
+            "999-999"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b0_3_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "mask": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b0_3_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}Mask",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}Mask",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/markNegatives/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/format/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/editFormat/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b1_0_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "markNegatives": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b1_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}MarkNegatives",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MarkNegatives",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}MarkNegatives",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b1_0_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "markNegatives": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b1_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}MarkNegatives",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MarkNegatives",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}MarkNegatives",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b1_1_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "format": "ЧДЦ=2; ЧГ=0"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b1_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=2; ЧГ=0"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Format",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            },
+            {
+              "language": "ru",
+              "content": "ЧДЦ=2; ЧГ=0"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=2; ЧГ=0"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b1_1_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "format": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b1_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Format",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b1_2_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "editFormat": "ЧДЦ=3"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b1_2_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=3"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditFormat",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            },
+            {
+              "language": "ru",
+              "content": "ЧДЦ=3"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=3"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b1_2_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "editFormat": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b1_2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditFormat",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/passwordMode/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/multiLine/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/extendedEdit/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/mask/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b2_0_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "passwordMode": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b2_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}PasswordMode",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PasswordMode",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}PasswordMode",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b2_0_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "passwordMode": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b2_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}PasswordMode",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PasswordMode",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}PasswordMode",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b2_1_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "multiLine": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b2_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}MultiLine",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MultiLine",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}MultiLine",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b2_1_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "multiLine": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b2_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}MultiLine",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MultiLine",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}MultiLine",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b2_2_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "extendedEdit": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b2_2_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}ExtendedEdit",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExtendedEdit",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}ExtendedEdit",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b2_2_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "extendedEdit": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b2_2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}ExtendedEdit",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExtendedEdit",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}ExtendedEdit",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b2_3_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "mask": "999-999"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b2_3_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}Mask",
+          "eq": [
+            "999-999"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Mask",
+          "eq": "999-999"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}Mask",
+          "eq": [
+            "999-999"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b2_3_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "mask": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b2_3_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}Mask",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}Mask",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/markNegatives/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/format/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/editFormat/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b3_0_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "markNegatives": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b3_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}MarkNegatives",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MarkNegatives",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}MarkNegatives",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b3_0_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "markNegatives": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b3_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}MarkNegatives",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MarkNegatives",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}MarkNegatives",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b3_1_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "format": "ЧДЦ=2; ЧГ=0"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b3_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=2; ЧГ=0"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Format",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            },
+            {
+              "language": "ru",
+              "content": "ЧДЦ=2; ЧГ=0"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=2; ЧГ=0"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b3_1_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "format": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b3_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Format",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b3_2_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "editFormat": "ЧДЦ=3"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b3_2_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=3"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditFormat",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            },
+            {
+              "language": "ru",
+              "content": "ЧДЦ=3"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=3"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b3_2_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "editFormat": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.b3_2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditFormat",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}TabularSection/{*}ChildObjects/{*}Attribute/{*}Properties[{*}Name=\"Amount\"]/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/PasswordMode/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/MultiLine/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/ExtendedEdit/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/Mask/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b4_0_0": {
+          "kind": "sha256",
+          "file": "src/Constants/Setting.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Setting",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PasswordMode": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "sha256",
+          "eq": "$capture.b4_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}PasswordMode",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PasswordMode",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}PasswordMode",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b4_0_1": {
+          "kind": "sha256",
+          "file": "src/Constants/Setting.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Setting",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PasswordMode": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "sha256",
+          "eq": "$capture.b4_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}PasswordMode",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/PasswordMode",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}PasswordMode",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b4_1_0": {
+          "kind": "sha256",
+          "file": "src/Constants/Setting.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Setting",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MultiLine": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "sha256",
+          "eq": "$capture.b4_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}MultiLine",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MultiLine",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}MultiLine",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b4_1_1": {
+          "kind": "sha256",
+          "file": "src/Constants/Setting.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Setting",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MultiLine": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "sha256",
+          "eq": "$capture.b4_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}MultiLine",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MultiLine",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}MultiLine",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b4_2_0": {
+          "kind": "sha256",
+          "file": "src/Constants/Setting.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Setting",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ExtendedEdit": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "sha256",
+          "eq": "$capture.b4_2_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}ExtendedEdit",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExtendedEdit",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}ExtendedEdit",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b4_2_1": {
+          "kind": "sha256",
+          "file": "src/Constants/Setting.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Setting",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ExtendedEdit": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "sha256",
+          "eq": "$capture.b4_2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}ExtendedEdit",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExtendedEdit",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}ExtendedEdit",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b4_3_0": {
+          "kind": "sha256",
+          "file": "src/Constants/Setting.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Setting",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Mask": "999-999"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "sha256",
+          "eq": "$capture.b4_3_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Mask",
+          "eq": [
+            "999-999"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Mask",
+          "eq": "999-999"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Mask",
+          "eq": [
+            "999-999"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b4_3_1": {
+          "kind": "sha256",
+          "file": "src/Constants/Setting.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Setting",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Mask": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "sha256",
+          "eq": "$capture.b4_3_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Mask",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Setting"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Setting.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Mask",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/MarkNegatives/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/Format/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/anyOf/0/properties/EditFormat/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b5_0_0": {
+          "kind": "sha256",
+          "file": "src/Constants/Amount.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Amount",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MarkNegatives": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "sha256",
+          "eq": "$capture.b5_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}MarkNegatives",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MarkNegatives",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}MarkNegatives",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b5_0_1": {
+          "kind": "sha256",
+          "file": "src/Constants/Amount.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Amount",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MarkNegatives": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "sha256",
+          "eq": "$capture.b5_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}MarkNegatives",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MarkNegatives",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}MarkNegatives",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b5_1_0": {
+          "kind": "sha256",
+          "file": "src/Constants/Amount.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Amount",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Format": "ЧДЦ=2; ЧГ=0"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "sha256",
+          "eq": "$capture.b5_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=2; ЧГ=0"
+          ]
+        },
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Format",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            },
+            {
+              "language": "ru",
+              "content": "ЧДЦ=2; ЧГ=0"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=2; ЧГ=0"
+          ]
+        },
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b5_1_1": {
+          "kind": "sha256",
+          "file": "src/Constants/Amount.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Amount",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Format": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "sha256",
+          "eq": "$capture.b5_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Format",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Format/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}Format/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b5_2_0": {
+          "kind": "sha256",
+          "file": "src/Constants/Amount.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Amount",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EditFormat": "ЧДЦ=3"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "sha256",
+          "eq": "$capture.b5_2_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=3"
+          ]
+        },
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditFormat",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            },
+            {
+              "language": "ru",
+              "content": "ЧДЦ=3"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": [
+            "ЧДЦ=3"
+          ]
+        },
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "b5_2_1": {
+          "kind": "sha256",
+          "file": "src/Constants/Amount.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Amount",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EditFormat": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "sha256",
+          "eq": "$capture.b5_2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EditFormat",
+          "eq": [
+            {
+              "language": "en",
+              "content": "ND=1"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}EditFormat/{*}item[{*}lang=\"ru\"]/{*}content",
+          "eq": []
+        },
+        {
+          "path": "src/Constants/Amount.xml",
+          "kind": "xml",
+          "select": "./{*}Constant/{*}Properties/{*}EditFormat/{*}item[{*}lang=\"en\"]/{*}content",
+          "eq": [
+            "ND=1"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "passwordMode": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Changed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "changed": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Catalogs/Codes.xml; input `Catalogs/Codes.xml`: source write target; the plan retains its original state to prevent overwriting",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "passwordMode": "true"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `passwordMode` must be a boolean",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Amount",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "passwordMode": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: PasswordMode is not supported for this Type",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.Flag",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Mask": "999"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Mask is not supported for this Type",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "passwordMode": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: input settings are available for Catalog header and tabular attributes",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    }
+  ]
+}

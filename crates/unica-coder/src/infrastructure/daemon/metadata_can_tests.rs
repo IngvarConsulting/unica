@@ -1,3 +1,5 @@
+#[path = "metadata_can_tests/field_input_format.rs"]
+mod field_input_format;
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
 

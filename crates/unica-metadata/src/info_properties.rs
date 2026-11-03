@@ -351,6 +351,9 @@ fn mutation_compatible_read_key(xml_name: &str) -> Option<(&'static str, MetaPro
 }
 
 fn mutation_value_kind(key: MetaPropertyKey) -> MetaInfoPropertyValueKind {
+    if matches!(key, MetaPropertyKey::Format | MetaPropertyKey::EditFormat) {
+        return MetaInfoPropertyValueKind::LocalizedString;
+    }
     use MetaPropertyKey::*;
     if matches!(
         key,
@@ -362,6 +365,10 @@ fn mutation_value_kind(key: MetaPropertyKey) -> MetaInfoPropertyValueKind {
             | Correspondence
             | DistributedInfoBase
             | EnableTotalsSplitting
+            | PasswordMode
+            | MultiLine
+            | ExtendedEdit
+            | MarkNegatives
             | ExternalConnection
             | FoldersOnTop
             | Global
@@ -423,6 +430,9 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | ReturnValuesReuse
         | Server
         | ServerCall => kind == CommonModule,
+        PasswordMode | MultiLine | ExtendedEdit | Mask | MarkNegatives | Format | EditFormat => {
+            kind == Constant
+        }
         Correspondence | PeriodAdjustmentLength => kind == AccountingRegister,
         Description | Predefined | RestartCountOnFailure | RestartIntervalOnFailure | Use => {
             kind == ScheduledJob
@@ -875,6 +885,11 @@ mod tests {
                 assert_eq!(observed.key, writer.public_name);
                 let expected_kind = if writer.key == MetaPropertyKey::Synonym {
                     MetaInfoPropertyValueKind::LegacyLocalizedString
+                } else if matches!(
+                    writer.key,
+                    MetaPropertyKey::Format | MetaPropertyKey::EditFormat
+                ) {
+                    MetaInfoPropertyValueKind::LocalizedString
                 } else {
                     match writer.value_kind {
                         MetaPropertyValueKind::String => MetaInfoPropertyValueKind::String,

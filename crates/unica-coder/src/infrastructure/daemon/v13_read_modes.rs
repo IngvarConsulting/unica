@@ -242,6 +242,18 @@ pub(super) fn operation_node_with(
     {
         contract = Some(unica_forms::contracts::form_item_add_in_command_bar());
     }
+    if descriptor.operation::<unica_metadata::apply_operations::MetadataOperation>()
+        == Some(unica_metadata::apply_operations::MetadataOperation::AttributeSet)
+        || descriptor.operation::<unica_metadata::descriptor_operations::PropertiesOperation>()
+            == Some(unica_metadata::descriptor_operations::PropertiesOperation::Set)
+    {
+        if let Some(contract) = contract.as_mut() {
+            let observed = data
+                .get("props")
+                .and_then(|props| props.get("type").or_else(|| props.get("Type")));
+            unica_metadata::constrain_input_settings_contract(contract, observed);
+        }
+    }
     if contract.is_none() {
         return Err(ReadModeError::unsupported_section(format!(
             "detailed argument contract for `{operation}` is not available yet"

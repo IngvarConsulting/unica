@@ -14,11 +14,14 @@ pub enum MetaMemberReadProfile {
 pub enum MetaMemberReadContext {
     TabularSection,
     TabularAttribute,
+    Attribute,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum MetaMemberValueKind {
     UnsignedInteger,
+    Boolean,
+    String,
     Text(&'static [&'static str]),
     LocalizedString,
 }
@@ -31,6 +34,76 @@ pub struct MetaMemberPropertySpec {
 }
 
 const CATALOG_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
+    MetaMemberPropertySpec {
+        name: "PasswordMode",
+        context: MetaMemberReadContext::Attribute,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "MultiLine",
+        context: MetaMemberReadContext::Attribute,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "ExtendedEdit",
+        context: MetaMemberReadContext::Attribute,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "Mask",
+        context: MetaMemberReadContext::Attribute,
+        kind: MetaMemberValueKind::String,
+    },
+    MetaMemberPropertySpec {
+        name: "MarkNegatives",
+        context: MetaMemberReadContext::Attribute,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "Format",
+        context: MetaMemberReadContext::Attribute,
+        kind: MetaMemberValueKind::LocalizedString,
+    },
+    MetaMemberPropertySpec {
+        name: "EditFormat",
+        context: MetaMemberReadContext::Attribute,
+        kind: MetaMemberValueKind::LocalizedString,
+    },
+    MetaMemberPropertySpec {
+        name: "PasswordMode",
+        context: MetaMemberReadContext::TabularAttribute,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "MultiLine",
+        context: MetaMemberReadContext::TabularAttribute,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "ExtendedEdit",
+        context: MetaMemberReadContext::TabularAttribute,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "Mask",
+        context: MetaMemberReadContext::TabularAttribute,
+        kind: MetaMemberValueKind::String,
+    },
+    MetaMemberPropertySpec {
+        name: "MarkNegatives",
+        context: MetaMemberReadContext::TabularAttribute,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "Format",
+        context: MetaMemberReadContext::TabularAttribute,
+        kind: MetaMemberValueKind::LocalizedString,
+    },
+    MetaMemberPropertySpec {
+        name: "EditFormat",
+        context: MetaMemberReadContext::TabularAttribute,
+        kind: MetaMemberValueKind::LocalizedString,
+    },
     MetaMemberPropertySpec {
         name: "LineNumberLength",
         context: MetaMemberReadContext::TabularSection,
@@ -88,6 +161,9 @@ impl MetaMemberReadProfile {
     }
 
     pub fn context_for_field(self, field: &str) -> Option<MetaMemberReadContext> {
+        if indexed_field_suffix(field, "collections.attributes[").is_some_and(str::is_empty) {
+            return Some(MetaMemberReadContext::Attribute);
+        }
         let rest = indexed_field_suffix(field, "collections.tabularSections[")?;
         if rest.is_empty() {
             return Some(MetaMemberReadContext::TabularSection);
@@ -103,6 +179,15 @@ impl MetaMemberReadProfile {
         kind: NodeKind,
     ) -> Option<MetaMemberReadContext> {
         match address.segments() {
+            [owner, attribute]
+                if owner.kind() == NodeKind::Catalog
+                    && owner.name().is_some()
+                    && attribute.kind() == NodeKind::Attribute
+                    && attribute.name().is_some()
+                    && kind == NodeKind::Attribute =>
+            {
+                Some(MetaMemberReadContext::Attribute)
+            }
             [owner, section]
                 if owner.kind() == NodeKind::Catalog
                     && owner.name().is_some()
@@ -145,7 +230,7 @@ impl MetaMemberReadContext {
     pub fn xml_tag(self) -> &'static str {
         match self {
             Self::TabularSection => "TabularSection",
-            Self::TabularAttribute => "Attribute",
+            Self::TabularAttribute | Self::Attribute => "Attribute",
         }
     }
 }
@@ -168,12 +253,22 @@ impl MetaMemberPropertySpec {
                         value: value.into(),
                     })
             }
+            MetaMemberValueKind::Boolean => match value {
+                "true" => Some(MetaObservedPropertyValue::Boolean { value: true }),
+                "false" => Some(MetaObservedPropertyValue::Boolean { value: false }),
+                _ => None,
+            },
+            MetaMemberValueKind::String => Some(MetaObservedPropertyValue::Text {
+                value: value.into(),
+            }),
             MetaMemberValueKind::LocalizedString => None,
         }
     }
 
     pub fn accepts(self, value: &MetaObservedPropertyValue) -> bool {
         match (self.kind, value) {
+            (MetaMemberValueKind::Boolean, MetaObservedPropertyValue::Boolean { .. }) => true,
+            (MetaMemberValueKind::String, MetaObservedPropertyValue::Text { .. }) => true,
             (
                 MetaMemberValueKind::UnsignedInteger,
                 MetaObservedPropertyValue::UnsignedInteger { .. },

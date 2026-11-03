@@ -833,6 +833,25 @@ pub fn parse_element_update(
     Ok(MetaElementUpdateInput {
         indexing: reader.read("indexing", optional_string_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
+        input_settings: {
+            let mut settings = Vec::new();
+            for setting in crate::MetadataInputSetting::ALL {
+                let key = setting.names().1;
+                let value = if setting.boolean() {
+                    reader
+                        .read(key, optional_bool_at)?
+                        .map(crate::MetadataInputValue::Boolean)
+                } else {
+                    reader
+                        .read(key, optional_string_at)?
+                        .map(crate::MetadataInputValue::Text)
+                };
+                if let Some(value) = value {
+                    settings.push((*setting, value));
+                }
+            }
+            crate::MetadataInputSettings(settings)
+        },
         name: reader.read("name", required_string_at)?,
         new_name: reader.read("newName", optional_string_at)?,
         synonym: reader.read("synonym", optional_string_at)?,

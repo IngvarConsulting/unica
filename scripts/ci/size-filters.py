@@ -54,6 +54,14 @@ TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::")
 # 400 000 исходных наборов: 34.447 с отдельно, 41.729 с совместно, macOS.
 # Это размер конкретной проверки; соседние layout-проверки остаются small.
 MEASURED_MEDIUM_CASES = (
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::field_input_format::field_input_format_constant_number"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::field_input_format::field_input_format_explicit_type_matches_can_and_preview"),
+    # Whole-tree mutation, refusal and no-op cases: 3–7 s in local queue runs.
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::field_input_format::field_input_format_constant_string"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::field_input_format::field_input_format_header_string"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::field_input_format::field_input_format_header_number"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::field_input_format::field_input_format_tabular_string"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::field_input_format::field_input_format_tabular_number"),
     (
         "unica-project-health",
         "unica_project_health",

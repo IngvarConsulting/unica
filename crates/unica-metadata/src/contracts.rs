@@ -184,6 +184,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
         } else {
             fields.remove("templateType");
             fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
+            for setting in crate::MetadataInputSetting::ALL { fields.insert(setting.names().1.into(), setting.schema()); }
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
@@ -230,6 +231,14 @@ fn metadata_element_schema(
         .collect();
     if update && deny_incomplete_values_allowed(collection, site) {
         fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
+    }
+    if update
+        && collection == MetaCollection::Attributes
+        && site.is_some_and(|site| site.owner == MetadataKind::Catalog)
+    {
+        for setting in crate::MetadataInputSetting::ALL {
+            fields.insert(setting.names().1.into(), setting.schema());
+        }
     }
     let selector = if update { "newName" } else { "name" };
     fields[selector]

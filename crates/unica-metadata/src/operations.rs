@@ -559,6 +559,7 @@ pub struct MetaElementUpdateInput {
     pub indexing: Option<String>,
     /// `DenyIncompleteValues` of a register dimension.
     pub deny_incomplete_values: Option<bool>,
+    pub input_settings: crate::MetadataInputSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -573,6 +574,7 @@ pub struct MetaElementUpdate {
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
     pub deny_incomplete_values: Option<bool>,
+    pub input_settings: crate::MetadataInputSettings,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -858,6 +860,7 @@ impl MetaElementUpdate {
             && input.position.is_none()
             && input.indexing.is_none()
             && input.deny_incomplete_values.is_none()
+            && input.input_settings.0.is_empty()
         {
             return Err(invalid_operation(
                 field,
@@ -893,6 +896,7 @@ impl MetaElementUpdate {
             position: input.position,
             indexing: input.indexing,
             deny_incomplete_values: input.deny_incomplete_values,
+            input_settings: input.input_settings,
         })
     }
 }
@@ -1698,6 +1702,15 @@ pub fn validate_metadata_operation_capabilities(
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
             for (index, element) in elements.iter().enumerate() {
+                if !(element.input_settings.0.is_empty()
+                    || owner_kind == MetadataKind::Catalog
+                        && *collection == MetaCollection::Attributes)
+                {
+                    return Err(invalid_operation(
+                        format!("elements[{index}].inputSettings"),
+                        "input settings are available for Catalog header and tabular attributes",
+                    ));
+                }
                 if element.deny_incomplete_values.is_some()
                     && !metadata_deny_incomplete_values_is_allowed(owner_kind)
                 {
