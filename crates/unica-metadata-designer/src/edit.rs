@@ -1413,6 +1413,39 @@ pub fn apply_typed_properties(
             {
                 return Err(typed_diagnostic(MetaDiagnosticCode::InvalidArguments, format!("existing {tag} is damaged; restore a confirmed valid source before changing it"), Some(&format!("values.{tag}"))));
             }
+            if let MetaPropertyValue::String(value) = value {
+                if observed != *value {
+                    // Keep the original qualified element and its namespace
+                    // declarations; only the confirmed scalar content changes.
+                    let raw = &parsed_body[property.range()];
+                    let mut quote = None;
+                    let content_start = raw
+                        .bytes()
+                        .enumerate()
+                        .find_map(|(index, byte)| {
+                            if let Some(delimiter) = quote {
+                                if byte == delimiter {
+                                    quote = None;
+                                }
+                            } else if matches!(byte, b'\'' | b'"') {
+                                quote = Some(byte);
+                            } else if byte == b'>' {
+                                return Some(index + 1);
+                            }
+                            None
+                        })
+                        .expect("parsed opening tag");
+                    let content_end = raw.rfind("</").expect("nonempty enum closing tag");
+                    let replacement =
+                        format!("{}{}{}", &raw[..content_start], value, &raw[content_end..]);
+                    let property_range = property.range();
+                    replacements.push((
+                        property_range.start - range.start..property_range.end - range.start,
+                        replacement,
+                    ));
+                }
+                continue;
+            }
         }
         let replacement = match (key, value) {
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {
