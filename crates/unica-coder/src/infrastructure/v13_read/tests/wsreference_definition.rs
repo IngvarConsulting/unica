@@ -201,10 +201,10 @@ fn wsreference_prefix_aliases_do_not_change_any_declaration() {
 #[test]
 fn wsreference_empty_missing_malformed_and_outside_profile_are_distinct() {
     for (content, expected_rows, reason) in [
-        (None, 0, "absent"),
-        (Some(""), 0, "unreadable"),
-        (Some("<definitions"), 0, "unreadable"),
-        (Some("<definitions/>"), 0, "root"),
+        (None, 0, "local WSDL companion WSDefinition.xml is absent; its declarations are unknown"),
+        (Some(""), 0, "local WSDL XML is unreadable:"),
+        (Some("<definitions"), 0, "local WSDL XML is unreadable:"),
+        (Some("<definitions/>"), 0, "local WSDL root must be wsdl:definitions"),
         (
             Some(r#"<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"/>"#),
             1,
@@ -215,7 +215,7 @@ fn wsreference_empty_missing_malformed_and_outside_profile_are_distinct() {
                 r#"<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"><unknown><message name="Hidden"/></unknown><message name="Known"/></definitions>"#,
             ),
             2,
-            "outside",
+            "WSDL declaration 2 construct: element or its context is outside the local read profile",
         ),
     ] {
         let fixture = RealReaderFixture::new();
@@ -234,28 +234,35 @@ fn wsreference_empty_missing_malformed_and_outside_profile_are_distinct() {
         if reason.is_empty() {
             assert!(data.get("limits").is_none(), "{data}");
         } else {
-            assert!(data["limits"].to_string().contains(reason), "{data}");
-            assert!(owner.data.as_ref().unwrap()["limits"]
-                .to_string()
-                .contains(reason));
+            let limits = data["limits"].as_array().unwrap();
+            assert_eq!(limits.len(), 1, "{data}");
+            assert!(limits[0].as_str().unwrap().starts_with(reason), "{data}");
+            assert_eq!(owner.data.as_ref().unwrap()["limits"], data["limits"]);
         }
     }
+}
+
+fn exact_limits(data: &serde_json::Value, expected: &[&str]) {
+    assert_eq!(data["limits"], json!(expected), "{data}");
 }
 
 #[test]
 fn wsreference_local_damage_preserves_independent_declarations_and_dependencies() {
     for (content, reason) in [
-        (WSDL.replace("xs:string", "missing:T"),"prefix"),
-        (WSDL.replace("xs:string", "xs:UnknownType"),"target"),
-        (FULL_WSDL.replace("nillable=\"false\"", "nillable=\"broken\""),"boolean"),
-        (FULL_WSDL.replace("minOccurs=\"0\"", "minOccurs=\"-1\""),"bound"),
-        (WSDL.replace("</definitions>","<import namespace=\"urn:outside\" location=\"https://example.invalid/must-not-be-loaded\"/></definitions>"),"external dependency"),
-        (WSDL.replace("</definitions>","<message name=\"Input\"/></definitions>"),"duplicate"),
+        (WSDL.replace("xs:string", "missing:T"), "WSDL declaration 3 type: QName prefix is not declared"),
+        (WSDL.replace("xs:string", "xs:UnknownType"), "WSDL declaration 3 type: QName target is missing, ambiguous, or outside the local document"),
+        (FULL_WSDL.replace("nillable=\"false\"", "nillable=\"broken\""), "WSDL declaration 7 nillable: invalid XML boolean"),
+        (FULL_WSDL.replace("minOccurs=\"0\"", "minOccurs=\"-1\""), "WSDL declaration 7 minOccurs: invalid occurrence bound"),
+        (WSDL.replace("</definitions>", "<import namespace=\"urn:outside\" location=\"https://example.invalid/must-not-be-loaded\"/></definitions>"), "WSDL declaration 4 import: external dependency is declared; no resource was loaded"),
+        (WSDL.replace("</definitions>", "<message name=\"Input\"/></definitions>"), "WSDL declaration 4: duplicate global Message identity is ambiguous"),
     ] {
-        let fixture = RealReaderFixture::new(); let path=install(&fixture,Some(&content)); let before=fs::read(&path).unwrap();
-        let result=fixture.view_service().view(ViewRequest::new(&format!("{OWNER}.Definition")).unwrap());
-        assert!(result.ok,"{result:?}"); let data=result.data.as_ref().unwrap();
-        assert!(data["limits"].to_string().contains(reason),"{data}");
+        let fixture = RealReaderFixture::new();
+        let path = install(&fixture, Some(&content));
+        let before = fs::read(&path).unwrap();
+        let result = fixture.view_service().view(ViewRequest::new(&format!("{OWNER}.Definition")).unwrap());
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        exact_limits(data, &[reason]);
         assert!(data["items"].as_array().unwrap().iter().any(|row| row["kind"] == "message"));
         assert_eq!(fs::read(path).unwrap(), before);
     }
@@ -424,15 +431,21 @@ fn wsreference_name_and_token_fields_follow_their_xml_types() {
         complete_rows(&fixture.view_service())[2]["name"],
         "123:body"
     );
-    for (content, reason) in [
+    for (content, reasons) in [
         (
             FULL_WSDL.replace("style=\"document\"", "style=\" document \""),
-            "style",
+            vec![
+                "WSDL declaration 30 style: value is outside the local read profile",
+                "WSDL declaration 32 style: value is outside the local read profile",
+            ],
         ),
-        (WSDL.replace("name=\"Input\"", "name=\"In put\""), "name"),
+        (
+            WSDL.replace("name=\"Input\"", "name=\"In put\""),
+            vec!["WSDL declaration 2 name: invalid XML name token"],
+        ),
         (
             WSDL.replace("name=\"Input\"", "name=\"\u{a0}Input\u{a0}\""),
-            "name",
+            vec!["WSDL declaration 2 name: invalid XML name token"],
         ),
     ] {
         let fixture = RealReaderFixture::new();
@@ -441,22 +454,20 @@ fn wsreference_name_and_token_fields_follow_their_xml_types() {
             .view_service()
             .view(ViewRequest::new(&format!("{OWNER}.Definition")).unwrap());
         assert!(result.ok, "{result:?}");
-        assert!(
-            result.data.as_ref().unwrap()["limits"]
-                .to_string()
-                .contains(reason),
-            "{result:?}"
-        );
+        exact_limits(result.data.as_ref().unwrap(), &reasons);
     }
 }
 
 #[test]
 fn wsreference_incomplete_character_content_and_address_are_named() {
     for (content, reason) in [
-        (WSDL.replace("</message>", "&#160;</message>"), "content"),
+        (
+            WSDL.replace("</message>", "&#160;</message>"),
+            "WSDL declaration 2 content: character content is outside the local read profile",
+        ),
         (
             FULL_WSDL.replace("location=\"https://example.invalid/soap\"", ""),
-            "location",
+            "WSDL declaration 41 location: required declaration is absent",
         ),
     ] {
         let fixture = RealReaderFixture::new();
@@ -465,12 +476,7 @@ fn wsreference_incomplete_character_content_and_address_are_named() {
             .view_service()
             .view(ViewRequest::new(&format!("{OWNER}.Definition")).unwrap());
         assert!(result.ok, "{result:?}");
-        assert!(
-            result.data.as_ref().unwrap()["limits"]
-                .to_string()
-                .contains(reason),
-            "{result:?}"
-        );
+        exact_limits(result.data.as_ref().unwrap(), &[reason]);
     }
 }
 
@@ -490,7 +496,10 @@ fn wsreference_duplicate_part_identity_is_preserved_and_limited() {
     assert!(result.ok, "{result:?}");
     let data = result.data.as_ref().unwrap();
     assert_eq!(data["items"].as_array().unwrap().len(), 4);
-    assert!(data["limits"].to_string().contains("duplicate"), "{data}");
+    exact_limits(
+        data,
+        &["WSDL declaration 4: duplicate local part identity is ambiguous"],
+    );
 }
 
 #[test]
