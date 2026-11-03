@@ -362,6 +362,8 @@ fn mutation_value_kind(key: MetaPropertyKey) -> MetaInfoPropertyValueKind {
             | Correspondence
             | DistributedInfoBase
             | EnableTotalsSplitting
+            | EnableTotalsSliceFirst
+            | EnableTotalsSliceLast
             | ExternalConnection
             | FoldersOnTop
             | Global
@@ -430,7 +432,9 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         Event | Handler => kind == EventSubscription,
         DistributedInfoBase => kind == ExchangePlan,
         EnableTotalsSplitting | RegisterType => kind == AccumulationRegister,
-        MainFilterOnPeriod | WriteMode => kind == InformationRegister,
+        MainFilterOnPeriod | WriteMode | EnableTotalsSliceFirst | EnableTotalsSliceLast => {
+            kind == InformationRegister
+        }
         NumberAllowedLength
         | NumberPeriodicity
         | PostInPrivilegedMode

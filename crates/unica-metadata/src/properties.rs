@@ -25,6 +25,8 @@ pub enum MetaPropertyKey {
     Event,
     DistributedInfoBase,
     EnableTotalsSplitting,
+    EnableTotalsSliceFirst,
+    EnableTotalsSliceLast,
     ExternalConnection,
     FoldersOnTop,
     Global,
@@ -458,6 +460,18 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::DistributedInfoBase,
         MetaPropertyValueKind::Boolean,
         EXCHANGE_PLAN_KINDS,
+    ),
+    property(
+        "EnableTotalsSliceFirst",
+        MetaPropertyKey::EnableTotalsSliceFirst,
+        MetaPropertyValueKind::Boolean,
+        INFORMATION_REGISTER_KINDS,
+    ),
+    property(
+        "EnableTotalsSliceLast",
+        MetaPropertyKey::EnableTotalsSliceLast,
+        MetaPropertyValueKind::Boolean,
+        INFORMATION_REGISTER_KINDS,
     ),
     property(
         "EnableTotalsSplitting",
@@ -1222,6 +1236,16 @@ mod tests {
                 "DistributedInfoBase",
                 MetaPropertyValue::Boolean(true),
                 &[ExchangePlan],
+            ),
+            (
+                "EnableTotalsSliceFirst",
+                MetaPropertyValue::Boolean(true),
+                &[InformationRegister],
+            ),
+            (
+                "EnableTotalsSliceLast",
+                MetaPropertyValue::Boolean(true),
+                &[InformationRegister],
             ),
             (
                 "EnableTotalsSplitting",
