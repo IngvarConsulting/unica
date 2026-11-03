@@ -20,7 +20,7 @@ pub(super) fn parse(
             return Err(ProjectionError::malformed(&field,"choice parameter value has an unexpected structure"));
         }
         let raw_type=value.attribute((XML_SCHEMA_INSTANCE_NAMESPACE,"type")).ok_or_else(|| ProjectionError::malformed(&field,"choice parameter value has no xsi:type"))?;
-        let expanded = expand_qname(*value, raw_type, &field)?;
+        let expanded = expanded_value_type(*value, raw_type, &field)?;
         if expanded.namespace != READABLE_NAMESPACE || expanded.local_name != "DesignTimeRef" {
             return Err(ProjectionError::unsupported(&field,"choice parameter type is outside the DesignTimeRef profile"));
         }
@@ -31,4 +31,25 @@ pub(super) fn parse(
         }
         Ok(MetaChoiceParameter { name:item.attribute("name").unwrap().to_string(), value:MetaChoiceParameterValue { r#type:expanded,reference } })
     }).collect()
+}
+
+fn expanded_value_type(
+    value: roxmltree::Node<'_, '_>,
+    raw: &str,
+    field: &str,
+) -> Result<MetaExpandedName, ProjectionError> {
+    let raw = raw.trim_matches([' ', '\t', '\r', '\n']);
+    if raw.contains(':') {
+        return expand_qname(value, raw, field);
+    }
+    if !xml_ncname_is_valid(raw) {
+        return Err(ProjectionError::malformed(
+            field,
+            "choice parameter type QName is malformed",
+        ));
+    }
+    Ok(MetaExpandedName {
+        namespace: value.lookup_namespace_uri(None).unwrap_or("").to_string(),
+        local_name: raw.to_string(),
+    })
 }

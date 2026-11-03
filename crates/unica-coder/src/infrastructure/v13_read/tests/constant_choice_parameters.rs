@@ -164,3 +164,54 @@ fn constant_choice_parameter_limit_keeps_whole_value_and_all_relation_pages() {
     assert_eq!(count, 40);
     assert_eq!(fs::read(path).unwrap(), before);
 }
+
+fn assert_choice_parameter_qname(replacement: &str) {
+    let fixture = RealReaderFixture::new();
+    let raw = entries(&["Вес"]).replace("xsi:type=\"xr:DesignTimeRef\"", replacement);
+    install(&fixture, &raw);
+    let result = fixture.view_service().view(ViewRequest::new(AT).unwrap());
+    assert!(result.ok, "{result:?}");
+    assert_eq!(
+        result.data.as_ref().unwrap()["props"]["choiceParameters"],
+        expected(&["Вес"]),
+        "{result:?}"
+    );
+}
+#[test]
+fn constant_choice_parameter_qname_xml_whitespace_is_valid() {
+    assert_choice_parameter_qname("xsi:type=\" xr:DesignTimeRef \"");
+}
+#[test]
+fn constant_choice_parameter_qname_default_namespace_is_valid() {
+    assert_choice_parameter_qname(
+        "xmlns=\"http://v8.1c.ru/8.3/xcf/readable\" xsi:type=\"DesignTimeRef\"",
+    );
+}
+
+#[test]
+fn constant_choice_parameter_qname_rejects_non_xml_whitespace_and_internal_spaces() {
+    for raw in [
+        "\u{a0}xr:DesignTimeRef\u{a0}",
+        "xr: DesignTimeRef",
+        "xr:DesignTimeRef:Extra",
+        "  ",
+    ] {
+        let fixture = RealReaderFixture::new();
+        let content = entries(&["Вес"]).replace("xr:DesignTimeRef", raw);
+        let path = install(&fixture, &content);
+        let before = fs::read(&path).unwrap();
+        let result = fixture.view_service().view(ViewRequest::new(AT).unwrap());
+        assert!(result.ok, "{result:?}");
+        let data = result.data.as_ref().unwrap();
+        assert!(
+            data["props"].get("choiceParameters").is_none(),
+            "{raw}: {data}"
+        );
+        assert!(
+            data["limits"].to_string().contains("choiceParameters"),
+            "{raw}: {data}"
+        );
+        assert!(data["props"].get("Type").is_some());
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+}
