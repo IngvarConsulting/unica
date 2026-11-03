@@ -375,9 +375,9 @@ fn invoke_on(
 /// Узлы набора исходников, которые показывает чтение: ветви и элементы от
 /// корня, в ширину, не больше `PER_SHAPE` на одну форму адреса.
 ///
-/// Каждый `at` из `branches` и `items`, до которого дошёл обход, обязан
-/// открываться тем же `view`: адрес, который сервер выдал и сам отверг,
-/// попадает в `unroutable` вместе с причиной отказа (#1467).
+/// Собственный `at` из `branches` и `items` обязан открываться тем же `view`.
+/// У цели Relation допускается отсутствующая XML-декларация, доказанная
+/// отдельно от читателя. Остальные отказы попадают в `unroutable` (#1467).
 struct Walk {
     nodes: Vec<String>,
     unroutable: Vec<String>,
@@ -386,11 +386,11 @@ struct Walk {
 fn walk(workspace: &Path, root: &str) -> Walk {
     let mut seen = BTreeSet::new();
     let mut shapes = BTreeMap::<String, usize>::new();
-    let mut queue = VecDeque::from([root.to_string()]);
+    let mut queue = VecDeque::from([(root.to_string(), false)]);
     let mut nodes = Vec::new();
     let mut unroutable = Vec::new();
-    while let Some(at) = queue.pop_front() {
-        if nodes.len() >= NODE_BUDGET || !seen.insert(at.clone()) {
+    while let Some((at, relation_target)) = queue.pop_front() {
+        if nodes.len() >= NODE_BUDGET || !seen.insert((at.clone(), relation_target)) {
             continue;
         }
         let address = match QualifiedAddress::parse(&at) {
@@ -415,7 +415,7 @@ fn walk(workspace: &Path, root: &str) -> Walk {
         }
         let result = invoke(workspace, ToolIdentity::View, json!({"at": at}));
         if !result.ok {
-            if !dangling_reference(workspace, &address, &result) {
+            if !dangling_reference(workspace, &address, &result, relation_target) {
                 unroutable.push(format!("{at}: {}", result.summary));
             }
             continue;
@@ -451,7 +451,12 @@ fn walk(workspace: &Path, root: &str) -> Walk {
             if root_collection && slot == "items" {
                 children.sort();
             }
-            queue.extend(children);
+            let referenced = slot == "items"
+                && address
+                    .segments()
+                    .last()
+                    .is_some_and(|part| part.kind() == NodeKind::Relation);
+            queue.extend(children.into_iter().map(|child| (child, referenced)));
         }
     }
     Walk { nodes, unroutable }
@@ -469,12 +474,14 @@ fn refusal_field<'a>(result: &'a DomainResult, field: &str) -> Option<&'a str> {
 /// Ссылка на объект, которого нет в исходниках: подсистема или командный
 /// интерфейс урезанной фикстуры называют объект, не вошедший в неё. Такой
 /// адрес разобран и маршрутизирован, а `not_found` отвечает отсутствием
-/// корневого объекта. Отсутствие доказывает файловая система фикстуры —
-/// нет файла описания корневого объекта, — а не проверяемый `view`.
+/// корневого объекта. Отсутствие доказывает файловая система фикстуры,
+/// а не проверяемый `view`. Для цели Relation также проверяется отсутствие
+/// точной декларации стандартного реквизита табличной части внутри XML.
 fn dangling_reference(
     workspace: &Path,
     address: &QualifiedAddress,
     refusal: &DomainResult,
+    relation_target: bool,
 ) -> bool {
     if refusal_field(refusal, "code") != Some("not_found") {
         return false;
@@ -492,6 +499,98 @@ fn dangling_reference(
         .join(layout.directory)
         .join(format!("{name}.xml"));
     !descriptor.exists()
+        || (relation_target && undeclared_tabular_standard_attribute(&descriptor, address))
+}
+
+/// A reference may name a field absent from the exported declarations. This
+/// proof reads XML directly and never excuses an owned branch/item address.
+fn undeclared_tabular_standard_attribute(descriptor: &Path, address: &QualifiedAddress) -> bool {
+    let [owner, section, field] = address.segments() else {
+        return false;
+    };
+    if section.kind() != NodeKind::TabularSection || field.kind() != NodeKind::StandardAttribute {
+        return false;
+    }
+    let (Some(owner_name), Some(section_name), Some(field_name)) =
+        (owner.name(), section.name(), field.name())
+    else {
+        return false;
+    };
+    let Ok(xml) = std::fs::read_to_string(descriptor) else {
+        return false;
+    };
+    let Ok(doc) = roxmltree::Document::parse(&xml) else {
+        return false;
+    };
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    const XR: &str = "http://v8.1c.ru/8.3/xcf/readable";
+    fn unique<'a, 'i>(
+        node: roxmltree::Node<'a, 'i>,
+        name: &str,
+    ) -> Option<roxmltree::Node<'a, 'i>> {
+        let mut matches = node
+            .children()
+            .filter(|child| child.has_tag_name((MD, name)));
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    }
+    fn named(node: roxmltree::Node<'_, '_>, name: &str) -> bool {
+        unique(node, "Properties")
+            .and_then(|props| unique(props, "Name"))
+            .and_then(|name| name.text())
+            == Some(name)
+    }
+    let Some(root) =
+        unique(doc.root_element(), owner.kind().as_str()).filter(|node| named(*node, owner_name))
+    else {
+        return false;
+    };
+    let Some(objects) = unique(root, "ChildObjects") else {
+        return false;
+    };
+    let mut sections = objects
+        .children()
+        .filter(|node| node.has_tag_name((MD, "TabularSection")) && named(*node, section_name));
+    let Some(section) = sections.next() else {
+        return false;
+    };
+    if sections.next().is_some() {
+        return false;
+    }
+    let Some(attributes) =
+        unique(section, "Properties").and_then(|props| unique(props, "StandardAttributes"))
+    else {
+        return false;
+    };
+    let fields = attributes
+        .children()
+        .filter(|node| node.is_element())
+        .collect::<Vec<_>>();
+    fields.iter().all(|node| {
+        node.has_tag_name((XR, "StandardAttribute")) && node.attribute("name").is_some()
+    }) && !fields
+        .iter()
+        .any(|node| node.attribute("name") == Some(field_name))
+}
+
+#[test]
+fn dangling_nested_reference_requires_xml_proof_and_relation_provenance() {
+    let workspace =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/acceptance/workspace");
+    let at = QualifiedAddress::parse("main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.ДополнительныеРеквизиты.StandardAttribute.Ref").unwrap();
+    let missing =
+        DomainResult::canonical_rejection(None, unica_refusal::RefusalCode::NotFound, "missing");
+    assert!(dangling_reference(&workspace, &at, &missing, true));
+    assert!(!dangling_reference(&workspace, &at, &missing, false));
+    let declared = QualifiedAddress::parse(
+        &at.to_string()
+            .replace("StandardAttribute.Ref", "StandardAttribute.LineNumber"),
+    )
+    .unwrap();
+    assert!(!dangling_reference(&workspace, &declared, &missing, true));
+    let other =
+        DomainResult::canonical_rejection(None, unica_refusal::RefusalCode::BadValue, "bad");
+    assert!(!dangling_reference(&workspace, &at, &other, true));
 }
 
 /// Форма адреса: маршрут и виды сегментов с признаком имени.
