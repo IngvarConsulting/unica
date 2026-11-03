@@ -19,12 +19,14 @@ pub enum MetaPropertyKey {
     CodeMask,
     CodeType,
     Correspondence,
+    DataHistory,
     DefaultPresentation,
     DependenceOnCalculationTypes,
     Description,
     Event,
     DistributedInfoBase,
     EnableTotalsSplitting,
+    ExecuteAfterWriteDataHistoryVersionProcessing,
     ExternalConnection,
     FoldersOnTop,
     Global,
@@ -61,6 +63,7 @@ pub enum MetaPropertyKey {
     SessionMaxAge,
     SubordinationUse,
     UnpostInPrivilegedMode,
+    UpdateDataHistoryImmediatelyAfterWrite,
     Use,
     WriteMode,
     CheckUnique,
@@ -339,6 +342,13 @@ const REUSE_SESSIONS_VALUES: &[&str] = &["DontUse", "AutoUse"];
 const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "ToItems"];
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
+const DATA_HISTORY_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::InformationRegister,
+];
+const DATA_HISTORY_VALUES: &[&str] = &["Use", "DontUse"];
+
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
     property(
         "Type",
@@ -426,6 +436,25 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::Correspondence,
         MetaPropertyValueKind::Boolean,
         ACCOUNTING_REGISTER_KINDS,
+    ),
+    enum_property(
+        "DataHistory",
+        "DataHistory",
+        MetaPropertyKey::DataHistory,
+        DATA_HISTORY_KINDS,
+        DATA_HISTORY_VALUES,
+    ),
+    property(
+        "UpdateDataHistoryImmediatelyAfterWrite",
+        MetaPropertyKey::UpdateDataHistoryImmediatelyAfterWrite,
+        MetaPropertyValueKind::Boolean,
+        DATA_HISTORY_KINDS,
+    ),
+    property(
+        "ExecuteAfterWriteDataHistoryVersionProcessing",
+        MetaPropertyKey::ExecuteAfterWriteDataHistoryVersionProcessing,
+        MetaPropertyValueKind::Boolean,
+        DATA_HISTORY_KINDS,
     ),
     enum_property(
         "DefaultPresentation",
@@ -1190,6 +1219,21 @@ mod tests {
                 "Correspondence",
                 MetaPropertyValue::Boolean(true),
                 &[AccountingRegister],
+            ),
+            (
+                "DataHistory",
+                MetaPropertyValue::String("Use".into()),
+                &[Catalog, Document, InformationRegister],
+            ),
+            (
+                "UpdateDataHistoryImmediatelyAfterWrite",
+                MetaPropertyValue::Boolean(true),
+                &[Catalog, Document, InformationRegister],
+            ),
+            (
+                "ExecuteAfterWriteDataHistoryVersionProcessing",
+                MetaPropertyValue::Boolean(true),
+                &[Catalog, Document, InformationRegister],
             ),
             (
                 "DefaultPresentation",

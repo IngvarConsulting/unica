@@ -362,6 +362,8 @@ fn mutation_value_kind(key: MetaPropertyKey) -> MetaInfoPropertyValueKind {
             | Correspondence
             | DistributedInfoBase
             | EnableTotalsSplitting
+            | UpdateDataHistoryImmediatelyAfterWrite
+            | ExecuteAfterWriteDataHistoryVersionProcessing
             | ExternalConnection
             | FoldersOnTop
             | Global
@@ -423,6 +425,11 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | ReturnValuesReuse
         | Server
         | ServerCall => kind == CommonModule,
+        DataHistory
+        | UpdateDataHistoryImmediatelyAfterWrite
+        | ExecuteAfterWriteDataHistoryVersionProcessing => {
+            matches!(kind, Catalog | Document | InformationRegister)
+        }
         Correspondence | PeriodAdjustmentLength => kind == AccountingRegister,
         Description | Predefined | RestartCountOnFailure | RestartIntervalOnFailure | Use => {
             kind == ScheduledJob
