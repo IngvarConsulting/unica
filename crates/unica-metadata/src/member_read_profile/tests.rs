@@ -5,6 +5,7 @@ use unica_address::address::{NodeKind, QualifiedAddress};
 fn member_profile_context_requires_the_complete_named_catalog_path() {
     let profile = MetaMemberReadProfile::CatalogTabularSection220;
     for (at, kind) in [
+        ("main:Catalog.Items.Attribute.Header", NodeKind::Attribute),
         (
             "main:Catalog.Items.TabularSection.Lines",
             NodeKind::TabularSection,
@@ -22,7 +23,6 @@ fn member_profile_context_requires_the_complete_named_catalog_path() {
     }
     for (at, kind) in [
         ("main:Catalog.Items", NodeKind::Catalog),
-        ("main:Catalog.Items.Attribute.Header", NodeKind::Attribute),
         (
             "main:Catalog.Items.TabularSection",
             NodeKind::TabularSection,
@@ -64,6 +64,8 @@ fn member_profile_context_requires_the_complete_named_catalog_path() {
 fn member_profile_owns_only_exact_context_property_diagnostics() {
     let profile = MetaMemberReadProfile::CatalogTabularSection220;
     for field in [
+        "collections.attributes[0].properties.FullTextSearch",
+        "collections.attributes[0].properties.DataHistory",
         "collections.tabularSections[0].properties.LineNumberLength",
         "collections.tabularSections[12].properties.Use",
         "collections.tabularSections[0].attributes[1].properties.Indexing",
@@ -99,4 +101,61 @@ fn member_profile_owns_only_exact_context_property_diagnostics() {
             "claimed foreign field {field}"
         );
     }
+}
+
+#[test]
+fn register_search_history_profile_keeps_context_and_source_boundaries() {
+    use crate::MetadataKind;
+    use unica_source_contract::SourceSetKind;
+    let profile = MetaMemberReadProfile::for_source(
+        SourceSetKind::Configuration,
+        MetadataKind::InformationRegister,
+        Some("2.20"),
+    )
+    .unwrap();
+    for (at, kind) in [
+        (
+            "main:InformationRegister.Prices.Dimension.Item",
+            NodeKind::Dimension,
+        ),
+        (
+            "main:InformationRegister.Prices.Resource.Price",
+            NodeKind::Resource,
+        ),
+    ] {
+        let address = QualifiedAddress::parse(at).unwrap();
+        let context = profile.context_for_address(&address, kind).unwrap();
+        assert_eq!(
+            profile
+                .properties(context)
+                .map(|spec| spec.name)
+                .collect::<Vec<_>>(),
+            vec!["FullTextSearch", "DataHistory"]
+        );
+    }
+    for field in [
+        "collections.dimensions[0].properties.FullTextSearch",
+        "collections.resources[12].properties.DataHistory",
+    ] {
+        assert!(profile.owns_diagnostic(field));
+    }
+    for field in [
+        "collections.attributes[0].properties.FullTextSearch",
+        "collections.dimensions[0].properties.Indexing",
+        "collections.resources[0].attributes[0].properties.DataHistory",
+    ] {
+        assert!(!profile.owns_diagnostic(field));
+    }
+    assert!(MetaMemberReadProfile::for_source(
+        SourceSetKind::Extension,
+        MetadataKind::InformationRegister,
+        Some("2.20")
+    )
+    .is_none());
+    assert!(MetaMemberReadProfile::for_source(
+        SourceSetKind::Configuration,
+        MetadataKind::InformationRegister,
+        Some("2.19")
+    )
+    .is_none());
 }

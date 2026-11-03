@@ -670,6 +670,8 @@ mod tests {
                         position: None,
                         indexing: None,
                         deny_incomplete_values: Some(true),
+                        full_text_search: None,
+                        data_history: None,
                     }],
                 },
             )
@@ -680,5 +682,55 @@ mod tests {
             Some("elements[0].denyIncompleteValues")
         );
         update(MetadataKind::AccumulationRegister).unwrap();
+    }
+    #[test]
+    fn field_search_history_has_a_closed_update_context_matrix() {
+        use crate::contracts::MetadataSite;
+        for owner in [
+            MetadataKind::Catalog,
+            MetadataKind::Document,
+            MetadataKind::InformationRegister,
+            MetadataKind::AccumulationRegister,
+            MetadataKind::ChartOfAccounts,
+        ] {
+            for in_section in [false, true] {
+                for (operation, attribute) in [
+                    (MetadataOperation::AttributeSet, true),
+                    (MetadataOperation::DimensionSet, false),
+                    (MetadataOperation::ResourceSet, false),
+                ] {
+                    let contract = operation.contract_at(Some(MetadataSite { owner, in_section }));
+                    let allowed = (owner == MetadataKind::Catalog && attribute)
+                        || (owner == MetadataKind::InformationRegister
+                            && !attribute
+                            && !in_section);
+                    for key in ["fullTextSearch", "dataHistory"] {
+                        assert_eq!(
+                            contract.schema["properties"]["values"]["properties"]
+                                .get(key)
+                                .is_some(),
+                            allowed,
+                            "{owner:?} {operation:?} {in_section} {key}"
+                        );
+                        assert_eq!(
+                            contract
+                                .normalize(&json!({"values":{key:"DontUse"}}), "args")
+                                .is_ok(),
+                            allowed
+                        );
+                        assert!(contract
+                            .normalize(&json!({"values":{key:"Unknown"}}), "args")
+                            .is_err());
+                    }
+                }
+            }
+        }
+        for key in ["fullTextSearch", "dataHistory"] {
+            assert!(
+                crate::contracts::metadata_element_input_schema(false, false)["properties"]
+                    .get(key)
+                    .is_none()
+            );
+        }
     }
 }

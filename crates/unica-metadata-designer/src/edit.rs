@@ -1967,6 +1967,64 @@ pub fn update_typed_element(
         )
     })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    if update.full_text_search.is_some() || update.data_history.is_some() {
+        let refused = |key: &str| {
+            typed_diagnostic(MetaDiagnosticCode::InvalidArguments, format!("existing field {key} is missing or damaged; restore a confirmed valid source before changing it"), Some(key))
+        };
+        let doc = Document::parse(xml_text).map_err(|_| refused("properties"))?;
+        let node = doc
+            .descendants()
+            .find(|node| node.is_element() && node.range() == range)
+            .ok_or_else(|| refused("properties"))?;
+        let containers: Vec<_> = node
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == "Properties")
+            .collect();
+        let [properties] = containers.as_slice() else {
+            return Err(refused("properties"));
+        };
+        if properties.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+            || properties.attributes().len() != 0
+        {
+            return Err(refused("properties"));
+        }
+        let mut replacements = Vec::new();
+        for (key, value) in [
+            ("FullTextSearch", &update.full_text_search),
+            ("DataHistory", &update.data_history),
+        ] {
+            let Some(value) = value else {
+                continue;
+            };
+            let nodes: Vec<_> = properties
+                .children()
+                .filter(|n| n.is_element() && n.tag_name().name() == key)
+                .collect();
+            let [property] = nodes.as_slice() else {
+                return Err(refused(key));
+            };
+            let observed: String = property
+                .children()
+                .filter(|n| n.is_text())
+                .filter_map(|n| n.text())
+                .collect();
+            if property.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+                || property.attributes().len() != 0
+                || property.children().any(|n| n.is_element())
+                || !matches!(observed.as_str(), "Use" | "DontUse")
+            {
+                return Err(refused(key));
+            }
+            let relative = property.range().start - range.start - properties_range.start
+                ..property.range().end - range.start - properties_range.start;
+            replacements.push((relative, format!("<{key}>{value}</{key}>")));
+        }
+        replacements.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+        for (range, value) in replacements {
+            properties_text.replace_range(range, &value);
+        }
+    }
+
     if let Some(metadata_type) = &update.r#type {
         let fill_value = match &update.fill_value {
             Some(fill_value) => Some(fill_value.clone()),

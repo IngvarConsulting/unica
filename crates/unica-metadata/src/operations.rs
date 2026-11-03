@@ -559,6 +559,8 @@ pub struct MetaElementUpdateInput {
     pub indexing: Option<String>,
     /// `DenyIncompleteValues` of a register dimension.
     pub deny_incomplete_values: Option<bool>,
+    pub full_text_search: Option<String>,
+    pub data_history: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -573,6 +575,8 @@ pub struct MetaElementUpdate {
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
     pub deny_incomplete_values: Option<bool>,
+    pub full_text_search: Option<String>,
+    pub data_history: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -635,6 +639,20 @@ const fn collection_spec(
 }
 
 /// Owners whose dimensions take `denyIncompleteValues` in this slice.
+pub fn metadata_field_search_history_is_allowed(
+    owner: MetadataKind,
+    collection: MetaCollection,
+    scope: MetaElementScope,
+) -> bool {
+    (owner == MetadataKind::Catalog && collection == MetaCollection::Attributes)
+        || (owner == MetadataKind::InformationRegister
+            && matches!(
+                collection,
+                MetaCollection::Dimensions | MetaCollection::Resources
+            )
+            && scope == MetaElementScope::TopLevel)
+}
+
 pub fn metadata_deny_incomplete_values_is_allowed(owner: MetadataKind) -> bool {
     matches!(
         owner,
@@ -858,6 +876,8 @@ impl MetaElementUpdate {
             && input.position.is_none()
             && input.indexing.is_none()
             && input.deny_incomplete_values.is_none()
+            && input.full_text_search.is_none()
+            && input.data_history.is_none()
         {
             return Err(invalid_operation(
                 field,
@@ -869,6 +889,20 @@ impl MetaElementUpdate {
                 format!("{field}.denyIncompleteValues"),
                 "denyIncompleteValues is a property of register dimensions",
             ));
+        }
+        for (name, value) in [
+            ("fullTextSearch", &input.full_text_search),
+            ("dataHistory", &input.data_history),
+        ] {
+            if value
+                .as_deref()
+                .is_some_and(|value| !matches!(value, "Use" | "DontUse"))
+            {
+                return Err(invalid_operation(
+                    format!("{field}.{name}"),
+                    "expected Use or DontUse",
+                ));
+            }
         }
         let spec = metadata_collection_spec(collection);
         validate_element_fields(
@@ -893,6 +927,8 @@ impl MetaElementUpdate {
             position: input.position,
             indexing: input.indexing,
             deny_incomplete_values: input.deny_incomplete_values,
+            full_text_search: input.full_text_search,
+            data_history: input.data_history,
         })
     }
 }
@@ -1713,6 +1749,20 @@ pub fn validate_metadata_operation_capabilities(
                 MetaElementScope::TopLevel
             };
             for (index, element) in elements.iter().enumerate() {
+                for (key, value) in [
+                    ("fullTextSearch", &element.full_text_search),
+                    ("dataHistory", &element.data_history),
+                ] {
+                    if value.is_some()
+                        && !metadata_field_search_history_is_allowed(
+                            owner_kind,
+                            *collection,
+                            context,
+                        )
+                    {
+                        return Err(invalid_operation(format!("elements[{index}].{key}"), "search/history settings are available for Catalog attributes and InformationRegister dimensions/resources"));
+                    }
+                }
                 if element.fill_value.is_some()
                     && !metadata_fill_value_is_allowed(owner_kind, *collection, context)
                 {

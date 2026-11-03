@@ -1,3 +1,5 @@
+#[path = "metadata_can_tests/member_search_history.rs"]
+mod member_search_history;
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
 

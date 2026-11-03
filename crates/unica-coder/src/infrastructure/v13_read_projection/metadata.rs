@@ -87,12 +87,18 @@ pub(super) fn project_metadata_for_source(
     let profile = source_kind
         .filter(|kind| *kind == unica_source_contract::SourceSetKind::Configuration)
         .filter(|_| {
-            address
-                .segments()
-                .first()
-                .is_some_and(|part| part.kind() == NodeKind::Catalog)
+            matches!(
+                (
+                    address.segments().first().map(|part| part.kind()),
+                    payload.get("kind").and_then(Value::as_str)
+                ),
+                (Some(NodeKind::Catalog), Some("Catalog"))
+                    | (
+                        Some(NodeKind::InformationRegister),
+                        Some("InformationRegister")
+                    )
+            )
         })
-        .filter(|_| payload.get("kind").and_then(Value::as_str) == Some("Catalog"))
         .and_then(|_| payload.get("memberReadProfile"))
         .and_then(|value| serde_json::from_value(value.clone()).ok());
     project_metadata(address, payload, suffix, profile)

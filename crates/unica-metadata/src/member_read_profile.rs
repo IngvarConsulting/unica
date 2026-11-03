@@ -8,12 +8,16 @@ use unica_source_contract::SourceSetKind;
 #[serde(rename_all = "camelCase")]
 pub enum MetaMemberReadProfile {
     CatalogTabularSection220,
+    InformationRegisterFields220,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaMemberReadContext {
     TabularSection,
     TabularAttribute,
+    Attribute,
+    Dimension,
+    Resource,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -31,6 +35,16 @@ pub struct MetaMemberPropertySpec {
 }
 
 const CATALOG_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
+    MetaMemberPropertySpec {
+        name: "FullTextSearch",
+        context: MetaMemberReadContext::Attribute,
+        kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
+    },
+    MetaMemberPropertySpec {
+        name: "DataHistory",
+        context: MetaMemberReadContext::Attribute,
+        kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
+    },
     MetaMemberPropertySpec {
         name: "LineNumberLength",
         context: MetaMemberReadContext::TabularSection,
@@ -63,16 +77,43 @@ const CATALOG_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
     },
 ];
 
+const REGISTER_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
+    MetaMemberPropertySpec {
+        name: "FullTextSearch",
+        context: MetaMemberReadContext::Dimension,
+        kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
+    },
+    MetaMemberPropertySpec {
+        name: "DataHistory",
+        context: MetaMemberReadContext::Dimension,
+        kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
+    },
+    MetaMemberPropertySpec {
+        name: "FullTextSearch",
+        context: MetaMemberReadContext::Resource,
+        kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
+    },
+    MetaMemberPropertySpec {
+        name: "DataHistory",
+        context: MetaMemberReadContext::Resource,
+        kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
+    },
+];
+
 impl MetaMemberReadProfile {
     pub fn for_source(
         source_kind: SourceSetKind,
         owner: MetadataKind,
         format: Option<&str>,
     ) -> Option<Self> {
-        (source_kind == SourceSetKind::Configuration
-            && owner == MetadataKind::Catalog
-            && format == Some("2.20"))
-        .then_some(Self::CatalogTabularSection220)
+        if source_kind != SourceSetKind::Configuration || format != Some("2.20") {
+            return None;
+        }
+        match owner {
+            MetadataKind::Catalog => Some(Self::CatalogTabularSection220),
+            MetadataKind::InformationRegister => Some(Self::InformationRegisterFields220),
+            _ => None,
+        }
     }
 
     pub fn properties(
@@ -81,6 +122,7 @@ impl MetaMemberReadProfile {
     ) -> impl Iterator<Item = &'static MetaMemberPropertySpec> {
         let properties = match self {
             Self::CatalogTabularSection220 => CATALOG_MEMBER_PROPERTIES,
+            Self::InformationRegisterFields220 => REGISTER_MEMBER_PROPERTIES,
         };
         properties
             .iter()
@@ -88,6 +130,20 @@ impl MetaMemberReadProfile {
     }
 
     pub fn context_for_field(self, field: &str) -> Option<MetaMemberReadContext> {
+        if self == Self::InformationRegisterFields220 {
+            for (prefix, context) in [
+                ("collections.dimensions[", MetaMemberReadContext::Dimension),
+                ("collections.resources[", MetaMemberReadContext::Resource),
+            ] {
+                if indexed_field_suffix(field, prefix).is_some_and(str::is_empty) {
+                    return Some(context);
+                }
+            }
+            return None;
+        }
+        if indexed_field_suffix(field, "collections.attributes[").is_some_and(str::is_empty) {
+            return Some(MetaMemberReadContext::Attribute);
+        }
         let rest = indexed_field_suffix(field, "collections.tabularSections[")?;
         if rest.is_empty() {
             return Some(MetaMemberReadContext::TabularSection);
@@ -102,15 +158,36 @@ impl MetaMemberReadProfile {
         address: &QualifiedAddress,
         kind: NodeKind,
     ) -> Option<MetaMemberReadContext> {
+        let owner_kind = match self {
+            Self::CatalogTabularSection220 => NodeKind::Catalog,
+            Self::InformationRegisterFields220 => NodeKind::InformationRegister,
+        };
+        if address
+            .segments()
+            .first()
+            .is_none_or(|owner| owner.kind() != owner_kind)
+        {
+            return None;
+        }
         match address.segments() {
-            [owner, section]
-                if owner.kind() == NodeKind::Catalog
-                    && owner.name().is_some()
-                    && section.kind() == NodeKind::TabularSection
-                    && section.name().is_some()
-                    && kind == NodeKind::TabularSection =>
+            [owner, member]
+                if owner.name().is_some() && member.name().is_some() && member.kind() == kind =>
             {
-                Some(MetaMemberReadContext::TabularSection)
+                match (self, kind) {
+                    (Self::CatalogTabularSection220, NodeKind::Attribute) => {
+                        Some(MetaMemberReadContext::Attribute)
+                    }
+                    (Self::CatalogTabularSection220, NodeKind::TabularSection) => {
+                        Some(MetaMemberReadContext::TabularSection)
+                    }
+                    (Self::InformationRegisterFields220, NodeKind::Dimension) => {
+                        Some(MetaMemberReadContext::Dimension)
+                    }
+                    (Self::InformationRegisterFields220, NodeKind::Resource) => {
+                        Some(MetaMemberReadContext::Resource)
+                    }
+                    _ => None,
+                }
             }
             [owner, section, attribute]
                 if owner.kind() == NodeKind::Catalog
@@ -145,7 +222,9 @@ impl MetaMemberReadContext {
     pub fn xml_tag(self) -> &'static str {
         match self {
             Self::TabularSection => "TabularSection",
-            Self::TabularAttribute => "Attribute",
+            Self::TabularAttribute | Self::Attribute => "Attribute",
+            Self::Dimension => "Dimension",
+            Self::Resource => "Resource",
         }
     }
 }
