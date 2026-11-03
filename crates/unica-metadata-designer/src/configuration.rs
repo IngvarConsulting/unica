@@ -181,6 +181,7 @@ pub fn parse_cf_info_xml(
                 })
         })
         .collect();
+    let (information, limits) = parse_configuration_information(props);
     let data = CfInfoData {
         format: version.to_string(),
         name: cf_prop_text(props, "Name"),
@@ -190,6 +191,7 @@ pub fn parse_cf_info_xml(
         support,
         extension_purpose,
         properties: CfInfoProperties {
+            information,
             compatibility_mode: optional(cf_prop_text(props, "CompatibilityMode")),
             default_run_mode: optional(cf_prop_text(props, "DefaultRunMode")),
             script_variant: optional(cf_prop_text(props, "ScriptVariant")),
@@ -226,11 +228,83 @@ pub fn parse_cf_info_xml(
         home_page,
         interface,
         panels,
+        limits,
     };
     Ok(ParsedCfInfo {
         data,
         registered_objects,
     })
+}
+
+/// Shared by the ordinary and streaming readers after selecting root properties.
+pub fn parse_configuration_information(
+    props: roxmltree::Node<'_, '_>,
+) -> (CfInformationProperties, Vec<String>) {
+    use unica_metadata::MetaObservedPropertyValue;
+    let mut information = CfInformationProperties::default();
+    let mut limits = Vec::new();
+    for &name in CONFIGURATION_INFORMATION_PROPERTIES {
+        let nodes = props
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().name() == name)
+            .collect::<Vec<_>>();
+        if nodes.is_empty() {
+            continue;
+        }
+        let node = match nodes.as_slice() {
+            [node]
+                if node.tag_name().namespace() == Some(CF_MD_NS)
+                    && node.attributes().len() == 0 =>
+            {
+                Some(*node)
+            }
+            _ => None,
+        };
+        let value = node.and_then(|node| {
+            if matches!(
+                name,
+                "UseManagedFormInOrdinaryApplication" | "UseOrdinaryFormInManagedApplication"
+            ) {
+                if node.children().any(|child| child.is_element()) {
+                    return None;
+                }
+                match crate::info_projection::direct_text_content(node).as_str() {
+                    "true" => Some(MetaObservedPropertyValue::Boolean { value: true }),
+                    "false" => Some(MetaObservedPropertyValue::Boolean { value: false }),
+                    _ => None,
+                }
+            } else {
+                crate::info_projection::strict_localized_meta_info_property_value(node)
+            }
+        });
+        match (name, value) {
+            (
+                "UseManagedFormInOrdinaryApplication",
+                Some(MetaObservedPropertyValue::Boolean { value }),
+            ) => information.use_managed_form_in_ordinary_application = Some(value),
+            (
+                "UseOrdinaryFormInManagedApplication",
+                Some(MetaObservedPropertyValue::Boolean { value }),
+            ) => information.use_ordinary_form_in_managed_application = Some(value),
+            (_, Some(MetaObservedPropertyValue::LocalizedString { values })) => {
+                let value = (!values.is_empty()).then_some(values);
+                match name {
+                    "BriefInformation" => information.brief_information = value,
+                    "DetailedInformation" => information.detailed_information = value,
+                    "Copyright" => information.copyright = value,
+                    "VendorInformationAddress" => information.vendor_information_address = value,
+                    "ConfigurationInformationAddress" => {
+                        information.configuration_information_address = value
+                    }
+                    _ => unreachable!("closed configuration information profile"),
+                }
+            }
+            _ => limits.push(format!(
+                "properties.{name} is malformed, duplicated, or has a foreign namespace"
+            )),
+        }
+    }
+    (information, limits)
 }
 
 pub fn cf_prop_text(props: roxmltree::Node<'_, '_>, local_name: &str) -> String {

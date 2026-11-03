@@ -1,0 +1,101 @@
+{
+  "id": "S-1561-configuration-information-properties",
+  "issue": 1561,
+  "area": "Навигация по исходникам",
+  "workspace": "tests/fixtures/acceptance/workspace-configuration-information",
+  "task": "Прочитать оба режима использования форм и пять локализованных информационных полей конфигурации без потери языков, false и исходных байтов.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "source": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/properties/useManagedFormInOrdinaryApplication",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/properties/useOrdinaryFormInManagedApplication",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/properties/briefInformation",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Кратко"
+            },
+            {
+              "language": "en",
+              "content": "Brief"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/detailedInformation",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Подробно"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/copyright",
+          "eq": [
+            {
+              "language": "ru",
+              "content": "Автор"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/vendorInformationAddress",
+          "eq": [
+            {
+              "language": "en",
+              "content": "https://example.org/vendor"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/properties/configurationInformationAddress",
+          "eq": [
+            {
+              "language": "en",
+              "content": "https://example.org/configuration"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/version",
+          "eq": "1.2"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.source"
+        }
+      ]
+    }
+  ]
+}

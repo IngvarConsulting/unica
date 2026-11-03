@@ -796,6 +796,8 @@ pub(super) fn read_configuration_root(
 ) -> Result<StreamedConfigurationRoot, ViewError> {
     let state = parse_configuration_owner(file, checkpoint)?;
     let RootState {
+        information,
+        information_limits,
         properties,
         version,
         total_objects,
@@ -822,7 +824,7 @@ pub(super) fn read_configuration_root(
     })?;
     let property = |name: &str| properties.get(name).cloned();
     let optional = |name: &str| property(name).filter(|value| !value.is_empty());
-    let payload = json!({
+    let mut payload = json!({
         "format": version,
         "name": property("Name").unwrap_or_default(),
         "synonym": optional("Synonym"),
@@ -852,6 +854,18 @@ pub(super) fn read_configuration_root(
         "interface": interface,
         "panels": panels,
     });
+    let information =
+        serde_json::to_value(information).map_err(|error| source_unreadable(&error.to_string()))?;
+    payload["properties"]
+        .as_object_mut()
+        .expect("root properties object")
+        .extend(
+            information
+                .as_object()
+                .expect("typed information object")
+                .clone(),
+        );
+    payload["limits"] = json!(information_limits);
     Ok(StreamedConfigurationRoot { payload, counts })
 }
 
@@ -893,6 +907,13 @@ fn parse_configuration_owner(
     config.ignore_invalid_encoding_declarations = true;
     let mut parser = config.create_reader(BufReader::new(checked));
     let mut state = RootState::new();
+    let mut information_xml = xml::EmitterConfig::new()
+        .write_document_declaration(false)
+        .create_writer(Vec::new());
+    information_xml
+        .write(xml::writer::XmlEvent::start_element("Properties").default_ns(MD_NS))
+        .map_err(|error| source_unreadable(&error.to_string()))?;
+    let mut information_depth = 0_usize;
     loop {
         checkpoint()?;
         let event = match parser.next() {
@@ -907,6 +928,31 @@ fn parse_configuration_owner(
                 ));
             }
         };
+        // Retain only the seven selected facts, preserving their XML structure so
+        // both reader routes use the same validation and localized-value parser.
+        if information_depth == 0
+            && state.ignored_depth == 0
+            && matches!(
+                state.stack.last().map(|frame| &frame.role),
+                Some(FrameRole::Properties)
+            )
+            && matches!(&event, XmlEvent::StartElement { name, .. }
+                if unica_metadata::configuration::CONFIGURATION_INFORMATION_PROPERTIES.contains(&name.local_name.as_str()))
+        {
+            information_depth = 1;
+        } else if information_depth > 0 && matches!(&event, XmlEvent::StartElement { .. }) {
+            information_depth += 1;
+        }
+        if information_depth > 0 {
+            if let Some(writer_event) = event.as_writer_event() {
+                information_xml
+                    .write(writer_event)
+                    .map_err(|error| source_unreadable(&error.to_string()))?;
+            }
+            if matches!(&event, XmlEvent::EndElement { .. }) {
+                information_depth -= 1;
+            }
+        }
         match event {
             XmlEvent::StartDocument { .. } => {}
             XmlEvent::StartElement {
@@ -938,6 +984,19 @@ fn parse_configuration_owner(
             "Configuration.xml has no single Configuration/Properties owner",
         ));
     }
+    information_xml
+        .write(xml::writer::XmlEvent::end_element())
+        .map_err(|error| source_unreadable(&error.to_string()))?;
+    let bytes = information_xml.into_inner();
+    // The event reader has expanded character references. The emitter escapes
+    // markup but leaves CR literal; a second XML parse would normalize it to LF.
+    let text = String::from_utf8(bytes)
+        .map_err(|error| source_unreadable(&error.to_string()))?
+        .replace('\r', "&#13;");
+    let doc =
+        roxmltree::Document::parse(&text).map_err(|error| source_unreadable(&error.to_string()))?;
+    (state.information, state.information_limits) =
+        unica_metadata_designer::configuration::parse_configuration_information(doc.root_element());
     Ok(state)
 }
 
@@ -998,6 +1057,8 @@ struct RootState {
     saw_first_child_objects: bool,
     version: String,
     properties: BTreeMap<String, String>,
+    information: unica_metadata::configuration::CfInformationProperties,
+    information_limits: Vec<String>,
     total_objects: usize,
     registrations: RegistrationSorter,
 }
