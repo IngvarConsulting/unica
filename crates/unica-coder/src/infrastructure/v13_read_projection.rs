@@ -1409,9 +1409,6 @@ struct InterfaceCommandLimits {
 fn named_interface_command(reference: &str) -> bool {
     use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use unica_xml_format::names::xml_ncname_is_valid;
-    if !unica_metadata_designer::interface::interface_command_ref_valid(reference) {
-        return false;
-    }
     let parts = reference.split('.').collect::<Vec<_>>();
     let owner = match parts.as_slice() {
         ["CommonCommand", name] if xml_ncname_is_valid(name) => reference.to_string(),

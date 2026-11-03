@@ -13,6 +13,7 @@ fn interface_reference_limits_classify_xml_representation_without_losing_control
 <Command name="Catalog.Items.Command.Refresh"><Visibility><xr:Common>true</xr:Common><xr:Value name="Role.One">false</xr:Value><xr:Value name="Role.Two">true</xr:Value><xr:Value name="Role.Three">false</xr:Value></Visibility></Command>
 <Command name="DocumentJournal.Documents.StandardCommand.OpenList"><Visibility><xr:Common>true</xr:Common></Visibility></Command>
 <Command name="Report.Contacts.StandardCommand.Open"><Visibility><xr:Common>false</xr:Common></Visibility></Command>
+<Command name="Report.Contacts.StandardCommand.Bad-Name"><Visibility><xr:Common>false</xr:Common></Visibility></Command>
 <Command name="0:bdebc888-2581-426c-9f5e-c09fbba5f6e2"><Visibility><xr:Common>true</xr:Common></Visibility></Command>
 <Command name="broken-command"><Visibility><xr:Common>false</xr:Common></Visibility></Command>
 </CommandsVisibility></CommandInterface>"#,
@@ -46,7 +47,11 @@ fn interface_reference_limits_classify_xml_representation_without_losing_control
                 && limit
                     .as_str()
                     .unwrap()
-                    .contains("Report.Contacts.StandardCommand.Open")));
+                    .contains("Report.Contacts.StandardCommand.Open")
+                && limit
+                    .as_str()
+                    .unwrap()
+                    .contains("Report.Contacts.StandardCommand.Bad-Name")));
         assert!(limits
             .iter()
             .any(|limit| limit.as_str().unwrap().contains("поврежд")
@@ -70,7 +75,7 @@ fn malformed_interface_command_references_are_not_ids_or_supported_addresses() {
         ".Items.StandardCommand.Open",
         "Catalog.Items",
         "Catalog.Items.StandardCommand.123",
-        "Catalog.Items.StandardCommand.Bad-Name",
+        "Catalog.Items.StandardCommand.Bad?Name",
         "Unknown.Items.StandardCommand.Open",
     ] {
         let fixture = RealReaderFixture::new();
@@ -223,6 +228,11 @@ fn interface_command_reference_classification_preserves_existing_unicode_names()
         "Catalog.Éléments.Command.Refresh",
         "Catalog.Items.Command.Éclair",
         "CommonCommand.Ωmega",
+        "CommonCommand.E\u{0301}clair",
+        "CommonCommand.Ω\u{0301}mega",
+        "Catalog.Items.Command.E\u{0301}clair",
+        "Catalog.E\u{0301}lements.Command.Refresh",
+        "Catalog.Items.Command.Bad-Name",
     ];
     let commands = names.iter().map(|name| format!(r#"<Command name="{name}"><Visibility><xr:Common>false</xr:Common></Visibility></Command>"#)).collect::<String>();
     write(
