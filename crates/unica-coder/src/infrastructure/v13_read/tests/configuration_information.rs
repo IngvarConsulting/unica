@@ -102,6 +102,8 @@ fn configuration_information_damage_is_local_and_absence_is_not_a_default() {
             ("<UseManagedFormInOrdinaryApplication><value>true</value></UseManagedFormInOrdinaryApplication>", true),
             ("<UseManagedFormInOrdinaryApplication>true</UseManagedFormInOrdinaryApplication><UseManagedFormInOrdinaryApplication>false</UseManagedFormInOrdinaryApplication>", true),
             ("<UseManagedFormInOrdinaryApplication xmlns=\"foreign\">true</UseManagedFormInOrdinaryApplication>", true),
+            (r#"<UseManagedFormInOrdinaryApplication xmlns="">true</UseManagedFormInOrdinaryApplication>"#, true),
+            (r#"<BriefInformation xmlns=""><v8:item><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item></BriefInformation>"#, true),
             ("<BriefInformation/>", false),
             ("<BriefInformation>plain text</BriefInformation>", true),
             ("<BriefInformation><v8:item><v8:lang>ru</v8:lang><v8:content>A</v8:content></v8:item><v8:item><v8:lang>ru</v8:lang><v8:content>B</v8:content></v8:item></BriefInformation>", true),

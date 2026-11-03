@@ -16,7 +16,14 @@
           "kind": "sha256",
           "file": "src/Configuration.xml"
         }
-      }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2cb1e77a0c1d77ec486316e475851b18f72a11398ac61fc45a8f250761a38f0c"
+        }
+      ]
     },
     {
       "tool": "unica.view",

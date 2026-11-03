@@ -794,7 +794,7 @@ pub(super) fn read_configuration_root(
     panels: Value,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<StreamedConfigurationRoot, ViewError> {
-    let state = parse_configuration_owner(file, checkpoint)?;
+    let state = parse_configuration_owner(file, checkpoint, true)?;
     let RootState {
         information,
         information_limits,
@@ -873,13 +873,95 @@ pub(crate) fn read_configuration_registration_index(
     file: impl Read + Seek,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
 ) -> Result<RegistrationIndex, ViewError> {
-    let state = parse_configuration_owner(file, checkpoint)?;
+    let state = parse_configuration_owner(file, checkpoint, false)?;
     RegistrationIndex::from_sorter(state.registrations, checkpoint)
+}
+
+#[derive(Default)]
+struct InformationCapture {
+    seen: [bool; 7],
+    duplicate: [bool; 7],
+    fragments: [Option<Vec<u8>>; 7],
+    active: Option<(usize, usize, xml::EventWriter<Vec<u8>>)>,
+}
+
+impl InformationCapture {
+    fn event(&mut self, event: &XmlEvent, at_properties: bool) -> Result<(), ViewError> {
+        if self.active.is_none() && at_properties {
+            if let XmlEvent::StartElement { name, .. } = event {
+                if let Some(index) =
+                    unica_metadata::configuration::CONFIGURATION_INFORMATION_PROPERTIES
+                        .iter()
+                        .position(|field| *field == name.local_name)
+                {
+                    if self.seen[index] {
+                        self.duplicate[index] = true;
+                        self.fragments[index] = None;
+                    } else {
+                        self.seen[index] = true;
+                        let writer = xml::EmitterConfig::new()
+                            .write_document_declaration(false)
+                            .create_writer(Vec::new());
+                        self.active = Some((index, 0, writer));
+                    }
+                }
+            }
+        }
+        let Some((_, depth, writer)) = self.active.as_mut() else {
+            return Ok(());
+        };
+        if matches!(event, XmlEvent::StartElement { .. }) {
+            *depth += 1;
+        }
+        if let Some(event) = event.as_writer_event() {
+            writer
+                .write(event)
+                .map_err(|error| source_unreadable(&error.to_string()))?;
+        }
+        if matches!(event, XmlEvent::EndElement { .. }) {
+            *depth -= 1;
+            if *depth == 0 {
+                let (index, _, writer) = self.active.take().expect("active information field");
+                self.fragments[index] = Some(writer.into_inner());
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(self, state: &mut RootState) -> Result<(), ViewError> {
+        let mut text = String::from("<Properties>");
+        for (index, name) in unica_metadata::configuration::CONFIGURATION_INFORMATION_PROPERTIES
+            .iter()
+            .enumerate()
+        {
+            if self.duplicate[index] {
+                // Keep duplicate validation in the shared reader without retaining
+                // any of the discarded source values.
+                text.push_str(&format!("<{name}/><{name}/>"));
+            } else if let Some(bytes) = &self.fragments[index] {
+                // Preserve expanded CR references across the second XML parse.
+                text.push_str(
+                    &std::str::from_utf8(bytes)
+                        .map_err(|error| source_unreadable(&error.to_string()))?
+                        .replace('\r', "&#13;"),
+                );
+            }
+        }
+        text.push_str("</Properties>");
+        let doc = roxmltree::Document::parse(&text)
+            .map_err(|error| source_unreadable(&error.to_string()))?;
+        (state.information, state.information_limits) =
+            unica_metadata_designer::configuration::parse_configuration_information(
+                doc.root_element(),
+            );
+        Ok(())
+    }
 }
 
 fn parse_configuration_owner(
     mut file: impl Read + Seek,
     checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    collect_information: bool,
 ) -> Result<RootState, ViewError> {
     skip_leading_boms(&mut file, checkpoint)?;
     let checkpoint_failure = Rc::new(RefCell::new(None));
@@ -907,13 +989,7 @@ fn parse_configuration_owner(
     config.ignore_invalid_encoding_declarations = true;
     let mut parser = config.create_reader(BufReader::new(checked));
     let mut state = RootState::new();
-    let mut information_xml = xml::EmitterConfig::new()
-        .write_document_declaration(false)
-        .create_writer(Vec::new());
-    information_xml
-        .write(xml::writer::XmlEvent::start_element("Properties").default_ns(MD_NS))
-        .map_err(|error| source_unreadable(&error.to_string()))?;
-    let mut information_depth = 0_usize;
+    let mut information = collect_information.then(InformationCapture::default);
     loop {
         checkpoint()?;
         let event = match parser.next() {
@@ -928,30 +1004,15 @@ fn parse_configuration_owner(
                 ));
             }
         };
-        // Retain only the seven selected facts, preserving their XML structure so
-        // both reader routes use the same validation and localized-value parser.
-        if information_depth == 0
-            && state.ignored_depth == 0
-            && matches!(
-                state.stack.last().map(|frame| &frame.role),
-                Some(FrameRole::Properties)
-            )
-            && matches!(&event, XmlEvent::StartElement { name, .. }
-                if unica_metadata::configuration::CONFIGURATION_INFORMATION_PROPERTIES.contains(&name.local_name.as_str()))
-        {
-            information_depth = 1;
-        } else if information_depth > 0 && matches!(&event, XmlEvent::StartElement { .. }) {
-            information_depth += 1;
-        }
-        if information_depth > 0 {
-            if let Some(writer_event) = event.as_writer_event() {
-                information_xml
-                    .write(writer_event)
-                    .map_err(|error| source_unreadable(&error.to_string()))?;
-            }
-            if matches!(&event, XmlEvent::EndElement { .. }) {
-                information_depth -= 1;
-            }
+        if let Some(information) = &mut information {
+            information.event(
+                &event,
+                state.ignored_depth == 0
+                    && matches!(
+                        state.stack.last().map(|frame| &frame.role),
+                        Some(FrameRole::Properties)
+                    ),
+            )?;
         }
         match event {
             XmlEvent::StartDocument { .. } => {}
@@ -984,19 +1045,9 @@ fn parse_configuration_owner(
             "Configuration.xml has no single Configuration/Properties owner",
         ));
     }
-    information_xml
-        .write(xml::writer::XmlEvent::end_element())
-        .map_err(|error| source_unreadable(&error.to_string()))?;
-    let bytes = information_xml.into_inner();
-    // The event reader has expanded character references. The emitter escapes
-    // markup but leaves CR literal; a second XML parse would normalize it to LF.
-    let text = String::from_utf8(bytes)
-        .map_err(|error| source_unreadable(&error.to_string()))?
-        .replace('\r', "&#13;");
-    let doc =
-        roxmltree::Document::parse(&text).map_err(|error| source_unreadable(&error.to_string()))?;
-    (state.information, state.information_limits) =
-        unica_metadata_designer::configuration::parse_configuration_information(doc.root_element());
+    if let Some(information) = information {
+        information.finish(&mut state)?;
+    }
     Ok(state)
 }
 
@@ -1394,6 +1445,61 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use unica_refusal::RefusalCode;
+
+    #[test]
+    fn duplicate_information_releases_the_first_value_and_discards_later_values() {
+        let mut capture = InformationCapture::default();
+        let field = format!(
+            r#"<BriefInformation xmlns="{MD_NS}" xmlns:v8="http://v8.1c.ru/8.1/data/core"><v8:item><v8:lang>ru</v8:lang><v8:content>{}</v8:content></v8:item></BriefInformation>"#,
+            "x".repeat(128 * 1024)
+        );
+        for repetition in 0..32 {
+            let mut depth = 0;
+            for event in xml::EventReader::from_str(&field) {
+                let event = event.unwrap();
+                capture.event(&event, depth == 0).unwrap();
+                match event {
+                    XmlEvent::StartElement { .. } => depth += 1,
+                    XmlEvent::EndElement { .. } => depth -= 1,
+                    _ => {}
+                }
+            }
+            let retained: usize = capture.fragments.iter().flatten().map(Vec::len).sum();
+            if repetition == 0 {
+                assert!(retained >= 128 * 1024);
+            } else {
+                assert_eq!(retained, 0);
+                assert!(capture.active.is_none());
+            }
+        }
+        let mut state = RootState::new();
+        capture.finish(&mut state).unwrap();
+        assert!(state.information.brief_information.is_none());
+        assert_eq!(state.information_limits.len(), 1);
+    }
+
+    #[test]
+    fn registration_only_parse_skips_information_but_still_checks_xml() {
+        let text = configuration_xml("Work").replace("</Properties>", "<UseManagedFormInOrdinaryApplication>true</UseManagedFormInOrdinaryApplication></Properties>");
+        let root =
+            parse_configuration_owner(io::Cursor::new(text.as_bytes()), &|| Ok(()), true).unwrap();
+        assert_eq!(
+            root.information.use_managed_form_in_ordinary_application,
+            Some(true)
+        );
+        let index =
+            parse_configuration_owner(io::Cursor::new(text.as_bytes()), &|| Ok(()), false).unwrap();
+        assert_eq!(
+            index.information.use_managed_form_in_ordinary_application,
+            None
+        );
+        assert!(parse_configuration_owner(
+            io::Cursor::new(format!("{text}<broken")),
+            &|| Ok(()),
+            false
+        )
+        .is_err());
+    }
 
     #[test]
     fn temporary_index_failures_are_distinct_from_unreadable_source_xml() {
