@@ -1203,6 +1203,27 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "FunctionalOption" {
+            let name = target.as_str().split('.').nth(1).unwrap_or_default();
+            match std::str::from_utf8(&descriptor)
+                .map_err(|error| error.to_string())
+                .and_then(|source| unica_metadata_designer::functional_option::read(source, name))
+            {
+                Ok((location, flag)) => {
+                    if !payload["properties"].is_array() {
+                        payload["properties"] = json!([]);
+                    }
+                    let properties = payload["properties"]
+                        .as_array_mut()
+                        .expect("identity property array");
+                    properties.push(json!({"key":"Location", "value":unica_metadata::MetaObservedPropertyValue::Text { value: location }}));
+                    properties.push(json!({"key":"PrivilegedGetMode", "value":unica_metadata::MetaObservedPropertyValue::Boolean { value: flag }}));
+                }
+                Err(message) => {
+                    payload["unreadable"] = json!([{"field":"properties", "message":message}])
+                }
+            }
+        }
         if evidence.artifact_kind() == "SessionParameter" {
             match unica_metadata_designer::session_parameter_comment::read_comment(&descriptor) {
                 Ok(Some(comment)) => {
