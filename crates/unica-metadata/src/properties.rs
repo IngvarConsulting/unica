@@ -205,6 +205,12 @@ const fn patterned_string_property(
     }
 }
 
+const CODE_ALLOWED_LENGTH_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::ExchangePlan,
+];
 const CATALOG_KINDS: &[MetadataKind] = &[MetadataKind::Catalog];
 const DOCUMENT_KINDS: &[MetadataKind] = &[MetadataKind::Document];
 const INFORMATION_REGISTER_KINDS: &[MetadataKind] = &[MetadataKind::InformationRegister];
@@ -405,7 +411,7 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "CodeAllowedLength",
         "CodeAllowedLength",
         MetaPropertyKey::CodeAllowedLength,
-        CATALOG_KINDS,
+        CODE_ALLOWED_LENGTH_KINDS,
         CODE_ALLOWED_LENGTH_VALUES,
     ),
     property(
@@ -1163,7 +1169,12 @@ mod tests {
             (
                 "CodeAllowedLength",
                 MetaPropertyValue::String("Fixed".into()),
-                &[Catalog],
+                &[
+                    Catalog,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ExchangePlan,
+                ],
             ),
             (
                 "CodeLength",

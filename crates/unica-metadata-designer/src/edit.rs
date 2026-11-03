@@ -1387,6 +1387,39 @@ pub fn apply_typed_properties(
                 Some("values"),
             )
         })?;
+        if *key == MetaPropertyKey::CodeAllowedLength
+            && matches!(
+                kind,
+                MetadataKind::ChartOfCharacteristicTypes
+                    | MetadataKind::ChartOfCalculationTypes
+                    | MetadataKind::ExchangePlan
+            )
+        {
+            let same_name_count = properties
+                .children()
+                .filter(|node| node.is_element() && node.tag_name().name() == tag)
+                .count();
+            if same_name_count != 1
+                || property.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+                || property.attributes().len() != 0
+                || property.children().any(|node| node.is_element())
+                || !matches!(
+                    property
+                        .children()
+                        .filter(|node| node.is_text())
+                        .filter_map(|node| node.text())
+                        .collect::<String>()
+                        .as_str(),
+                    "Variable" | "Fixed"
+                )
+            {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "existing CodeAllowedLength is damaged; restore a confirmed valid source before changing it",
+                    Some("values.CodeAllowedLength"),
+                ));
+            }
+        }
         let replacement = match (key, value) {
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {
                 if previous_type

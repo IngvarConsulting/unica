@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/code_allowed_length.rs"]
+mod code_allowed_length;
+
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
 
