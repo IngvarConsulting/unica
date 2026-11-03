@@ -132,6 +132,66 @@ pub fn parse_cf_command_interface_xml(text: &str) -> Result<CfInterfaceData, Str
     Ok(CfInterfaceData { subsystem_order })
 }
 
+/// Observe the closed information profile without replacing unknown values with defaults.
+fn information_property<'a, 'input>(
+    properties: roxmltree::Node<'a, 'input>,
+    name: &str,
+    kind: unica_metadata::MetaInfoPropertyValueKind,
+    limits: &mut Vec<String>,
+) -> Option<roxmltree::Node<'a, 'input>> {
+    use crate::info_projection::{
+        direct_meta_info_property, meta_info_property_value_is_valid,
+        strict_localized_meta_info_property_value,
+    };
+    let node = match direct_meta_info_property(properties, "Configuration", name) {
+        Ok(node) => node?,
+        Err(error) => {
+            limits.push(format!("{}: {}", error.field, error.message));
+            return None;
+        }
+    };
+    let valid = if kind == unica_metadata::MetaInfoPropertyValueKind::LocalizedString {
+        strict_localized_meta_info_property_value(node).is_some()
+    } else {
+        meta_info_property_value_is_valid(node, kind)
+    };
+    if !valid {
+        limits.push(format!(
+            "properties.{name}: Configuration contains a malformed value"
+        ));
+        return None;
+    }
+    Some(node)
+}
+
+fn information_flag(
+    properties: roxmltree::Node<'_, '_>,
+    name: &str,
+    limits: &mut Vec<String>,
+) -> Option<bool> {
+    information_property(
+        properties,
+        name,
+        unica_metadata::MetaInfoPropertyValueKind::Boolean,
+        limits,
+    )
+    .map(|node| crate::info_projection::direct_text_content(node) == "true")
+}
+
+fn information_text(
+    properties: roxmltree::Node<'_, '_>,
+    name: &str,
+    limits: &mut Vec<String>,
+) -> Option<Vec<unica_metadata::MetaLocalizedText>> {
+    let values = crate::info_projection::strict_localized_text(information_property(
+        properties,
+        name,
+        unica_metadata::MetaInfoPropertyValueKind::LocalizedString,
+        limits,
+    )?);
+    (!values.is_empty()).then_some(values)
+}
+
 pub fn parse_cf_info_xml(
     text: &str,
     support: ConfigurationSupportData,
@@ -181,6 +241,7 @@ pub fn parse_cf_info_xml(
                 })
         })
         .collect();
+    let mut property_limits = Vec::new();
     let data = CfInfoData {
         format: version.to_string(),
         name: cf_prop_text(props, "Name"),
@@ -217,7 +278,35 @@ pub fn parse_cf_info_xml(
             comment: optional(cf_prop_text(props, "Comment")),
             name_prefix: optional(cf_prop_text(props, "NamePrefix")),
             update_catalog_address: optional(cf_prop_text(props, "UpdateCatalogAddress")),
+            use_managed_form_in_ordinary_application: information_flag(
+                props,
+                "UseManagedFormInOrdinaryApplication",
+                &mut property_limits,
+            ),
+            use_ordinary_form_in_managed_application: information_flag(
+                props,
+                "UseOrdinaryFormInManagedApplication",
+                &mut property_limits,
+            ),
+            brief_information: information_text(props, "BriefInformation", &mut property_limits),
+            detailed_information: information_text(
+                props,
+                "DetailedInformation",
+                &mut property_limits,
+            ),
+            copyright: information_text(props, "Copyright", &mut property_limits),
+            vendor_information_address: information_text(
+                props,
+                "VendorInformationAddress",
+                &mut property_limits,
+            ),
+            configuration_information_address: information_text(
+                props,
+                "ConfigurationInformationAddress",
+                &mut property_limits,
+            ),
         },
+        property_limits,
         child_objects: counts
             .into_iter()
             .map(|(kind, count)| CfChildObjectCount { kind, count })

@@ -15,6 +15,8 @@ pub struct CfInfoData {
     pub extension_purpose: Option<String>,
     pub support: ConfigurationSupportData,
     pub properties: CfInfoProperties,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub property_limits: Vec<String>,
     pub child_objects: Vec<CfChildObjectCount>,
     pub total_objects: usize,
     pub home_page: Option<CfHomePageData>,
@@ -43,6 +45,13 @@ pub struct CfInfoProperties {
     pub comment: Option<String>,
     pub name_prefix: Option<String>,
     pub update_catalog_address: Option<String>,
+    pub use_managed_form_in_ordinary_application: Option<bool>,
+    pub use_ordinary_form_in_managed_application: Option<bool>,
+    pub brief_information: Option<Vec<crate::MetaLocalizedText>>,
+    pub detailed_information: Option<Vec<crate::MetaLocalizedText>>,
+    pub copyright: Option<Vec<crate::MetaLocalizedText>>,
+    pub vendor_information_address: Option<Vec<crate::MetaLocalizedText>>,
+    pub configuration_information_address: Option<Vec<crate::MetaLocalizedText>>,
 }
 
 #[derive(serde::Serialize)]

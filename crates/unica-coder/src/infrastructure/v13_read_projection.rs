@@ -721,7 +721,17 @@ pub(super) fn project_configuration_with_counts(
                 .unwrap_or("Configuration"),
             props,
         )
-        .with_branches(branches),
+        .with_branches(branches)
+        .with_additional_limits(
+            payload
+                .get("propertyLimits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect(),
+        ),
     ))
 }
 
@@ -920,6 +930,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "childObjects",
             "registeredObjects",
             "totalObjects",
+            "propertyLimits",
             "homePage",
             "interface",
             "panels",
