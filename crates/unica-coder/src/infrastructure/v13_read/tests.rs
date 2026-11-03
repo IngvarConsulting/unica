@@ -1,6 +1,7 @@
 mod catalog_attribute_properties;
 mod catalog_attribute_tooltip;
 mod catalog_tabular_properties;
+mod characteristic_relations;
 mod common_module_synonym;
 mod dcs_parameter_expression;
 mod defined_type_reference;

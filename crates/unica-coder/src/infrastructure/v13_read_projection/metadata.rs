@@ -454,6 +454,15 @@ const METADATA_DETAIL_RELATIONS: &[(&str, &str, &str)] = &[
 ];
 
 fn metadata_relation_error_field(field: &str) -> Option<String> {
+    if field == "properties.Characteristics" {
+        return Some("declarations.characteristics".to_string());
+    }
+    if field
+        .strip_prefix("characteristics")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+    {
+        return Some(format!("declarations.{field}"));
+    }
     if field.starts_with("relations.") {
         return Some(field.to_string());
     }
@@ -499,6 +508,12 @@ fn metadata_missing_relation_limits(payload: &Value) -> Vec<String> {
                 .filter(|(name, _, _)| details.get(*name).is_some_and(Value::is_null))
                 .map(|(name, _, _)| format!("details.{name}")),
         );
+    }
+    if payload
+        .pointer("/declarations/characteristics")
+        .is_some_and(Value::is_null)
+    {
+        missing.push("declarations.characteristics".to_string());
     }
     missing
         .into_iter()
@@ -626,6 +641,41 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
     }
 }
 
+/// Characteristics reference metadata sources and fields, not arbitrary view routes.
+fn characteristic_target(address: &QualifiedAddress) -> bool {
+    let segments = address.segments();
+    let Some(owner) = segments.first() else {
+        return false;
+    };
+    if !owner.kind().is_metadata_kind() || segments.iter().any(|part| part.name().is_none()) {
+        return false;
+    }
+    let child = |kind: NodeKind| {
+        unica_source_designer::registration::platform_child_object_order(owner.kind().as_str())
+            .is_some_and(|kinds| kinds.contains(&kind.as_str()))
+    };
+    match &segments[1..] {
+        [] => true,
+        [field] => match field.kind() {
+            NodeKind::Attribute
+            | NodeKind::Dimension
+            | NodeKind::Resource
+            | NodeKind::TabularSection
+            | NodeKind::EnumValue => child(field.kind()),
+            NodeKind::StandardAttribute | NodeKind::StandardTabularSection => true,
+            _ => false,
+        },
+        [section, field] => match (section.kind(), field.kind()) {
+            (NodeKind::TabularSection, NodeKind::Attribute | NodeKind::StandardAttribute) => {
+                child(NodeKind::TabularSection)
+            }
+            (NodeKind::StandardTabularSection, NodeKind::StandardAttribute) => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Все ссылки объекта наружу — одной ветвью.
 ///
 /// Платформа держит их в разных местах: владельцы и движения — в `relations`,
@@ -696,6 +746,43 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
                 .as_str()
                 .or_else(|| entry.get("metadataPath").and_then(Value::as_str));
             if let Some(target) = target {
+                items.extend(addressed(relation, target));
+            }
+        }
+    }
+    // Only the seven source/field roles are references. Filter values and
+    // data paths remain facts of the anonymous Characteristic declaration.
+    for declaration in payload
+        .pointer("/declarations/characteristics")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for (group, field, relation) in [
+            ("types", "source", "characteristicTypesSource"),
+            ("types", "keyField", "characteristicTypesKeyField"),
+            (
+                "types",
+                "typesFilterField",
+                "characteristicTypesFilterField",
+            ),
+            ("values", "source", "characteristicValuesSource"),
+            ("values", "objectField", "characteristicValuesObjectField"),
+            ("values", "typeField", "characteristicValuesTypeField"),
+            ("values", "valueField", "characteristicValuesValueField"),
+        ] {
+            let Some(target) = declaration
+                .get(group)
+                .and_then(|group| group.get(field))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let Ok(at) = QualifiedAddress::parse(&format!("{}:{target}", address.source_set()))
+            else {
+                continue;
+            };
+            if characteristic_target(&at) {
                 items.extend(addressed(relation, target));
             }
         }
