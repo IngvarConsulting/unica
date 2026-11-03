@@ -40,6 +40,20 @@ pub struct MetaExpandedName {
     pub local_name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaChoiceParameter {
+    pub name: String,
+    pub value: MetaChoiceParameterValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MetaChoiceParameterValue {
+    pub r#type: MetaExpandedName,
+    pub reference: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MetaLocalizedText {
@@ -197,6 +211,7 @@ pub enum MetaInfoDetails {
     Enum {},
     Constant {
         r#type: Option<ObservedMetadataType>,
+        choice_parameters: Option<Vec<MetaChoiceParameter>>,
     },
     InformationRegister {},
     AccumulationRegister {},
@@ -242,7 +257,10 @@ impl MetaInfoDetails {
             MetadataKind::Catalog => Self::Catalog {},
             MetadataKind::Document => Self::Document {},
             MetadataKind::Enum => Self::Enum {},
-            MetadataKind::Constant => Self::Constant { r#type: None },
+            MetadataKind::Constant => Self::Constant {
+                r#type: None,
+                choice_parameters: None,
+            },
             MetadataKind::InformationRegister => Self::InformationRegister {},
             MetadataKind::AccumulationRegister => Self::AccumulationRegister {},
             MetadataKind::AccountingRegister => Self::AccountingRegister {},
