@@ -71,7 +71,7 @@ BINARY = binary_path(REPO_ROOT)
 from tests.ci.form_runtime_diagnostics import WORKSPACE as FORM_RUNTIME_WORKSPACE
 
 from tests.ci.acceptance_profiles import (
-    DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
+    BUDGET_SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
     select_profile,
 )
 
@@ -691,7 +691,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
             workspace = scenario.get("workspace", self.corpus["workspace"])
             self.assertIn(
                 workspace,
-                SOURCE_WORKSPACES | {SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, FORM_RUNTIME_WORKSPACE, PULL_VALIDATION_WORKSPACE},
+                SOURCE_WORKSPACES | {SYMBOL_WORKSPACE, BUDGET_SYMBOL_WORKSPACE, DIAGNOSTICS_WORKSPACE, FORM_RUNTIME_WORKSPACE, PULL_VALIDATION_WORKSPACE},
                 f"{scenario['id']}: a scenario runs on one of the registered fixture workspaces",
             )
             for index, step in enumerate(scenario["wire"]):

@@ -3,7 +3,7 @@
   "issue": 2390,
   "area": "Код BSL",
   "task": "Найти символы при исчерпании бюджета структурированного ответа анализатора",
-  "workspace": "tests/fixtures/acceptance/workspace-symbol",
+  "workspace": "tests/fixtures/acceptance/workspace-budget-symbol",
   "profile": "delivery",
   "driver": "bsl-analyzer",
   "wire": [
