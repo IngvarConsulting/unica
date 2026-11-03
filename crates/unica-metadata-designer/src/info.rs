@@ -925,6 +925,25 @@ pub fn typed_optional_root_collection(
     let Some(parent) = parent else {
         return Some(None);
     };
+    let accounting_flags = matches!(route.tag, "AccountingFlag" | "ExtDimensionAccountingFlag");
+    if accounting_flags
+        && parent.children().any(|child| {
+            child.is_element()
+                && child.tag_name().name() == route.tag
+                && child.tag_name().namespace()
+                    != Some(super::info_projection::MD_CLASSES_NAMESPACE)
+        })
+    {
+        diagnostics.push(
+            MetaDiagnostic::warning(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata flag collection contains a foreign namespace member",
+            )
+            .with_metadata_path(target.clone())
+            .with_field(route.field),
+        );
+        return Some(None);
+    }
     let expected = crate::info_projection::direct_children_with_namespace(
         parent,
         super::info_projection::MD_CLASSES_NAMESPACE,
@@ -944,6 +963,23 @@ pub fn typed_optional_root_collection(
         target,
         diagnostics,
     );
+    if accounting_flags {
+        let mut names = std::collections::HashSet::new();
+        if values.iter().any(|value| {
+            !unica_metadata::identifier::is_1c_identifier(&value.name)
+                || !names.insert(value.name.to_lowercase())
+        }) {
+            diagnostics.push(
+                MetaDiagnostic::error(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "metadata flag collection contains an invalid or duplicate member name",
+                )
+                .with_metadata_path(target.clone())
+                .with_field(route.field),
+            );
+            return Some(None);
+        }
+    }
     let errors_after = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.severity == MetaDiagnosticSeverity::Error)

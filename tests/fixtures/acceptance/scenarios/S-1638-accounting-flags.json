@@ -1,0 +1,462 @@
+{
+  "id": "S-1638-accounting-flags",
+  "name": "accounting-flag-definitions",
+  "issue": 1638,
+  "area": "Метаданные",
+  "task": "Прочитать все определения признаков учёта и субконто по выданным ветвям, дочитать страницы и сохранить различные адреса одноимённых признаков, типы и описания без изменения исходников",
+  "workspace": "tests/fixtures/acceptance/workspace-accounting-flags",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sourceSets/0/name",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "config": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "xml": {
+          "kind": "sha256",
+          "file": "src/ChartsOfAccounts/Accounts.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/38/count",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "owners": {
+          "pointer": "/data/branches/38/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owners"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:ChartOfAccounts.Accounts"
+        }
+      ],
+      "captures": {
+        "owner": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        },
+        {
+          "pointer": "/data/branches/2/count",
+          "eq": 4
+        },
+        {
+          "pointer": "/data/branches/3/count",
+          "eq": 3
+        }
+      ],
+      "captures": {
+        "attributes": {
+          "pointer": "/data/branches/0/at"
+        },
+        "flags": {
+          "pointer": "/data/branches/2/at"
+        },
+        "extFlags": {
+          "pointer": "/data/branches/3/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.flags",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:ChartOfAccounts.Accounts.AccountingFlag.Валютный",
+              "kind": "AccountingFlag",
+              "title": "Признак Валютный",
+              "props": {
+                "synonym": "Признак Валютный",
+                "comment": "Definition Валютный",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ],
+                  "mutationCapability": "editable"
+                }
+              }
+            },
+            {
+              "at": "main:ChartOfAccounts.Accounts.AccountingFlag.Количественный",
+              "kind": "AccountingFlag",
+              "title": "Признак Количественный",
+              "props": {
+                "synonym": "Признак Количественный",
+                "comment": "Definition Количественный",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ],
+                  "mutationCapability": "editable"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "flagsCursor": {
+          "pointer": "/cursor"
+        },
+        "flagsFirst": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.flags",
+        "limit": 2,
+        "cursor": "$capture.flagsCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:ChartOfAccounts.Accounts.AccountingFlag.УчетПоПодразделениям",
+              "kind": "AccountingFlag",
+              "title": "Признак УчетПоПодразделениям",
+              "props": {
+                "synonym": "Признак УчетПоПодразделениям",
+                "comment": "Definition УчетПоПодразделениям",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ],
+                  "mutationCapability": "editable"
+                }
+              }
+            },
+            {
+              "at": "main:ChartOfAccounts.Accounts.AccountingFlag.НалоговыйУчет",
+              "kind": "AccountingFlag",
+              "title": "Признак НалоговыйУчет",
+              "props": {
+                "synonym": "Признак НалоговыйУчет",
+                "comment": "Definition НалоговыйУчет",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ],
+                  "mutationCapability": "editable"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.flagsFirst"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "synonym": "Признак Валютный",
+            "comment": "Definition Валютный",
+            "type": {
+              "variants": [
+                {
+                  "kind": "boolean"
+                }
+              ],
+              "mutationCapability": "editable"
+            }
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Accounts.AccountingFlag.Валютный.Can.props.set"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: operation `props.set` does not apply to AccountingFlag"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extFlags",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:ChartOfAccounts.Accounts.ExtDimensionAccountingFlag.Суммовой",
+              "kind": "ExtDimensionAccountingFlag",
+              "title": "Признак Суммовой",
+              "props": {
+                "synonym": "Признак Суммовой",
+                "comment": "Definition Суммовой",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ],
+                  "mutationCapability": "editable"
+                }
+              }
+            },
+            {
+              "at": "main:ChartOfAccounts.Accounts.ExtDimensionAccountingFlag.Валютный",
+              "kind": "ExtDimensionAccountingFlag",
+              "title": "Признак Валютный",
+              "props": {
+                "synonym": "Признак Валютный",
+                "comment": "Definition Валютный",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ],
+                  "mutationCapability": "editable"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "extFlagsCursor": {
+          "pointer": "/cursor"
+        },
+        "extFlagsFirst": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extFlags",
+        "limit": 2,
+        "cursor": "$capture.extFlagsCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:ChartOfAccounts.Accounts.ExtDimensionAccountingFlag.Количественный",
+              "kind": "ExtDimensionAccountingFlag",
+              "title": "Признак Количественный",
+              "props": {
+                "synonym": "Признак Количественный",
+                "comment": "Definition Количественный",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ],
+                  "mutationCapability": "editable"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extFlagsFirst"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props",
+          "eq": {
+            "synonym": "Признак Суммовой",
+            "comment": "Definition Суммовой",
+            "type": {
+              "variants": [
+                {
+                  "kind": "boolean"
+                }
+              ],
+              "mutationCapability": "editable"
+            }
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Accounts.ExtDimensionAccountingFlag.Суммовой.Can.props.set"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: operation `props.set` does not apply to ExtDimensionAccountingFlag"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.attributes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:ChartOfAccounts.Accounts.Attribute.Enabled"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:ChartOfAccounts.Accounts.Attribute.Note"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/2/count",
+          "eq": 4
+        },
+        {
+          "pointer": "/data/branches/3/count",
+          "eq": 3
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.config"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/ChartsOfAccounts/Accounts.xml",
+          "eq": "$capture.xml"
+        }
+      ]
+    }
+  ]
+}
