@@ -361,6 +361,7 @@ fn mutation_value_kind(key: MetaPropertyKey) -> MetaInfoPropertyValueKind {
             | ClientManagedApplication
             | Correspondence
             | DistributedInfoBase
+            | IncludeConfigurationExtensions
             | EnableTotalsSplitting
             | ExternalConnection
             | FoldersOnTop
@@ -428,7 +429,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
             kind == ScheduledJob
         }
         Event | Handler => kind == EventSubscription,
-        DistributedInfoBase => kind == ExchangePlan,
+        DistributedInfoBase | IncludeConfigurationExtensions => kind == ExchangePlan,
         EnableTotalsSplitting | RegisterType => kind == AccumulationRegister,
         MainFilterOnPeriod | WriteMode => kind == InformationRegister,
         NumberAllowedLength

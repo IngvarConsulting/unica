@@ -24,6 +24,7 @@ pub enum MetaPropertyKey {
     Description,
     Event,
     DistributedInfoBase,
+    IncludeConfigurationExtensions,
     EnableTotalsSplitting,
     ExternalConnection,
     FoldersOnTop,
@@ -452,6 +453,12 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::Event,
         EVENT_SUBSCRIPTION_KINDS,
         "^[A-Z][A-Za-z0-9]*$",
+    ),
+    property(
+        "IncludeConfigurationExtensions",
+        MetaPropertyKey::IncludeConfigurationExtensions,
+        MetaPropertyValueKind::Boolean,
+        EXCHANGE_PLAN_KINDS,
     ),
     property(
         "DistributedInfoBase",
@@ -1217,6 +1224,11 @@ mod tests {
                     Task,
                     ExchangePlan,
                 ],
+            ),
+            (
+                "IncludeConfigurationExtensions",
+                MetaPropertyValue::Boolean(true),
+                &[ExchangePlan],
             ),
             (
                 "DistributedInfoBase",
