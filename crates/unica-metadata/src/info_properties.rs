@@ -423,6 +423,22 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | ReturnValuesReuse
         | Server
         | ServerCall => kind == CommonModule,
+        DataLockControlMode => matches!(
+            kind,
+            Catalog
+                | Document
+                | Constant
+                | InformationRegister
+                | AccumulationRegister
+                | AccountingRegister
+                | CalculationRegister
+                | ChartOfAccounts
+                | ChartOfCharacteristicTypes
+                | ChartOfCalculationTypes
+                | BusinessProcess
+                | Task
+                | ExchangePlan
+        ),
         Correspondence | PeriodAdjustmentLength => kind == AccountingRegister,
         Description | Predefined | RestartCountOnFailure | RestartIntervalOnFailure | Use => {
             kind == ScheduledJob
