@@ -45,6 +45,7 @@ properties_operations!(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertiesSite {
     Metadata(MetadataKind),
+    DocumentNumerator,
     Role,
     Subsystem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
@@ -91,7 +92,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension: true } => {
                         match self { $(Self::$field => $extension),+ }
                     }
-                    PropertiesSite::Metadata(_) => false,
+                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator => false,
                 }
             }
         }
@@ -204,6 +205,7 @@ impl PropertiesSite {
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::DocumentNumerator => Some(Self::DocumentNumerator),
             NodeKind::Role => Some(Self::Role),
             NodeKind::Subsystem => Some(Self::Subsystem),
             kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
@@ -221,6 +223,7 @@ impl PropertiesSite {
         let mut properties = Map::new();
         let mut groups = Vec::new();
         match self {
+            Self::DocumentNumerator => return crate::document_numerator::values_schema(),
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
             Self::Role | Self::Subsystem | Self::Configuration { .. } => {
                 for field in self.descriptor_fields() {
@@ -265,11 +268,12 @@ impl PropertiesOperation {
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
                 notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 example_args: match site {
+                    PropertiesSite::DocumentNumerator => json!({"values":{"NumberLength":12,"CheckUnique":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",

@@ -1234,6 +1234,15 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
+    unica_metadata_designer::planner::validate_final_numerators(
+        &mut staged.proposal(),
+        parsed.iter().filter_map(|operation| match operation {
+            ParsedApplyOperation::Metadata(operation) => {
+                Some((operation.index(), operation.operation()))
+            }
+            _ => None,
+        }),
+    )?;
     unica_metadata_designer::planner::validate_final_object_integrity(
         &mut staged.proposal(),
         binding.source_set_name(),

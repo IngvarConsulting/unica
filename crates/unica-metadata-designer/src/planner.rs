@@ -104,6 +104,42 @@ pub fn validate_final_object_integrity(
     Ok(())
 }
 
+/// All addressed numerator edits are checked after every family has staged
+/// its contribution, including equivalent edits that stage no changed file.
+pub fn validate_final_numerators<'a>(
+    staged: &mut ApplyProposal<'_>,
+    operations: impl IntoIterator<Item = (usize, &'a MetadataPlanOperation)>,
+) -> Result<(), ApplyPlanError> {
+    let mut targets = std::collections::BTreeMap::new();
+    for (index, operation) in operations {
+        if let MetadataPlanKind::DescriptorProperties {
+            relative,
+            name,
+            changes: DescriptorPropertyChanges::DocumentNumerator(_),
+        } = &operation.kind
+        {
+            targets.insert(relative, (name, index));
+        }
+    }
+    for (relative, (name, index)) in targets {
+        let path = format!("ops[{index}].args.values");
+        let bytes = staged
+            .read(relative)
+            .map_err(|error| ApplyPlanError::staging(error, path.clone()))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "DocumentNumerator descriptor was not found",
+                )
+                .at_path(path.clone())
+            })?;
+        crate::numerator_write::validate(&bytes, name).map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(path)
+        })?;
+    }
+    Ok(())
+}
+
 /// The source classes and the event a subscription descriptor binds.
 fn event_subscription_binding(
     bytes: &[u8],
@@ -1389,6 +1425,14 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::DocumentNumerator(changes) => {
+            let text =
+                crate::numerator_write::patch(&source, name, changes).map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?;
+            (NodeKind::DocumentNumerator, text)
+        }
         DescriptorPropertyChanges::Role(unica_metadata::property_input::RolePropertyChanges {
             synonym,
             comment,

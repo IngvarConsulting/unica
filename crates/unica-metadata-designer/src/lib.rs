@@ -21,6 +21,7 @@ pub mod edit;
 
 pub mod info;
 pub mod numerator_read;
+mod numerator_write;
 pub mod session_parameter_comment;
 
 pub mod job_schedule;
