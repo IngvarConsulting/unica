@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/number_settings.rs"]
+mod number_settings;
+
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
 
