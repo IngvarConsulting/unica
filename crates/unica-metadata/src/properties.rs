@@ -205,6 +205,14 @@ const fn patterned_string_property(
     }
 }
 
+const CHOICE_MODE_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Enum,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ExchangePlan,
+];
 const CATALOG_KINDS: &[MetadataKind] = &[MetadataKind::Catalog];
 const DOCUMENT_KINDS: &[MetadataKind] = &[MetadataKind::Document];
 const INFORMATION_REGISTER_KINDS: &[MetadataKind] = &[MetadataKind::InformationRegister];
@@ -386,7 +394,7 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "ChoiceMode",
         "ChoiceMode",
         MetaPropertyKey::ChoiceMode,
-        CATALOG_KINDS,
+        CHOICE_MODE_KINDS,
         CHOICE_MODE_VALUES,
     ),
     property(
@@ -1148,7 +1156,14 @@ mod tests {
             (
                 "ChoiceMode",
                 MetaPropertyValue::String("FromForm".into()),
-                &[Catalog],
+                &[
+                    Catalog,
+                    Enum,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ChartOfAccounts,
+                    ExchangePlan,
+                ],
             ),
             (
                 "ClientManagedApplication",
