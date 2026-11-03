@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/business_process_task_mode.rs"]
+mod business_process_task_mode;
+
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
 
