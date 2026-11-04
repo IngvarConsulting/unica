@@ -341,6 +341,63 @@ fn wsreference_definition_is_only_a_collection_of_its_registered_owner() {
 }
 
 #[test]
+fn wsreference_directory_companion_preserves_owner_with_local_limit() {
+    let fixture = RealReaderFixture::new();
+    let path = install(&fixture, Some(WSDL));
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    let owner = fixture
+        .view_service()
+        .view(ViewRequest::new(OWNER).unwrap());
+    assert!(owner.ok, "{owner:?}");
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new(&format!("{OWNER}.Definition")).unwrap());
+    assert!(result.ok, "{result:?}");
+    let data = result.data.as_ref().unwrap();
+    assert_eq!(data["items"], json!([]));
+    exact_limits(
+        data,
+        &["local WSDL companion WSDefinition.xml is a directory; its declarations are unknown"],
+    );
+    assert_eq!(owner.data.as_ref().unwrap()["limits"], data["limits"]);
+    assert!(fixture
+        .read_authority()
+        .existing_export_path(
+            &QualifiedAddress::parse(&format!("{OWNER}.Definition")).unwrap(),
+            None
+        )
+        .is_err());
+}
+
+#[test]
+fn wsreference_companion_parent_link_is_still_refused() {
+    let fixture = RealReaderFixture::new();
+    let path = install(&fixture, Some(WSDL));
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(outside.path().join("WSDefinition.xml"), WSDL).unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::remove_dir(path.parent().unwrap()).unwrap();
+    let created = unica_workspace::test_support::create_dir_symlink_for_test(
+        outside.path(),
+        path.parent().unwrap(),
+    )
+    .expect("symlink fixtures exist on supported hosts");
+    if created.is_err() {
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "creating a link fixture needs the symlink privilege",
+        );
+        return;
+    }
+    let result = fixture
+        .view_service()
+        .view(ViewRequest::new(OWNER).unwrap());
+    assert!(!result.ok, "{result:?}");
+    assert_eq!(refusal_codes(&result), vec!["provider_unavailable"]);
+}
+
+#[test]
 fn wsreference_companion_symlink_cannot_read_another_source() {
     let fixture = RealReaderFixture::new();
     let path = install(&fixture, Some(WSDL));
