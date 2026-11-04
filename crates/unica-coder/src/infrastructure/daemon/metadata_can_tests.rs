@@ -1,5 +1,9 @@
+#[path = "metadata_can_tests/functional_option.rs"]
+mod functional_option;
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
+#[path = "metadata_can_tests/search_input.rs"]
+mod search_input;
 
 use super::actor_capacity_tests::direct_v5;
 use super::*;

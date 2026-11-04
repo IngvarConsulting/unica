@@ -77,6 +77,38 @@ fn verify_owners(owners: &[(&str, &str, &str)]) {
                 mode
             );
         }
+        if *kind == "Catalog" {
+            let root_search = "\n\t\t\t<FullTextSearch>Use</FullTextSearch>";
+            assert_eq!(initial.matches(root_search).count(), 1);
+            let expected_xml = initial
+                .replace(
+                    "<DataLockControlMode>Automatic</DataLockControlMode>",
+                    "<DataLockControlMode>Managed</DataLockControlMode>",
+                )
+                .replacen(
+                    root_search,
+                    "\n\t\t\t<FullTextSearch>DontUse</FullTextSearch>",
+                    1,
+                );
+            let mut expected = original.clone();
+            expected.insert(owner.clone(), expected_xml.into_bytes());
+            for _ in 0..2 {
+                publish(
+                    &runtime,
+                    &fixture,
+                    json!({"at":at,"ops":[{"op":"props.set","args":{"values":{
+                        "DataLockControlMode":"Managed","FullTextSearch":"DontUse"
+                    }}}]}),
+                );
+                assert_eq!(
+                    unica_workspace::test_support::tree_snapshot(&fixture.source),
+                    expected
+                );
+                let observed = view(&runtime, &fixture, &at);
+                assert_eq!(observed["props"]["DataLockControlMode"], "Managed");
+                assert_eq!(observed["props"]["FullTextSearch"], "DontUse");
+            }
+        }
     }
 }
 

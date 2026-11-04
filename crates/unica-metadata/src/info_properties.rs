@@ -423,6 +423,12 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | ReturnValuesReuse
         | Server
         | ServerCall => kind == CommonModule,
+        FullTextSearch
+        | SearchStringModeOnInputByString
+        | FullTextSearchOnInputByString
+        | ChoiceDataGetModeOnInputByString
+        | CreateOnInput
+        | ChoiceHistoryOnInput => matches!(kind, Catalog | Document),
         DataLockControlMode => matches!(
             kind,
             Catalog

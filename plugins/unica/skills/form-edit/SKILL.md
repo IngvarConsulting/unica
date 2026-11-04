@@ -50,6 +50,26 @@ allowed-tools:
 и адресуются полной
 цепочкой `Item`. Точный набор операций узла — в его словаре `can`.
 
+### Формы по умолчанию
+
+`form.set` вызывается на владельце, например `main:Report.Продажи`.
+Собственная форма задаётся именем или её логическим адресом; пустая строка
+снимает назначение. Для четырёх слотов можно передать адрес существующей
+совместимой общей формы того же набора:
+
+| Владелец и ключ `values` | Поддержанный профиль общей управляемой формы |
+|---|---|
+| Report `defaultForm` | Основной реквизит generic ReportObject, ReportFormType=Main |
+| Report `defaultSettingsForm` | ReportObject, ReportFormType=Settings |
+| Report `defaultVariantForm` | ReportObject, ReportFormType=Variant |
+| Constant `defaultForm` | Основной реквизит ConstantsSet |
+
+Например, `{"defaultSettingsForm":"main:CommonForm.ФормаНастроекОтчета"}`.
+У generic ReportObject отсутствующий ReportFormType означает Main.
+Операция проверяет регистрацию, декларацию и локальное содержимое формы;
+неуказанные назначения и сами формы сохраняются. Подробный договор и
+доступные слоты возьми из `<владелец>.Can.form.set`.
+
 ### Свойства формы
 
 Заголовок, размеры и поведение самой формы пишет `props.set` на адресе
