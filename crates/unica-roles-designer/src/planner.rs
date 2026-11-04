@@ -419,6 +419,18 @@ fn rights_entry_size(body: &str, object: &str) -> Result<Option<usize>, ApplyPla
                 .count()
         }))
 }
+// Only whitespace between a preceding newline and this XML node is layout.
+fn structural_line_start(body: &str, offset: usize) -> Option<usize> {
+    let start = body.as_bytes()[..offset]
+        .iter()
+        .rposition(|byte| matches!(byte, b'\r' | b'\n'))?
+        + 1;
+    body[start..offset]
+        .chars()
+        .all(|ch| matches!(ch, ' ' | '\t'))
+        .then_some(start)
+}
+
 fn ensure_rights_object(body: &str, object: &str) -> Result<String, String> {
     let document = roxmltree::Document::parse(body)
         .map_err(|_| "Rights.xml is not well-formed XML".to_string())?;
@@ -443,14 +455,7 @@ fn ensure_rights_object(body: &str, object: &str) -> Result<String, String> {
         .map(|node| node.range().start)
         .or_else(|| body.rfind("</Rights>"))
         .ok_or_else(|| "Rights.xml has no closing root element".to_string())?;
-    let line_start = body.as_bytes()[..insert_at]
-        .iter()
-        .rposition(|byte| matches!(byte, b'\r' | b'\n'))
-        .map_or(0, |index| index + 1);
-    if !body[line_start..insert_at]
-        .chars()
-        .all(|ch| matches!(ch, ' ' | '\t'))
-    {
+    let Some(line_start) = structural_line_start(body, insert_at) else {
         let mut updated = body.to_string();
         updated.insert_str(
             insert_at,
@@ -460,7 +465,7 @@ fn ensure_rights_object(body: &str, object: &str) -> Result<String, String> {
             ),
         );
         return Ok(updated);
-    }
+    };
     let indent = body[line_start..insert_at]
         .chars()
         .take_while(|ch| *ch == '\t' || *ch == ' ')
@@ -527,6 +532,10 @@ fn set_rights_restriction(
         let indent = crate::writer::line_indent(body, range.start);
         let replacement = if condition_node.is_some() {
             format!("<condition>{escaped}</condition>")
+        } else if structural_line_start(body, range.start).is_none() {
+            format!(
+                "<restrictionByCondition><condition>{escaped}</condition></restrictionByCondition>"
+            )
         } else {
             let eol = crate::writer::role_source_eol(body, range.start)?;
             format!(
@@ -548,10 +557,14 @@ fn set_rights_restriction(
     } else {
         "\t".to_string()
     };
-    let eol = crate::writer::role_source_eol(body, range.end)?;
-    let block = format!(
+    let block = if structural_line_start(body, range.start).is_none() {
+        format!("<restrictionByCondition><condition>{escaped}</condition></restrictionByCondition>")
+    } else {
+        let eol = crate::writer::role_source_eol(body, range.start)?;
+        format!(
         "{eol}{indent}<restrictionByCondition>{eol}{indent}{unit}<condition>{escaped}</condition>{eol}{indent}</restrictionByCondition>"
-    );
+        )
+    };
     let mut updated = body.to_string();
     updated.insert_str(range.end, &block);
     Ok(updated)
@@ -768,22 +781,55 @@ mod eol_tests {
     }
 
     #[test]
+    fn compact_restriction_does_not_choose_eol_from_a_later_template() {
+        for existing in ["", "<restrictionByCondition/>"] {
+            let body = rights_xml("", "<value>true</value>")
+                .replace(
+                    "<name>Use</name><value>true</value>",
+                    &format!("<name>Use</name><value>true</value>{existing}"),
+                )
+                .replace(
+                    "<condition>TRUE</condition>",
+                    "<condition>A\nB\r\nC</condition>",
+                );
+            let updated =
+                set_rights_restriction(&body, "DataProcessor.Worker", "Use", "WHERE true").unwrap();
+            let block = "<restrictionByCondition><condition>WHERE true</condition></restrictionByCondition>";
+            assert!(updated.contains(block), "{updated}");
+            assert_eq!(updated.replacen(block, existing, 1), body);
+            roxmltree::Document::parse(&updated).unwrap();
+        }
+    }
+
+    #[test]
     fn adding_restriction_preserves_local_eol_and_existing_bytes() {
         for eol in ["\r\n", "\n", "\r"] {
-            let body = rights_xml(eol, "<value>true</value>");
+            let body = rights_xml(eol, "<value>true</value>").replace(
+                "<right><name>Use</name><value>true</value></right>",
+                &format!("<right>{eol}\t\t\t<name>Use</name>{eol}\t\t\t<value>true</value>{eol}\t\t</right>"),
+            );
             let updated =
                 set_rights_restriction(&body, "DataProcessor.Worker", "Use", "WHERE true").unwrap();
             assert!(
                 !updated.replace(eol, "").contains(['\r', '\n']),
                 "{updated:?}"
             );
-            let start = updated
-                .find(&format!("{eol}\t\t<restrictionByCondition>"))
-                .unwrap();
-            let end = updated[start..].find("</restrictionByCondition>").unwrap()
-                + start
-                + "</restrictionByCondition>".len();
-            assert_eq!(format!("{}{}", &updated[..start], &updated[end..]), body);
+            let block = format!("{eol}\t\t\t<restrictionByCondition>{eol}\t\t\t\t<condition>WHERE true</condition>{eol}\t\t\t</restrictionByCondition>");
+            assert!(updated.contains(&block));
+            assert_eq!(updated.replacen(&block, "", 1), body);
         }
+    }
+
+    #[test]
+    fn restriction_layout_is_not_taken_from_a_comment_inside_value() {
+        let body = rights_xml("\r\n", "<value>true</value>").replace(
+            "<right><name>Use</name><value>true</value></right>",
+            "<right>\r\n\t\t\t<name>Use</name>\r\n\t\t\t<value><!-- keep\n -->true</value>\r\n\t\t</right>",
+        );
+        let updated =
+            set_rights_restriction(&body, "DataProcessor.Worker", "Use", "WHERE true").unwrap();
+        let block = "\r\n\t\t\t<restrictionByCondition>\r\n\t\t\t\t<condition>WHERE true</condition>\r\n\t\t\t</restrictionByCondition>";
+        assert!(updated.contains(block));
+        assert_eq!(updated.replacen(block, "", 1), body);
     }
 }
