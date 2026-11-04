@@ -1,6 +1,14 @@
 use super::apply_typed_properties;
 use unica_metadata::{MetaPropertyChanges, MetaPropertyInput, MetaPropertyValue, MetadataKind};
 
+fn prefixed_task(property: &str) -> String {
+    format!(
+        "<md:MetaDataObject xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\">\
+         <md:Task><md:Properties><md:Name>Approval</md:Name>\
+         <md:Comment>keep</md:Comment>{property}</md:Properties></md:Task></md:MetaDataObject>"
+    )
+}
+
 fn changes(value: &str) -> MetaPropertyChanges {
     MetaPropertyChanges::convert(
         MetadataKind::Task,
@@ -60,4 +68,68 @@ fn task_number_auto_prefix_missing_property_refuses_without_other_changes() {
     let error = apply_typed_properties(&mut xml, &changes("DontUse"), "ru").unwrap_err();
     assert!(error.message.contains("not present"));
     assert_eq!(xml, before);
+}
+
+#[test]
+fn task_number_auto_prefix_equivalent_xml_keeps_its_lexical_bytes() {
+    for value in ["Dont&#85;se", "<![CDATA[DontUse]]>", "Dont<!--keep-->Use"] {
+        let before = prefixed_task(&format!(
+            "<md:TaskNumberAutoPrefix>{value}</md:TaskNumberAutoPrefix>"
+        ));
+        let mut xml = before.clone();
+        apply_typed_properties(&mut xml, &changes("DontUse"), "ru").unwrap();
+        assert_eq!(xml.as_bytes(), before.as_bytes(), "{value}");
+    }
+}
+
+#[test]
+fn task_number_auto_prefix_change_preserves_qualified_element_and_namespace() {
+    let before = prefixed_task(
+        "<md:TaskNumberAutoPrefix xmlns:other=\"urn:keep\">BusinessProcessNumber</md:TaskNumberAutoPrefix>",
+    );
+    let mut xml = before.clone();
+    apply_typed_properties(&mut xml, &changes("DontUse"), "ru").unwrap();
+    assert_eq!(xml, before.replace("BusinessProcessNumber", "DontUse"));
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    let property = doc
+        .descendants()
+        .find(|node| node.is_element() && node.tag_name().name() == "TaskNumberAutoPrefix")
+        .unwrap();
+    assert_eq!(
+        property.tag_name().namespace(),
+        Some("http://v8.1c.ru/8.3/MDClasses")
+    );
+    drop(doc);
+    apply_typed_properties(&mut xml, &changes("BusinessProcessNumber"), "ru").unwrap();
+    assert_eq!(xml, before);
+}
+
+#[test]
+fn task_number_auto_prefix_damaged_source_refuses_the_entire_property_batch() {
+    let changes = MetaPropertyChanges::convert(
+        MetadataKind::Task,
+        vec![
+            MetaPropertyInput::new("Comment", MetaPropertyValue::String("must not leak".into())),
+            MetaPropertyInput::new(
+                "TaskNumberAutoPrefix",
+                MetaPropertyValue::String("DontUse".into()),
+            ),
+        ],
+    )
+    .unwrap();
+    for property in [
+        "<md:TaskNumberAutoPrefix>Unknown</md:TaskNumberAutoPrefix>",
+        "<md:TaskNumberAutoPrefix/>",
+        "<md:TaskNumberAutoPrefix><md:Value>DontUse</md:Value></md:TaskNumberAutoPrefix>",
+        "<md:TaskNumberAutoPrefix extra=\"invalid\">DontUse</md:TaskNumberAutoPrefix>",
+        "<TaskNumberAutoPrefix xmlns=\"urn:foreign\">DontUse</TaskNumberAutoPrefix>",
+        "<md:TaskNumberAutoPrefix>DontUse</md:TaskNumberAutoPrefix><md:TaskNumberAutoPrefix>BusinessProcessNumber</md:TaskNumberAutoPrefix>",
+    ] {
+        let before = prefixed_task(property);
+        let mut xml = before.clone();
+        let error = apply_typed_properties(&mut xml, &changes, "ru").unwrap_err();
+        assert_eq!(error.code, unica_metadata::MetaDiagnosticCode::InvalidArguments);
+        assert_eq!(error.field.as_deref(), Some("values.TaskNumberAutoPrefix"));
+        assert_eq!(xml, before, "{property}");
+    }
 }
