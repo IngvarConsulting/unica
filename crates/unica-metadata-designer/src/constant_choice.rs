@@ -2,6 +2,7 @@
 //! registration and descriptors participate in saved-plan input equality.
 use std::path::Path;
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind, ApplyProposal};
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::layout::metadata_descriptor_relative;
@@ -122,6 +123,6 @@ pub(crate) fn validate_choice_form(
             ApplyPlanErrorKind::BadValue,
             format!("values.ChoiceForm: {message}"),
         )
-        .at_path(relative.display().to_string())
+        .at_path(relative.portable().to_string())
     })
 }
