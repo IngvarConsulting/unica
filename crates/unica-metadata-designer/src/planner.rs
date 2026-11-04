@@ -1,4 +1,8 @@
 //! Canonical metadata descriptor/resource planning over an issued proposal and read observations.
+#[path = "predefined_code_type_plan.rs"]
+mod predefined_code_type_plan;
+pub use predefined_code_type_plan::PredefinedCodeTypePlan;
+
 use crate::decode::*;
 use crate::edit::apply_typed_operations_to_image_with_seed;
 use crate::layout::metadata_layout;
@@ -236,6 +240,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
     operations: &[IndexedPlanOperation<MetadataPlanOperation>],
+    code_type_plan: &PredefinedCodeTypePlan,
 ) -> Result<Vec<ProvisionalApplyEffect>, ApplyPlanError> {
     if operations.is_empty() {
         return Err(empty_apply_family_batch());
@@ -279,6 +284,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                     *kind,
                     change,
                     op_index,
+                    code_type_plan.render_type(op_index),
                     &mut provisional,
                 )?;
                 continue;
@@ -1389,6 +1395,48 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::StyleItem(color) => {
+            let root_relative = Path::new("Configuration.xml");
+            let root = staged
+                .read(root_relative)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::NotFound, "source-set owner is absent")
+                        .at_path(at_path.clone())
+                })?;
+            let image = crate::style_color::StyleColorImage::parse_registered(
+                &source,
+                name,
+                relative,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| {
+                let kind = match &error {
+                    crate::style_color::ColorIssue::NotFound(_) => ApplyPlanErrorKind::NotFound,
+                    crate::style_color::ColorIssue::Invalid(_) => ApplyPlanErrorKind::InvalidSource,
+                    crate::style_color::ColorIssue::ReadOnly(_) => ApplyPlanErrorKind::InvalidState,
+                };
+                ApplyPlanError::new(kind, error.to_string()).at_path(at_path.clone())
+            })?;
+            let postimage = image.replace(*color);
+            let checked = crate::style_color::StyleColorImage::parse(&postimage, name, relative)
+                .map_err(|error| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::Postcondition,
+                        format!("StyleItem Color postimage is invalid: {error}"),
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            if checked.color() != *color {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::Postcondition,
+                    "StyleItem Color postimage does not contain the requested color",
+                )
+                .at_path(at_path.clone()));
+            }
+            (NodeKind::StyleItem, postimage)
+        }
         DescriptorPropertyChanges::FunctionalOption(values) => {
             let text =
                 crate::functional_option::patch(&source, name, values).map_err(|message| {
@@ -2357,6 +2405,7 @@ fn stage_template_remove(
 /// batch is visible to a later `set` or `remove` of the same batch. `set` and
 /// `remove` find the item by the name in their address; the platform keeps
 /// predefined names unique within the owner, nested items included.
+#[allow(clippy::too_many_arguments)]
 fn stage_predefined(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
@@ -2364,6 +2413,7 @@ fn stage_predefined(
     kind: MetadataKind,
     change: &PredefinedChange,
     op_index: usize,
+    final_code_type: Option<crate::predefined::PredefinedCodeType>,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
     let at_path = format!("ops[{op_index}].args.at");
@@ -2416,13 +2466,23 @@ fn stage_predefined(
             op_index,
         )?),
     };
-    let post_image = crate::predefined::predefined_post_image(
-        kind,
-        owner,
-        &owner_source,
-        original.as_deref(),
-        &operation,
-    )
+    let post_image = match final_code_type {
+        Some(code_type) => crate::predefined::predefined_post_image_for_final_code_type(
+            kind,
+            owner,
+            &owner_source,
+            original.as_deref(),
+            &operation,
+            code_type,
+        ),
+        None => crate::predefined::predefined_post_image(
+            kind,
+            owner,
+            &owner_source,
+            original.as_deref(),
+            &operation,
+        ),
+    }
     .map_err(|failure| {
         // A name or id already taken is the caller's to change: the
         // refusal asks for another value rather than for a human.
