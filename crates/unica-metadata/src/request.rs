@@ -833,6 +833,7 @@ pub fn parse_element_update(
     Ok(MetaElementUpdateInput {
         indexing: reader.read("indexing", optional_string_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
+        type_reduction_mode: reader.read("typeReductionMode", optional_string_at)?,
         name: reader.read("name", required_string_at)?,
         new_name: reader.read("newName", optional_string_at)?,
         synonym: reader.read("synonym", optional_string_at)?,
@@ -1113,9 +1114,20 @@ pub fn parse_event_source(value: &Value, field: &str) -> Result<MetaEventSource,
     let Some(shape) =
         ArgumentShape::new(metadata_event_source_input_schema()).variant("kind", &kind)
     else {
+        let supported = metadata_event_source_input_schema()["oneOf"]
+            .as_array()
+            .expect("the event source schema is a closed union")
+            .iter()
+            .map(|variant| {
+                variant["properties"]["kind"]["enum"][0]
+                    .as_str()
+                    .expect("each event source variant has one kind")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(invalid(
             format!("{field}.kind"),
-            format!("unsupported event source kind `{kind}`"),
+            format!("unsupported event source kind `{kind}`; use {supported}; example: {{\"kind\":\"object\",\"metadataPath\":\"Document.Order\"}}"),
         ));
     };
     let reader = MetadataArgumentReader {
@@ -1839,5 +1851,19 @@ mod shared_primitive_contract_tests {
         let error = parse_predefined_fields(&reader).unwrap_err();
         assert_eq!(error.field.as_deref(), Some(field), "{pointer}: {error:?}");
     }
+    }
+}
+
+#[cfg(test)]
+mod reduction_tests {
+    #[test]
+    fn type_reduction_update_accepts_deny_and_transform_values() {
+        for value in ["Deny", "TransformValues"] {
+            assert!(super::parse_element_update(
+                &serde_json::json!({"name":"Item", "typeReductionMode":value}),
+                "elements[0]"
+            )
+            .is_ok());
+        }
     }
 }

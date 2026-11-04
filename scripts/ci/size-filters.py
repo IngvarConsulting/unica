@@ -10,7 +10,9 @@
 
 Отдельные объёмные проверки с фактическим замером объявлены точным именем
 и владельцем библиотеки. Генератор проверяет их присутствие и единственность
-в списке Cargo, поэтому переименование требует обновить объявление.
+в списке Cargo на доступной платформе, поэтому переименование требует обновить
+объявление. Unix-only проверка не требуется в Windows inventory, но её точный
+терм остаётся в общем фильтре для Linux и macOS.
 
 Тот же проход пишет профиль `queue-platform`: тесты модулей, чьи файлы лежат
 в платформенных каталогах правила INV.PLATFORM.OS-BEHIND-FACADE. Его очередь
@@ -29,11 +31,13 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+from typing import NamedTuple
 
 from tree_sitter import Language, Parser
 import tree_sitter_rust
@@ -51,10 +55,19 @@ BLOCKS = {
 # Тест в исходнике: `#[test]`, `#[tokio::test]`, они же с аргументами.
 TEST_ATTRIBUTE_IN_SOURCE = re.compile(r"#\[\s*(?:[A-Za-z0-9_]+\s*::\s*)*test\s*[\](]")
 TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::")
+
+
+class MeasuredMediumCase(NamedTuple):
+    binary_id: str
+    binary_name: str
+    name: str
+    requires_unix: bool = False
+
+
 # 400 000 исходных наборов: 34.447 с отдельно, 41.729 с совместно, macOS.
 # Это размер конкретной проверки; соседние layout-проверки остаются small.
 MEASURED_MEDIUM_CASES = (
-    (
+    MeasuredMediumCase(
         "unica-project-health",
         "unica_project_health",
         "inspection::layout::tests::health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity",
@@ -62,35 +75,35 @@ MEASURED_MEDIUM_CASES = (
     # Библиотечные проверки от 3 с в ворота `pr`: PR-прогон 39649205116,
     # ubuntu, 21.10.2026. Вместе ~150 с из ~330 с суммарного (не настенного)
     # времени тестов PR; настенная фаза исполнения тогда шла 92 с.
-    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_main_corpus_workspace"),
-    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_resolve_workspace"),
-    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_code_and_extension_workspace"),
-    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_dcs_workspace"),
-    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_mxl_workspace"),
-    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_predefined_workspace"),
-    ("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_external_sources"),
-    ("unica-execution", "unica_execution", "receipt_store::tests::default_recovery_completes_after_former_automatic_timeout"),
-    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::contract_shape_tests::nested_type_and_position_shapes_reach_each_typed_member_reader"),
-    ("unica-execution", "unica_execution", "lifecycle_link_store::tests::real_snapshot_over_8mib_can_reopen_mutate"),
-    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::member_operation_contracts_and_the_planner_agree_on_structure"),
-    ("unica-coder", "unica_coder", "interfaces::task_projection::tests::error_fallback_is_bounded_without_losing_structured_diagnostics"),
-    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::contract_shape_tests::all_twenty_one_member_shapes_match_the_productive_parser_without_source_writes"),
-    ("unica-execution", "unica_execution", "store::file_tests::raw_frame_exact_result_bound_reopens_and_rejects_corruption"),
-    ("unica-coder", "unica_coder", "application::v13::view::tests::actual_cursor_size_is_reserved_for_late_items_and_metadata"),
-    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::contract_shape_tests::fill_shape_uses_the_same_owner_and_tabular_context_as_the_productive_reader"),
-    ("unica-coder", "unica_coder", "infrastructure::daemon::server::invocation_service::registration_cache_tests::logical_read_retains_root_artifacts_across_calls_and_isolates_sources"),
-    ("unica-coder", "unica_coder", "infrastructure::daemon::tests::canonical_invocation_authority_keeps_root_capabilities_without_a_tree_revision"),
-    ("unica-execution", "unica_execution", "lifecycle_link_store::tests::production_links_reserve_and_materialize_past_4096_and_reopen"),
-    ("unica-coder", "unica_coder", "infrastructure::v13_read::tests::named_external_owner_view_has_no_hidden_eight_mib_descriptor_fallback"),
-    ("unica-coder", "unica_coder", "infrastructure::daemon::tests::injected_hidden_v13_service_executes_real_view_and_find_through_actor_capabilities"),
-    ("unica-coder", "unica_coder", "infrastructure::daemon::tests::daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_main_corpus_workspace"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_resolve_workspace"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_code_and_extension_workspace"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_dcs_workspace"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_mxl_workspace"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_the_predefined_workspace"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::v13_can_honesty_tests::honest_can_on_external_sources"),
+    MeasuredMediumCase("unica-execution", "unica_execution", "receipt_store::tests::default_recovery_completes_after_former_automatic_timeout"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::contract_shape_tests::nested_type_and_position_shapes_reach_each_typed_member_reader"),
+    MeasuredMediumCase("unica-execution", "unica_execution", "lifecycle_link_store::tests::real_snapshot_over_8mib_can_reopen_mutate"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::member_operation_contracts_and_the_planner_agree_on_structure"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "interfaces::task_projection::tests::error_fallback_is_bounded_without_losing_structured_diagnostics"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::contract_shape_tests::all_twenty_one_member_shapes_match_the_productive_parser_without_source_writes"),
+    MeasuredMediumCase("unica-execution", "unica_execution", "store::file_tests::raw_frame_exact_result_bound_reopens_and_rejects_corruption", requires_unix=True),
+    MeasuredMediumCase("unica-coder", "unica_coder", "application::v13::view::tests::actual_cursor_size_is_reserved_for_late_items_and_metadata"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::contract_shape_tests::fill_shape_uses_the_same_owner_and_tabular_context_as_the_productive_reader"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::invocation_service::registration_cache_tests::logical_read_retains_root_artifacts_across_calls_and_isolates_sources"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::tests::canonical_invocation_authority_keeps_root_capabilities_without_a_tree_revision"),
+    MeasuredMediumCase("unica-execution", "unica_execution", "lifecycle_link_store::tests::production_links_reserve_and_materialize_past_4096_and_reopen"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::v13_read::tests::named_external_owner_view_has_no_hidden_eight_mib_descriptor_fallback"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::tests::injected_hidden_v13_service_executes_real_view_and_find_through_actor_capabilities"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::tests::daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it"),
     # apply над файлами больше прежних потолков #1119: настоящие 16 и 32 МиБ.
     # Локально, macOS arm64, 25.10.2026: около 3 с и 22 с.
-    ("unica-coder", "unica_coder", "infrastructure::daemon::server::apply_large_input_tests::object_remove_scans_a_module_larger_than_the_former_bound"),
-    ("unica-coder", "unica_coder", "infrastructure::daemon::server::apply_large_input_tests::apply_edits_a_descriptor_larger_than_the_former_staging_bound"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::apply_large_input_tests::object_remove_scans_a_module_larger_than_the_former_bound"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::apply_large_input_tests::apply_edits_a_descriptor_larger_than_the_former_staging_bound"),
     # Замер задержки MCP под потоком hover (#2173). Локально, macOS arm64,
     # 26.10.2026: 4,5–7 с, под фоновой нагрузкой до 16 с.
-    ("unica-coder", "unica_coder", "interfaces::lsp::tests::an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "interfaces::lsp::tests::an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call"),
 )
 
 
@@ -411,15 +424,20 @@ def medium_terms(listed: dict, modules_by_crate: dict) -> list[str]:
             terms.append((crate, f"(binary({binary}) & test(/^{stem}({'|'.join(sorted(inline[key]))})::/))"))
         if key in direct:
             terms.append((crate, f"(binary({binary}) & test(/^{stem}[^:]+$/))"))
-    for (binary_id, _, _), term in zip(MEASURED_MEDIUM_CASES, measured_medium_terms(listed), strict=True):
-        terms.append((binary_id, term))
+    for case, term in zip(MEASURED_MEDIUM_CASES, measured_medium_terms(listed), strict=True):
+        terms.append((case.binary_id, term))
     return [term for _, term in sorted(set(terms))]
 
 
 def measured_medium_terms(listed: dict) -> list[str]:
     terms = []
-    for binary_id, binary_name, name in MEASURED_MEDIUM_CASES:
+    for case in MEASURED_MEDIUM_CASES:
+        binary_id, binary_name, name = case[:3]
+        term = f"(binary({binary_name}) & test(/^{re.escape(name)}$/))"
         matches = [suite for suite in listed["rust-suites"].values() if name in suite["testcases"]]
+        if not matches and case.requires_unix and os.name == "nt":
+            terms.append(term)
+            continue
         if len(matches) != 1:
             raise ValueError(f"measured medium test must exist once: {binary_id}::{name}")
         suite = matches[0]
@@ -427,7 +445,7 @@ def measured_medium_terms(listed: dict) -> list[str]:
             "lib", binary_id, binary_name
         ):
             raise ValueError(f"measured medium test belongs to another binary: {binary_id}::{name}")
-        terms.append(f"(binary({binary_name}) & test(/^{re.escape(name)}$/))")
+        terms.append(term)
     return terms
 
 

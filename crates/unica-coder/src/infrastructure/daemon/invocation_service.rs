@@ -4,7 +4,6 @@ use crate::domain::apply::ApplyRequest;
 use unica_analysis_services::provider_host::{LongWorkFailure, ProviderHostKey, ProviderHostOwner};
 use unica_execution::invocation::InvocationResponseDeadline;
 use unica_execution::receipt_runtime::ports::ExecutionClass;
-use unica_execution_contract::view_error::ViewError;
 use unica_source_contract::{ProjectSourceSet, SourceFormat, SourceProfile, SourceSetKind};
 use unica_work_control::shared_work::{SharedWorkLease, SharedWorkProducer};
 
@@ -15,11 +14,11 @@ type RuntimeJobService = unica_execution::runtime_jobs::RuntimeJobService<
 >;
 use crate::infrastructure::source_workspace::discover_project_source_admission;
 use crate::infrastructure::source_workspace::{WorkspaceActor, WorkspaceActorRegistry};
-use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
+use crate::infrastructure::v13_large_configuration::RegistrationCache;
 use crate::infrastructure::workspace::discover_workspace;
 use std::io::BufRead;
 use std::sync::Arc;
-use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_address::address::QualifiedAddress;
 use unica_execution_contract::invocation::{DomainResult, InvocationFailure, SafeIdentityHash};
 use unica_refusal::RefusalCode;
 use unica_work_control::cancellation::CancellationToken;
@@ -32,103 +31,13 @@ use unica_workspace::selection_evidence::SourceSelectionEvidenceErrorKind;
 
 mod ordered_search_names;
 pub(in crate::infrastructure::daemon) mod text_search;
+use self::text_search::SearchHitOwners;
 
 // Regex anchors and Unicode columns require a complete line. Keep that
 // indivisible unit bounded; neither file nor corpus size is a memory budget.
 const CANONICAL_SEARCH_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 const CANONICAL_SEARCH_MAX_DEPTH: usize = 32;
 const CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS: usize = 32;
-
-/// Proves that the owner of a module address derived from a hit path is
-/// registered in this source set, so a hit names only a module `view` admits.
-/// Configuration and extension owners are checked against the source set's own
-/// `Configuration.xml` registrations, read once per revision through the
-/// retained root and shared with `view` by the registration cache; each owner
-/// is decided once per scan. An extension object that is neither its own nor
-/// borrowed is not registered there and stays unproven.
-pub(in crate::infrastructure::daemon) struct SearchHitOwners<'a> {
-    root: Arc<SourceDirectory>,
-    source_kind: SourceSetKind,
-    cache: &'a RegistrationCache,
-    index: Option<Option<Arc<RegistrationIndex>>>,
-    owners: std::collections::BTreeMap<(&'static str, String), bool>,
-}
-
-impl<'a> SearchHitOwners<'a> {
-    fn new(
-        root: Arc<SourceDirectory>,
-        source_kind: SourceSetKind,
-        cache: &'a RegistrationCache,
-    ) -> Self {
-        Self {
-            root,
-            source_kind,
-            cache,
-            index: None,
-            owners: std::collections::BTreeMap::new(),
-        }
-    }
-
-    /// `Err` only for cancellation or an elapsed deadline; an unreadable
-    /// registration source leaves the owner unproven instead.
-    fn proves(
-        &mut self,
-        at: &QualifiedAddress,
-        checkpoint: &dyn Fn() -> Result<(), ViewError>,
-    ) -> Result<bool, ViewError> {
-        let interrupted = |error: &ViewError| {
-            matches!(
-                error.code(),
-                RefusalCode::Cancelled | RefusalCode::DeadlineExceeded
-            )
-        };
-        let Some(owner) = at.segments().first() else {
-            return Ok(false);
-        };
-        let configuration = matches!(
-            self.source_kind,
-            SourceSetKind::Configuration | SourceSetKind::Extension
-        );
-        // Application modules belong to the admitted Configuration itself.
-        if owner.kind() == NodeKind::Module {
-            return Ok(configuration);
-        }
-        let Some(name) = owner.name() else {
-            return Ok(false);
-        };
-        let key = (owner.kind().as_str(), name.to_owned());
-        if let Some(proved) = self.owners.get(&key) {
-            return Ok(*proved);
-        }
-        checkpoint()?;
-        let proved = if configuration {
-            if self.index.is_none() {
-                let built = self.cache.registrations(&self.root, checkpoint);
-                self.index = Some(match built {
-                    Ok(index) => Some(index),
-                    Err(error) if interrupted(&error) => return Err(error),
-                    Err(_) => None,
-                });
-            }
-            match self.index.as_ref().and_then(Option::as_ref) {
-                Some(index) => match index.contains(owner.kind().as_str(), name, checkpoint) {
-                    Ok(contains) => contains,
-                    Err(error) if interrupted(&error) => return Err(error),
-                    Err(_) => false,
-                },
-                None => false,
-            }
-        } else {
-            // An external processor or report is described by its root
-            // descriptor beside its directory.
-            self.root
-                .open_relative_regular_nofollow(std::path::Path::new(&format!("{name}.xml")))
-                .is_ok()
-        };
-        self.owners.insert(key, proved);
-        Ok(proved)
-    }
-}
 
 fn read_search_line_bounded(
     reader: &mut impl BufRead,

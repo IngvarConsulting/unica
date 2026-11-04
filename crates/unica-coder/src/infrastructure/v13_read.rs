@@ -223,6 +223,68 @@ impl<'a> LogicalViewReadAuthority<'a> {
         }
     }
 
+    /// Only the path resolver supplies this placement; subsequent owner and
+    /// child-registration checks still consume the target's actual XML.
+    pub(crate) fn with_external_point_binding(
+        mut self,
+        binding: unica_source_designer::external_artifact::ExternalArtifactBinding,
+    ) -> Self {
+        self.read = self.read.with_external_point_binding(binding);
+        self
+    }
+
+    /// A capability comes from the same retained owner proof as its value,
+    /// never from a truncated property projection or a guessed object name.
+    pub(crate) fn style_item_color_observation(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<Option<unica_metadata::style_color::StyleItemColor>, ViewError> {
+        let [owner] = at.segments() else {
+            return Ok(None);
+        };
+        if owner.kind() != NodeKind::StyleItem {
+            return Ok(None);
+        }
+        let Some(name) = owner.name() else {
+            return Ok(None);
+        };
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let route = route_logical_address(&canonical, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        let Some(target) = route.reader_metadata_path() else {
+            return Ok(None);
+        };
+        self.verify_registered_owner(target, &admitted)?;
+        let parent_version = self
+            .read
+            .configuration_root_version_literal(&|| self.read_checkpoint())?;
+        if unica_source_designer::format_profile::writable_profile_refusal(
+            "Configuration.xml",
+            parent_version.as_deref(),
+        )
+        .is_some()
+        {
+            return Ok(None);
+        }
+        let raw = self.read.metadata_descriptor(target)?;
+        self.read_checkpoint()?;
+        let Ok(text) = std::str::from_utf8(&raw) else {
+            return Ok(None);
+        };
+        let relative = unica_source_designer::layout::metadata_descriptor_relative(
+            target,
+            self.read.source_set_kind(),
+        )
+        .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        let observed =
+            unica_metadata_designer::style_color::StyleColorImage::parse(text, name, &relative)
+                .ok()
+                .map(|image| image.color());
+        self.read_checkpoint()?;
+        Ok(observed)
+    }
+
     pub(crate) fn object_borrowing(
         &self,
         at: &QualifiedAddress,
@@ -370,6 +432,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let path = self.identity_export_path(at)?.ok_or_else(|| {
             ViewError::new(RefusalCode::NotFound, "the logical node has no source file")
         })?;
+        if matches!(at.segments(), [owner, definition]
+            if owner.kind() == NodeKind::WsReference && definition.kind() == NodeKind::Definition)
+        {
+            let target = route
+                .reader_metadata_path()
+                .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "WSDL route has no owner"))?;
+            if !self
+                .read
+                .attached_resource_exists(target, "WSDefinition.xml")?
+            {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the local WSDefinition.xml source file does not exist",
+                ));
+            }
+        }
         if route.reader() == LogicalReader::Form {
             let target = route
                 .reader_metadata_path()
@@ -1333,6 +1411,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(payload);
         }
         let kind = target.as_str().split('.').next().unwrap_or_default();
+        if kind == NodeKind::WsReference.as_str() {
+            return self
+                .read
+                .wsreference_payload(target, &mut || self.read_checkpoint());
+        }
         if kind == NodeKind::WebSocketClient.as_str() {
             let name = target.as_str().split('.').nth(1).unwrap_or_default();
             return Ok(identity_only_metadata_payload(kind, name));
@@ -1426,6 +1509,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
                             .strip_prefix(prefix)
                             .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
                     })
+                    || field
+                        .strip_prefix("collections.addressingAttributes")
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
                     || (field.starts_with("collections.tabularSections[")
                         && field.contains("].standardAttributes"))
                     || local
@@ -1570,6 +1656,17 @@ impl<'a> LogicalViewReadAuthority<'a> {
         owner_name: &str,
         admitted: &ViewSourceSnapshot,
     ) -> Result<(), ViewError> {
+        if let Some(matches) = self
+            .read
+            .point_external_owner_matches(owner_kind, owner_name)
+        {
+            return matches.then_some(()).ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::NotFound,
+                    "metadata owner is outside the point-proven external artifact",
+                )
+            });
+        }
         if matches!(
             self.read.source_set_kind(),
             SourceSetKind::Configuration | SourceSetKind::Extension
@@ -1652,7 +1749,14 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(NodeViewData::Node(event_node(&event)));
         }
         let projections = self.module_projection(&module_at, capability, admitted)?;
-        let view = module_projection_view(route.at(), prefix_len, projections.as_ref())?;
+        let mut view = module_projection_view(route.at(), prefix_len, projections.as_ref())?;
+        if capability.role() == ModuleRole::Common && route.at() == &module_at {
+            let (synonym, limits) = self.common_module_synonym(&module_at)?;
+            if let Some(synonym) = synonym {
+                view = view.with_prop("synonym", synonym);
+            }
+            view = view.with_additional_limits(limits);
+        }
         // Узел общего модуля — и узел объекта метаданных: его ветвь `Relation`
         // (подсистемы и библиотеки) читается по адресу, поэтому узел её
         // называет; непрочитанный состав подсистем узел называет пределом.
@@ -1697,6 +1801,53 @@ impl<'a> LogicalViewReadAuthority<'a> {
             }
         }
         Ok(view)
+    }
+
+    fn common_module_synonym(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<(Option<Value>, Vec<String>), ViewError> {
+        self.read_checkpoint()?;
+        let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &at.logical_path())
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        let descriptor = self.read.metadata_descriptor(&owner)?;
+        let text = std::str::from_utf8(&descriptor).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        let document =
+            roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        let properties = common_module_property_container(&document)?;
+        let observation = unica_metadata_designer::info_projection::observe_meta_info_property(
+            properties,
+            MetadataKind::CommonModule,
+            "Synonym",
+        );
+        let mut props = Map::new();
+        let mut limits = Vec::new();
+        match observation {
+            Ok(Some(unica_metadata::MetaInfoPropertyValue::String(text))) if !text.is_empty() => {
+                crate::infrastructure::v13_read_projection::place_prop(
+                    &mut props,
+                    &mut limits,
+                    at,
+                    "synonym",
+                    &json!(text),
+                    false,
+                    "common module Synonym",
+                );
+            }
+            Ok(None | Some(unica_metadata::MetaInfoPropertyValue::String(_))) => {}
+            Ok(Some(_)) => unreachable!("the closed Synonym profile yields a string"),
+            Err(error) => limits.push(format!(
+                "properties.Synonym is unreadable: {}",
+                error.message
+            )),
+        }
+        Ok((props.remove("synonym"), limits))
     }
 
     fn module_projection(
@@ -2271,6 +2422,13 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let is_detail = at.segments().len() > target_depth;
         let path = match route.reader() {
             LogicalReader::Metadata
+                if matches!(at.segments(), [owner, definition]
+                if owner.kind() == NodeKind::WsReference && definition.kind() == NodeKind::Definition) =>
+            {
+                self.read
+                    .attached_resource_export_path(target, "WSDefinition.xml")?
+            }
+            LogicalReader::Metadata
                 if matches!(at.segments(), [owner, schedule]
                 if owner.kind() == NodeKind::ScheduledJob && schedule.kind() == NodeKind::Schedule) =>
             {
@@ -2428,6 +2586,40 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                     self.read.source_set_kind(),
                 )?;
             self.with_template_body_branches(projected, &route)?
+        };
+        let projected = match projected {
+            NodeViewData::Collection(collection)
+                if matches!(at.segments(), [root]
+                    if root.kind() == NodeKind::CommonModule && root.name().is_none()) =>
+            {
+                NodeViewData::Collection(collection.try_map_items(|mut row| {
+                    let owner = row["at"].as_str().ok_or_else(|| {
+                        ViewError::detailed(
+                            RefusalDetail::SourceUnreadable,
+                            "common module row has no address",
+                        )
+                    })?;
+                    let owner = QualifiedAddress::parse(owner).map_err(|error| {
+                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                    })?;
+                    let (synonym, limits) = match self.common_module_synonym(&owner) {
+                        Ok(fact) => fact,
+                        Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => (
+                            None,
+                            vec![format!("common module Synonym is unreadable: {error}")],
+                        ),
+                        Err(error) => return Err(error),
+                    };
+                    if let Some(synonym) = synonym {
+                        row["props"] = json!({"synonym": synonym});
+                    }
+                    if !limits.is_empty() {
+                        row["limits"] = json!(limits);
+                    }
+                    Ok::<_, ViewError>(row)
+                })?)
+            }
+            other => other,
         };
         // Модуль формы без `Form.xml` платформа не выгружает: ветви модуля у
         // унаследованной формы нет.
@@ -3035,28 +3227,14 @@ fn module_source_address(
     .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
 }
 
-fn common_module_properties(
-    bytes: &[u8],
-    source_kind: SourceSetKind,
-) -> Result<CommonModuleProperties, ViewError> {
-    let text = std::str::from_utf8(bytes).map_err(|_| {
-        ViewError::detailed(
-            RefusalDetail::SourceUnreadable,
-            "common module descriptor is not UTF-8",
-        )
-    })?;
-    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+fn common_module_property_container<'a, 'input>(
+    document: &'a roxmltree::Document<'input>,
+) -> Result<roxmltree::Node<'a, 'input>, ViewError> {
     let root = document.root_element();
-    use unica_metadata::{
-        MetaInfoPropertyAbsence, MetaInfoPropertyValue, META_INFO_PROPERTY_PROFILE,
-    };
     const NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-    // Идентичность заимствования проверяется строго до того, как разрешить
-    // пропуски: один объект `CommonModule`, один прямой `Properties` из
-    // пространства имён метаданных, единственные корректные `ObjectBelonging`
-    // и `ExtendedConfigurationObject`. Иначе повреждённый маркер открыл бы
-    // послабление для любого описания.
+    // Оба читателя требуют один CommonModule и один прямой Properties
+    // из пространства имён метаданных. Повреждение структуры не становится
+    // отсутствием локального свойства.
     let objects = root
         .children()
         .filter(roxmltree::Node::is_element)
@@ -3086,6 +3264,25 @@ fn common_module_properties(
             ))
         }
     };
+    Ok(properties)
+}
+
+fn common_module_properties(
+    bytes: &[u8],
+    source_kind: SourceSetKind,
+) -> Result<CommonModuleProperties, ViewError> {
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            "common module descriptor is not UTF-8",
+        )
+    })?;
+    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
+    use unica_metadata::{
+        MetaInfoPropertyAbsence, MetaInfoPropertyValue, META_INFO_PROPERTY_PROFILE,
+    };
+    let properties = common_module_property_container(&document)?;
     let borrowing_property = |name| {
         unica_metadata_designer::info_projection::observe_meta_borrowing_property(
             properties,

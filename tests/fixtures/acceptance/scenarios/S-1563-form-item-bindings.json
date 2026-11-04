@@ -1,0 +1,319 @@
+{
+  "id": "S-1563-form-item-bindings",
+  "name": "form-item-data-path-and-command-name",
+  "issue": 1563,
+  "area": "Формы",
+  "task": "Прочитать точные DataPath и CommandName вложенных элементов формы, сохранить оба факта у общей команды и различить отсутствие, повреждение и длинное значение без изменения исходников",
+  "workspace": "tests/fixtures/acceptance/workspace-form-item-bindings",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "xml": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Команды/Forms/ФормаСписка/Ext/Form.xml"
+        },
+        "bsl": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Команды/Forms/ФормаСписка/Ext/Form/Module.bsl"
+        },
+        "config": {
+          "kind": "sha256",
+          "file": "v8project.yaml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "rootItems": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rootItems"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Команды.Form.ФормаСписка.Item.Группа"
+        }
+      ],
+      "captures": {
+        "group": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.group"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "groupChildren": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.groupChildren"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataPath",
+          "eq": "Объект.Code"
+        },
+        {
+          "pointer": "/data/items/0/props/visible",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/DataPath",
+          "eq": "Объект.Товары"
+        },
+        {
+          "pointer": "/data/items/2/props/CommandName",
+          "eq": "Form.Command.Заполнить"
+        },
+        {
+          "pointer": "/data/items/3/props/CommandName",
+          "eq": "Form.StandardCommand.Close"
+        },
+        {
+          "pointer": "/data/items/4/props/DataPath",
+          "eq": "Объект.Ref"
+        },
+        {
+          "pointer": "/data/items/4/props/CommandName",
+          "eq": "CommonCommand.ОбщаяКоманда"
+        }
+      ],
+      "captures": {
+        "field": {
+          "pointer": "/data/items/0/at"
+        },
+        "table": {
+          "pointer": "/data/items/1/at"
+        },
+        "common": {
+          "pointer": "/data/items/4/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.field"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataPath",
+          "eq": "Объект.Code"
+        },
+        {
+          "pointer": "/data/props/visible",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.table"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "tableChildren": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.tableChildren"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataPath",
+          "eq": "Объект.Товары.Quantity"
+        }
+      ],
+      "captures": {
+        "column": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.column"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataPath",
+          "eq": "Объект.Товары.Quantity"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.common"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataPath",
+          "eq": "Объект.Ref"
+        },
+        {
+          "pointer": "/data/props/CommandName",
+          "eq": "CommonCommand.ОбщаяКоманда"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Item.Группа.Item.Свободная"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataPath",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/CommandName",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Item.Группа.Item.Поврежденная"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataPath",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/CommandName",
+          "eq": "Form.Command.Заполнить"
+        },
+        {
+          "pointer": "/data/limits",
+          "contains": "DataPath is unreadable: expected one direct text property in the form namespace"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Item.Группа.Item.Длинная"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataPath",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits",
+          "contains": "DataPath exceeds the compact property limit of 2048 bytes; read it whole at main:Catalog.Команды.Form.ФормаСписка.Item.Группа.Item.Длинная.Props.DataPath"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Команды.Form.ФормаСписка.Item.Группа.Item.Длинная.Props.DataPath"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataPath",
+          "eq": "Объект.ДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДДД"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Команды/Forms/ФормаСписка/Ext/Form.xml",
+          "eq": "$capture.xml"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Команды/Forms/ФормаСписка/Ext/Form/Module.bsl",
+          "eq": "$capture.bsl"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.config"
+        }
+      ]
+    }
+  ]
+}

@@ -2105,7 +2105,7 @@ fn target_args(case: &ExecutableCase, workspace: &Path) -> Result<Map<String, Va
                     "property": {
                         "name": "Документ_Корпус",
                         "type": "tns:Документ_ЗаказКлиента",
-                        "minOccurs": 0
+                        "lowerBound": 0
                     }
                 }}
             })],
