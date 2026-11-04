@@ -358,6 +358,9 @@ pub trait SourceProposal {
     fn checkpoint(&self, phase: &str) -> Result<(), ApplyStagingError>;
     fn binding(&self) -> ProposalBinding;
     fn enumerate_tree(&mut self, relative: &Path) -> Result<Vec<PathBuf>, ApplyStagingError>;
+    fn enumerate_directories(&mut self, relative: &Path)
+        -> Result<Vec<PathBuf>, ApplyStagingError>;
+    fn create_directory(&mut self, relative: &Path) -> Result<(), ApplyStagingError>;
     fn enumerate_tree_with_root_absence(
         &mut self,
         relative: &Path,
@@ -412,6 +415,18 @@ impl<'a> ApplyProposal<'a> {
     }
     pub fn enumerate_tree(&mut self, relative: &Path) -> Result<Vec<PathBuf>, ApplyStagingError> {
         self.owner.enumerate_tree(relative)
+    }
+    /// Existing root-relative directories, including the selected root. The
+    /// owner retains the same topology proof as file-tree enumeration.
+    pub fn enumerate_directories(
+        &mut self,
+        relative: &Path,
+    ) -> Result<Vec<PathBuf>, ApplyStagingError> {
+        self.owner.enumerate_directories(relative)
+    }
+    /// Plan an absent directory without writing to the filesystem.
+    pub fn create_directory(&mut self, relative: &Path) -> Result<(), ApplyStagingError> {
+        self.owner.create_directory(relative)
     }
     pub fn enumerate_tree_with_root_absence(
         &mut self,

@@ -1,0 +1,321 @@
+{
+  "id": "S-1688-object-copy",
+  "issue": 1688,
+  "area": "Метаданные",
+  "task": "Скопировать справочник вместе с формами, макетами и модулями через предпросмотр и сохранённый план, прочитать копию и отклонить занятое имя",
+  "workspace": "tests/fixtures/acceptance/workspace-object-copy",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Inspectable"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "sourceAt": {
+          "pointer": "/data/at"
+        },
+        "file0": {
+          "file": "src/Catalogs/External.xml",
+          "kind": "sha256"
+        },
+        "file1": {
+          "file": "src/Catalogs/Inspectable/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "file2": {
+          "file": "src/Catalogs/Inspectable/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "file3": {
+          "file": "src/Catalogs/Inspectable/Forms/Main.xml",
+          "kind": "sha256"
+        },
+        "file4": {
+          "file": "src/Catalogs/Inspectable/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256"
+        },
+        "file5": {
+          "file": "src/Catalogs/Inspectable/Templates/Blob.xml",
+          "kind": "sha256"
+        },
+        "file6": {
+          "file": "src/Catalogs/Inspectable/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "file7": {
+          "file": "src/Catalogs/Inspectable/Templates/Layout.xml",
+          "kind": "sha256"
+        },
+        "file8": {
+          "file": "src/Catalogs/Inspectable.xml",
+          "kind": "sha256"
+        },
+        "file9": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "file10": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "file11": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.sourceAt",
+        "ops": [
+          {
+            "op": "object.copy",
+            "args": {
+              "values": {
+                "name": "Copy"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/External.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Templates/Blob.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Templates/Layout.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Catalogs/Inspectable.xml",
+          "kind": "sha256",
+          "eq": "$capture.file8"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.file10"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file11"
+        },
+        {
+          "path": "src/Catalogs/Copy.xml",
+          "kind": "exists",
+          "eq": false
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/External.xml",
+          "kind": "sha256",
+          "eq": "$capture.file0"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.file2"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "$capture.file3"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Templates/Blob.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        },
+        {
+          "path": "src/Catalogs/Inspectable/Templates/Layout.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Catalogs/Inspectable.xml",
+          "kind": "sha256",
+          "eq": "$capture.file8"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.file10"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file11"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Configuration/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Catalog",
+          "eq": [
+            "Copy",
+            "Inspectable",
+            "External"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Copy.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Copy"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Copy/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.file1"
+        },
+        {
+          "path": "src/Catalogs/Copy/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/Catalogs/Copy/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Copy"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Copy"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Copy.Form.Main"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Copy.Template.Layout"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.sourceAt",
+        "ops": [
+          {
+            "op": "object.copy",
+            "args": {
+              "values": {
+                "name": "Copy"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: the configuration already registers Catalog.Copy"
+    }
+  ]
+}

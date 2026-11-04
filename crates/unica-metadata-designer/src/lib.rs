@@ -41,6 +41,7 @@ pub mod remove;
 
 pub mod help;
 
+mod object_copy;
 pub mod planner;
 
 pub mod subsystem;

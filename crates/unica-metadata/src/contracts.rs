@@ -458,6 +458,21 @@ pub fn metadata_object_create() -> OperationContract {
     }
 }
 
+pub fn metadata_object_copy() -> OperationContract {
+    OperationContract {
+        schema: object(&[
+            ("at", text(true)),
+            ("values", object(&[("name", json!({"type":"string", "pattern": IDENTIFIER_PATTERN}))], &["name"])),
+        ], &["values"]),
+        target: "An existing Catalog of an ordinary configuration: <source-set>:Catalog.<Name>.",
+        effect: "Create and register an independent copy under values.name in the same source set, with new owned UUIDs and all forms, templates and modules.",
+        notes: "Only Catalog in an ordinary configuration is supported. Internal XML identities and self references are remapped; external references, user text, BSL and binary payloads are preserved. Run before other changes in a separate apply preview, then execute its saved token.",
+        example_args: json!({"values":{"name":"Copy"}}),
+        help: METADATA_HELP,
+        format_validators: &[],
+    }
+}
+
 pub fn metadata_object_remove() -> OperationContract {
     OperationContract {
         schema: metadata_object_remove_input_schema().clone(),

@@ -8,6 +8,7 @@ use unica_source_contract::SourceSetKind;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApplicability {
+    ConfigurationCatalog,
     ExchangePlan,
     Configuration,
     ConfigurationRoot,
@@ -45,6 +46,7 @@ pub enum OperationApplicability {
 impl OperationApplicability {
     pub const fn shape(self) -> &'static str {
         match self {
+            Self::ConfigurationCatalog => "`Catalog.Name` of a configuration",
             Self::ExchangePlan => "`ExchangePlan.Name`",
             Self::Configuration => "`Configuration`",
             Self::ConfigurationRoot => "`Configuration` of a configuration, not of an extension",
@@ -89,6 +91,10 @@ impl OperationApplicability {
         let segments = site.segments();
         let terminal = site.terminal();
         match self {
+            Self::ConfigurationCatalog => {
+                site.source().kind() == SourceSetKind::Configuration
+                    && matches!(segments, [owner] if owner.kind() == NodeKind::Catalog && owner.name().is_some())
+            }
             Self::ExchangePlan => {
                 matches!(segments, [only] if only.kind() == NodeKind::ExchangePlan && only.name().is_some())
             }

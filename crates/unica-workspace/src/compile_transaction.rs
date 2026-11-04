@@ -234,7 +234,7 @@ impl ApplyInputContext {
             relative_path: entry.relative_path.clone(),
             role: if !source_participant {
                 ApplyInputRole::SharedCache
-            } else if entry.original == entry.current {
+            } else if !entry.create_directory && entry.original == entry.current {
                 ApplyInputRole::ReadOnly
             } else {
                 ApplyInputRole::SourceWrite
@@ -570,6 +570,7 @@ pub struct CompileTransaction {
 
 #[derive(Debug)]
 struct PlannedRetainedApplyChange {
+    create_directory: bool,
     root: Arc<RetainedDirectoryCapability>,
     relative_path: PathBuf,
     route_identities: Vec<FileIdentity>,
@@ -640,6 +641,7 @@ impl CompileTransaction {
             .unwrap_or(self.retained_apply.len());
         self.retained_apply[..end]
             .iter()
+            .filter(|change| !change.create_directory)
             .map(|change| {
                 let (path_encoding, path) =
                     crate::platform::filesystem::encode_relative_source_path(&change.relative_path)
@@ -764,6 +766,19 @@ impl CompileTransaction {
             }
         }
         for directory in created {
+            directory
+                .directory
+                .validate_named_identity()
+                .map_err(|error| {
+                    retained_guard_validation_error(
+                        super::apply::ApplyStagingError::new(
+                            super::apply::ApplyStagingErrorKind::ContainmentIdentity,
+                            format!("batch-created directory identity changed: {error}"),
+                        ),
+                        &directory.logical_path,
+                        ApplyInputRole::DirectoryMembership,
+                    )
+                })?;
             if directory.source_participant {
                 deltas.push((directory.logical_path.clone(), Some(1)));
             }
@@ -855,6 +870,7 @@ impl CompileTransaction {
             return Err("one retained apply transaction cannot mix source roots".to_string());
         }
         self.retained_apply.push(PlannedRetainedApplyChange {
+            create_directory: false,
             root,
             relative_path,
             route_identities,
@@ -870,6 +886,24 @@ impl CompileTransaction {
         });
         self.retained_apply
             .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+        Ok(())
+    }
+
+    pub(super) fn bind_retained_directory_creation(
+        &mut self,
+        binding: RetainedApplyChangeBinding,
+        authority: &ApplyWriterAuthority,
+    ) -> Result<(), String> {
+        if binding.original.is_some() || binding.current.is_some() {
+            return Err("directory creation overlaps a file image".to_string());
+        }
+        let path = binding.relative_path.clone();
+        self.bind_retained_apply_change(binding, authority)?;
+        self.retained_apply
+            .iter_mut()
+            .find(|entry| entry.relative_path == path)
+            .expect("just bound directory target")
+            .create_directory = true;
         Ok(())
     }
 
@@ -3429,10 +3463,18 @@ fn create_retained_apply_parent_chain(
                 entry.relative_path.portable()
             ))
         })?;
-    let parent_path = entry
-        .relative_path
-        .parent()
-        .expect("retained file path has a parent");
+    let parent_path = if entry.create_directory {
+        entry.relative_path.as_path()
+    } else {
+        entry
+            .relative_path
+            .parent()
+            .expect("retained file path has a parent")
+    };
+    let mut missing_parent_chain = entry.missing_parent_chain.clone();
+    if entry.create_directory {
+        missing_parent_chain.push(entry.name.clone());
+    }
     let parent_components = parent_path
         .components()
         .filter_map(|component| match component {
@@ -3442,7 +3484,7 @@ fn create_retained_apply_parent_chain(
         .collect::<Vec<_>>();
     let retained_prefix_len = parent_components
         .len()
-        .checked_sub(entry.missing_parent_chain.len())
+        .checked_sub(missing_parent_chain.len())
         .ok_or_else(|| {
             RetainedApplyPublishError::new(
                 RetainedApplyPublishErrorKind::Invariant,
@@ -3453,7 +3495,8 @@ fn create_retained_apply_parent_chain(
         .iter()
         .collect::<PathBuf>();
     let mut parent = binding.ancestor.clone();
-    for name in &entry.missing_parent_chain {
+    for name in &missing_parent_chain {
+        retained_apply_entry_checkpoint(entry).map_err(RetainedApplyPublishError::from)?;
         logical_path.push(name);
         if let Some(directory) = owned_retained_apply_directory_child(&parent, name, created)? {
             parent = directory;
@@ -3554,6 +3597,32 @@ fn validate_retained_apply_postimage(
     expected: &Option<Vec<u8>>,
     created: &[CreatedRetainedApplyDirectory],
 ) -> Result<(), RetainedApplyPublishError> {
+    if entry.create_directory {
+        entry.root.validate_named_identity().map_err(|error| {
+            RetainedApplyPublishError::containment(format!(
+                "directory source root changed: {error}"
+            ))
+        })?;
+        let mut directory = binding.ancestor.clone();
+        directory.validate_named_identity().map_err(|error| {
+            RetainedApplyPublishError::containment(format!(
+                "directory retained ancestor changed: {error}"
+            ))
+        })?;
+        for name in entry
+            .missing_parent_chain
+            .iter()
+            .chain(std::iter::once(&entry.name))
+        {
+            directory = owned_retained_apply_directory_child(&directory, name, created)?
+                .ok_or_else(|| {
+                    RetainedApplyPublishError::containment(
+                        "planned directory is not owned by this transaction",
+                    )
+                })?;
+        }
+        return Ok(());
+    }
     if entry.missing_parent_chain.is_empty() {
         return validate_retained_apply_state_typed(entry, binding, expected, true)
             .map_err(RetainedApplyPublishError::from);
@@ -3637,6 +3706,15 @@ fn publish_retained_apply_change_inner(
     created_directories: &mut Vec<CreatedRetainedApplyDirectory>,
     source_participant: bool,
 ) -> Result<(), RetainedApplyPublishError> {
+    if entry.create_directory {
+        create_retained_apply_parent_chain(
+            entry,
+            binding,
+            created_directories,
+            source_participant,
+        )?;
+        return Ok(());
+    }
     if entry.original == entry.current {
         return Ok(());
     }

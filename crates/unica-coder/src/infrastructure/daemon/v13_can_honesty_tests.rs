@@ -1143,7 +1143,15 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         if plan_writes && listed && family == Ok(true) {
             if let Ok(paths) = plan(checked, &request) {
                 WRITES_CHECKED.with(|done| done.borrow_mut().insert(write_key(descriptor)));
-                check_written_paths(checked, &address, route, op, &paths, mismatches);
+                check_written_paths(
+                    &checked.source_root,
+                    &address,
+                    route,
+                    op,
+                    request.ops()[0].args(),
+                    &paths,
+                    mismatches,
+                );
             }
         }
     }
@@ -1212,11 +1220,13 @@ fn plan(checked: &Checked<'_>, request: &ApplyRequest) -> Result<Vec<PathBuf>, S
 
 /// Файлы плана принадлежат объекту `at`; узлы формы и макета не выходят за
 /// свою форму или макет, кроме регистрации в описании владельца.
+/// Копирование пишет в названную копию и регистрацию в конфигурации.
 fn check_written_paths(
-    checked: &Checked<'_>,
+    source_root: &Path,
     at: &QualifiedAddress,
     route: RouteClass,
     op: &str,
+    args: &serde_json::Map<String, Value>,
     paths: &[PathBuf],
     mismatches: &mut Vec<String>,
 ) {
@@ -1247,7 +1257,22 @@ fn check_written_paths(
         mismatches.push(format!("{at}: `{op}` has no owner layout to check writes"));
         return;
     };
-    let owner_dir = format!("{}/{owner_name}", layout.directory);
+    let destination_name = if op == "object.copy" {
+        let Some(name) = args
+            .get("values")
+            .and_then(|values| values.get("name"))
+            .and_then(Value::as_str)
+        else {
+            mismatches.push(format!(
+                "{at}: `{op}` has no destination name to check writes"
+            ));
+            return;
+        };
+        name
+    } else {
+        owner_name
+    };
+    let owner_dir = format!("{}/{destination_name}", layout.directory);
     let descriptor = format!("{owner_dir}.xml");
     let nested = segments.iter().find_map(|segment| match segment.kind() {
         NodeKind::Form if route != RouteClass::Metadata || segments.len() > 1 => segment
@@ -1263,13 +1288,72 @@ fn check_written_paths(
         let path = path.to_string_lossy().replace('\\', "/");
         let inside = path == descriptor
             || path == format!("{prefix}.xml")
-            || path.starts_with(&format!("{prefix}/"));
+            || path.starts_with(&format!("{prefix}/"))
+            || (op == "object.copy" && path == "Configuration.xml");
         if !inside {
             mismatches.push(format!(
                 "{at}: `{op}` writes `{path}` outside its node (source root {})",
-                checked.source_root.display()
+                source_root.display()
             ));
         }
+    }
+}
+
+#[test]
+fn object_copy_write_scope_accepts_only_the_named_copy_and_registration() {
+    let at = QualifiedAddress::parse("main:Catalog.Source").unwrap();
+    for name in ["Copy", "OtherCopy"] {
+        let args = json!({"values": {"name": name}});
+        let paths = [
+            PathBuf::from("Configuration.xml"),
+            PathBuf::from(format!("Catalogs/{name}.xml")),
+            PathBuf::from(format!("Catalogs/{name}/Ext/ObjectModule.bsl")),
+            PathBuf::from(format!("Catalogs/{name}/Forms/Main/Ext/Form.xml")),
+        ];
+        let mut mismatches = Vec::new();
+        check_written_paths(
+            Path::new("source"),
+            &at,
+            RouteClass::Metadata,
+            "object.copy",
+            args.as_object().unwrap(),
+            &paths,
+            &mut mismatches,
+        );
+        assert!(mismatches.is_empty(), "{mismatches:?}");
+        for foreign in [
+            "Catalogs/Source.xml".to_owned(),
+            "Catalogs/Source/Ext/ObjectModule.bsl".to_owned(),
+            format!("Catalogs/{name}Extra.xml"),
+            format!("Catalogs/{name}Extra/Ext/ObjectModule.bsl"),
+            format!("Documents/{name}.xml"),
+            "Configuration.xml.bak".to_owned(),
+        ] {
+            mismatches.clear();
+            check_written_paths(
+                Path::new("source"),
+                &at,
+                RouteClass::Metadata,
+                "object.copy",
+                args.as_object().unwrap(),
+                &[PathBuf::from(&foreign)],
+                &mut mismatches,
+            );
+            assert_eq!(mismatches.len(), 1, "{foreign}: {mismatches:?}");
+        }
+    }
+    for path in ["Configuration.xml", "Catalogs/Copy.xml"] {
+        let mut mismatches = Vec::new();
+        check_written_paths(
+            Path::new("source"),
+            &at,
+            RouteClass::Metadata,
+            "props.set",
+            json!({"values": {"Comment": "text"}}).as_object().unwrap(),
+            &[PathBuf::from(path)],
+            &mut mismatches,
+        );
+        assert_eq!(mismatches.len(), 1, "{path}: {mismatches:?}");
     }
 }
 

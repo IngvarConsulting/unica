@@ -524,6 +524,7 @@ macro_rules! operation_descriptors {
 operation_descriptors!(
     (unica_metadata::apply_operations::MetadataOperation::ObjectBorrow),
     (unica_metadata::apply_operations::MetadataOperation::ObjectCreate),
+    (unica_metadata::apply_operations::MetadataOperation::ObjectCopy),
     (unica_metadata::apply_operations::MetadataOperation::ObjectRemove),
     (PropertiesOperation::Set),
     (unica_metadata::apply_operations::MetadataOperation::ContentSet),
@@ -1409,6 +1410,7 @@ mod tests {
         let expected = [
             "object.borrow",
             "object.create",
+            "object.copy",
             "object.remove",
             "props.set",
             "content.set",
@@ -1538,7 +1540,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 129);
+        assert_eq!(expected.len(), 130);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465), свойства формы — как свойства описания (#1984):
@@ -1560,7 +1562,7 @@ mod tests {
         }
         assert_eq!(
             unica_metadata::apply_operations::MetadataOperation::ALL.len(),
-            36
+            37
         );
         assert_eq!(
             registry

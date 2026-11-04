@@ -52,6 +52,10 @@ pub enum MetadataPlanKind {
         kind: MetadataKind,
         name: String,
     },
+    Copy {
+        source: String,
+        name: String,
+    },
     Remove {
         target: MetadataAddress,
         /// The removed object's layout: a typed kind or a common template.
@@ -402,6 +406,9 @@ pub fn parse_metadata_plan_operation_in(
             RegisteredMetadataOperation::ObjectCreate => {
                 parse_object_create(object, op_index, binding)?
             }
+            RegisteredMetadataOperation::ObjectCopy => {
+                parse_object_copy(object, op_index, binding)?
+            }
             RegisteredMetadataOperation::ObjectRemove => {
                 parse_object_remove(object, op_index, binding)?
             }
@@ -725,6 +732,74 @@ pub fn parse_template_remove(
     let (owner, name) = template_target(&target, op_index)?;
     Ok(MetadataPlanKind::TemplateRemove { owner, name })
 }
+fn parse_object_copy(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &MetadataDecodeContext<'_>,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    let contract = unica_metadata::contracts::metadata_object_copy();
+    reject_unknown_input_args(
+        "object.copy",
+        args,
+        &contract.schema,
+        op_index,
+        binding.registry,
+    )?;
+    let target = unica_source_contract::proposal::input::qualified_target(
+        args,
+        op_index,
+        binding.source_set_name(),
+    )?;
+    let [owner] = target.segments() else {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "object.copy targets an existing Catalog of a configuration",
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    };
+    if binding.source_kind != unica_source_contract::SourceSetKind::Configuration
+        || owner.kind() != NodeKind::Catalog
+        || owner.name().is_none()
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "object.copy targets an existing Catalog of a configuration",
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    }
+    ArgumentShape::new(&contract.schema)
+        .validate_type(
+            &Value::Object(args.clone()),
+            &format!("ops[{op_index}].args"),
+        )
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
+        })?;
+    let values = required_object(args, "values", op_index)?;
+    let name = values
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| unica_metadata::identifier::is_1c_identifier(name))
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "object.copy requires only values.name, a valid 1C identifier",
+            )
+            .at_path(format!("ops[{op_index}].args.values.name"))
+        })?;
+    if values.len() != 1 {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "object.copy takes only the copy's name; all content comes from the source",
+        )
+        .at_path(format!("ops[{op_index}].args.values")));
+    }
+    Ok(MetadataPlanKind::Copy {
+        source: owner.name().unwrap().to_owned(),
+        name: name.to_owned(),
+    })
+}
+
 pub fn parse_object_create(
     args: &Map<String, Value>,
     op_index: usize,
