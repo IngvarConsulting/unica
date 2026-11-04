@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="4b5f30f67f178942af55b8f0cab6904700000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="2bf3d70daf4eb2499cc0d9f3d38b365600000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="2318e23d2c095746a93d7fae9368944800000000"/>
+		<Metadata name="XDTOPackage.Consumer" id="6ee80fee-9eb6-5ef4-8081-916ffe87cb42" configVersion="33b9b98dad9e7749a40633017d71d16f00000000"/>
+		<Metadata name="XDTOPackage.Consumer.Package" id="6ee80fee-9eb6-5ef4-8081-916ffe87cb42.0" configVersion="7d9493e944ede942becc75e78c6cbfb400000000"/>
+		<Metadata name="XDTOPackage.Provider" id="06883876-31c7-5552-801f-27e757e00e9f" configVersion="feb106f931196b4997828274b8c9fa4100000000"/>
+		<Metadata name="XDTOPackage.Provider.Package" id="06883876-31c7-5552-801f-27e757e00e9f.0" configVersion="257b7ebcb3436246a37f7a6fa5f2b52200000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

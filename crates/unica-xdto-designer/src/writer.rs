@@ -162,6 +162,16 @@ pub enum TypedWriterOperation<'a> {
         property: &'a XdtoPropertySpec,
         property_path: Option<&'a str>,
     },
+    AddGlobalProperty {
+        property: &'a XdtoPropertySpec,
+    },
+    AddReferenceProperty {
+        type_name: &'a str,
+        reference: &'a str,
+        min_occurs: Option<u8>,
+        max_occurs: Option<i64>,
+        property_path: Option<&'a str>,
+    },
     RemoveType {
         name: &'a str,
     },
@@ -180,6 +190,23 @@ pub enum TypedWriterOperation<'a> {
         property_path: Option<&'a str>,
         new_name: &'a str,
     },
+}
+
+/// Resolve the exact QName scope used by a newly inserted reference.
+pub(crate) fn reference_identity(
+    text: &str,
+    type_name: &str,
+    property_path: Option<&str>,
+    reference: &str,
+) -> Result<Option<(String, String)>, WriterError> {
+    let document = super::parse(text).map_err(writer_invalid_source)?;
+    let root = document.root_element();
+    let target = property_target(root, type_name, property_path)?;
+    let desired = desired_qname(root, target, reference);
+    Ok(desired
+        .semantic
+        .namespace
+        .map(|ns| (ns, desired.semantic.local)))
 }
 
 pub fn plan_typed(
@@ -320,6 +347,14 @@ pub fn plan_typed(
                     "property",
                 ));
                 None
+            } else if let Some(existing) = own_property_conflict(root, target, None, name) {
+                finding = Some(duplicate_finding(
+                    "duplicate_property",
+                    existing,
+                    false,
+                    "property",
+                ));
+                None
             } else {
                 let lower = min_occurs
                     .map(|value| format!(" lowerBound=\"{value}\""))
@@ -331,6 +366,110 @@ pub fn plan_typed(
                     desired_qname.namespace_declaration(),
                     escape_attribute(name),
                     escape_attribute(&desired_qname.raw)
+                );
+                Some(insert_child(before, target, &fragment).map_err(writer_invalid_source)?)
+            }
+        }
+        TypedWriterOperation::AddGlobalProperty { property } => {
+            if !matches!(property.definition, XdtoPropertyDefinition::Named(_)) {
+                return Err(WriterError::new(
+                    WriterErrorCause::BadValue,
+                    WriterErrorField::PropertyName,
+                    "global properties require an own name and QName type",
+                ));
+            }
+            let existing = direct_named_properties(root, property.name.as_str());
+            if !existing.is_empty() {
+                let exact = existing.len() == 1
+                    && compatible_property_tree(existing[0], root, root, property);
+                finding = Some(duplicate_finding(
+                    "duplicate_property",
+                    existing[0],
+                    exact,
+                    "property",
+                ));
+                None
+            } else {
+                let element_name = lexical_xdto_child_name(before, root, "property")
+                    .map_err(writer_invalid_source)?;
+                let definition_name = lexical_xdto_child_name(before, root, "typeDef")
+                    .map_err(writer_invalid_source)?;
+                let fragment = render_property_tree(
+                    root,
+                    root,
+                    property,
+                    &element_name,
+                    &definition_name,
+                    "",
+                    "",
+                    "",
+                );
+                Some(
+                    insert_top_level(before, root, TopLevelInsert::Property, &fragment)
+                        .map_err(writer_invalid_source)?,
+                )
+            }
+        }
+        TypedWriterOperation::AddReferenceProperty {
+            type_name,
+            reference,
+            min_occurs,
+            max_occurs,
+            property_path,
+        } => {
+            let target = property_target(root, type_name, property_path)?;
+            let desired = desired_qname(root, target, reference);
+            let existing = target
+                .children()
+                .filter(|node| {
+                    node.has_tag_name((XDTO_NS, "property"))
+                        && node
+                            .attribute("ref")
+                            .is_some_and(|raw| semantic_qname(*node, raw) == desired.semantic)
+                })
+                .collect::<Vec<_>>();
+            if !existing.is_empty() {
+                let exact = existing.len() == 1
+                    && has_only_plain_attributes(existing[0], &["ref", "lowerBound", "upperBound"])
+                    && has_exact_compatible_content(existing[0])
+                    && existing[0]
+                        .attribute("lowerBound")
+                        .unwrap_or("1")
+                        .parse::<u8>()
+                        .ok()
+                        == Some(min_occurs.unwrap_or(1))
+                    && existing[0]
+                        .attribute("upperBound")
+                        .unwrap_or("1")
+                        .parse::<i64>()
+                        .ok()
+                        == Some(max_occurs.unwrap_or(1));
+                finding = Some(duplicate_finding(
+                    "duplicate_property",
+                    existing[0],
+                    exact,
+                    "property",
+                ));
+                None
+            } else if let Some(existing) =
+                inserted_reference_conflict(root, target, &desired.semantic)
+            {
+                finding = Some(duplicate_finding(
+                    "duplicate_property",
+                    existing,
+                    false,
+                    "property",
+                ));
+                None
+            } else {
+                let name = lexical_xdto_child_name(before, target, "property")
+                    .map_err(writer_invalid_source)?;
+                let lower = min_occurs.map_or_else(String::new, |v| format!(" lowerBound=\"{v}\""));
+                let upper = max_occurs.map_or_else(String::new, |v| format!(" upperBound=\"{v}\""));
+                let fragment = format!(
+                    "<{name}{} ref=\"{}\"{lower}{upper}/>",
+                    desired.namespace_declaration(),
+                    escape_attribute(&desired.raw)
                 );
                 Some(insert_child(before, target, &fragment).map_err(writer_invalid_source)?)
             }
@@ -350,6 +489,16 @@ pub fn plan_typed(
                     "duplicate_property",
                     existing[0],
                     exact,
+                    "property",
+                ));
+                None
+            } else if let Some(existing) =
+                own_property_conflict(root, target, None, property.name.as_str())
+            {
+                finding = Some(duplicate_finding(
+                    "duplicate_property",
+                    existing,
+                    false,
                     "property",
                 ));
                 None
@@ -495,7 +644,8 @@ pub fn plan_typed(
             )?;
             if name == new_name {
                 None
-            } else if let Some(existing) = renamed_property_conflict(root, target, node, new_name) {
+            } else if let Some(existing) = own_property_conflict(root, target, Some(node), new_name)
+            {
                 finding = Some(duplicate_finding(
                     "duplicate_property",
                     existing,
@@ -600,6 +750,7 @@ fn writer_invalid_source(message: String) -> WriterError {
 
 #[derive(Clone, Copy)]
 enum TopLevelInsert {
+    Property,
     ValueType,
     ObjectType,
 }
@@ -1342,6 +1493,13 @@ fn insert_top_level(
     kind: TopLevelInsert,
     fragment: &str,
 ) -> Result<TextEdit, String> {
+    if matches!(kind, TopLevelInsert::Property) {
+        if let Some(ty) = root.children().find(|node| {
+            node.has_tag_name((XDTO_NS, "valueType")) || node.has_tag_name((XDTO_NS, "objectType"))
+        }) {
+            return insert_line_before_node(text, ty, fragment);
+        }
+    }
     if matches!(kind, TopLevelInsert::ValueType) {
         if let Some(object) = root
             .children()
@@ -1711,49 +1869,75 @@ fn strict_property_path(property_path: Option<&str>) -> Result<Vec<String>, Writ
     Ok(segments)
 }
 
-/// The sibling the platform would refuse next to the renamed property. 8.3.27
-/// rejects a repeated property name, where a `ref` is named by the local part
-/// of its global property, and a repeated XML representation: form, namespace
-/// and XML name, which is `localName` when it is written.
-fn renamed_property_conflict<'a>(
+/// The same platform collision rule applies to insertion in either order and
+/// to renaming: property names and XML representations are independently unique.
+fn inserted_reference_conflict<'a>(
     root: Node<'a, 'a>,
     target: Node<'a, 'a>,
-    renamed: Node<'a, 'a>,
+    reference: &SemanticQName,
+) -> Option<Node<'a, 'a>> {
+    property_conflict(
+        root,
+        target,
+        None,
+        &reference.local,
+        Some(("Element", reference.namespace.as_deref(), &reference.local)),
+    )
+}
+
+fn own_property_conflict<'a>(
+    root: Node<'a, 'a>,
+    target: Node<'a, 'a>,
+    renamed: Option<Node<'a, 'a>>,
     new_name: &str,
 ) -> Option<Node<'a, 'a>> {
-    let target_namespace = root.attribute("targetNamespace");
-    let reference = |property: Node<'a, 'a>| {
-        property.attribute("ref").map(|raw| {
-            let (prefix, local) = raw
-                .split_once(':')
-                .map_or((None, raw), |(p, l)| (Some(p), l));
-            (property.lookup_namespace_uri(prefix), local)
-        })
+    let representation = match renamed {
+        Some(node) => node.attribute("localName").is_none().then(|| {
+            (
+                node.attribute("form").unwrap_or("Element"),
+                root.attribute("targetNamespace"),
+                new_name,
+            )
+        }),
+        None => Some(("Element", root.attribute("targetNamespace"), new_name)),
     };
-    let form = |property: Node<'a, 'a>| property.attribute("form").unwrap_or("Element");
-    let representation = |property: Node<'a, 'a>| match reference(property) {
-        Some((namespace, local)) => (form(property), namespace, local),
-        None => (
-            form(property),
-            target_namespace,
-            property
-                .attribute("localName")
-                .or_else(|| property.attribute("name"))
-                .unwrap_or_default(),
-        ),
-    };
-    let renamed_representation = renamed
-        .attribute("localName")
-        .is_none()
-        .then(|| (form(renamed), target_namespace, new_name));
+    property_conflict(root, target, renamed, new_name, representation)
+}
+
+fn property_conflict<'a>(
+    root: Node<'a, 'a>,
+    target: Node<'a, 'a>,
+    except: Option<Node<'a, 'a>>,
+    name: &str,
+    representation: Option<(&str, Option<&str>, &str)>,
+) -> Option<Node<'a, 'a>> {
     target
         .children()
-        .filter(|sibling| *sibling != renamed && sibling.has_tag_name((XDTO_NS, "property")))
+        .filter(|sibling| Some(*sibling) != except && sibling.has_tag_name((XDTO_NS, "property")))
         .find(|sibling| {
-            let name = sibling
+            let reference = sibling
+                .attribute("ref")
+                .map(|raw| semantic_qname(*sibling, raw));
+            let sibling_name = sibling
                 .attribute("name")
-                .or_else(|| reference(*sibling).map(|(_, local)| local));
-            name == Some(new_name) || renamed_representation == Some(representation(*sibling))
+                .or_else(|| reference.as_ref().map(|qname| qname.local.as_str()));
+            let (namespace, local) = match &reference {
+                Some(reference) => (reference.namespace.as_deref(), reference.local.as_str()),
+                None => (
+                    root.attribute("targetNamespace"),
+                    sibling
+                        .attribute("localName")
+                        .or_else(|| sibling.attribute("name"))
+                        .unwrap_or_default(),
+                ),
+            };
+            sibling_name == Some(name)
+                || representation
+                    == Some((
+                        sibling.attribute("form").unwrap_or("Element"),
+                        namespace,
+                        local,
+                    ))
         })
 }
 

@@ -1,0 +1,8 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:unica:global-consumer" xmlns:ext="urn:unica:global-provider" targetNamespace="urn:unica:global-consumer">
+	<import namespace="urn:unica:global-provider"/>
+	<valueType name="TypeOnly" base="xs:string"/>
+	<objectType name="Envelope">
+		<property name="Kept" type="xs:string"/>
+	</objectType>
+</package>
