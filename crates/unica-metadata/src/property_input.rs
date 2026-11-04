@@ -39,10 +39,16 @@ pub struct ConfigurationPropertyChanges {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WsReferencePropertyChanges {
+    pub location_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
     Metadata(MetaPropertyChanges),
     FunctionalOption(FunctionalOptionPropertyChanges),
     Role(RolePropertyChanges),
+    WSReference(WsReferencePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
     StyleItem(crate::style_color::StyleItemColor),
@@ -324,6 +330,18 @@ fn decode_with_contract(
                         )?;
                     }
                     PropertiesIntent::Metadata(changes)
+                }
+                PropertiesSite::WSReference => {
+                    PropertiesIntent::WSReference(WsReferencePropertyChanges {
+                        location_url: values_reader
+                            .string(DescriptorProperty::LocationUrl)?
+                            .ok_or_else(|| {
+                                invalid(
+                                    format!("{path}.values.LocationURL"),
+                                    "LocationURL is required",
+                                )
+                            })?,
+                    })
                 }
                 PropertiesSite::FunctionalOption => {
                     PropertiesIntent::FunctionalOption(FunctionalOptionPropertyChanges {

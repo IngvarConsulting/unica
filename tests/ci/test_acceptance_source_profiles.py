@@ -11,7 +11,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tests.ci.acceptance_profiles import REPO, SOURCE_PROFILE_DIR, load_source_workspaces
+from tests.ci.acceptance_profiles import (
+    REPO, SOURCE_PROFILE_DIR, load_source_workspaces, load_source_workspace_profiles, prepare_source_workspace,
+)
 
 
 def register(root: Path, name: str) -> None:
@@ -37,6 +39,17 @@ class SourceProfileStorageTests(unittest.TestCase):
                 "tests/fixtures/acceptance/workspace-second",
             })
 
+    def test_source_fixture_can_declare_git_initialization(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            register(root, "workspace-git")
+            declaration = root / SOURCE_PROFILE_DIR / "workspace-git.json"
+            for enabled in (True, False):
+                with self.subTest(git=enabled):
+                    declaration.write_text(json.dumps({"profile": "source", "git": enabled}), encoding="utf-8")
+                    self.assertEqual(load_source_workspaces(root), {"tests/fixtures/acceptance/workspace-git"})
+                    self.assertIs(load_source_workspace_profiles(root)["tests/fixtures/acceptance/workspace-git"]["git"], enabled)
+
     def test_invalid_json_and_profile_schema_fail_closed(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
@@ -45,6 +58,9 @@ class SourceProfileStorageTests(unittest.TestCase):
             for content in (
                 '[]', '{}', '{"profile":true}', '{"profile":"delivery"}',
                 '{"profile":"source","extra":true}',
+                '{"profile":"source","git":null}', '{"profile":"source","git":1}',
+                '{"profile":"source","git":0}', '{"profile":"source","git":"true"}',
+                '{"profile":"source","git":[]}', '{"profile":"source","git":{}}',
                 '{"profile":"source","profile":"source"}',
                 '{"profile":"source",}',
             ):
@@ -100,6 +116,146 @@ class SourceProfileStorageTests(unittest.TestCase):
                     self.skipTest(f"filesystem cannot create a test symlink: {error}")
                 with self.assertRaises(ValueError):
                     load_source_workspaces(root)
+
+
+class SourceFixtureGitPreparationTests(unittest.TestCase):
+    @staticmethod
+    def git(workspace, *arguments):
+        environment = {
+            **{key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
+            "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+        }
+        return subprocess.run(["git", *arguments], cwd=workspace, env=environment,
+                              check=True, capture_output=True)
+
+    def test_git_index_is_ready_before_server_start_and_only_the_copy_changes(self):
+        from tests.ci import test_acceptance_scenarios as harness
+        for profile in ({"profile": "source", "git": True},
+                        {"profile": "source", "git": False}, {"profile": "source"}):
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                original = root / "fixture"
+                original.mkdir()
+                module = b"// fixture needle\r\n"
+                (original / "Module.bsl").write_bytes(module)
+                starts = []
+                case = self
+
+                class Server:
+                    def __init__(self, workspace, *_):
+                        self.workspace = workspace
+                        starts.append(workspace)
+                        case.assertNotEqual(workspace.resolve(), original.resolve())
+                        case.assertEqual((workspace / "Module.bsl").read_bytes(), module)
+                        if profile.get("git", False):
+                            case.assertEqual(case.git(workspace, "ls-files", "-z").stdout, b"Module.bsl\x00")
+                            case.assertIn(b"fixture needle", case.git(workspace, "grep", "-n", "needle").stdout)
+                        else:
+                            case.assertFalse((workspace / ".git").exists())
+                    def close(self):
+                        pass
+
+                corpus = {"workspace": "fixture", "protocolVersion": "2025-03-26",
+                          "scenarios": [{"id": "git-fixture", "wire": []}]}
+                with (patch.object(harness, "REPO_ROOT", root),
+                      patch.object(harness, "SOURCE_WORKSPACE_PROFILES", {"fixture": profile}),
+                      patch.object(harness, "AcceptanceServer", Server)):
+                    harness.run_corpus(self, corpus)
+                self.assertEqual(len(starts), 1)
+                self.assertEqual(sorted(path.name for path in original.iterdir()), ["Module.bsl"])
+                self.assertEqual((original / "Module.bsl").read_bytes(), module)
+
+    def test_inherited_git_context_and_global_config_cannot_redirect_or_rewrite_the_index(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            foreign = root / "foreign"
+            foreign.mkdir()
+            (foreign / "sentinel.txt").write_text("foreign sentinel\n", encoding="utf-8")
+            prepare_source_workspace(foreign, {"git": True})
+            foreign_index = (foreign / ".git/index").read_bytes()
+            workspace = root / "copy"
+            workspace.mkdir()
+            module = b"\xef\xbb\xbf// fixture needle\r\n"
+            (workspace / "Module.bsl").write_bytes(module)
+            global_config = root / "gitconfig"
+            global_config.write_text("[core]\nautocrlf=true\n", encoding="utf-8")
+            contamination = {
+                "GIT_DIR": str(foreign / ".git"), "GIT_WORK_TREE": str(foreign),
+                "GIT_INDEX_FILE": str(foreign / ".git/index"),
+                "GIT_COMMON_DIR": str(foreign / ".git"),
+                "GIT_OBJECT_DIRECTORY": str(foreign / ".git/objects"),
+                "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.worktree",
+                "GIT_CONFIG_VALUE_0": str(foreign), "GIT_CONFIG_GLOBAL": str(global_config),
+            }
+            with patch.dict(os.environ, contamination):
+                prepare_source_workspace(workspace, {"git": True})
+            self.assertEqual(self.git(workspace, "ls-files", "-z").stdout, b"Module.bsl\x00")
+            self.assertEqual(self.git(workspace, "show", ":Module.bsl").stdout, module)
+            self.assertEqual((workspace / "Module.bsl").read_bytes(), module)
+            self.assertEqual((foreign / ".git/index").read_bytes(), foreign_index)
+            self.assertEqual(self.git(foreign, "ls-files", "-z").stdout, b"sentinel.txt\x00")
+
+    def test_fixture_gitdir_file_cannot_replace_a_foreign_repository_index(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            foreign = root / "foreign"
+            foreign.mkdir()
+            (foreign / "sentinel.txt").write_text("foreign sentinel\n", encoding="utf-8")
+            prepare_source_workspace(foreign, {"git": True})
+            before_index = (foreign / ".git/index").read_bytes()
+            workspace = root / "copy"
+            workspace.mkdir()
+            (workspace / "Module.bsl").write_bytes(b"// fixture needle\n")
+            pointer = workspace / ".git"
+            pointer.write_text(f"gitdir: {foreign / '.git'}\n", encoding="utf-8")
+            try:
+                with self.assertRaisesRegex(ValueError, "existing .git"):
+                    prepare_source_workspace(workspace, {"git": True})
+            finally:
+                self.assertEqual((foreign / ".git/index").read_bytes(), before_index)
+                self.assertEqual(self.git(foreign, "ls-files", "-z").stdout, b"sentinel.txt\x00")
+
+    def test_existing_git_entry_is_rejected_before_running_git(self):
+        for kind in ("file", "directory", "dangling-link"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as raw:
+                workspace = Path(raw)
+                entry = workspace / ".git"
+                if kind == "file":
+                    entry.write_text("unexpected Git metadata", encoding="utf-8")
+                elif kind == "directory":
+                    entry.mkdir()
+                else:
+                    try:
+                        entry.symlink_to(workspace / "missing-git-dir", target_is_directory=True)
+                    except OSError as error:
+                        self.skipTest(f"filesystem cannot create a test symlink: {error}")
+                with patch("tests.ci.acceptance_profiles.subprocess.run") as run:
+                    with self.assertRaisesRegex(ValueError, "existing .git"):
+                        prepare_source_workspace(workspace, {"git": True})
+                    run.assert_not_called()
+
+    def test_git_initialization_or_index_failure_prevents_server_start(self):
+        from tests.ci import test_acceptance_scenarios as harness
+        for failed in ("init", "add"):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                (root / "fixture").mkdir()
+                corpus = {"workspace": "fixture", "protocolVersion": "2025-03-26",
+                          "scenarios": [{"id": "git-fixture", "wire": []}]}
+                actual_run = subprocess.run
+
+                def run(arguments, **kwargs):
+                    if failed in arguments:
+                        raise subprocess.CalledProcessError(128, arguments, stderr=b"git preparation sentinel")
+                    return actual_run(arguments, **kwargs)
+
+                with (patch.object(harness, "REPO_ROOT", root),
+                      patch.object(harness, "SOURCE_WORKSPACE_PROFILES", {"fixture": {"git": True}}),
+                      patch.object(harness, "AcceptanceServer") as server,
+                      patch("tests.ci.acceptance_profiles.subprocess.run", side_effect=run)):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        harness.run_corpus(self, corpus)
+                    server.assert_not_called()
 
 
 class IndependentSourceAdditionTests(unittest.TestCase):
