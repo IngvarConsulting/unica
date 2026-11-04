@@ -19,10 +19,12 @@ pub mod format_contract;
 
 pub mod edit;
 
+pub mod functional_option;
 pub mod info;
 pub mod numerator_read;
 pub mod session_parameter_comment;
 pub mod ws_reference;
+pub mod wsdl_read;
 
 pub mod job_schedule;
 
@@ -77,3 +79,5 @@ pub mod external;
 pub mod borrowed_enum_value;
 pub mod borrowed_form;
 pub mod borrowed_object;
+
+mod dimension_reduction;

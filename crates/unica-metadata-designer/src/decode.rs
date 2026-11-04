@@ -88,6 +88,7 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
+    FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
     WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
@@ -1105,6 +1106,10 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
+            "FunctionalOptions",
+            DescriptorPropertyChanges::FunctionalOption(values),
+        ),
         unica_metadata::property_input::PropertiesIntent::Metadata(values) => {
             let (target, _) = metadata_owner(&target, op_index)?;
             return Ok(MetadataPlanKind::Edit {
