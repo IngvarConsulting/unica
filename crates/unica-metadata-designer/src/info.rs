@@ -27,6 +27,25 @@ pub fn typed_properties(
         })
         .collect()
 }
+pub(crate) fn dimension_boolean_xml_space(value: char) -> bool {
+    matches!(value, ' ' | '\t' | '\r' | '\n')
+}
+
+pub(crate) fn dimension_boolean_value(node: roxmltree::Node<'_, '_>) -> Option<bool> {
+    if node.tag_name().namespace() != Some(crate::info_projection::MD_CLASSES_NAMESPACE)
+        || !crate::info_projection::strict_text_leaf_is_valid(node)
+    {
+        return None;
+    }
+    match crate::info_projection::direct_text_content(node)
+        .trim_matches(dimension_boolean_xml_space)
+    {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
 pub fn typed_relations(
     document: &Document<'_>,
     properties: Option<roxmltree::Node<'_, '_>>,
@@ -447,19 +466,8 @@ pub fn typed_element(
         }
         let value = candidates
             .first()
-            .filter(|child| {
-                candidates.len() == 1
-                    && child.tag_name().namespace()
-                        == Some(crate::info_projection::MD_CLASSES_NAMESPACE)
-                    && crate::info_projection::strict_text_leaf_is_valid(**child)
-            })
-            .and_then(
-                |child| match crate::info_projection::direct_text_content(*child).trim() {
-                    "true" => Some(true),
-                    "false" => Some(false),
-                    _ => None,
-                },
-            );
+            .filter(|_| candidates.len() == 1)
+            .and_then(|child| dimension_boolean_value(*child));
         if value.is_none() {
             incomplete = true;
             diagnostics.push(
@@ -1170,6 +1178,8 @@ mod dimension_flag_tests {
         for damaged in [
             "<Master/>",
             "<Master>yes</Master>",
+            "<Master>\u{00a0}false\u{00a0}</Master>",
+            "<Master>&#xA0;false&#160;</Master>",
             "<Master>true</Master><Master>false</Master>",
             "<Master xmlns=\"urn:foreign\">true</Master>",
             "<Master>true<Unexpected/></Master>",

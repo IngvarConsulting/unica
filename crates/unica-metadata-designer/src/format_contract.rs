@@ -236,22 +236,20 @@ pub fn validate_metadata_8_3_27_boolean_contract(
                         property_name,
                         "Master" | "MainFilter" | "DenyIncompleteValues"
                     );
-                if dimension_flag && !crate::info_projection::strict_text_leaf_is_valid(property) {
-                    return Err(format!(
-                        "{context} property {object_type}.{property_name} is not a boolean text leaf"
-                    ));
+                if dimension_flag {
+                    if crate::info::dimension_boolean_value(property).is_none() {
+                        return Err(format!(
+                            "{context} property {object_type}.{property_name} is not a boolean text leaf"
+                        ));
+                    }
+                } else {
+                    validate_meta_8_3_27_boolean_property_value(
+                        context,
+                        object_type,
+                        property_name,
+                        property.text().unwrap_or(""),
+                    )?;
                 }
-                let joined =
-                    dimension_flag.then(|| crate::info_projection::direct_text_content(property));
-                validate_meta_8_3_27_boolean_property_value(
-                    context,
-                    object_type,
-                    property_name,
-                    joined
-                        .as_deref()
-                        .map(str::trim)
-                        .unwrap_or_else(|| property.text().unwrap_or("")),
-                )?;
             }
         }
     }

@@ -1980,7 +1980,7 @@ fn dimension_boolean_text_range(
             let value = raw.chars().next()?;
             (value, value.len_utf8())
         };
-        if !value.is_whitespace() {
+        if !crate::info::dimension_boolean_xml_space(value) {
             first.get_or_insert(cursor);
             last = cursor + length;
         }
@@ -2073,18 +2073,11 @@ fn dimension_boolean_edit(
     if flag.tag_name().namespace() != Some(MD) || flag.attributes().len() != 0 {
         return Err(refused());
     }
-    if !crate::info_projection::strict_text_leaf_is_valid(*flag) {
-        return Err(refused());
-    }
-    let observed = crate::info_projection::direct_text_content(*flag);
-    let current = observed.trim();
-    if !matches!(current, "true" | "false") {
-        return Err(refused());
-    }
-    let replacement = if value { "true" } else { "false" };
-    if current == replacement {
+    let current = crate::info::dimension_boolean_value(*flag).ok_or_else(refused)?;
+    if current == value {
         return Ok(Vec::new());
     }
+    let replacement = if value { "true" } else { "false" };
     dimension_boolean_text_edits(xml, *flag, replacement).ok_or_else(refused)
 }
 

@@ -177,6 +177,8 @@ fn every_information_flag_refuses_missing_foreign_duplicate_and_nonliteral_value
             format!("{original}{original}"),
             format!("<{tag}><Nested>false</Nested></{tag}>"),
             format!("<{tag}>1</{tag}>"),
+            format!("<{tag}>\u{00a0}false\u{00a0}</{tag}>"),
+            format!("<{tag}>&#xA0;false&#160;</{tag}>"),
             format!("<{tag} extra=\"value\">false</{tag}>"),
             format!("<{tag}/>"),
         ] {
@@ -191,6 +193,10 @@ fn every_information_flag_refuses_missing_foreign_duplicate_and_nonliteral_value
                 code,
                 MetaDiagnosticCode::InvalidArguments,
                 "{tag}: {replacement}"
+            );
+            assert!(
+                apply(&before, flag("StringDimension", tag, false)).is_err(),
+                "invalid no-op: {tag}: {replacement}"
             );
             assert_eq!(
                 field.as_deref(),
