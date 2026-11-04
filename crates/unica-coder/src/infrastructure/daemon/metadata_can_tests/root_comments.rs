@@ -60,6 +60,122 @@ fn assert_source_refusal(result: &DomainResult, at: &str) {
 }
 
 #[test]
+fn root_comment_requires_registered_owner_even_when_descriptor_exists() {
+    let runtime = runtime();
+    for (kind, name) in [
+        ("CommonAttribute", "Probe"),
+        ("FunctionalOption", "Probe"),
+        ("WSReference", "Probe"),
+        ("CommonForm", "Probe"),
+        ("Language", "Русский"),
+    ] {
+        let fixture = Fixture::new("workspace-root-comments");
+        let root = fixture.source.join("Configuration.xml");
+        let source = std::fs::read_to_string(&root).unwrap();
+        let registration = format!("<{kind}>{name}</{kind}>");
+        assert_eq!(source.matches(&registration).count(), 1);
+        std::fs::write(&root, source.replace(&registration, "")).unwrap();
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        let at = if kind == "CommonForm" {
+            format!("main:{kind}.{name}.Metadata")
+        } else {
+            format!("main:{kind}.{name}")
+        };
+        let named = call(&runtime, &fixture, ToolIdentity::View, json!({"at":at}));
+        let detailed = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::View,
+            json!({"at":format!("{at}.Can.props.set")}),
+        );
+        for comment in ["orphan", ""] {
+            let preview = call(
+                &runtime,
+                &fixture,
+                ToolIdentity::Apply,
+                json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"Comment":comment}}}]}),
+            );
+            let published = preview
+                .data
+                .as_ref()
+                .and_then(|data| data.get("executionToken"))
+                .map(|token| {
+                    call(
+                        &runtime,
+                        &fixture,
+                        ToolIdentity::Apply,
+                        json!({"executionToken":token}),
+                    )
+                });
+            assert!(!preview.ok,
+                "{at}: named={named:?}; detailed={detailed:?}; preview={preview:?}; published={published:?}");
+            assert!(
+                preview
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic["code"] == "not_found"),
+                "{at}: {preview:?}"
+            );
+            assert!(
+                preview
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("executionToken"))
+                    .is_none(),
+                "{preview:?}"
+            );
+            assert!(preview.changed.is_empty(), "{preview:?}");
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&fixture.source),
+                before,
+                "{at}"
+            );
+        }
+        assert!(
+            !named.ok && !detailed.ok,
+            "{at}: named={named:?}; detailed={detailed:?}"
+        );
+    }
+}
+
+#[test]
+fn root_comment_saved_plan_rejects_registration_drift_without_overwriting_it() {
+    let fixture = Fixture::new("workspace-root-comments");
+    let runtime = runtime();
+    let plan = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":"main:CommonAttribute.Probe","ops":[{"op":"props.set","args":{"values":{"Comment":"planned"}}}]}),
+    );
+    assert!(plan.ok, "{plan:?}");
+    let root = fixture.source.join("Configuration.xml");
+    let source = std::fs::read_to_string(&root).unwrap();
+    std::fs::write(
+        &root,
+        source.replace("<CommonAttribute>Probe</CommonAttribute>", ""),
+    )
+    .unwrap();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let refused = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"executionToken":plan.data.unwrap()["executionToken"]}),
+    );
+    assert!(!refused.ok, "{refused:?}");
+    assert_eq!(
+        refused.diagnostics[0]["code"], "stale_revision",
+        "{refused:?}"
+    );
+    assert!(refused.changed.is_empty(), "{refused:?}");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
+}
+
+#[test]
 fn root_comments_preview_publish_read_and_repeat_preserve_native_companions() {
     let fixture = Fixture::new("workspace-root-comments");
     let form_dir = fixture.source.join("CommonForms/Probe/Ext");

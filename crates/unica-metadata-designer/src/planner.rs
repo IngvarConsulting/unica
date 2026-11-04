@@ -1396,6 +1396,33 @@ fn stage_descriptor_properties(
     })?;
     let (kind, postimage_text) = match changes {
         DescriptorPropertyChanges::CommentOnly { kind, comment } => {
+            let root_path = std::path::Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::NotFound,
+                        "configuration descriptor was not found",
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error.message)
+                    .at_path(at_path.clone())
+            })?;
+            if !root.registers(kind.as_str(), name) {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "metadata owner is not registered",
+                )
+                .at_path(at_path.clone()));
+            }
             let text = crate::descriptor_comment::set_comment(&source, *kind, name, comment)
                 .map_err(|message| {
                     ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
