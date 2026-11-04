@@ -1,0 +1,79 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "result": {
+      "type": "string"
+    },
+    "formAndObject": {
+      "type": "string"
+    },
+    "beforeWrite": {
+      "type": "string"
+    },
+    "postingEntry": {
+      "type": "string"
+    },
+    "afterMemoryChange": {
+      "type": "string"
+    },
+    "otherSessions": {
+      "type": "string"
+    },
+    "movements": {
+      "type": "string"
+    },
+    "hypotheses": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "documentId": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          },
+          "claim": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "documentId",
+          "version",
+          "claim"
+        ]
+      },
+      "description": "Только полные официальные страницы, фактически открытые через unica.docs. Ссылки на исходники указывай в остальных полях ответа."
+    },
+    "runtimeExecuted": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "result",
+    "formAndObject",
+    "beforeWrite",
+    "postingEntry",
+    "afterMemoryChange",
+    "otherSessions",
+    "movements",
+    "hypotheses",
+    "verification",
+    "evidence",
+    "runtimeExecuted"
+  ]
+}
