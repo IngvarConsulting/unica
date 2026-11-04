@@ -20,6 +20,9 @@ check:
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_at_requested_limit_does_not_claim_exhaustion
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_at_its_internal_cap_does_not_claim_exhaustion
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_output_budget_truncation_does_not_claim_exhaustion
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_structured_budgeted_search_keeps_hits_as_partial
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_structured_search_rejects_untrusted_and_invalid_hits
+  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_budgeted_search_omits_unrelated_stderr
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_empty_results_with_index_ready_footer_are_empty
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_empty_marker_does_not_hide_untrusted_tail
   - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_busy_or_building_index_is_a_retryable_wait_not_an_empty_answer

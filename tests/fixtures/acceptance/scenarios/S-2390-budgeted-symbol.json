@@ -1,0 +1,23 @@
+{
+  "id": "S-2390-budgeted-symbol",
+  "issue": 2390,
+  "area": "Код BSL",
+  "task": "Найти символы при исчерпании бюджета структурированного ответа анализатора",
+  "workspace": "tests/fixtures/acceptance/workspace-budget-symbol",
+  "profile": "delivery",
+  "driver": "bsl-analyzer",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {"query": "BudgetNeedle2390", "role": "symbol", "limit": 50},
+      "expect": ["ok"],
+      "assertions": [
+        {"pointer": "/data/matches/0/provider", "eq": "bsl-analyzer"},
+        {"pointer": "/data/matches/0/status", "eq": "partial"},
+        {"pointer": "/data/matches/0/searchComplete", "eq": false},
+        {"pointer": "/data/matches/0/matches/relation", "eq": "lowerBound"},
+        {"pointer": "/data/matches/0/hits/0/symbol", "contains": "BudgetNeedle2390"}
+      ]
+    }
+  ]
+}

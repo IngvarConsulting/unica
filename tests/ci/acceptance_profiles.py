@@ -13,6 +13,7 @@ from tests.ci.acceptance_controls import load_corpus, tool_result
 
 REPO = Path(__file__).resolve().parents[2]
 SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-symbol"
+BUDGET_SYMBOL_WORKSPACE = "tests/fixtures/acceptance/workspace-budget-symbol"
 DIAGNOSTICS_WORKSPACE = "tests/fixtures/acceptance/workspace-diagnostics"
 FAULT_CASES = {"empty", "invalid-event", "unknown-severity", "exit-failure", "missing-engine", "checksum-mismatch"}
 DIAGNOSTIC_CASES = {"plain", "authors-toml", "authors-json", "diff-base", "precedence"}
@@ -128,7 +129,7 @@ def select_profile(corpus, profile):
                     for step in scenario["wire"]
                 ):
                     raise ValueError(f"{scenario['id']}: invalid external check or arguments")
-            elif driver == "bsl-analyzer" and workspace == SYMBOL_WORKSPACE:
+            elif driver == "bsl-analyzer" and workspace in {SYMBOL_WORKSPACE, BUDGET_SYMBOL_WORKSPACE}:
                 if any(step["tool"] != "unica.search" or step["args"].get("role") != "symbol"
                        for step in scenario["wire"]):
                     raise ValueError(f"{scenario['id']}: analyzer driver supports symbol search only")
