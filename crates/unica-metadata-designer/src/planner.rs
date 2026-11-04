@@ -1403,6 +1403,63 @@ fn stage_descriptor_properties(
                 })?;
             (*kind, text)
         }
+        DescriptorPropertyChanges::StyleItem(values) => {
+            let color = &values.color;
+            let root_relative = Path::new("Configuration.xml");
+            let root = staged
+                .read(root_relative)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::NotFound, "source-set owner is absent")
+                        .at_path(at_path.clone())
+                })?;
+            let image = crate::style_color::StyleColorImage::parse_registered(
+                &source,
+                name,
+                relative,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| {
+                let kind = match &error {
+                    crate::style_color::ColorIssue::NotFound(_) => ApplyPlanErrorKind::NotFound,
+                    crate::style_color::ColorIssue::Invalid(_) => ApplyPlanErrorKind::InvalidSource,
+                    crate::style_color::ColorIssue::ReadOnly(_) => ApplyPlanErrorKind::InvalidState,
+                };
+                ApplyPlanError::new(kind, error.to_string()).at_path(at_path.clone())
+            })?;
+            let postimage = image.replace(*color);
+            let checked = crate::style_color::StyleColorImage::parse(&postimage, name, relative)
+                .map_err(|error| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::Postcondition,
+                        format!("StyleItem Color postimage is invalid: {error}"),
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            if checked.color() != *color {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::Postcondition,
+                    "StyleItem Color postimage does not contain the requested color",
+                )
+                .at_path(at_path.clone()));
+            }
+            let postimage = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(
+                    &postimage,
+                    NodeKind::StyleItem,
+                    name,
+                    comment,
+                )
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?
+            } else {
+                postimage
+            };
+            (NodeKind::StyleItem, postimage)
+        }
         DescriptorPropertyChanges::FunctionalOption(values) => {
             let text =
                 crate::functional_option::patch(&source, name, values).map_err(|message| {
@@ -1596,8 +1653,10 @@ fn stage_descriptor_properties(
             (NodeKind::Configuration, text)
         }
     };
-    let postimage = if matches!(changes, DescriptorPropertyChanges::CommentOnly { .. })
-        || matches!(changes, DescriptorPropertyChanges::FunctionalOption(values) if values.comment.is_some())
+    let postimage = if matches!(
+        changes,
+        DescriptorPropertyChanges::CommentOnly { .. } | DescriptorPropertyChanges::StyleItem(_)
+    ) || matches!(changes, DescriptorPropertyChanges::FunctionalOption(values) if values.comment.is_some())
     {
         let mut image = preimage[..preimage.len() - source.len()].to_vec();
         image.extend_from_slice(postimage_text.as_bytes());

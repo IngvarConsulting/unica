@@ -2824,3 +2824,6 @@ fn an_oversized_form_item_title_is_named_by_a_limit() {
         "the title reads whole at its address"
     );
 }
+
+#[path = "metadata_can_tests/style_color.rs"]
+mod style_color;

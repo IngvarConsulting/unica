@@ -8,7 +8,8 @@ import copy
 import tomllib
 import xml.etree.ElementTree as ET
 from unittest.mock import patch
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import shlex
 from itertools import product
 
 from tests.agent_evaluation.dcs_driver import DCS_TEMPLATE, allowed_help_command, audit_cli, audit_mcp, audit_review, terminal_calls
@@ -155,9 +156,10 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 config = tomllib.loads(command[index + 1])
                 self.assertNotIn("view_image", config.get("tools", {}))
 
+    @patch("tests.agent_evaluation.cli_host.IS_WINDOWS", False)
     def test_agent_audit_rejects_errors_and_forbidden_events_in_an_otherwise_valid_turn(self):
         """Inject faults into an accepted transcript so rejection is caused by each fault."""
-        help_path = Path("/prepared/help.md")
+        help_path = PurePosixPath("/prepared/help.md")
         call = {"type": "mcp_tool_call", "server": "unica", "tool": "unica.view", "status": "completed"}
         valid = [
             {"type": "thread.started"}, {"type": "turn.started"},
@@ -888,13 +890,14 @@ class AgentEvaluationAuditTests(unittest.TestCase):
         import signal
         import subprocess
         from tests.agent_evaluation.dcs_driver import stop_owned_daemons
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, \
+             patch("tests.agent_evaluation.cli_host.IS_WINDOWS", False):
             state = Path(directory)
             endpoint = state / "daemon-p5-test/endpoint.json"
             endpoint.parent.mkdir()
             endpoint.write_text(json.dumps({"pid": 42}))
             binary = state / "plugin/bin/unica"
-            owned = f"{binary} --daemon --state-root {state}"
+            owned = shlex.join([str(binary), "--daemon", "--state-root", str(state)])
             for terminal in ("Z <defunct>", "S /unrelated/process"):
                 observations = iter([f"S {owned}", terminal])
                 def observe(command, **kwargs):
@@ -1058,8 +1061,9 @@ class AgentEvaluationAuditTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "all requested template operations"):
             audit(missing_creation)
 
+    @patch("tests.agent_evaluation.cli_host.IS_WINDOWS", False)
     def test_only_literal_cat_of_prepared_help_is_allowed(self):
-        path = Path("/prepared/plugin/reports printing.md")
+        path = PurePosixPath("/prepared/plugin/reports printing.md")
         self.assertTrue(allowed_help_command("/bin/zsh -lc \"cat '/prepared/plugin/reports printing.md'\"", path))
         for command in ["cat /other/skill.md", "cat '/prepared/plugin/reports printing.md'; cat /old/skill.md",
                         "python -c 'print(open(\"/old/skill.md\").read())'", "cat $(echo /prepared/plugin/reports\\ printing.md)",

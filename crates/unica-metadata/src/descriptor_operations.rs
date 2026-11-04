@@ -49,6 +49,7 @@ pub enum PropertiesSite {
     FunctionalOption,
     Role,
     Subsystem,
+    StyleItem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
     /// or an extension's, which may change only its identity properties.
     Configuration {
@@ -96,6 +97,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Metadata(_) => false,
                     PropertiesSite::CommentOnly(_) => self == Self::Comment,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
+                    PropertiesSite::StyleItem => self == Self::Comment,
                 }
             }
         }
@@ -214,6 +216,7 @@ impl PropertiesSite {
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::StyleItem => Some(Self::StyleItem),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
             NodeKind::Role => Some(Self::Role),
             NodeKind::Subsystem => Some(Self::Subsystem),
@@ -231,7 +234,6 @@ impl PropertiesSite {
             | NodeKind::DocumentNumerator
             | NodeKind::WsReference
             | NodeKind::XdtoPackage
-            | NodeKind::StyleItem
             | NodeKind::Sequence
             | NodeKind::Style => Some(Self::CommentOnly(owner.kind())),
             kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
@@ -248,9 +250,16 @@ impl PropertiesSite {
     fn values_schema(self) -> Value {
         let mut properties = Map::new();
         let mut groups = Vec::new();
+        if self == Self::StyleItem {
+            properties.insert(
+                "Value".into(),
+                crate::style_color::StyleItemColor::argument_schema(),
+            );
+        }
         match self {
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
-            Self::FunctionalOption
+            Self::StyleItem
+            | Self::FunctionalOption
             | Self::Role
             | Self::Subsystem
             | Self::Configuration { .. }
@@ -297,6 +306,7 @@ impl PropertiesOperation {
             Self::Set => OperationContract {
                 schema: object(&[("values", site.values_schema())], &["values"]),
                 target: match site {
+                    PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
                     PropertiesSite::CommentOnly(NodeKind::CommonForm) => "The existing common form descriptor at `<set>:CommonForm.Name.Metadata`.",
@@ -304,14 +314,18 @@ impl PropertiesOperation {
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
-                notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
+                notes: match site {
+                    PropertiesSite::StyleItem => "Color Value and optional string Comment/comment are accepted: #RRGGBB or an enumerated web/builtin style color. Empty Value, null and arbitrary XML are refused; empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Type, identity and bytes outside supplied Value/Comment stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
+                    _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
+                },
                 example_args: match site {
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
+                    PropertiesSite::StyleItem => json!({"values":{"Value":"#F0F0F0"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -326,7 +340,17 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
     fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
         crate::recovery::RETIRED_ARGUMENTS
     }
-    type Observation = ();
+    type Observation = crate::style_color::StyleItemColor;
+    fn needs_observation(
+        self,
+        site: Option<&unica_source_contract::context::OperationSite<'_>>,
+    ) -> bool {
+        site.and_then(PropertiesSite::from_site) == Some(PropertiesSite::StyleItem)
+    }
+    fn admits_observation(self, _observation: Option<&Self::Observation>) -> bool {
+        // Missing color evidence still permits the independent Comment writer.
+        true
+    }
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Properties
     }
@@ -353,13 +377,91 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
         self,
         site: &unica_source_contract::context::OperationSite<'_>,
     ) -> Option<unica_operation_contract::OperationContract> {
-        PropertiesSite::from_site(site).map(|profile| self.contract(profile))
+        self.contract_at_with_observation(site, None)
+    }
+
+    fn contract_at_with_observation(
+        self,
+        site: &unica_source_contract::context::OperationSite<'_>,
+        observation: Option<&Self::Observation>,
+    ) -> Option<OperationContract> {
+        PropertiesSite::from_site(site).map(|profile| {
+            let profile = if profile == PropertiesSite::StyleItem && observation.is_none() {
+                PropertiesSite::CommentOnly(NodeKind::StyleItem)
+            } else {
+                profile
+            };
+            self.contract(profile)
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn style_item_contract_uses_only_typed_color_evidence() {
+        use unica_operations::FamilyOperation;
+        use unica_source_contract::context::{OperationSite, SourceSetTraits};
+        use unica_source_contract::route::RouteClass;
+        use unica_source_contract::{SourceProfile, SourceSetKind};
+        let at = QualifiedAddress::parse("main:StyleItem.Accent").unwrap();
+        let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+        let source =
+            SourceSetTraits::from_profiles(SourceSetKind::Configuration, Some(profile), profile);
+        let site = OperationSite::from_route(&at, source, RouteClass::Metadata);
+        let operation = PropertiesOperation::Set.descriptor();
+        let plain = operation.argument_contract_at(&site).unwrap();
+        let absent = operation
+            .argument_contract_at_with_observations(&site, &|_, _| None)
+            .unwrap();
+        assert_eq!(plain.schema, absent.schema);
+        assert!(plain.schema["properties"]["values"]["properties"]
+            .get("Value")
+            .is_none());
+        let color = crate::style_color::StyleItemColor::parse_argument("#123456").unwrap();
+        let observed = operation
+            .argument_contract_at_with_observations(&site, &|_, requested| {
+                assert!(requested.is::<crate::style_color::StyleItemColor>());
+                Some(Box::new(color))
+            })
+            .unwrap();
+        assert_eq!(
+            observed.schema["properties"]["values"]["properties"]
+                .as_object()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert!(operation
+            .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(String::new())))
+            .is_none());
+        let oracle = jsonschema::validator_for(&observed.schema).unwrap();
+        for values in [
+            json!({"Value":"#123456", "Comment":""}),
+            json!({"comment":"text"}),
+        ] {
+            assert!(oracle.is_valid(&json!({"values":values})));
+            assert!(crate::property_input::decode_properties(
+                PropertiesOperation::Set,
+                PropertiesSite::StyleItem,
+                &json!({"values":values}),
+                "args"
+            )
+            .is_ok());
+        }
+        // Another metadata owner ignores irrelevant Color evidence.
+        let at = QualifiedAddress::parse("main:Role.Reader").unwrap();
+        let site = OperationSite::from_route(&at, source, RouteClass::Metadata);
+        assert_eq!(
+            PropertiesOperation::Set.contract_at(&site).unwrap().schema,
+            operation
+                .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(color)))
+                .unwrap()
+                .schema
+        );
+    }
 
     #[test]
     fn additional_root_comments_have_a_closed_string_only_profile() {
@@ -379,7 +481,6 @@ mod tests {
             "DocumentNumerator",
             "WSReference",
             "XDTOPackage",
-            "StyleItem",
             "Sequence",
             "Style",
         ] {

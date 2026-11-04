@@ -98,7 +98,13 @@ fn root_comments_preview_publish_read_and_repeat_preserve_native_companions() {
                 .as_object()
                 .unwrap()
                 .len(),
-            if kind == "FunctionalOption" { 6 } else { 2 },
+            if kind == "FunctionalOption" {
+                6
+            } else if kind == "StyleItem" {
+                3
+            } else {
+                2
+            },
             "{at}"
         );
         let relative = PathBuf::from(directory).join(format!("{name}.xml"));

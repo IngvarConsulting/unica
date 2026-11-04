@@ -49,6 +49,7 @@ pub enum PropertiesIntent {
     Role(RolePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
+    StyleItem(StyleItemPropertyChanges),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +57,12 @@ pub struct FunctionalOptionPropertyChanges {
     pub comment: Option<String>,
     pub location: Option<String>,
     pub privileged_get_mode: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleItemPropertyChanges {
+    pub color: crate::style_color::StyleItemColor,
+    pub comment: Option<String>,
 }
 
 type DecodeResult<T> = Result<T, ContractError>;
@@ -301,6 +308,29 @@ fn decode_with_contract(
                         .string(DescriptorProperty::Comment)?
                         .ok_or_else(|| invalid(&values_path, "Comment is required"))?,
                 },
+                PropertiesSite::StyleItem => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    let value = values_reader.field("Value", false)?;
+                    if let Some(value) = value {
+                        let color = value
+                            .as_str()
+                            .and_then(crate::style_color::StyleItemColor::parse_argument)
+                            .ok_or_else(|| {
+                                invalid(
+                                    format!("{values_path}.Value"),
+                                    "Value must be a supported RGB, web or builtin style color",
+                                )
+                            })?;
+                        PropertiesIntent::StyleItem(StyleItemPropertyChanges { color, comment })
+                    } else {
+                        PropertiesIntent::CommentOnly {
+                            kind: unica_address::address::NodeKind::StyleItem,
+                            comment: comment.ok_or_else(|| {
+                                invalid(&values_path, "Comment or Value is required")
+                            })?,
+                        }
+                    }
+                }
                 PropertiesSite::Metadata(kind) => {
                     // Preserve Metadata's existing conversion diagnostics and
                     // structured Type model, then verify the shared shape.
