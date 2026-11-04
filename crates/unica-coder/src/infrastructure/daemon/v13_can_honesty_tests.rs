@@ -170,6 +170,10 @@ const WRITES_BEYOND_NODE: &[(&str, &str)] = &[
         "удаление объекта снимает его регистрацию в корне и ссылки на него",
     ),
     (
+        "object.rename",
+        "переименование переносит ресурсы и меняет регистрацию в корне и ссылки на объект",
+    ),
+    (
         "supportRule.set",
         "правило поддержки хранится в файле поддержки конфигурации",
     ),
@@ -227,11 +231,17 @@ const WRITES_CHECKED_AT_LEAST: &[(&str, &[&str])] = &[
     ),
     (
         "workspace-resolve",
-        &["code.insert", "code.replace", "form.remove"],
+        &[
+            "code.insert",
+            "code.replace",
+            "form.remove",
+            "object.rename",
+        ],
     ),
     (
         "workspace-predefined",
         &[
+            "object.rename",
             "predefinedItem.add",
             "predefinedItem.remove",
             "predefinedItem.set",
