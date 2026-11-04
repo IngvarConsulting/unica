@@ -519,7 +519,7 @@ fn filter_container_metadata_is_not_an_extra_condition() {
 fn appearance_container_view_mode_is_not_an_extra_rule() {
     let xml = NESTED_SETTINGS.replace(
         "<dcsset:conditionalAppearance>",
-        "<dcsset:conditionalAppearance><dcsset:viewMode>Normal</dcsset:viewMode>",
+        "<dcsset:conditionalAppearance><dcsset:viewMode>Normal</dcsset:viewMode><dcsset:userSettingID>id</dcsset:userSettingID><dcsset:userSettingPresentation>Title</dcsset:userSettingPresentation>",
     );
     assert_ne!(xml, NESTED_SETTINGS);
     assert_eq!(

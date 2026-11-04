@@ -59,7 +59,13 @@ pub(super) fn read(settings: roxmltree::Node<'_, '_>) -> Vec<serde_json::Value> 
                             .children()
                             .filter(|child| {
                                 child.is_element()
-                                    && !child.has_tag_name((DCS_SETTINGS_NS, "viewMode"))
+                                    && !(child.tag_name().namespace() == Some(DCS_SETTINGS_NS)
+                                        && matches!(
+                                            child.tag_name().name(),
+                                            "viewMode"
+                                                | "userSettingID"
+                                                | "userSettingPresentation"
+                                        ))
                             })
                             .enumerate()
                             .map(|(index, item)| (index, Vec::new(), item)),
