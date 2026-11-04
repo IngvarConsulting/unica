@@ -344,7 +344,7 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "Type",
         MetaPropertyKey::Type,
         MetaPropertyValueKind::Type,
-        &[MetadataKind::Constant],
+        &[MetadataKind::Constant, MetadataKind::DefinedType],
     ),
     property(
         "Synonym",

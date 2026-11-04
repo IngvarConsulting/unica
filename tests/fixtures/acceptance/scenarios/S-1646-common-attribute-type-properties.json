@@ -1,0 +1,674 @@
+{
+  "id": "S-1646-common-attribute-type-properties",
+  "issue": 1646,
+  "area": "Метаданные",
+  "task": "У существующего CommonAttribute прочитать Type и закрытый Can, затем сменить примитив с квалификаторами, ссылочный и составной тип через preview/token; точные readback/XML и неизменность остальных исходников.",
+  "workspace": "tests/fixtures/acceptance/workspace-root-type-properties",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "initialFile0": {
+          "file": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "initialFile1": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "initialFile2": {
+          "file": "src/Catalogs/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "initialFile3": {
+          "file": "src/Catalogs/Other.xml",
+          "kind": "sha256"
+        },
+        "initialFile4": {
+          "file": "src/CommonAttributes/SharedValue.xml",
+          "kind": "sha256"
+        },
+        "initialFile5": {
+          "file": "src/ConfigDumpInfo.xml",
+          "kind": "sha256"
+        },
+        "initialFile6": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "initialFile7": {
+          "file": "src/DefinedTypes/Existing.xml",
+          "kind": "sha256"
+        },
+        "initialFile8": {
+          "file": "src/DefinedTypes/Helper.xml",
+          "kind": "sha256"
+        },
+        "initialFile9": {
+          "file": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256"
+        },
+        "initialFile10": {
+          "file": "src/FilterCriteria/CriterionValue.xml",
+          "kind": "sha256"
+        },
+        "initialFile11": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "initialFile12": {
+          "file": "src/SessionParameters/SessionValue.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute.SharedValue"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 0,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "SharedValue"
+        }
+      ],
+      "captures": {
+        "ownerAt": {
+          "pointer": "/data/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute.SharedValue.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "props.set"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Type/type",
+          "eq": "object"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.ownerAt",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Type": {
+                  "variants": [
+                    {
+                      "kind": "string",
+                      "length": 32,
+                      "allowedLength": "variable"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "planP": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initialFile0"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile1"
+        },
+        {
+          "path": "src/Catalogs/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initialFile2"
+        },
+        {
+          "path": "src/Catalogs/Other.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile3"
+        },
+        {
+          "path": "src/CommonAttributes/SharedValue.xml",
+          "kind": "sha256",
+          "eq": "fd33628ff3bec8616f4c13448139b3704e2acea0d9bcaea406e2b4a914e9e816"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile6"
+        },
+        {
+          "path": "src/DefinedTypes/Existing.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile7"
+        },
+        {
+          "path": "src/DefinedTypes/Helper.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile8"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile9"
+        },
+        {
+          "path": "src/FilterCriteria/CriterionValue.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile10"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile11"
+        },
+        {
+          "path": "src/SessionParameters/SessionValue.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.planP"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/SharedValue.xml",
+          "kind": "sha256",
+          "eq": "46daad04e8e0ae4fe8d3b27de1e39029919d1fed42653a15c4cf568e87ef1a06"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ownerAt"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "string",
+                "length": 32,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.ownerAt",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Type": {
+                  "variants": [
+                    {
+                      "kind": "reference",
+                      "metadataPath": "Catalog.Items"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "planR": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initialFile0"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile1"
+        },
+        {
+          "path": "src/Catalogs/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initialFile2"
+        },
+        {
+          "path": "src/Catalogs/Other.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile3"
+        },
+        {
+          "path": "src/CommonAttributes/SharedValue.xml",
+          "kind": "sha256",
+          "eq": "46daad04e8e0ae4fe8d3b27de1e39029919d1fed42653a15c4cf568e87ef1a06"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile6"
+        },
+        {
+          "path": "src/DefinedTypes/Existing.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile7"
+        },
+        {
+          "path": "src/DefinedTypes/Helper.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile8"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile9"
+        },
+        {
+          "path": "src/FilterCriteria/CriterionValue.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile10"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile11"
+        },
+        {
+          "path": "src/SessionParameters/SessionValue.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.planR"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/SharedValue.xml",
+          "kind": "sha256",
+          "eq": "4c9c7d97d7e11af14aaeab83f945011c45da728cb28041ff57a0e99743729a26"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ownerAt"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "Catalog.Items"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.ownerAt",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Type": {
+                  "variants": [
+                    {
+                      "kind": "reference",
+                      "metadataPath": "Catalog.Items"
+                    },
+                    {
+                      "kind": "reference",
+                      "metadataPath": "Catalog.Other"
+                    },
+                    {
+                      "kind": "string",
+                      "length": 24,
+                      "allowedLength": "variable"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "planC": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initialFile0"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile1"
+        },
+        {
+          "path": "src/Catalogs/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initialFile2"
+        },
+        {
+          "path": "src/Catalogs/Other.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile3"
+        },
+        {
+          "path": "src/CommonAttributes/SharedValue.xml",
+          "kind": "sha256",
+          "eq": "4c9c7d97d7e11af14aaeab83f945011c45da728cb28041ff57a0e99743729a26"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile6"
+        },
+        {
+          "path": "src/DefinedTypes/Existing.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile7"
+        },
+        {
+          "path": "src/DefinedTypes/Helper.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile8"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile9"
+        },
+        {
+          "path": "src/FilterCriteria/CriterionValue.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile10"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile11"
+        },
+        {
+          "path": "src/SessionParameters/SessionValue.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.planC"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/SharedValue.xml",
+          "kind": "sha256",
+          "eq": "e3bbc2adaa818cc9052db2288358caab7016fb29af8de19f001614498745954c"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.ownerAt"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "reference",
+                "metadataPath": "Catalog.Items"
+              },
+              {
+                "kind": "reference",
+                "metadataPath": "Catalog.Other"
+              },
+              {
+                "kind": "string",
+                "length": 24,
+                "allowedLength": "variable"
+              }
+            ],
+            "mutationCapability": "editable"
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initialFile0"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile1"
+        },
+        {
+          "path": "src/Catalogs/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initialFile2"
+        },
+        {
+          "path": "src/Catalogs/Other.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile3"
+        },
+        {
+          "path": "src/CommonAttributes/SharedValue.xml",
+          "kind": "sha256",
+          "eq": "e3bbc2adaa818cc9052db2288358caab7016fb29af8de19f001614498745954c"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile6"
+        },
+        {
+          "path": "src/DefinedTypes/Existing.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile7"
+        },
+        {
+          "path": "src/DefinedTypes/Helper.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile8"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile9"
+        },
+        {
+          "path": "src/FilterCriteria/CriterionValue.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile10"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile11"
+        },
+        {
+          "path": "src/SessionParameters/SessionValue.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialFile12"
+        }
+      ]
+    }
+  ]
+}

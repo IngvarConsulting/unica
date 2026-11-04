@@ -45,6 +45,7 @@ properties_operations!(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertiesSite {
     Metadata(MetadataKind),
+    TypeOwner(TypePropertyOwner),
     Role,
     Subsystem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
@@ -52,6 +53,25 @@ pub enum PropertiesSite {
     Configuration {
         extension: bool,
     },
+}
+
+/// Existing descriptors whose only supported property change is Type.
+/// These owners do not acquire the metadata creation vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypePropertyOwner {
+    CommonAttribute,
+    SessionParameter,
+    FilterCriterion,
+}
+
+impl TypePropertyOwner {
+    pub const fn node_kind(self) -> NodeKind {
+        match self {
+            Self::CommonAttribute => NodeKind::CommonAttribute,
+            Self::SessionParameter => NodeKind::SessionParameter,
+            Self::FilterCriterion => NodeKind::FilterCriterion,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +111,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension: true } => {
                         match self { $(Self::$field => $extension),+ }
                     }
-                    PropertiesSite::Metadata(_) => false,
+                    PropertiesSite::Metadata(_) | PropertiesSite::TypeOwner(_) => false,
                 }
             }
         }
@@ -204,6 +224,11 @@ impl PropertiesSite {
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::CommonAttribute => Some(Self::TypeOwner(TypePropertyOwner::CommonAttribute)),
+            NodeKind::SessionParameter => {
+                Some(Self::TypeOwner(TypePropertyOwner::SessionParameter))
+            }
+            NodeKind::FilterCriterion => Some(Self::TypeOwner(TypePropertyOwner::FilterCriterion)),
             NodeKind::Role => Some(Self::Role),
             NodeKind::Subsystem => Some(Self::Subsystem),
             kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
@@ -222,6 +247,9 @@ impl PropertiesSite {
         let mut groups = Vec::new();
         match self {
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
+            Self::TypeOwner(_) => {
+                properties.insert("Type".into(), crate::metadata_type_schema());
+            }
             Self::Role | Self::Subsystem | Self::Configuration { .. } => {
                 for field in self.descriptor_fields() {
                     let schema = match field.kind() {
@@ -263,13 +291,17 @@ impl PropertiesOperation {
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
-                notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
+                notes: match site {
+                    PropertiesSite::TypeOwner(TypePropertyOwner::CommonAttribute) => "values contains only the structured Type from this contract. The new Type must accept the existing active FillValue. The Type of a borrowed data separator cannot change; changing an ordinary borrowed attribute requires known DataSeparation. Descriptor identity, other properties and companion files are preserved. Preview writes nothing; execute only the saved execution token.",
+                    _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
+                },
                 example_args: match site {
+                    PropertiesSite::TypeOwner(_) => json!({"values":{"Type":{"variants":[{"kind":"string","length":32,"allowedLength":"variable"}]}}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::TypeOwner(_) => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -414,7 +446,7 @@ mod tests {
             (
                 MetadataKind::DefinedType,
                 json!({"Type":{"variants":[{"kind":"boolean"}]}}),
-                false,
+                true,
             ),
             (
                 MetadataKind::CommonModule,
@@ -455,3 +487,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "descriptor_operations/root_type_tests.rs"]
+mod root_type_tests;

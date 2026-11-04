@@ -88,6 +88,10 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
+    RootType {
+        owner: unica_metadata::descriptor_operations::TypePropertyOwner,
+        metadata_type: unica_metadata::MetadataType,
+    },
     Role(unica_metadata::property_input::RolePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
     Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
@@ -1095,6 +1099,42 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::RootType {
+            owner,
+            metadata_type,
+        } => {
+            let address = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!(
+                    "{}.{}",
+                    owner.node_kind().as_str(),
+                    target.segments()[0].name().expect("named property owner")
+                ),
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
+                    .at_path(format!("ops[{op_index}].args.at"))
+            })?;
+            let relative = unica_source_designer::layout::metadata_descriptor_relative(
+                &address,
+                binding.source_kind,
+            )
+            .map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                    .at_path(format!("ops[{op_index}].args.at"))
+            })?;
+            return Ok(MetadataPlanKind::DescriptorProperties {
+                name: target.segments()[0]
+                    .name()
+                    .expect("named property owner")
+                    .to_string(),
+                relative,
+                changes: DescriptorPropertyChanges::RootType {
+                    owner,
+                    metadata_type,
+                },
+            });
+        }
         unica_metadata::property_input::PropertiesIntent::Metadata(values) => {
             let (target, _) = metadata_owner(&target, op_index)?;
             return Ok(MetadataPlanKind::Edit {

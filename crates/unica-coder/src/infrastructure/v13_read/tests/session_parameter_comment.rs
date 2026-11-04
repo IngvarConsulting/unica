@@ -15,7 +15,7 @@ fn install(fixture: &RealReaderFixture, comment: &str) -> PathBuf {
     write(
         &path,
         &format!(
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><SessionParameter uuid="16280000-0000-4000-8000-000000000001"><Properties><Name>Параметр</Name>{comment}<FutureProperty>must not leak</FutureProperty></Properties></SessionParameter></MetaDataObject>"#
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><SessionParameter uuid="16280000-0000-4000-8000-000000000001"><Properties><Name>Параметр</Name>{comment}<Type><v8:Type>xs:boolean</v8:Type></Type><FutureProperty>must not leak</FutureProperty></Properties></SessionParameter></MetaDataObject>"#
         ),
     );
     path

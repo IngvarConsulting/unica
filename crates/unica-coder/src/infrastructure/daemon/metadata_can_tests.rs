@@ -1,6 +1,9 @@
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
 
+#[path = "metadata_can_tests/root_type_properties.rs"]
+mod root_type_properties;
+
 use super::actor_capacity_tests::direct_v5;
 use super::*;
 use crate::domain::apply::ApplyRequest;

@@ -1229,6 +1229,12 @@ impl ProviderReadAuthority {
             unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
         }
+        if matches!(
+            evidence.artifact_kind(),
+            "CommonAttribute" | "SessionParameter" | "FilterCriterion"
+        ) {
+            unica_metadata_designer::root_type::enrich(&descriptor, &mut payload);
+        }
         Ok(payload)
     }
 

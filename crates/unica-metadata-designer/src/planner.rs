@@ -1389,6 +1389,19 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::RootType {
+            owner,
+            metadata_type,
+        } => {
+            let mut text = source.clone();
+            crate::edit::apply_descriptor_type(&mut text, *owner, metadata_type).map_err(
+                |diagnostic| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, diagnostic.message)
+                        .at_path(format!("ops[{op_index}].args.values.Type"))
+                },
+            )?;
+            (owner.node_kind(), text)
+        }
         DescriptorPropertyChanges::Role(unica_metadata::property_input::RolePropertyChanges {
             synonym,
             comment,

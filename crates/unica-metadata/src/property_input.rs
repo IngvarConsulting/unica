@@ -41,6 +41,10 @@ pub struct ConfigurationPropertyChanges {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
     Metadata(MetaPropertyChanges),
+    RootType {
+        owner: crate::descriptor_operations::TypePropertyOwner,
+        metadata_type: crate::MetadataType,
+    },
     Role(RolePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
@@ -53,6 +57,15 @@ fn invalid(path: impl Into<String>, message: impl Into<String>) -> ContractError
         path: path.into(),
         message: message.into(),
     }
+}
+
+fn root_type_argument_error(error: crate::MetaDiagnostic, path: &str) -> ContractError {
+    let field = error.field.as_deref().unwrap_or("values.Type");
+    let field = field.strip_prefix("type").map_or_else(
+        || field.to_string(),
+        |suffix| format!("values.Type{suffix}"),
+    );
+    invalid(format!("{path}.{field}"), error.message)
 }
 
 struct PropertyArgumentReader<'a> {
@@ -283,6 +296,25 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::TypeOwner(owner) => {
+                    let value = values_reader.field("Type", false)?.ok_or_else(|| {
+                        invalid(format!("{values_path}.Type"), "Type is required")
+                    })?;
+                    let metadata_type = crate::request::parse_metadata_type(value, "values.Type")
+                        .and_then(|metadata_type| {
+                            crate::validate_metadata_element_value_profile(
+                                Some(&metadata_type),
+                                None,
+                                crate::MetaValueProfileContext::Patch,
+                            )?;
+                            Ok(metadata_type)
+                        })
+                        .map_err(|error| root_type_argument_error(error, path))?;
+                    PropertiesIntent::RootType {
+                        owner,
+                        metadata_type,
+                    }
+                }
                 PropertiesSite::Metadata(kind) => {
                     // Preserve Metadata's existing conversion diagnostics and
                     // structured Type model, then verify the shared shape.
@@ -293,6 +325,18 @@ fn decode_with_contract(
                                 error.message,
                             )
                         })?;
+                    if kind == crate::MetadataKind::DefinedType {
+                        for (_, value) in changes.entries() {
+                            if let crate::MetaPropertyValue::Type(metadata_type) = value {
+                                crate::validate_metadata_element_value_profile(
+                                    Some(metadata_type),
+                                    None,
+                                    crate::MetaValueProfileContext::Patch,
+                                )
+                                .map_err(|error| root_type_argument_error(error, path))?;
+                            }
+                        }
+                    }
                     for spec in METADATA_PROPERTY_SPECS
                         .iter()
                         .filter(|spec| spec.allowed_kinds.contains(&kind))
