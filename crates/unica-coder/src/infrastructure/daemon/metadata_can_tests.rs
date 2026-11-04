@@ -4,6 +4,8 @@ mod functional_option;
 mod property_name_parity;
 #[path = "metadata_can_tests/root_comments.rs"]
 mod root_comments;
+#[path = "metadata_can_tests/search_input.rs"]
+mod search_input;
 
 use super::actor_capacity_tests::direct_v5;
 use super::*;
