@@ -1434,6 +1434,25 @@ pub fn apply_typed_properties(
                     Some("values.DataLockControlMode"),
                 ));
             }
+            if let MetaPropertyValue::String(value) = value {
+                let property_range = property.range();
+                let raw = &parsed_body[property_range.clone()];
+                // The validated enum has text content. Preserve its original
+                // qualified opening and closing tags, including local bindings.
+                let content_start = property
+                    .children()
+                    .next()
+                    .expect("validated enum content")
+                    .range()
+                    .start
+                    - property_range.start;
+                let content_end = raw.rfind("</").expect("validated enum closing tag");
+                replacements.push((
+                    property_range.start - range.start..property_range.end - range.start,
+                    format!("{}{}{}", &raw[..content_start], value, &raw[content_end..]),
+                ));
+                continue;
+            }
         }
         if matches!(
             key,

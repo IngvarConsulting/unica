@@ -162,3 +162,54 @@ fn object_data_lock_refuses_damaged_source_and_stale_owner() {
         before
     );
 }
+
+#[test]
+fn object_data_lock_preserves_a_fully_prefixed_descriptor() {
+    let fixture = Fixture::new("workspace-object-data-lock");
+    let runtime = runtime();
+    let owner = PathBuf::from("Catalogs/Codes.xml");
+    let path = fixture.source.join(&owner);
+    let original = std::fs::read_to_string(&path).unwrap();
+    let tags = regex::Regex::new(r"<(/?)([A-Za-z_][A-Za-z0-9_]*)([ >/\t\r\n])").unwrap();
+    let prefixed = tags.replace_all(&original, "<${1}md:${2}${3}").replace(
+        "xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
+        "xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\"",
+    );
+    assert!(!prefixed.contains("xmlns=\""));
+    let doc = roxmltree::Document::parse(prefixed.trim_start_matches('\u{feff}')).unwrap();
+    assert!(doc
+        .descendants()
+        .filter(|node| node.is_element() && node.tag_name().name() == "DataLockControlMode")
+        .all(|node| node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")));
+    std::fs::write(&path, &prefixed).unwrap();
+    let at = "main:Catalog.Codes";
+    assert_eq!(
+        view(&runtime, &fixture, at)["props"]["DataLockControlMode"],
+        "Automatic"
+    );
+    let mut expected = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    expected.insert(
+        owner,
+        prefixed
+            .replace(
+                "<md:DataLockControlMode>Automatic</md:DataLockControlMode>",
+                "<md:DataLockControlMode>Managed</md:DataLockControlMode>",
+            )
+            .into_bytes(),
+    );
+    for _ in 0..2 {
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"DataLockControlMode":"Managed"}}}]}),
+        );
+        assert_eq!(
+            view(&runtime, &fixture, at)["props"]["DataLockControlMode"],
+            "Managed"
+        );
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            expected
+        );
+    }
+}
