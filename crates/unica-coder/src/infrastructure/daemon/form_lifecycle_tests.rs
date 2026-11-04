@@ -1,3 +1,6 @@
+#[path = "form_lifecycle_tests/common_defaults.rs"]
+mod common_defaults;
+
 use super::actor_capacity_tests::direct_v5;
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
