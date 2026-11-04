@@ -3,7 +3,6 @@ id: INV.APP.META-OBSERVATION
 check:
   - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unavailable
   - crates/unica-coder/src/infrastructure/meta_info_surface_tests.rs::info_preserves_local_structure_when_child_resource_evidence_is_unavailable
-gap: https://github.com/IngvarConsulting/unica/issues/1939
 ---
 
 # Ошибка дочернего ресурса не скрывает прочитанную структуру
@@ -16,6 +15,11 @@ gap: https://github.com/IngvarConsulting/unica/issues/1939
 и наличие этой формы в его коллекции. Это частичный результат чтения,
 а не подтверждение исправности формы.
 
-Канонический `check` сообщает `provider_unavailable` и сохраняет структуру
-в `view`; сам ответ `view` об ошибке пока не сообщает. Сохранение структуры
-на внутреннем читателе проверено отдельно, ответ там собирает тест.
+Канонический `view` называет непроверяемый дочерний ресурс в `limits` кодом
+`provider_unavailable` и логическим адресом; `check` сообщает тот же ресурс
+диагностикой. Оба маршрута используют общую проверку ресурсов. Ошибка доступа
+не считается доказательством отсутствия содержимого, в том числе у
+заимствованного ребёнка или двоичного макета без данных.
+
+Отмена и подмена удержанного корня прерывают чтение: они не превращаются
+в успешный частичный ответ с ограничениями ресурса.

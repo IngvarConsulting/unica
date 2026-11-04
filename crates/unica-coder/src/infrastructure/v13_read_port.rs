@@ -57,6 +57,9 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::documents::{DocumentText, SessionDocuments};
 use unica_xdto_designer::info::{parse_xdto_info_bytes, XdtoInfoError};
 
+#[path = "v13_read_port/child_resources.rs"]
+mod retained_child_resources;
+
 #[cfg(test)]
 thread_local! {
     static REVIEW_BEFORE_REVISION_IDENTITY: RefCell<Option<Box<dyn FnMut()>>> = RefCell::new(None);
@@ -100,7 +103,7 @@ pub(crate) struct FormValidationInput {
 /// chooses a parser, not a refusal: every size is read (#1119).
 const CONFIGURATION_STREAMING_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Один разбор дескриптора объекта: свойства и заимствование из тех же байтов.
+/// Один образ дескриптора объекта: свойства и заимствование из тех же байтов.
 pub(crate) struct MetadataLocalRead {
     pub(crate) info: unica_metadata::validation_subject::MetaLocalInfo,
     /// `None` — набор не вида `extension`: заимствования там не бывает.
@@ -1001,6 +1004,31 @@ impl ProviderReadAuthority {
                 .unwrap_or_else(|_| "metadata reader failed".to_string());
             ViewError::detailed(RefusalDetail::SourceUnreadable, message)
         })?;
+        let resource_reader =
+            retained_child_resources::RetainedChildResourceRead::new(&self.root, checkpoint);
+        let child_observation =
+            unica_metadata_designer::child_resources::observe_typed_child_resources_with(
+                &resource_reader,
+                &self
+                    .root_path()
+                    .join(self.metadata_descriptor_relative(target)?),
+                target,
+                info.kind.as_str(),
+                &info.name,
+                std::str::from_utf8(&descriptor).map_err(|_| {
+                    ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
+                        "metadata descriptor is not UTF-8",
+                    )
+                })?,
+            );
+        // The observer preserves local facts on ordinary resource failures.
+        // Cancellation and a replaced retained root must still refuse the read.
+        resource_reader.finish()?;
+        match child_observation {
+            Ok(observation) => info.diagnostics.extend(observation.diagnostics),
+            Err(failure) => info.diagnostics.extend(failure.diagnostics),
+        }
         if info.kind == MetadataKind::ExchangePlan {
             let relative = Path::new("ExchangePlans")
                 .join(&info.name)
