@@ -2829,5 +2829,8 @@ fn an_oversized_form_item_title_is_named_by_a_limit() {
     );
 }
 
+#[path = "metadata_can_tests/predefined_data_update.rs"]
+mod predefined_data_update;
+
 #[path = "metadata_can_tests/style_color.rs"]
 mod style_color;

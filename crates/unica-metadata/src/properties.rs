@@ -52,6 +52,7 @@ pub enum MetaPropertyKey {
     PostInPrivilegedMode,
     Posting,
     Predefined,
+    PredefinedDataUpdate,
     Privileged,
     QuickChoice,
     RealTimePosting,
@@ -349,6 +350,14 @@ const REUSE_SESSIONS_VALUES: &[&str] = &["DontUse", "AutoUse"];
 const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "ToItems"];
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
+const PREDEFINED_DATA_UPDATE_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+];
+const PREDEFINED_DATA_UPDATE_VALUES: &[&str] = &["Auto", "AutoUpdate", "DontAutoUpdate"];
+
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
     enum_property(
         "FullTextSearch",
@@ -643,6 +652,13 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::Posting,
         DOCUMENT_KINDS,
         POSTING_VALUES,
+    ),
+    enum_property(
+        "PredefinedDataUpdate",
+        "PredefinedDataUpdate",
+        MetaPropertyKey::PredefinedDataUpdate,
+        PREDEFINED_DATA_UPDATE_KINDS,
+        PREDEFINED_DATA_UPDATE_VALUES,
     ),
     property(
         "Predefined",
@@ -1449,6 +1465,16 @@ mod tests {
                 "Posting",
                 MetaPropertyValue::String("Deny".into()),
                 &[Document],
+            ),
+            (
+                "PredefinedDataUpdate",
+                MetaPropertyValue::String("AutoUpdate".into()),
+                &[
+                    Catalog,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                ],
             ),
             (
                 "Predefined",
