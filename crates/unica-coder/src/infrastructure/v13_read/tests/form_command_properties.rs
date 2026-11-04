@@ -53,6 +53,61 @@ fn form_command_properties_reach_collection_and_detail_without_changing_buttons(
 }
 
 #[test]
+fn form_command_string_identity_and_qname_variants_reach_collection_and_detail() {
+    for property in [
+        r#"<AssociatedTableElementId xsi:type=" xs:string "> Товары </AssociatedTableElementId>"#,
+        r#"<lf:AssociatedTableElementId xmlns:lf="http://v8.1c.ru/8.3/xcf/logform" xmlns="http://www.w3.org/2001/XMLSchema" xsi:type="string"> Товары </lf:AssociatedTableElementId>"#,
+    ] {
+        let fixture = RealReaderFixture::new();
+        let path = install(&fixture, &format!("<Command name=\"Fill\" id=\"1\">{property}<ModifiesSavedData> \tfalse\r\n</ModifiesSavedData><Action>Keep</Action></Command>"));
+        let before = fs::read(&path).unwrap();
+        let service = fixture.view_service();
+        let collection = service.view(ViewRequest::new(&format!("{FORM}.Command")).unwrap());
+        assert!(collection.ok, "{collection:?}");
+        let row = &collection.data.as_ref().unwrap()["items"][0];
+        let detail = service.view(ViewRequest::new(row["at"].as_str().unwrap()).unwrap());
+        assert!(detail.ok, "{detail:?}");
+        for node in [row, detail.data.as_ref().unwrap()] {
+            assert_eq!(node["props"]["associatedTableElementId"], " Товары ");
+            assert_eq!(node["props"]["modifiesSavedData"], false);
+            assert!(node.get("limits").is_none(), "{node}");
+        }
+        assert_eq!(fs::read(path).unwrap(), before);
+    }
+}
+
+#[test]
+fn form_command_nbsp_boolean_damage_preserves_independent_public_facts() {
+    let fixture = RealReaderFixture::new();
+    let path = install(
+        &fixture,
+        r#"<Command name="Fill" id="1"><CurrentRowUse>DontUse</CurrentRowUse><ModifiesSavedData>&#160;false&#160;</ModifiesSavedData><AssociatedTableElementId xsi:type="xs:string">Товары</AssociatedTableElementId><Picture><xr:Ref>CommonPicture.Fill</xr:Ref><xr:LoadTransparent>&#160;false&#160;</xr:LoadTransparent></Picture><Action>Keep</Action></Command>"#,
+    );
+    let before = fs::read(&path).unwrap();
+    let service = fixture.view_service();
+    let collection = service.view(ViewRequest::new(&format!("{FORM}.Command")).unwrap());
+    assert!(collection.ok, "{collection:?}");
+    let row = &collection.data.as_ref().unwrap()["items"][0];
+    let detail = service.view(ViewRequest::new(row["at"].as_str().unwrap()).unwrap());
+    assert!(detail.ok, "{detail:?}");
+    for node in [row, detail.data.as_ref().unwrap()] {
+        assert!(node["props"]["modifiesSavedData"].is_null());
+        assert!(node["props"]["pictureLoadTransparent"].is_null());
+        assert_eq!(node["props"]["currentRowUse"], "DontUse");
+        assert_eq!(node["props"]["associatedTableElementId"], "Товары");
+        assert_eq!(node["props"]["picture"], "CommonPicture.Fill");
+        assert_eq!(
+            node["limits"],
+            json!([
+                "ModifiesSavedData is unreadable: malformed or duplicate command property",
+                "LoadTransparent is unreadable: malformed or duplicate command property"
+            ])
+        );
+    }
+    assert_eq!(fs::read(path).unwrap(), before);
+}
+
+#[test]
 fn form_command_option_limit_preserves_the_whole_property_projection() {
     let fixture = RealReaderFixture::new();
     let options = (0..180)

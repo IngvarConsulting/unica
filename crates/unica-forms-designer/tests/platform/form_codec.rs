@@ -61,6 +61,85 @@ fn form_item_binding_facts_keep_damage_local_to_each_property() {
     }
 }
 #[test]
+fn form_command_string_values_preserve_space_and_resolve_expanded_type_names() {
+    for property in [
+        r#"<AssociatedTableElementId xsi:type=" xs:string "> Товары </AssociatedTableElementId>"#,
+        r#"<lf:AssociatedTableElementId xmlns:lf="http://v8.1c.ru/8.3/xcf/logform" xmlns="http://www.w3.org/2001/XMLSchema" xsi:type="string"> Товары </lf:AssociatedTableElementId>"#,
+        "<AssociatedTableElementId> Товары </AssociatedTableElementId>",
+    ] {
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let command = &data.commands[0];
+        assert_eq!(
+            command.associated_table_element_id.as_deref(),
+            Some(" Товары "),
+            "{property}"
+        );
+        assert!(
+            command.property_limits.is_empty(),
+            "{:?}",
+            command.property_limits
+        );
+        assert_eq!(command.actions[0].handler, "Keep");
+    }
+}
+
+#[test]
+fn form_command_string_type_rejects_unresolved_or_wrong_qnames() {
+    for property in [
+        r#"<AssociatedTableElementId xsi:type="string">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="missing:string">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="xs:boolean">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="xs:string:bad">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="&#160;xs:string&#160;">Товары</AssociatedTableElementId>"#,
+        r#"<lf:AssociatedTableElementId xmlns:lf="http://v8.1c.ru/8.3/xcf/logform" xmlns="urn:foreign" xsi:type="string">Товары</lf:AssociatedTableElementId>"#,
+    ] {
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let command = &data.commands[0];
+        assert!(command.associated_table_element_id.is_none(), "{property}");
+        assert_eq!(
+            command.property_limits,
+            ["AssociatedTableElementId is unreadable: malformed or duplicate command property"]
+        );
+        assert_eq!(command.actions[0].handler, "Keep");
+    }
+}
+
+#[test]
+fn form_command_option_reference_does_not_trim_non_xml_whitespace() {
+    let data = parse_form_event_evidence_xml(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Commands><Command name="Fill" id="1"><FunctionalOptions><Item>&#160;FunctionalOption.Bad&#160;</Item><Item>FunctionalOption.Keep</Item></FunctionalOptions><Action>Keep</Action></Command></Commands></Form>"#).unwrap();
+    let command = &data.commands[0];
+    assert_eq!(
+        command.functional_options,
+        Some(vec!["FunctionalOption.Keep".to_string()])
+    );
+    assert_eq!(
+        command.property_limits,
+        ["FunctionalOptions is unreadable: malformed or duplicate command property"]
+    );
+    assert_eq!(command.actions[0].handler, "Keep");
+}
+
+#[test]
+fn form_command_non_xml_whitespace_is_damage_in_boolean_and_enum_values() {
+    for (property, field) in [
+        ("<ModifiesSavedData>&#160;false&#160;</ModifiesSavedData>", "ModifiesSavedData"),
+        ("<CurrentRowUse>&#160;DontUse&#160;</CurrentRowUse>", "CurrentRowUse"),
+        ("<Picture><xr:Ref>CommonPicture.Fill</xr:Ref><xr:LoadTransparent>&#160;false&#160;</xr:LoadTransparent></Picture>", "LoadTransparent"),
+        ("<FunctionalOptions>&#160;</FunctionalOptions>", "FunctionalOptions"),
+    ] {
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let command = &data.commands[0];
+        assert!(command.modifies_saved_data.is_none());
+        assert!(command.current_row_use.is_none());
+        assert!(command.picture_load_transparent.is_none());
+        assert!(command.functional_options.is_none());
+        assert_eq!(command.property_limits, [format!("{field} is unreadable: malformed or duplicate command property")]);
+        assert_eq!(command.actions[0].handler, "Keep");
+        if field == "LoadTransparent" { assert_eq!(command.picture.as_deref(), Some("CommonPicture.Fill")); }
+    }
+}
+
+#[test]
 fn form_command_context_and_picture_transparency_survive_typed_reading() {
     for transparent in [false, true] {
         let text = format!(
