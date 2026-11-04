@@ -113,6 +113,15 @@ pub struct FormInfoElement {
     pub name: String,
     /// The data path or command the element is bound to; `null` when unbound.
     pub binding: Option<FormInfoBinding>,
+    /// Direct XML facts may coexist on a common-command button. The legacy
+    /// `binding` above keeps its precedence for existing event consumers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_name: Option<String>,
+    /// Damage to one binding does not hide the other or the element itself.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub binding_limits: Vec<String>,
     /// The element title when it differs from its name; `null` otherwise.
     pub title: Option<String>,
     pub visible: bool,

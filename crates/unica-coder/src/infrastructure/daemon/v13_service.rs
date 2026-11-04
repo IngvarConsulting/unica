@@ -1453,6 +1453,9 @@ impl CanonicalV13ReadService {
                         ToString::to_string,
                     ),
                     prefix: route.as_ref().and_then(|route| route.prefix.clone()),
+                    external_binding: route
+                        .as_ref()
+                        .and_then(|route| route.external_binding.clone()),
                     // A nested source set owns its files; its parent skips them.
                     excluded: sources
                         .iter()
@@ -1538,7 +1541,7 @@ impl CanonicalV13ReadService {
         cancellation: &CancellationToken,
     ) -> Result<SearchScopeRoute, Box<DomainResult>> {
         let refuse = |result: DomainResult| Box::new(result);
-        let route = search_scope_route(scope).map_err(|error| {
+        let mut route = search_scope_route(scope, source.source_kind()).map_err(|error| {
             refuse(error_result(
                 Some(scope.to_string()),
                 error.code(),
@@ -1575,6 +1578,32 @@ impl CanonicalV13ReadService {
         authority
             .validate_search_scope_owner(&owner, &snapshot)
             .map_err(|error| refuse(view_error_result(Some(scope.to_string()), error)))?;
+        if matches!(
+            source.source_kind(),
+            unica_source_contract::SourceSetKind::ExternalProcessor
+                | unica_source_contract::SourceSetKind::ExternalReport
+        ) {
+            if let Some(name) = owner.segments()[0].name() {
+                let descriptor = authority
+                    .existing_export_path(&owner, None)
+                    .map_err(|error| refuse(view_error_result(Some(scope.to_string()), error)))?;
+                let binding =
+                    unica_source_designer::external_artifact::ExternalArtifactBinding::new(
+                        source.source_kind(),
+                        name,
+                        std::path::Path::new(&descriptor),
+                    )
+                    .map_err(|error| {
+                        refuse(error_result(
+                            Some(scope.to_string()),
+                            RefusalCode::InvalidSource,
+                            error,
+                        ))
+                    })?;
+                route.prefix = Some(binding.payload().to_string_lossy().replace('\\', "/"));
+                route.external_binding = Some(binding);
+            }
+        }
         if owner.segments()[0].kind() == NodeKind::Configuration
             || owner.segments()[0].name().is_none()
         {
@@ -1653,6 +1682,15 @@ impl CanonicalV13ReadService {
             };
             let Ok(authority) = source.logical_view_read_authority(cancellation) else {
                 continue;
+            };
+            let authority = match scan.hits[indices[0]].external_binding.as_ref() {
+                Some(proof) => {
+                    if let Err(error) = proof.validate(source) {
+                        return view_error_result(Some(module.to_string()), error);
+                    }
+                    authority.with_external_point_binding(proof.binding.clone())
+                }
+                None => authority,
             };
             for index in indices {
                 let hit = &mut values[index];

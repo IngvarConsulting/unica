@@ -1,6 +1,65 @@
 //! Original pure Form codec oracles; assertions retained once.
 use super::*;
 use serde_json::{json, Map};
+
+#[test]
+fn form_item_binding_facts_preserve_both_targets_and_legacy_normalization() {
+    let data = parse_form_event_evidence_xml(
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems>
+<Button name="Both" id="1"><DataPath> Объект.<!-- split -->Ref </DataPath><CommandName> Form.Command.Заполнить </CommandName></Button>
+<Button name="Command" id="2"><CommandName><![CDATA[ Form.StandardCommand.Close ]]></CommandName></Button>
+</ChildItems></Form>"#,
+    ).unwrap();
+    let both = &data.elements[0];
+    assert_eq!(both.data_path.as_deref(), Some(" Объект.Ref "));
+    assert_eq!(
+        both.command_name.as_deref(),
+        Some(" Form.Command.Заполнить ")
+    );
+    assert!(both.binding_limits.is_empty());
+    let legacy = both.binding.as_ref().unwrap();
+    assert_eq!(legacy.kind, "dataPath");
+    assert_eq!(legacy.target, "Объект.Ref");
+    let command = &data.elements[1];
+    assert_eq!(
+        command.command_name.as_deref(),
+        Some(" Form.StandardCommand.Close ")
+    );
+    let legacy = command.binding.as_ref().unwrap();
+    assert_eq!(legacy.kind, "standardCommand");
+    assert_eq!(legacy.target, "Close");
+}
+
+#[test]
+fn form_item_binding_facts_keep_damage_local_to_each_property() {
+    for property in ["DataPath", "CommandName"] {
+        for raw in [
+            format!("<{property}><Nested>bad</Nested></{property}>"),
+            format!("<{property}>One</{property}><{property}>Two</{property}>"),
+            format!("<{property} xmlns=\"urn:foreign\">Foreign</{property}>"),
+            format!("<{property} unknown=\"value\">Bad</{property}>"),
+        ] {
+            let other = if property == "DataPath" {
+                "<CommandName>CommonCommand.Probe</CommandName>"
+            } else {
+                "<DataPath>Объект.Code</DataPath>"
+            };
+            let data = parse_form_event_evidence_xml(&format!(
+                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\"><ChildItems><Button name=\"Probe\" id=\"1\">{raw}{other}</Button></ChildItems></Form>"
+            )).unwrap();
+            let element = &data.elements[0];
+            assert_eq!(element.binding_limits.len(), 1);
+            assert!(element.binding_limits[0].contains(property));
+            if property == "DataPath" {
+                assert!(element.data_path.is_none());
+                assert_eq!(element.command_name.as_deref(), Some("CommonCommand.Probe"));
+            } else {
+                assert!(element.command_name.is_none());
+                assert_eq!(element.data_path.as_deref(), Some("Объект.Code"));
+            }
+        }
+    }
+}
 #[test]
 fn generated_form_module_uses_the_8_3_27_crlf_serialization() {
     assert_platform_text_uses_crlf_without_bare_lf(form_add_module_bsl());

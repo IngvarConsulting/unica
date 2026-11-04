@@ -22,12 +22,25 @@ def load_checker_module():
 
 
 class RustPlatformBoundaryTests(unittest.TestCase):
+    def test_applied_builder_has_domain_guards_in_every_source_file(self) -> None:
+        checker = load_checker_module()
+        self.assertIn("unica-bsl-applied", checker.file_io_free_packages(REPO_ROOT))
+        for filename in ("lib.rs", "doc.rs", "facts.rs", "tests.rs", "arbitrary_name.rs"):
+            for module in ("fs", "env", "process"):
+                with self.subTest(filename=filename, module=module):
+                    diagnostics = checker.check_source(
+                        f"crates/unica-bsl-applied/src/{filename}", f"use std::{module};")
+                    self.assertEqual(len(diagnostics), 1, diagnostics)
+                    self.assertIn(f"domain must not access std::{module} directly", diagnostics[0])
+        self.assertEqual(checker.check_source("crates/unica-bsl-applied/src/lib.rs",
+                         "use std::path::Path; fn join(p: &Path) { let _ = p.join(\"x\"); }"), [])
+
     def test_moved_semantic_packages_keep_domain_io_and_dependency_guards(self) -> None:
         checker = load_checker_module()
         for owner in (
             "unica-address", "unica-source-contract", "unica-operation-contract",
             "unica-metadata", "unica-forms", "unica-roles", "unica-dcs",
-            "unica-xdto", "unica-templates", "unica-bsl", "unica-bindings", "unica-documentation",
+            "unica-xdto", "unica-templates", "unica-bsl", "unica-bsl-applied", "unica-bindings", "unica-documentation",
         ):
             with self.subTest(owner=owner):
                 path = f"crates/{owner}/src/lib.rs"

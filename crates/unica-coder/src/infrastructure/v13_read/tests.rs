@@ -1,11 +1,13 @@
 mod catalog_attribute_properties;
 mod catalog_attribute_tooltip;
 mod catalog_tabular_properties;
+mod common_module_synonym;
 mod dcs_parameter_expression;
 mod defined_type_reference;
 mod external_artifact_alias;
 mod form;
 mod form_conditional_appearance;
+mod form_item_bindings;
 mod form_support;
 mod job_schedule;
 mod metadata;
