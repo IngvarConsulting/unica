@@ -1225,6 +1225,28 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "SettingsStorage" {
+            let name = target.segments().nth(1).unwrap_or_default();
+            match unica_forms_designer::storage_defaults::read(&descriptor, name) {
+                Ok(facts) => {
+                    payload["properties"] = json!(facts
+                        .properties
+                        .into_iter()
+                        .map(|property| json!({"key":property.name,"value":property.value}))
+                        .collect::<Vec<_>>());
+                    if !facts.unreadable.is_empty() {
+                        payload["unreadable"] = json!(facts
+                            .unreadable
+                            .into_iter()
+                            .map(|(field, message)| json!({"field":field,"message":message}))
+                            .collect::<Vec<_>>());
+                    }
+                }
+                Err(message) => {
+                    payload["unreadable"] = json!([{"field":"properties","message":message}])
+                }
+            }
+        }
         if evidence.artifact_kind() == "StyleItem" {
             unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;

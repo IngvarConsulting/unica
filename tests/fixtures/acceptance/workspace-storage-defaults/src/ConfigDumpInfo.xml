@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="099c9dbda0723547a4dd5ffa99d9242f00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="4833401bea4ca94ba8268ee4638d476500000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="cbac28557cd2cd43a7d554c82472868900000000"/>
+		<Metadata name="SettingsStorage.Store" id="addf066f-d2ff-53fa-bf5c-5f2a56420090" configVersion="f76a0fc09fc0744b935967803d8c2f1700000000"/>
+		<Metadata name="SettingsStorage.Store.Form.A" id="643d3aa3-c145-5886-bdf1-ce7e3652e505" configVersion="769c89ab37ca184ba58d5bece0ea456700000000"/>
+		<Metadata name="SettingsStorage.Store.Form.A.Form" id="643d3aa3-c145-5886-bdf1-ce7e3652e505.0" configVersion="29cd1dd84c87234b9e2570ea1a4ffc6b00000000"/>
+		<Metadata name="SettingsStorage.Store.Form.B" id="0c4fba39-0942-5cc8-b0cd-2ead37f96f8d" configVersion="2c96feeeb0e67a419f2907c26ff1ee0900000000"/>
+		<Metadata name="SettingsStorage.Store.Form.B.Form" id="0c4fba39-0942-5cc8-b0cd-2ead37f96f8d.0" configVersion="fd3593a4fa4fba43a8c402f2759c882d00000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

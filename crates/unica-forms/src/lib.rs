@@ -296,3 +296,5 @@ pub mod events;
 pub mod facts;
 
 pub mod event_targets;
+
+pub mod storage_defaults;

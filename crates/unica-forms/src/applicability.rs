@@ -12,11 +12,15 @@ pub enum OperationApplicability {
     FormItem,
     FormItemContainer,
     MetadataForms,
+    FormDefaults,
 }
 impl OperationApplicability {
     pub const fn shape(self) -> &'static str {
         match self {
             Self::MetadataForms => "`Kind.Name` of a kind with forms",
+            Self::FormDefaults => {
+                "`Kind.Name` with supported default-form slots, including SettingsStorage"
+            }
             Self::Form => "`Kind.Name.Form.F`",
             Self::FormItemContainer => "`Kind.Name.Form.F[.Item.I…]`",
             Self::FormItem => "`Kind.Name.Form.F.Item.I[.Item.J…]`",
@@ -27,6 +31,11 @@ impl OperationApplicability {
         let segments = site.segments();
         match self {
             Self::MetadataForms => site.metadata_owner_with(MetaCollection::Forms),
+            Self::FormDefaults => {
+                site.metadata_owner_with(MetaCollection::Forms)
+                    || (site.route() == RouteClass::Metadata
+                        && matches!(segments,[owner] if owner.kind()==NodeKind::SettingsStorage && owner.name().is_some()))
+            }
             Self::Form => site.route() == RouteClass::Form && site.owned_form(),
             Self::FormItemContainer => site.form_items(segments).is_some(),
             Self::FormItem => site

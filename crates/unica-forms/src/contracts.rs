@@ -552,8 +552,11 @@ pub fn form_slots_of(kind: &str) -> Option<&'static [&'static str]> {
 /// The `form.set` contract for the owner kind, or for any owner.
 pub fn form_set(kind: Option<&str>) -> OperationContract {
     let at = || ("at", text(true));
-    let slot = json!({"type":"string",
-        "description":"A form name of this owner; an empty string clears the slot, as an export with no such form writes it."});
+    let slot = if kind == Some("SettingsStorage") {
+        json!({"type":"string","description":"An existing Managed form owned by this SettingsStorage: use its name or its logical address in the same source set. An empty string clears the slot. The form descriptor and local Form.xml must be present."})
+    } else {
+        json!({"type":"string","description":"A form name of this owner; an empty string clears the slot, as an export with no such form writes it."})
+    };
     let keys = kind
         .and_then(form_slots_of)
         .map(<[&str]>::to_vec)

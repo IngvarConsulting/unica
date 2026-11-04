@@ -797,6 +797,13 @@ ChildObjects могут содержать `Dimension` (измерения по�
 
 ChildObjects: `Form` (формы), `Template` (макеты).
 
+Ссылка на собственную форму имеет вид
+`SettingsStorage.<Хранилище>.Form.<Форма>`. Её декларация лежит в
+`SettingsStorages/<Хранилище>/Forms/<Форма>.xml`, содержимое — в
+`SettingsStorages/<Хранилище>/Forms/<Форма>/Ext/Form.xml`.
+Для проверенного профиля Managed отдельный сериализованный признак
+назначения Load/Save не требуется; четыре слота задают ссылки независимо.
+
 ### 6.11. FilterCriterion — критерий отбора
 
 Каталог: `FilterCriteria/`. Один XML-файл.
