@@ -53,7 +53,7 @@ impl OperationApplicability {
             Self::MetadataOrCommonTemplate => "`Kind.Name` or `CommonTemplate.Name`",
             Self::SupportRule => "`Kind.Name` or `Kind.Name.Form.F`",
             Self::MetadataOrRoleOrSubsystem => {
-                "`Configuration`, `Kind.Name`, `Role.Name` or `Subsystem.Name`"
+                "`Configuration`, `Kind.Name`, `Role.Name` or `Subsystem.Name[.Subsystem.Child]`"
             }
             Self::MetadataAttributeContainer => {
                 "`Kind.Name` of a kind with attributes or `Kind.Name.TabularSection.T`"

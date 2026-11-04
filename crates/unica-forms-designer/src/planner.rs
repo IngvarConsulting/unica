@@ -2,6 +2,7 @@
 use serde_json::{Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_forms::default_forms::FormSlotTarget;
 use unica_forms::facts::FormInfoElement;
 use unica_forms::operations::FormOperation;
 use unica_forms::FormItemRole;
@@ -791,17 +792,9 @@ pub fn parse_form_operation(
                     )
                 };
                 let raw = value.as_str().ok_or_else(slot_value)?;
-                let form_name = if raw.is_empty() {
-                    String::new()
-                } else {
-                    let trimmed = raw.trim();
-                    let name = trimmed.rsplit(".Form.").next().unwrap_or(trimmed);
-                    if name.is_empty() {
-                        return Err(slot_value());
-                    }
-                    name.to_string()
-                };
-                defaults.push((property.to_string(), form_name));
+                let target = FormSlotTarget::parse(raw, &target.owner, source_set_name, property)
+                    .map_err(|message| bad(op_index, &format!("values.{key}"), message))?;
+                defaults.push((property.to_string(), target));
             }
             if defaults.is_empty() {
                 return Err(bad(
@@ -1361,7 +1354,7 @@ pub fn stage_form_set(
     staged: &mut ApplyProposal<'_>,
     authority: &dyn ApplySourceAuthority,
     owner: &MetadataAddress,
-    defaults: &[(String, String)],
+    defaults: &[(String, FormSlotTarget)],
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
@@ -1375,8 +1368,8 @@ pub fn stage_form_set(
     )?;
     let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
     let mut owner_text = owner_source.clone();
-    for (property, form_name) in defaults {
-        if form_name.is_empty() {
+    for (property, target) in defaults {
+        if matches!(target, FormSlotTarget::Clear) {
             if !owner_text.contains(&format!("<{property}>"))
                 && !owner_text.contains(&format!("<{property}/>"))
             {
@@ -1389,13 +1382,35 @@ pub fn stage_form_set(
             owner_text = clear_form_default_property(&owner_text, property);
             continue;
         }
-        if !owner_text.contains(&format!("<Form>{form_name}</Form>")) {
-            return Err(ApplyPlanError::new(
-                ApplyPlanErrorKind::NotFound,
-                format!("form `{form_name}` is not a form of `{}`", owner.as_str()),
-            )
-            .at_path(format!("ops[{op_index}].args.values")));
-        }
+        let reference = match target {
+            FormSlotTarget::Owned(form_name) => {
+                if !owner_text.contains(&format!("<Form>{form_name}</Form>")) {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::NotFound,
+                        format!("form `{form_name}` is not a form of `{}`", owner.as_str()),
+                    )
+                    .at_path(format!("ops[{op_index}].args.values")));
+                }
+                format!("{}.Form.{form_name}", owner.as_str())
+            }
+            FormSlotTarget::Common(at) => {
+                let reference = crate::default_forms::common_form_reference(
+                    staged, authority, owner, property, at, op_index,
+                )?;
+                owner_text = crate::default_forms::set_common_form_slot(
+                    &owner_text,
+                    owner,
+                    property,
+                    &reference,
+                )
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(format!("ops[{op_index}].args.values"))
+                })?;
+                continue;
+            }
+            FormSlotTarget::Clear => unreachable!("handled above"),
+        };
         if !owner_text.contains(&format!("<{property}>"))
             && !owner_text.contains(&format!("<{property}/>"))
         {
@@ -1405,19 +1420,14 @@ pub fn stage_form_set(
                 format!("`{}` has no `{property}` slot", owner.as_str()),
             ));
         }
-        let (updated, _) = crate::codec::replace_form_default_property(
-            &owner_text,
-            property,
-            &format!("{}.Form.{form_name}", owner.as_str()),
-            true,
-        );
+        let (updated, _) =
+            crate::codec::replace_form_default_property(&owner_text, property, &reference, true);
         owner_text = updated;
     }
-    let owner_postimage = with_bom(
-        &unica_xml_format::text::lxml_tree_serialized_text_like_source_preserving_final_newline(
-            &owner_text,
-            &owner_source,
-        ),
+    let owner_postimage = unica_source_designer::registration::preserve_descriptor_image(
+        &owner_preimage,
+        &owner_source,
+        &owner_text,
     );
     if owner_postimage == owner_preimage {
         return Ok(());
@@ -1656,7 +1666,7 @@ pub enum FormPlan {
     /// `form.set`: default-form slots of the owner.
     FormSet {
         owner: MetadataAddress,
-        defaults: Vec<(String, String)>,
+        defaults: Vec<(String, FormSlotTarget)>,
     },
     FormRemove {
         owner: MetadataAddress,

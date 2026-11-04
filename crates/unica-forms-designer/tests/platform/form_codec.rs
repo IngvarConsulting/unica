@@ -1,6 +1,234 @@
 //! Original pure Form codec oracles; assertions retained once.
 use super::*;
 use serde_json::{json, Map};
+
+#[test]
+fn form_item_binding_facts_preserve_both_targets_and_legacy_normalization() {
+    let data = parse_form_event_evidence_xml(
+        r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><ChildItems>
+<Button name="Both" id="1"><DataPath> Объект.<!-- split -->Ref </DataPath><CommandName> Form.Command.Заполнить </CommandName></Button>
+<Button name="Command" id="2"><CommandName><![CDATA[ Form.StandardCommand.Close ]]></CommandName></Button>
+</ChildItems></Form>"#,
+    ).unwrap();
+    let both = &data.elements[0];
+    assert_eq!(both.data_path.as_deref(), Some(" Объект.Ref "));
+    assert_eq!(
+        both.command_name.as_deref(),
+        Some(" Form.Command.Заполнить ")
+    );
+    assert!(both.binding_limits.is_empty());
+    let legacy = both.binding.as_ref().unwrap();
+    assert_eq!(legacy.kind, "dataPath");
+    assert_eq!(legacy.target, "Объект.Ref");
+    let command = &data.elements[1];
+    assert_eq!(
+        command.command_name.as_deref(),
+        Some(" Form.StandardCommand.Close ")
+    );
+    let legacy = command.binding.as_ref().unwrap();
+    assert_eq!(legacy.kind, "standardCommand");
+    assert_eq!(legacy.target, "Close");
+}
+
+#[test]
+fn form_item_binding_facts_keep_damage_local_to_each_property() {
+    for property in ["DataPath", "CommandName"] {
+        for raw in [
+            format!("<{property}><Nested>bad</Nested></{property}>"),
+            format!("<{property}>One</{property}><{property}>Two</{property}>"),
+            format!("<{property} xmlns=\"urn:foreign\">Foreign</{property}>"),
+            format!("<{property} unknown=\"value\">Bad</{property}>"),
+        ] {
+            let other = if property == "DataPath" {
+                "<CommandName>CommonCommand.Probe</CommandName>"
+            } else {
+                "<DataPath>Объект.Code</DataPath>"
+            };
+            let data = parse_form_event_evidence_xml(&format!(
+                "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\"><ChildItems><Button name=\"Probe\" id=\"1\">{raw}{other}</Button></ChildItems></Form>"
+            )).unwrap();
+            let element = &data.elements[0];
+            assert_eq!(element.binding_limits.len(), 1);
+            assert!(element.binding_limits[0].contains(property));
+            if property == "DataPath" {
+                assert!(element.data_path.is_none());
+                assert_eq!(element.command_name.as_deref(), Some("CommonCommand.Probe"));
+            } else {
+                assert!(element.command_name.is_none());
+                assert_eq!(element.data_path.as_deref(), Some("Объект.Code"));
+            }
+        }
+    }
+}
+#[test]
+fn form_command_string_values_preserve_space_and_resolve_expanded_type_names() {
+    for property in [
+        r#"<AssociatedTableElementId xsi:type=" xs:string "> Товары </AssociatedTableElementId>"#,
+        r#"<lf:AssociatedTableElementId xmlns:lf="http://v8.1c.ru/8.3/xcf/logform" xmlns="http://www.w3.org/2001/XMLSchema" xsi:type="string"> Товары </lf:AssociatedTableElementId>"#,
+        "<AssociatedTableElementId> Товары </AssociatedTableElementId>",
+    ] {
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let command = &data.commands[0];
+        assert_eq!(
+            command.associated_table_element_id.as_deref(),
+            Some(" Товары "),
+            "{property}"
+        );
+        assert!(
+            command.property_limits.is_empty(),
+            "{:?}",
+            command.property_limits
+        );
+        assert_eq!(command.actions[0].handler, "Keep");
+    }
+}
+
+#[test]
+fn form_command_string_type_rejects_unresolved_or_wrong_qnames() {
+    for property in [
+        r#"<AssociatedTableElementId xsi:type="string">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="missing:string">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="xs:boolean">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="xs:string:bad">Товары</AssociatedTableElementId>"#,
+        r#"<AssociatedTableElementId xsi:type="&#160;xs:string&#160;">Товары</AssociatedTableElementId>"#,
+        r#"<lf:AssociatedTableElementId xmlns:lf="http://v8.1c.ru/8.3/xcf/logform" xmlns="urn:foreign" xsi:type="string">Товары</lf:AssociatedTableElementId>"#,
+    ] {
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let command = &data.commands[0];
+        assert!(command.associated_table_element_id.is_none(), "{property}");
+        assert_eq!(
+            command.property_limits,
+            ["AssociatedTableElementId is unreadable: malformed or duplicate command property"]
+        );
+        assert_eq!(command.actions[0].handler, "Keep");
+    }
+}
+
+#[test]
+fn form_command_option_reference_does_not_trim_non_xml_whitespace() {
+    let data = parse_form_event_evidence_xml(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.20"><Commands><Command name="Fill" id="1"><FunctionalOptions><Item>&#160;FunctionalOption.Bad&#160;</Item><Item>FunctionalOption.Keep</Item></FunctionalOptions><Action>Keep</Action></Command></Commands></Form>"#).unwrap();
+    let command = &data.commands[0];
+    assert_eq!(
+        command.functional_options,
+        Some(vec!["FunctionalOption.Keep".to_string()])
+    );
+    assert_eq!(
+        command.property_limits,
+        ["FunctionalOptions is unreadable: malformed or duplicate command property"]
+    );
+    assert_eq!(command.actions[0].handler, "Keep");
+}
+
+#[test]
+fn form_command_non_xml_whitespace_is_damage_in_boolean_and_enum_values() {
+    for (property, field) in [
+        ("<ModifiesSavedData>&#160;false&#160;</ModifiesSavedData>", "ModifiesSavedData"),
+        ("<CurrentRowUse>&#160;DontUse&#160;</CurrentRowUse>", "CurrentRowUse"),
+        ("<Picture><xr:Ref>CommonPicture.Fill</xr:Ref><xr:LoadTransparent>&#160;false&#160;</xr:LoadTransparent></Picture>", "LoadTransparent"),
+        ("<FunctionalOptions>&#160;</FunctionalOptions>", "FunctionalOptions"),
+    ] {
+        let data = parse_form_event_evidence_xml(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Commands><Command name="Fill" id="1">{property}<Action>Keep</Action></Command></Commands></Form>"#)).unwrap();
+        let command = &data.commands[0];
+        assert!(command.modifies_saved_data.is_none());
+        assert!(command.current_row_use.is_none());
+        assert!(command.picture_load_transparent.is_none());
+        assert!(command.functional_options.is_none());
+        assert_eq!(command.property_limits, [format!("{field} is unreadable: malformed or duplicate command property")]);
+        assert_eq!(command.actions[0].handler, "Keep");
+        if field == "LoadTransparent" { assert_eq!(command.picture.as_deref(), Some("CommonPicture.Fill")); }
+    }
+}
+
+#[test]
+fn form_command_context_and_picture_transparency_survive_typed_reading() {
+    for transparent in [false, true] {
+        let text = format!(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xs="http://www.w3.org/2001/XMLSchema" version="2.20"><Commands><Command name="Fill" id="1"><CurrentRowUse>DontUse</CurrentRowUse><ModifiesSavedData>true</ModifiesSavedData><AssociatedTableElementId xsi:type="xs:string">Товары</AssociatedTableElementId><FunctionalOptions><Item>FunctionalOption.Prices</Item><Item>FunctionalOption.Taxes</Item></FunctionalOptions><Picture><xr:Ref>CommonPicture.Fill</xr:Ref><xr:LoadTransparent>{transparent}</xr:LoadTransparent></Picture><Action callType="After">FillAfter</Action></Command></Commands></Form>"#
+        );
+        let data = parse_form_event_evidence_xml(&text).unwrap();
+        let command = serde_json::to_value(&data.commands[0]).unwrap();
+        assert_eq!(command["currentRowUse"], "DontUse");
+        assert_eq!(command["modifiesSavedData"], true);
+        assert_eq!(command["associatedTableElementId"], "Товары");
+        assert_eq!(
+            command["functionalOptions"],
+            json!(["FunctionalOption.Prices", "FunctionalOption.Taxes"])
+        );
+        assert_eq!(command["picture"], "CommonPicture.Fill");
+        assert_eq!(command["pictureLoadTransparent"], transparent);
+        assert_eq!(command["actions"][0]["handler"], "FillAfter");
+        assert_eq!(command["actions"][0]["callType"], "After");
+    }
+}
+
+#[test]
+fn form_command_properties_distinguish_absence_empty_and_local_damage() {
+    let read = |body: &str| {
+        let xml = format!(
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" version="2.20"><Commands><Command name="Fill" id="1"><Action>Keep</Action>{body}</Command></Commands></Form>"#
+        );
+        parse_form_event_evidence_xml(&xml)
+            .unwrap()
+            .commands
+            .remove(0)
+    };
+    let absent = read("");
+    assert!(absent.current_row_use.is_none());
+    assert!(absent.modifies_saved_data.is_none());
+    assert!(absent.associated_table_element_id.is_none());
+    assert!(absent.functional_options.is_none());
+    assert!(absent.picture_load_transparent.is_none());
+    assert!(absent.property_limits.is_empty());
+    let empty = read("<AssociatedTableElementId/><FunctionalOptions/>");
+    assert_eq!(empty.associated_table_element_id.as_deref(), Some(""));
+    assert_eq!(empty.functional_options, Some(Vec::new()));
+    assert!(empty.property_limits.is_empty());
+    for (raw, property) in [
+        ("<CurrentRowUse/>", "CurrentRowUse"),
+        ("<CurrentRowUse>SelectionPresentation</CurrentRowUse>", "CurrentRowUse"),
+        ("<CurrentRowUse>Use</CurrentRowUse><CurrentRowUse>DontUse</CurrentRowUse>", "CurrentRowUse"),
+        ("<ModifiesSavedData/>", "ModifiesSavedData"),
+        ("<ModifiesSavedData>yes</ModifiesSavedData>", "ModifiesSavedData"),
+        ("<ModifiesSavedData><Nested>true</Nested></ModifiesSavedData>", "ModifiesSavedData"),
+        ("<ModifiesSavedData xmlns='urn:vendor'>true</ModifiesSavedData>", "ModifiesSavedData"),
+        ("<AssociatedTableElementId>One</AssociatedTableElementId><AssociatedTableElementId>Two</AssociatedTableElementId>", "AssociatedTableElementId"),
+        ("<FunctionalOptions/><FunctionalOptions/>", "FunctionalOptions"),
+    ] {
+        let command = read(raw);
+        assert_eq!(command.actions[0].handler,"Keep");
+        assert_eq!(command.property_limits.len(),1,"{raw}");
+        assert!(command.property_limits[0].contains(property));
+    }
+    for (reference, transparent, expected_reference, expected_transparent) in [
+        (
+            "<xr:Ref>CommonPicture.Fill</xr:Ref>",
+            "<xr:LoadTransparent>bad</xr:LoadTransparent>",
+            Some("CommonPicture.Fill"),
+            None,
+        ),
+        (
+            "<xr:Ref>One</xr:Ref><xr:Ref>Two</xr:Ref>",
+            "<xr:LoadTransparent>false</xr:LoadTransparent>",
+            None,
+            Some(false),
+        ),
+    ] {
+        let command = read(&format!("<Picture>{reference}{transparent}</Picture>"));
+        assert_eq!(command.picture.as_deref(), expected_reference);
+        assert_eq!(command.picture_load_transparent, expected_transparent);
+        assert_eq!(command.property_limits.len(), 1);
+    }
+    let partial=read("<FunctionalOptions><Item>FunctionalOption.Keep</Item><Item><Bad/></Item><Item>FunctionalOption.123</Item><Item>FunctionalOption.Bad-Name</Item><Item>FunctionalOption./broken</Item><Item>FunctionalOption.AlsoKeep</Item></FunctionalOptions>");
+    assert_eq!(
+        partial.functional_options,
+        Some(vec![
+            "FunctionalOption.Keep".into(),
+            "FunctionalOption.AlsoKeep".into()
+        ])
+    );
+    assert_eq!(partial.property_limits.len(), 1);
+}
+
 #[test]
 fn generated_form_module_uses_the_8_3_27_crlf_serialization() {
     assert_platform_text_uses_crlf_without_bare_lf(form_add_module_bsl());

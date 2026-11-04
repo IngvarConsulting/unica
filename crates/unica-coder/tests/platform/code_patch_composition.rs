@@ -1956,6 +1956,43 @@ fn staged_addressed_method_body_preserves_signature_neighbors_and_repeat() {
 }
 
 #[test]
+fn method_replacement_owns_supplied_documentation_and_repeats_without_duplicates() {
+    for eol in ["\n", "\r\n"] {
+        for bom in ["", "\u{feff}"] {
+            for (old, supplied, expected_doc) in [
+                ("// Old.\n// Old.\n", "// New.\n", "// New.\n"),
+                ("// Same.\n// Same.\n", "// Same.\n", "// Same.\n"),
+                ("", "// New.\n", "// New.\n"),
+                ("// Keep.\n", "", "// Keep.\n"),
+            ] {
+                let prefix =
+                    format!("{bom}// Module comment.\n\n#Region Methods\n#If Server Then\n");
+                let suffix =
+                    "#EndIf\n#EndRegion\n\n// Neighbor doc.\nProcedure Neighbor()\nEndProcedure\n";
+                let before = format!("{prefix}{old}&AtServer\nProcedure Base()\n    Value = 1;\nEndProcedure\n{suffix}").replace('\n', eol);
+                let input = format!(
+                    "{supplied}&AtServer\nProcedure Base()\n    Value = 2;\nEndProcedure\n"
+                );
+                let expected = format!("{prefix}{expected_doc}&AtServer\nProcedure Base()\n    Value = 2;\nEndProcedure\n{suffix}").replace('\n', eol);
+                let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    at: unica_address::address::QualifiedAddress::parse(
+                        "main:CommonModule.Sample.Method.Base",
+                    )
+                    .unwrap(),
+                    anchor: None,
+                    text: input,
+                });
+                let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+                assert_eq!(post.after, expected.as_bytes());
+                let repeat = plan_code_postimage(&post.after, &operation, 0).unwrap();
+                assert!(repeat.no_op);
+                assert_eq!(repeat.after, post.after);
+            }
+        }
+    }
+}
+
+#[test]
 fn method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop() {
     // `view …Method.Base.Body` отдаёт комментарий, директиву, объявление,
     // тело и окончание; тот же текст с правкой заменяет ровно этот участок.

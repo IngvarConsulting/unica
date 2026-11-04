@@ -21,6 +21,7 @@ use unica_xml_format::text::*;
 use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
 
 pub(crate) mod attribute_remove;
+mod command_properties;
 mod conditional_appearance;
 
 pub const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
@@ -1278,14 +1279,46 @@ fn form_info_events_section(events: roxmltree::Node<'_, '_>) -> Vec<FormInfoEven
         .collect()
 }
 
-fn form_info_binding(node: roxmltree::Node<'_, '_>) -> Option<FormInfoBinding> {
-    if let Some(data_path) = form_child_text(node, "DataPath") {
+fn form_info_binding_property(
+    node: roxmltree::Node<'_, '_>,
+    name: &str,
+    limits: &mut Vec<String>,
+) -> Option<String> {
+    let values = node
+        .children()
+        .filter(|child| child.is_element() && child.tag_name().name() == name)
+        .collect::<Vec<_>>();
+    let value = match values.as_slice() {
+        [] => return None,
+        [value]
+            if value.tag_name().namespace() == Some(FORM_LOGFORM_NS)
+                && value.attributes().len() == 0
+                && !value.children().any(|child| child.is_element()) =>
+        {
+            *value
+        }
+        _ => {
+            limits.push(format!(
+                "{name} is unreadable: expected one direct text property in the form namespace"
+            ));
+            return None;
+        }
+    };
+    let text = unica_xml_format::read::direct_text(value);
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn form_info_binding(
+    data_path: Option<&str>,
+    command_name: Option<&str>,
+) -> Option<FormInfoBinding> {
+    if let Some(data_path) = data_path {
         return Some(FormInfoBinding {
             kind: "dataPath".to_string(),
-            target: data_path,
+            target: data_path.trim().to_string(),
         });
     }
-    let command_name = form_child_text(node, "CommandName")?;
+    let command_name = command_name?.trim();
     if let Some(name) = command_name.strip_prefix("Form.StandardCommand.") {
         Some(FormInfoBinding {
             kind: "standardCommand".to_string(),
@@ -1299,7 +1332,7 @@ fn form_info_binding(node: roxmltree::Node<'_, '_>) -> Option<FormInfoBinding> {
     } else {
         Some(FormInfoBinding {
             kind: "other".to_string(),
-            target: command_name,
+            target: command_name.to_string(),
         })
     }
 }
@@ -1336,12 +1369,18 @@ fn form_info_children(owner: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> {
 
 fn form_info_element(child: roxmltree::Node<'_, '_>) -> FormInfoElement {
     let name = child.attribute("name").unwrap_or("").to_string();
+    let mut binding_limits = Vec::new();
+    let data_path = form_info_binding_property(child, "DataPath", &mut binding_limits);
+    let command_name = form_info_binding_property(child, "CommandName", &mut binding_limits);
     FormInfoElement {
         tag: form_element_tag(child),
         event_kind: FormElementKind::from_xml_tag(child.tag_name().name()),
         title: form_title_differs(child, &name),
         name,
-        binding: form_info_binding(child),
+        binding: form_info_binding(data_path.as_deref(), command_name.as_deref()),
+        data_path,
+        command_name,
+        binding_limits,
         visible: form_child_text(child, "Visible").as_deref() != Some("false"),
         enabled: form_child_text(child, "Enabled").as_deref() != Some("false"),
         read_only: form_child_text(child, "ReadOnly").as_deref() == Some("true"),
@@ -1405,25 +1444,9 @@ fn form_info_parameters(params: roxmltree::Node<'_, '_>) -> Vec<FormInfoParamete
 }
 
 fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand> {
-    form_children(commands, "Command")
+    form_children_in_ns(commands, "Command", FORM_LOGFORM_NS)
         .into_iter()
-        .map(|command| FormInfoCommand {
-            name: command.attribute("name").unwrap_or("").to_string(),
-            actions: form_children(command, "Action")
-                .into_iter()
-                .map(|action| FormInfoEvent {
-                    name: "Execute".to_string(),
-                    handler: action.text().unwrap_or("").to_string(),
-                    call_type: action.attribute("callType").map(str::to_string),
-                })
-                .collect(),
-            title: form_child_text(command, "Title"),
-            tooltip: form_child_text(command, "ToolTip"),
-            shortcut: form_child_text(command, "Shortcut"),
-            picture: form_child(command, "Picture")
-                .and_then(|picture| form_child_text(picture, "Ref")),
-            representation: form_child_text(command, "Representation"),
-        })
+        .map(command_properties::read)
         .collect()
 }
 

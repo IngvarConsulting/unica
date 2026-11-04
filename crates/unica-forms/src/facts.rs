@@ -113,6 +113,15 @@ pub struct FormInfoElement {
     pub name: String,
     /// The data path or command the element is bound to; `null` when unbound.
     pub binding: Option<FormInfoBinding>,
+    /// Direct XML facts may coexist on a common-command button. The legacy
+    /// `binding` above keeps its precedence for existing event consumers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_name: Option<String>,
+    /// Damage to one binding does not hide the other or the element itself.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub binding_limits: Vec<String>,
     /// The element title when it differs from its name; `null` otherwise.
     pub title: Option<String>,
     pub visible: bool,
@@ -176,6 +185,14 @@ pub struct FormInfoCommand {
     pub picture: Option<String>,
     /// The command's DefaultRepresentation; `null` when it keeps the default.
     pub representation: Option<String>,
+    pub current_row_use: Option<String>,
+    pub modifies_saved_data: Option<bool>,
+    pub associated_table_element_id: Option<String>,
+    pub functional_options: Option<Vec<String>>,
+    /// An explicitly stored flag, independent of the picture reference.
+    pub picture_load_transparent: Option<bool>,
+    /// Damage to one command property does not discard the other facts.
+    pub property_limits: Vec<String>,
 }
 
 /// Minimal, provider-neutral form evidence consumed by the hidden event

@@ -45,6 +45,7 @@ properties_operations!(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertiesSite {
     Metadata(MetadataKind),
+    FunctionalOption,
     Role,
     Subsystem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
@@ -92,6 +93,7 @@ macro_rules! descriptor_properties {
                         match self { $(Self::$field => $extension),+ }
                     }
                     PropertiesSite::Metadata(_) => false,
+                    PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode),
                 }
             }
         }
@@ -105,6 +107,8 @@ macro_rules! descriptor_properties {
 // re-export of 8.3.27 resets a configuration's own
 // `ConfigurationExtensionCompatibilityMode`, so only an extension sets it.
 descriptor_properties!(
+    Location => ("Location", "location", String, false, false, false, false),
+    PrivilegedGetMode => ("PrivilegedGetMode", "privilegedGetMode", Boolean, false, false, false, false),
     Synonym => ("Synonym", "synonym", String, true, true, true, true),
     Comment => ("Comment", "comment", String, true, true, true, true),
     Explanation => ("Explanation", "explanation", String, true, false, false, false),
@@ -187,14 +191,24 @@ impl PropertiesSite {
     }
 
     /// Read routing is deliberately irrelevant here: CommonModule is read as
-    /// a module and still owns a metadata descriptor. Members and nested
-    /// subsystems do not acquire the owner's write profile.
+    /// a module and still owns a metadata descriptor. Members do not acquire
+    /// the owner's write profile; a nested subsystem owns a descriptor of its
+    /// own and the subsystem profile with it.
     pub fn from_address(at: &QualifiedAddress) -> Option<Self> {
+        if at.segments().len() > 1
+            && at
+                .segments()
+                .iter()
+                .all(|segment| segment.kind() == NodeKind::Subsystem && segment.name().is_some())
+        {
+            return Some(Self::Subsystem);
+        }
         let [owner] = at.segments() else {
             return None;
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::FunctionalOption => Some(Self::FunctionalOption),
             NodeKind::Role => Some(Self::Role),
             NodeKind::Subsystem => Some(Self::Subsystem),
             kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
@@ -213,7 +227,7 @@ impl PropertiesSite {
         let mut groups = Vec::new();
         match self {
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
-            Self::Role | Self::Subsystem | Self::Configuration { .. } => {
+            Self::FunctionalOption | Self::Role | Self::Subsystem | Self::Configuration { .. } => {
                 for field in self.descriptor_fields() {
                     let schema = match field.kind() {
                         DescriptorPropertyKind::String => json!({"type":"string"}),
@@ -221,6 +235,13 @@ impl PropertiesSite {
                         DescriptorPropertyKind::Enum => {
                             json!({"type":"string", "enum":field.allowed_values()})
                         }
+                    };
+                    let schema = if field == DescriptorProperty::Location {
+                        let mut schema = schema;
+                        schema["description"] = json!("Existing Constant.Name, Kind.Name.Attribute.Name, Kind.Name.Resource.Name or Kind.Name.TabularSection.Name.Attribute.Name in this source set, where the owner supports that collection. Empty storage is invalid.");
+                        schema
+                    } else {
+                        schema
                     };
                     for name in field.names() {
                         properties.insert((*name).to_string(), schema.clone());
@@ -251,16 +272,17 @@ impl PropertiesOperation {
                 target: match site {
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
-                    _ => "The existing named top-level metadata object, role or subsystem at its full address. The address selects the property profile.",
+                    _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
-                notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
+                notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 example_args: match site {
+                    PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::FunctionalOption => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -311,6 +333,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn functional_option_storage_properties_have_an_addressed_contract() {
+        let at = QualifiedAddress::parse("main:FunctionalOption.UseGoods").unwrap();
+        let site = PropertiesSite::from_address(&at).expect("FunctionalOption property profile");
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        assert!(oracle.is_valid(
+            &json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}})
+        ));
+        assert!(!oracle.is_valid(&json!({"values":{"PrivilegedGetMode":"true"}})));
+        assert!(!oracle.is_valid(&json!({"values":{"Content":[]}})));
+    }
+
+    #[test]
     fn registration_and_context_cover_only_current_descriptor_owners() {
         let operation = PropertiesOperation::Set;
         assert_eq!(PropertiesOperation::ALL, &[operation]);
@@ -345,7 +380,11 @@ mod tests {
             ("main:Catalog", None),
             ("main:CommonForm.Card.Metadata", None),
             ("main:Catalog.Items.Attribute.Code", None),
-            ("main:Subsystem.Sales.Subsystem.Child", None),
+            (
+                "main:Subsystem.Sales.Subsystem.Child",
+                Some(PropertiesSite::Subsystem),
+            ),
+            ("main:Subsystem.Sales.Interface", None),
         ] {
             assert_eq!(
                 PropertiesSite::from_address(&QualifiedAddress::parse(at).unwrap()),

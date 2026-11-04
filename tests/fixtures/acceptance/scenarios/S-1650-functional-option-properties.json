@@ -1,0 +1,437 @@
+{
+  "id": "S-1650-functional-option-properties",
+  "name": "functional-option-storage-and-privileged-get-mode",
+  "issue": 1650,
+  "area": "Метаданные",
+  "task": "Изменить хранение функциональной опции и режим получения, сохранив идентичность и состав; отклонить неверные значения без записи.",
+  "workspace": "tests/fixtures/acceptance/workspace-functional-option",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption.ByConstant"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/FunctionalOptions/ByConstant.xml"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/Location",
+          "eq": "Constant.Enabled"
+        },
+        {
+          "pointer": "/data/props/PrivilegedGetMode",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption.ByConstant.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "PrivilegedGetMode": "true"
+              }
+            }
+          }
+        ],
+        "at": "main:FunctionalOption.ByConstant"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "refusal": "bad_value: expected \"boolean\""
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Location": "Constant.Missing"
+              }
+            }
+          }
+        ],
+        "at": "main:FunctionalOption.ByConstant"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "refusal": "bad_value: Location target Constant.Missing does not exist"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Location": "Catalog.Options"
+              }
+            }
+          }
+        ],
+        "at": "main:FunctionalOption.ByConstant"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "refusal": "bad_value: Location must name an existing constant, attribute or resource"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Location": ""
+              }
+            }
+          }
+        ],
+        "at": "main:FunctionalOption.ByConstant"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "refusal": "bad_value: Location must not be empty: the platform requires functional option storage"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Location": "Catalog.Options.Attribute.Enabled",
+                "PrivilegedGetMode": false
+              }
+            }
+          }
+        ],
+        "at": "main:FunctionalOption.ByConstant"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Location",
+          "eq": [
+            "Catalog.Options.Attribute.Enabled"
+          ]
+        },
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}PrivilegedGetMode",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ByConstant"
+          ]
+        },
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            "\n\t\t\t\tCatalog.Options\n\t\t\t"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption.ByConstant"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Location",
+          "eq": "Catalog.Options.Attribute.Enabled"
+        },
+        {
+          "pointer": "/data/props/PrivilegedGetMode",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "after1": {
+          "kind": "sha256",
+          "file": "src/FunctionalOptions/ByConstant.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Location": "InformationRegister.Settings.Resource.Enabled",
+                "PrivilegedGetMode": true
+              }
+            }
+          }
+        ],
+        "at": "main:FunctionalOption.ByConstant"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "sha256",
+          "eq": "$capture.after1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Location",
+          "eq": [
+            "InformationRegister.Settings.Resource.Enabled"
+          ]
+        },
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}PrivilegedGetMode",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ByConstant"
+          ]
+        },
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            "\n\t\t\t\tCatalog.Options\n\t\t\t"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption.ByConstant"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Location",
+          "eq": "InformationRegister.Settings.Resource.Enabled"
+        },
+        {
+          "pointer": "/data/props/PrivilegedGetMode",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "after2": {
+          "kind": "sha256",
+          "file": "src/FunctionalOptions/ByConstant.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Location": "Constant.Enabled",
+                "PrivilegedGetMode": false
+              }
+            }
+          }
+        ],
+        "at": "main:FunctionalOption.ByConstant"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "sha256",
+          "eq": "$capture.after2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Location",
+          "eq": [
+            "Constant.Enabled"
+          ]
+        },
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}PrivilegedGetMode",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ByConstant"
+          ]
+        },
+        {
+          "path": "src/FunctionalOptions/ByConstant.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            "\n\t\t\t\tCatalog.Options\n\t\t\t"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FunctionalOption.ByConstant"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Location",
+          "eq": "Constant.Enabled"
+        },
+        {
+          "pointer": "/data/props/PrivilegedGetMode",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "after3": {
+          "kind": "sha256",
+          "file": "src/FunctionalOptions/ByConstant.xml"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tns="urn:unica:property-names" targetNamespace="urn:unica:property-names">
+ <property name="Global" type="xs:string"/>
+ <valueType name="Text" base="xs:string" maxLength="20"/>
+ <objectType name="Base"/>
+ <objectType name="Envelope" base="tns:Base">
+  <property name="Absent" type="xs:string"/>
+  <property name="Explicit" type="xs:string" lowerBound="1" upperBound="1"/>
+  <property name="Rows" lowerBound="0" upperBound="-1"><typeDef xsi:type="ObjectType"><property name="Code" type="tns:Text" lowerBound="0"/></typeDef></property>
+  <property name="Limited"><typeDef xsi:type="ValueType" base="xs:string" maxLength="10"/></property>
+  <property ref="tns:Global"/>
+ </objectType>
+</package>
