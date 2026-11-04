@@ -4496,8 +4496,12 @@ fn rename_open_child(
         .len()
         .checked_mul(size_of::<u16>())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
+    // NtSetInformationFile rejects a buffer shorter than the declared
+    // structure, whose trailing one-character name array is padded; a
+    // one-character name otherwise yields STATUS_INFO_LENGTH_MISMATCH.
     let information_length = offset_of!(RenameInformation, file_name)
         .checked_add(name_bytes)
+        .map(|length| length.max(size_of::<RenameInformation>()))
         .and_then(|length| u32::try_from(length).ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
     let word_count = (information_length as usize).div_ceil(size_of::<usize>());
@@ -6790,6 +6794,25 @@ mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn atomic_directory_publication_accepts_a_one_character_name() {
+        use super::RetainedDirectoryCapability;
+
+        let root = unique_temp_root("one-character-directory");
+        fs::create_dir_all(&root).unwrap();
+        let parent = RetainedDirectoryCapability::open(&fs::canonicalize(&root).unwrap()).unwrap();
+        parent
+            .create_directory_child_atomically(
+                std::ffi::OsStr::new(".private-a"),
+                std::ffi::OsStr::new("A"),
+            )
+            .unwrap();
+        assert!(root.join("A").is_dir());
+        assert!(!root.join(".private-a").exists());
+        drop(parent);
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[cfg(windows)]
     #[test]
