@@ -336,3 +336,107 @@ fn canonical_style_color_contract_does_not_outlive_parent_format_admission() {
         assert!(!contract.ok, "{version}: {contract:?}");
     }
 }
+
+#[test]
+fn canonical_style_color_read_failure_after_node_projection_is_not_an_absent_capability() {
+    use crate::infrastructure::v13_read::CompletedViewProjectionProbeForTest;
+    use crate::infrastructure::v13_read_port::{
+        review_clear_revision_identity_hooks, review_set_revision_identity_hooks,
+    };
+    use std::cell::Cell;
+    use std::rc::Rc;
+    struct RestoreSource {
+        source: PathBuf,
+        saved: PathBuf,
+    }
+    impl Drop for RestoreSource {
+        fn drop(&mut self) {
+            review_clear_revision_identity_hooks();
+            if self.saved.exists() {
+                std::fs::rename(&self.saved, &self.source).unwrap();
+            }
+        }
+    }
+    struct RestoreAfterRead {
+        inner: crate::infrastructure::daemon::v13_service::CanonicalV13ReadService,
+        source: PathBuf,
+        saved: PathBuf,
+    }
+    impl CanonicalInvocationService for RestoreAfterRead {
+        fn prepare(
+            &self,
+            invocation: &ActorBoundInvocation,
+        ) -> Result<ExecutionClass, Box<DomainResult>> {
+            self.inner.prepare(invocation)
+        }
+        fn execute(
+            &self,
+            invocation: &ActorBoundExecution,
+            cancellation: CancellationToken,
+        ) -> Result<DomainResult, InvocationFailure> {
+            let result = self.inner.execute(invocation, cancellation);
+            // The read failed transiently. Restore before the outer receipt
+            // validates the root, so that validation cannot mask a lost error.
+            if self.saved.exists() {
+                std::fs::rename(&self.saved, &self.source).unwrap();
+            }
+            result
+        }
+    }
+    for at in [
+        "main:StyleItem.Accent",
+        "main:StyleItem.Accent.Can.props.set",
+    ] {
+        let fixture = color_fixture("#123456");
+
+        let probe = Rc::new(CompletedViewProjectionProbeForTest::start(
+            "main:StyleItem.Accent",
+        ));
+        let fired = Rc::new(Cell::new(false));
+        let fired_hook = Rc::clone(&fired);
+        let probe_hook = Rc::clone(&probe);
+        let source = fixture.source.clone();
+        let saved = fixture.workspace.join("retained-source");
+        let runtime = V5CanonicalInvocationRuntime::new(
+            Arc::new(RestoreAfterRead {
+                inner: crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(
+                ),
+                source: source.clone(),
+                saved: saved.clone(),
+            }),
+            Arc::new(TokioClock),
+        );
+        let restore = RestoreSource {
+            source: source.clone(),
+            saved: saved.clone(),
+        };
+        review_set_revision_identity_hooks(
+            move || {
+                if !probe_hook.revisions().is_empty() && !fired_hook.replace(true) {
+                    std::fs::rename(&source, &saved).unwrap();
+                }
+            },
+            || {},
+        );
+        let result = call(&runtime, &fixture, ToolIdentity::View, json!({"at":at}));
+        drop(restore);
+        assert!(
+            fired.get(),
+            "the failure must occur after the successful node projection"
+        );
+        assert!(
+            !result.ok,
+            "Color read I/O failure must not become a successful incomplete Can: {result:?}"
+        );
+        assert_eq!(
+            result
+                .diagnostics
+                .first()
+                .and_then(|d| d.get("code"))
+                .and_then(Value::as_str),
+            Some("provider_unavailable"),
+            "{result:?}"
+        );
+        assert!(result.data.is_none(), "{result:?}");
+    }
+}

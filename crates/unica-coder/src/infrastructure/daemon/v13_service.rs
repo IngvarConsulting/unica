@@ -994,16 +994,25 @@ impl CanonicalV13ReadService {
             if let Some(node) = data.as_object_mut() {
                 declare_method_branches(node);
             }
-            let color = |at: &QualifiedAddress| {
-                if at.segments().len() != 1 || at.segments()[0].kind() != NodeKind::StyleItem {
-                    return None;
-                }
+            // Read failures are not evidence that this Color profile is absent.
+            // Resolve the fallible observation before passing a pure lookup to Can.
+            let observed_color = if address.segments().len() == 1
+                && address.segments()[0].kind() == NodeKind::StyleItem
+                && address.segments()[0].name().is_some()
+            {
                 source
                     .logical_view_read_authority(cancellation)
-                    .ok()?
-                    .style_item_color_observation(at)
-                    .ok()
-                    .flatten()
+                    .map_err(|message| ViewError::detailed(RefusalDetail::ProviderAbsent, message))?
+                    .style_item_color_observation(&address)?
+            } else {
+                None
+            };
+            let color = |at: &QualifiedAddress| {
+                if at == &address {
+                    observed_color
+                } else {
+                    None
+                }
             };
             match operation.as_deref() {
                 Some(op) => {
