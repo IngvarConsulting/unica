@@ -301,6 +301,11 @@ fn information_boolean_edits_preserve_split_text_markup_and_reader_values() {
     for tag in ["Master", "MainFilter", "DenyIncompleteValues"] {
         for (input, changed) in [
             ("false<!-- trailing -->", "true<!-- trailing -->"),
+            ("<!-- </Properties> -->false", "<!-- </Properties> -->true"),
+            (
+                "<?keep </Properties> ?>false",
+                "<?keep </Properties> ?>true",
+            ),
             ("fa<!-- middle -->lse", "true<!-- middle -->"),
             ("f<?keep value?>alse", "true<?keep value?>"),
             ("<![CDATA[false]]>", "<![CDATA[true]]>"),
@@ -372,4 +377,53 @@ fn information_boolean_edits_preserve_split_text_markup_and_reader_values() {
             assert_eq!(read(&reverted), Some(false), "{tag}: {input}");
         }
     }
+}
+
+#[test]
+fn a_flag_and_missing_comment_share_the_full_properties_container() {
+    let mut before = information_register()
+        .trim_start_matches('\u{feff}')
+        .to_string();
+    let dimension = before.find("<Name>StringDimension</Name>").unwrap();
+    let comment = dimension + before[dimension..].find("<Comment/>").unwrap();
+    before.replace_range(comment..comment + "<Comment/>".len(), "");
+    before = before.replacen(
+        "<MetaDataObject ",
+        "<MetaDataObject xmlns:m=\"http://v8.1c.ru/8.3/MDClasses\" ",
+        1,
+    );
+    before = before.replacen(
+        "<Master>false</Master>",
+        "<m:Master><!-- </Properties> -->false</m:Master>",
+        1,
+    );
+    let mut operation = flag("StringDimension", "Master", true);
+    let MetaEditOperation::Update { elements, .. } = &mut operation else {
+        unreachable!()
+    };
+    elements[0].comment = Some("inserted comment".into());
+    let after = apply(&before, operation).unwrap();
+    assert!(after.contains("<m:Master><!-- </Properties> -->true</m:Master>"));
+    let document = roxmltree::Document::parse(&after).unwrap();
+    let properties = document
+        .descendants()
+        .find(|node| node.has_tag_name("Name") && node.text() == Some("StringDimension"))
+        .unwrap()
+        .parent()
+        .unwrap();
+    let comments: Vec<_> = properties
+        .children()
+        .filter(|node| node.has_tag_name("Comment"))
+        .collect();
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].text(), Some("inserted comment"));
+    let expected_flag_only = before.replacen(
+        "<m:Master><!-- </Properties> -->false</m:Master>",
+        "<m:Master><!-- </Properties> -->true</m:Master>",
+        1,
+    );
+    let inserted = "\t\t\t\t\t<Comment>inserted comment</Comment>\n\t\t\t\t\t";
+    assert_eq!(after.matches(inserted).count(), 1);
+    // Remove only the new property and its own indentation, preserving every old byte.
+    assert_eq!(after.replacen(inserted, "", 1), expected_flag_only);
 }

@@ -2030,6 +2030,11 @@ fn dimension_boolean_text_edits(
     (!edits.is_empty()).then_some(edits)
 }
 
+struct DimensionBooleanEdit {
+    properties_range: std::ops::Range<usize>,
+    replacements: Vec<(std::ops::Range<usize>, &'static str)>,
+}
+
 // Read the original document so inherited namespace bindings remain authoritative.
 // Replace only the boolean text; markup and unrelated bytes stay unchanged.
 fn dimension_boolean_edit(
@@ -2038,7 +2043,7 @@ fn dimension_boolean_edit(
     tag: &str,
     field: &str,
     value: bool,
-) -> Result<Vec<(std::ops::Range<usize>, &'static str)>, MetaDiagnostic> {
+) -> Result<DimensionBooleanEdit, MetaDiagnostic> {
     const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
     let refused =
         || {
@@ -2074,11 +2079,16 @@ fn dimension_boolean_edit(
         return Err(refused());
     }
     let current = crate::info::dimension_boolean_value(*flag).ok_or_else(refused)?;
-    if current == value {
-        return Ok(Vec::new());
-    }
-    let replacement = if value { "true" } else { "false" };
-    dimension_boolean_text_edits(xml, *flag, replacement).ok_or_else(refused)
+    let replacements = if current == value {
+        Vec::new()
+    } else {
+        let replacement = if value { "true" } else { "false" };
+        dimension_boolean_text_edits(xml, *flag, replacement).ok_or_else(refused)?
+    };
+    Ok(DimensionBooleanEdit {
+        properties_range: properties.range(),
+        replacements,
+    })
 }
 
 pub fn update_typed_element(
@@ -2098,14 +2108,7 @@ pub fn update_typed_element(
         ensure_typed_name_free(xml_text, tag, scope, new_name)?;
     }
     let node_xml = xml_text[range.clone()].to_string();
-    let properties_range = typed_properties_text_range(&node_xml).ok_or_else(|| {
-        typed_diagnostic(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata element has no Properties",
-            None,
-        )
-    })?;
-    let mut properties_text = node_xml[properties_range.clone()].to_string();
+    let mut flag_properties_range = None;
     let mut flag_edits = Vec::new();
     for (tag, field, value) in [
         ("Master", "master", update.master),
@@ -2117,15 +2120,22 @@ pub fn update_typed_element(
         ),
     ] {
         if let Some(value) = value {
-            flag_edits.extend(dimension_boolean_edit(
-                xml_text,
-                range.clone(),
-                tag,
-                field,
-                value,
-            )?);
+            let edit = dimension_boolean_edit(xml_text, range.clone(), tag, field, value)?;
+            flag_properties_range.get_or_insert(edit.properties_range);
+            flag_edits.extend(edit.replacements);
         }
     }
+    let properties_range = flag_properties_range
+        .map(|properties| properties.start - range.start..properties.end - range.start)
+        .or_else(|| typed_properties_text_range(&node_xml))
+        .ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata element has no Properties",
+                None,
+            )
+        })?;
+    let mut properties_text = node_xml[properties_range.clone()].to_string();
     flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     let properties_start = range.start + properties_range.start;
     for (range, value) in flag_edits {
