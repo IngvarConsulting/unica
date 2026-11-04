@@ -728,6 +728,7 @@ mod tests {
                         deny_incomplete_values: Some(true),
                         master: None,
                         main_filter: None,
+                        type_reduction_mode: None,
                     }],
                 },
             )

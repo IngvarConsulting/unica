@@ -969,20 +969,45 @@ pub fn typed_operation_effect_value(
             collection,
             scope,
             elements,
-        } => typed_collection_effect_value(
-            xml,
-            object,
-            *collection,
-            scope.as_ref(),
-            elements.iter().map(|element| {
-                if after {
-                    element.new_name.as_deref().unwrap_or(&element.name)
-                } else {
-                    &element.name
-                }
-            }),
-            &target,
-        )?,
+        } => {
+            let value = typed_collection_effect_value(
+                xml,
+                object,
+                *collection,
+                scope.as_ref(),
+                elements.iter().map(|element| {
+                    if after {
+                        element.new_name.as_deref().unwrap_or(&element.name)
+                    } else {
+                        &element.name
+                    }
+                }),
+                &target,
+            )?;
+            if elements
+                .iter()
+                .any(|element| element.type_reduction_mode.is_some())
+            {
+                crate::dimension_reduction::effect(
+                    xml,
+                    object,
+                    value,
+                    &elements
+                        .iter()
+                        .filter(|element| element.type_reduction_mode.is_some())
+                        .map(|element| {
+                            if after {
+                                element.new_name.as_deref().unwrap_or(&element.name)
+                            } else {
+                                &element.name
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )?
+            } else {
+                value
+            }
+        }
         MetaEditOperation::Remove {
             collection,
             scope,
@@ -2182,7 +2207,11 @@ pub fn update_typed_element(
         if let Some(value) = value {
             let edit = dimension_boolean_edit(xml_text, range.clone(), tag, field, value)?;
             flag_properties_range.get_or_insert(edit.properties_range);
-            flag_edits.extend(edit.replacements);
+            flag_edits.extend(
+                edit.replacements
+                    .into_iter()
+                    .map(|(range, value)| (range, value.to_owned())),
+            );
         }
     }
     let properties_range = flag_properties_range
@@ -2196,12 +2225,17 @@ pub fn update_typed_element(
             )
         })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    if let Some(value) = &update.type_reduction_mode {
+        if let Some(edit) = crate::dimension_reduction::edit(xml_text, range.clone(), value)? {
+            flag_edits.push(edit);
+        }
+    }
     flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     let properties_start = range.start + properties_range.start;
     for (range, value) in flag_edits {
         properties_text.replace_range(
             range.start - properties_start..range.end - properties_start,
-            value,
+            &value,
         );
     }
 

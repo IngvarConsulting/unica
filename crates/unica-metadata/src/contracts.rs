@@ -188,7 +188,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
             }
         } else {
             fields.remove("templateType");
-
+            fields.insert("typeReductionMode".into(), json!({"type":"string", "enum":["Deny", "TransformValues"]}));
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
@@ -250,6 +250,17 @@ fn metadata_element_schema(
         })
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
+    if update
+        && collection == MetaCollection::Dimensions
+        && site.is_some_and(|site| {
+            site.owner == crate::MetadataKind::InformationRegister && !site.in_section
+        })
+    {
+        fields.insert(
+            "typeReductionMode".into(),
+            json!({"type":"string", "enum":["Deny", "TransformValues"]}),
+        );
+    }
     let selector = if update { "newName" } else { "name" };
     fields[selector]
         .as_object_mut()

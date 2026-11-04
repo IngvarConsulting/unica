@@ -838,6 +838,7 @@ pub fn parse_element_update(
         master: reader.read("master", optional_bool_at)?,
         main_filter: reader.read("mainFilter", optional_bool_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
+        type_reduction_mode: reader.read("typeReductionMode", optional_string_at)?,
         name: reader.read("name", required_string_at)?,
         new_name: reader.read("newName", optional_string_at)?,
         synonym: reader.read("synonym", optional_string_at)?,
@@ -1893,6 +1894,20 @@ mod dimension_flag_invalid_tests {
                     "{value}"
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod reduction_tests {
+    #[test]
+    fn type_reduction_update_accepts_deny_and_transform_values() {
+        for value in ["Deny", "TransformValues"] {
+            assert!(super::parse_element_update(
+                &serde_json::json!({"name":"Item", "typeReductionMode":value}),
+                "elements[0]"
+            )
+            .is_ok());
         }
     }
 }

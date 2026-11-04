@@ -27,6 +27,7 @@ fn deny(name: &str, value: bool) -> MetaEditOperation {
             deny_incomplete_values: Some(value),
             master: None,
             main_filter: None,
+            type_reduction_mode: None,
         }],
     }
 }
@@ -426,4 +427,72 @@ fn a_flag_and_missing_comment_share_the_full_properties_container() {
     assert_eq!(after.matches(inserted).count(), 1);
     // Remove only the new property and its own indentation, preserving every old byte.
     assert_eq!(after.replacen(inserted, "", 1), expected_flag_only);
+}
+
+#[test]
+fn flags_and_reduction_mode_share_original_ranges_in_either_xml_order() {
+    for mode_first in [false, true] {
+        for old_flag in [false, true] {
+            let old_mode = if old_flag { "Deny" } else { "TransformValues" };
+            let new_mode = if old_flag { "TransformValues" } else { "Deny" };
+            let mut before = information_register()
+                .trim_start_matches('\u{feff}')
+                .to_string();
+            if mode_first {
+                let property = "<TypeReductionMode>TransformValues</TypeReductionMode>";
+                before = before.replacen(property, "", 1).replacen(
+                    "<Master>false</Master>",
+                    &format!("{property}<Master>false</Master>"),
+                    1,
+                );
+            }
+            if old_flag {
+                for tag in ["Master", "MainFilter", "DenyIncompleteValues"] {
+                    before = before.replacen(
+                        &format!("<{tag}>false</{tag}>"),
+                        &format!("<{tag}>true</{tag}>"),
+                        1,
+                    );
+                }
+                before = before.replacen(
+                    "<TypeReductionMode>TransformValues</TypeReductionMode>",
+                    "<TypeReductionMode>Deny</TypeReductionMode>",
+                    1,
+                );
+            }
+            let mut operation = flag("StringDimension", "Master", !old_flag);
+            let MetaEditOperation::Update { elements, .. } = &mut operation else {
+                unreachable!()
+            };
+            elements[0].main_filter = Some(!old_flag);
+            elements[0].deny_incomplete_values = Some(!old_flag);
+            elements[0].type_reduction_mode = Some(new_mode.into());
+            let mut expected = before.replacen(
+                &format!("<TypeReductionMode>{old_mode}</TypeReductionMode>"),
+                &format!("<TypeReductionMode>{new_mode}</TypeReductionMode>"),
+                1,
+            );
+            for tag in ["Master", "MainFilter", "DenyIncompleteValues"] {
+                expected = expected.replacen(
+                    &format!("<{tag}>{old_flag}</{tag}>"),
+                    &format!("<{tag}>{}</{tag}>", !old_flag),
+                    1,
+                );
+            }
+            let after = apply(&before, operation.clone()).unwrap();
+            assert_eq!(
+                after, expected,
+                "mode_first={mode_first}, old_flag={old_flag}"
+            );
+            assert_eq!(apply(&after, operation.clone()).unwrap(), after);
+            let MetaEditOperation::Update { elements, .. } = &mut operation else {
+                unreachable!()
+            };
+            elements[0].master = Some(old_flag);
+            elements[0].main_filter = Some(old_flag);
+            elements[0].deny_incomplete_values = Some(old_flag);
+            elements[0].type_reduction_mode = Some(old_mode.into());
+            assert_eq!(apply(&after, operation).unwrap(), before);
+        }
+    }
 }
