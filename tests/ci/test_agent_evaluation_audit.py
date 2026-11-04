@@ -186,6 +186,35 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 with self.subTest(event=event, position=position), self.assertRaises(ValueError):
                     audit_cli(valid[:position] + [event] + valid[position:], {"unica.view"}, help_path)
 
+    def test_agent_help_allowlist_accepts_only_each_declared_file(self):
+        from tests.agent_evaluation import cli_host
+        for windows in (False, True):
+            paths = ((r"C:\prepared packet\object's events.md", r"C:\prepared packet\posting.md")
+                     if windows else ("/prepared packet/object's events.md", "/prepared packet/posting.md"))
+            call = {"type": "mcp_tool_call", "server": "unica", "tool": "unica.docs", "status": "completed"}
+            def transcript(command):
+                return [{"type": "turn.started"},
+                        {"type": "item.completed", "item": {"type": "command_execution", "command": command,
+                                                            "status": "completed", "exit_code": 0}},
+                        {"type": "item.completed", "item": call}, {"type": "turn.completed"}]
+            with patch.object(cli_host, "IS_WINDOWS", windows):
+                commands = [cli_host.help_command(path) for path in paths]
+                for sequence in (paths, list(paths)):
+                    for command in commands:
+                        with self.subTest(windows=windows, command=command, sequence=type(sequence)):
+                            self.assertEqual(audit_cli(transcript(command), {"unica.docs"}, sequence), [call])
+                    other = cli_host.help_command("C:\\prepared packet\\other.md" if windows else "/prepared packet/other.md")
+                    traversal = cli_host.help_command(paths[1].replace("posting.md", "../other.md"))
+                    forbidden = [other, commands[0] + " " + commands[1], commands[0] + "; " + other,
+                                 commands[0] + " > output.md", traversal, "cat 'unterminated"]
+                    if windows:
+                        forbidden += [commands[0].replace("-LiteralPath", "-Path"), "cat " + paths[0]]
+                    else:
+                        forbidden += [commands[0].replace("cat ", "cat -- ", 1)]
+                    for command in forbidden:
+                        with self.subTest(windows=windows, command=command), self.assertRaises(ValueError):
+                            audit_cli(transcript(command), {"unica.docs"}, sequence)
+
     def test_dcs_physical_outcome_accepts_independent_platform_scaffold(self):
         """Accept native defaults or their removal without losing the requested schema data."""
         from tests.agent_evaluation.dcs_driver import verify_dcs_images
