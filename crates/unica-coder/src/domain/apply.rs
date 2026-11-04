@@ -446,6 +446,24 @@ pub(crate) fn observation_lookup<'a>(
     }
 }
 
+/// The same registry observations with the closed Color profile owned by
+/// metadata. The caller obtains it from retained descriptor bytes.
+pub(crate) fn observation_lookup_with_color<'a>(
+    template: &'a dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    item: &'a dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    color: &'a dyn Fn(&QualifiedAddress) -> Option<unica_metadata::style_color::StyleItemColor>,
+) -> impl Fn(&QualifiedAddress, unica_operations::ObservationType) -> Option<Box<dyn std::any::Any>> + 'a
+{
+    let ordinary = observation_lookup(template, item);
+    move |at, requested| {
+        if requested.is::<unica_metadata::style_color::StyleItemColor>() {
+            color(at).map(|value| Box::new(value) as Box<dyn std::any::Any>)
+        } else {
+            ordinary(at, requested)
+        }
+    }
+}
+
 impl OperationDescriptorExt for OperationDescriptor {
     fn admits_template_format(self, format: Option<TemplateFormat>) -> bool {
         !self.observation_type().is::<TemplateFormat>()
@@ -1392,6 +1410,7 @@ mod tests {
         let expected = [
             "object.borrow",
             "object.create",
+            "object.copy",
             "object.remove",
             "props.set",
             "content.set",
@@ -1521,7 +1540,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 129);
+        assert_eq!(expected.len(), 130);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465), свойства формы — как свойства описания (#1984):
@@ -1543,7 +1562,7 @@ mod tests {
         }
         assert_eq!(
             unica_metadata::apply_operations::MetadataOperation::ALL.len(),
-            36
+            37
         );
         assert_eq!(
             registry
