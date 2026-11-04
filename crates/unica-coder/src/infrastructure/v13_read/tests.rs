@@ -6,6 +6,7 @@ mod dcs_parameter_expression;
 mod defined_type_reference;
 mod external_artifact_alias;
 mod form;
+mod form_command_properties;
 mod form_conditional_appearance;
 mod form_item_bindings;
 mod form_support;
@@ -16,6 +17,7 @@ mod numerator_read_profile;
 mod session_parameter_comment;
 mod structured_property_names;
 mod support;
+mod wsreference_definition;
 mod xdto_missing_target;
 
 use support::*;
