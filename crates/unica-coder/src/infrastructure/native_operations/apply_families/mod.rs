@@ -1090,6 +1090,7 @@ pub(crate) fn plan_hidden_v13_apply(
         .at_path("ops"));
     }
     let mut provisional = Vec::new();
+    let mut code_support_warnings = Vec::new();
     let mut xdto_validation = unica_xdto_designer::planner::XdtoValidationLedger::default();
     let mut borrowing = Vec::new();
     let mut cursor = 0;
@@ -1134,8 +1135,12 @@ pub(crate) fn plan_hidden_v13_apply(
                     &operations,
                     cursor,
                 )?;
+                code_support_warnings.extend(planned.support_warnings);
                 provisional.extend(batch_effects_as_provisional(
-                    &before, &staged, planned, cursor,
+                    &before,
+                    &staged,
+                    planned.effects,
+                    cursor,
                 ));
             }
             ParsedApplyOperation::Event(_) => {
@@ -1292,6 +1297,9 @@ pub(crate) fn plan_hidden_v13_apply(
     )?;
     let legacy_inline = collapse_legacy_inline_registrations(&mut staged, binding)?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
+    for warning in code_support_warnings {
+        warning.append_if_changed(&staged.planned_changes(), &mut effects);
+    }
     // A plan whose operations cancel out edits nothing protected.
     if let Some(warning) = support_warning.filter(|_| !staged.planned_changes().is_empty()) {
         effects.push_warning(warning);
