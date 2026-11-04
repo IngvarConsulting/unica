@@ -43,6 +43,7 @@ class HostCapabilityGuardTests(unittest.TestCase):
             "multiline": "if\n    supports_retained_root_replacement_test()\n{\n    assert!(changed());\n}",
             "os_and_capability": "if MAIN_SEPARATOR == '/' && supports_retained_root_replacement_test() { assert!(changed()); }",
             "alias_conjunction": "let available = supports_retained_root_replacement_test();\nif available && true { assert!(changed()); }",
+            "matches_macro": "if matches!(create_file_symlink_for_test(&a, &b), Some(Ok(_))) { assert!(linked()); }",
         }
         for name, statement in shapes.items():
             with self.subTest(shape=name):

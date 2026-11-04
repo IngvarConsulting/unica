@@ -101,7 +101,9 @@ def partial_capability_assertions(body: str) -> bool:
                         for alias in aliases) or
                     re.match(r"let\s+(?:Some|Ok)\s*\(", condition) or
                     "::Created" in condition or
-                    (ASSERTION_PROBE.search(condition) and not re.search(r"!|is_(?:err|none)\s*\(|!=", condition)))
+                    # The `!` of a macro such as `matches!` is not a negation.
+                    (ASSERTION_PROBE.search(condition) and
+                     not re.search(r"(?<!\w)!(?!=)|is_(?:err|none)\s*\(|!=", condition)))
         if not positive:
             continue
         opening = match.end() - 1
