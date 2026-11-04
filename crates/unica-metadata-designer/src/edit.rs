@@ -9,6 +9,8 @@ use unica_xml_format::text::{resolve_observed_line_ending, LineEnding, SourceTex
 use super::format_contract::*;
 use super::template_catalog::*;
 use super::xml_model::*;
+#[cfg(test)]
+mod presentation_tests;
 #[derive(Debug, Default)]
 pub struct MetaEditCounts {
     pub added: usize,
@@ -1369,10 +1371,9 @@ pub fn apply_typed_properties(
     let indent = meta_edit_property_child_indent(&text);
     let mut replacements = Vec::new();
     for (key, value) in changes.entries() {
-        let tag = METADATA_PROPERTY_SPECS
+        let spec = METADATA_PROPERTY_SPECS
             .iter()
             .find(|spec| spec.key == *key && spec.allowed_kinds.contains(&kind))
-            .map(|spec| spec.xml_name)
             .ok_or_else(|| {
                 typed_diagnostic(
                     MetaDiagnosticCode::ProviderUnavailable,
@@ -1380,6 +1381,37 @@ pub fn apply_typed_properties(
                     Some("values"),
                 )
             })?;
+        let tag = spec.xml_name;
+        if matches!(
+            key,
+            MetaPropertyKey::DefaultPresentation | MetaPropertyKey::FoldersOnTop
+        ) {
+            let observed = super::info_projection::observe_meta_info_property(
+                properties, kind, tag,
+            )
+            .map_err(|error| {
+                typed_diagnostic(error.code, error.message, Some(&format!("values.{tag}")))
+            })?;
+            if let Some(MetaInfoPropertyValue::String(previous)) = &observed {
+                if !spec.enum_values.contains(&previous.as_str()) {
+                    return Err(typed_diagnostic(
+                        MetaDiagnosticCode::ValidationFailed,
+                        format!(
+                            "property `{tag}` has an invalid existing value `{previous}` for {}",
+                            kind.as_str()
+                        ),
+                        Some(&format!("values.{tag}")),
+                    ));
+                }
+            }
+            if matches!((&observed, value),
+                (Some(MetaInfoPropertyValue::String(previous)), MetaPropertyValue::String(requested)) if previous == requested)
+                || matches!((&observed, value),
+                    (Some(MetaInfoPropertyValue::Boolean(previous)), MetaPropertyValue::Boolean(requested)) if previous == requested)
+            {
+                continue;
+            }
+        }
         let property = unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
             typed_diagnostic(
                 MetaDiagnosticCode::InvalidArguments,

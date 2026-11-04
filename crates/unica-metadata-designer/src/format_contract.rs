@@ -2,7 +2,7 @@ use roxmltree::{Document, Node};
 
 use unica_metadata::MetadataKind;
 
-use crate::validation::{meta_validate_property_values, meta_validate_valid_types};
+use crate::validation::{meta_validate_property_values_for_owner, meta_validate_valid_types};
 
 fn format_contract_object_node<'a>(document: &'a Document<'a>) -> Result<Node<'a, 'a>, String> {
     document
@@ -259,7 +259,9 @@ pub fn validate_metadata_8_3_27_enum_contract(xml_text: &str, context: &str) -> 
         let Some(properties) = unica_xml_format::read::child_element(object, "Properties") else {
             continue;
         };
-        for (property_name, allowed) in meta_validate_property_values() {
+        for (property_name, allowed) in
+            meta_validate_property_values_for_owner(object.tag_name().name())
+        {
             let Some(value) = unica_xml_format::read::child_direct_text(properties, property_name)
                 .filter(|value| !value.is_empty())
             else {

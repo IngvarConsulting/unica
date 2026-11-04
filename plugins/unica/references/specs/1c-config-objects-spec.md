@@ -906,6 +906,16 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 <DefaultPresentation>AsDescription</DefaultPresentation>  <!-- AsDescription | AsCode -->
 ```
 
+`props.set` изменяет `DefaultPresentation` у Catalog, ChartOfAccounts,
+ChartOfCharacteristicTypes, ChartOfCalculationTypes и ExchangePlan:
+`AsDescription` / `AsCode`. У Task допустимы `AsDescription` / `AsNumber`.
+`FoldersOnTop` изменяется у Catalog и ChartOfCharacteristicTypes независимо
+от `DefaultPresentation` и `Hierarchical`; связанные размеры кода, номера и
+наименования сохраняются. Существующее значение должно присутствовать и
+соответствовать типу своего владельца. Повтор того же значения сохраняет
+исходные байты.
+
+
 **Владелец:**
 
 ```xml

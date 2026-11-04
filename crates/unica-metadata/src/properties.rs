@@ -312,6 +312,7 @@ const CHOICE_MODE_VALUES: &[&str] = &["BothWays", "FromForm", "QuickChoice"];
 const CODE_ALLOWED_LENGTH_VALUES: &[&str] = &["Variable", "Fixed"];
 const CODE_TYPE_VALUES: &[&str] = &["String", "Number"];
 const DEFAULT_PRESENTATION_VALUES: &[&str] = &["AsDescription", "AsCode"];
+const TASK_PRESENTATION_VALUES: &[&str] = &["AsDescription", "AsNumber"];
 const DEPENDENCE_VALUES: &[&str] = &["DontUse", "OnActionPeriod"];
 const HIERARCHY_TYPE_VALUES: &[&str] = &["HierarchyFoldersAndItems", "HierarchyOfItems"];
 const NUMBER_ALLOWED_LENGTH_VALUES: &[&str] = &["Variable", "Fixed"];
@@ -431,8 +432,21 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "DefaultPresentation",
         "DefaultPresentation",
         MetaPropertyKey::DefaultPresentation,
-        CATALOG_KINDS,
+        &[
+            MetadataKind::Catalog,
+            MetadataKind::ChartOfAccounts,
+            MetadataKind::ChartOfCharacteristicTypes,
+            MetadataKind::ChartOfCalculationTypes,
+            MetadataKind::ExchangePlan,
+        ],
         DEFAULT_PRESENTATION_VALUES,
+    ),
+    enum_property(
+        "DefaultPresentation",
+        "DefaultPresentation",
+        MetaPropertyKey::DefaultPresentation,
+        &[MetadataKind::Task],
+        TASK_PRESENTATION_VALUES,
     ),
     enum_property(
         "DependenceOnCalculationTypes",
@@ -475,7 +489,10 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "FoldersOnTop",
         MetaPropertyKey::FoldersOnTop,
         MetaPropertyValueKind::Boolean,
-        CATALOG_KINDS,
+        &[
+            MetadataKind::Catalog,
+            MetadataKind::ChartOfCharacteristicTypes,
+        ],
     ),
     property(
         "Global",
@@ -1194,7 +1211,18 @@ mod tests {
             (
                 "DefaultPresentation",
                 MetaPropertyValue::String("AsCode".into()),
-                &[Catalog],
+                &[
+                    Catalog,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ExchangePlan,
+                ],
+            ),
+            (
+                "DefaultPresentation",
+                MetaPropertyValue::String("AsNumber".into()),
+                &[Task],
             ),
             (
                 "DependenceOnCalculationTypes",
@@ -1236,7 +1264,7 @@ mod tests {
             (
                 "FoldersOnTop",
                 MetaPropertyValue::Boolean(false),
-                &[Catalog],
+                &[Catalog, ChartOfCharacteristicTypes],
             ),
             ("Global", MetaPropertyValue::Boolean(true), &[CommonModule]),
             (

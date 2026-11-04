@@ -1,0 +1,315 @@
+{
+  "schemaVersion": 1,
+  "status": "NATIVE_EXPORT_8_3_27_2074",
+  "sourceRevision": "dbe4345df7f2dbf9552394b9101ca8354e671919",
+  "platform": {
+    "platformVersion": "8.3.27.2074",
+    "ibcmdPath": "C:\\Program Files\\1cv8\\8.3.27.2074\\bin\\ibcmd.exe",
+    "ibcmdSha256": "c4b044e1a1d18b9d2e63cf477605c0847d3fef0d9cf98d3fc17ecf2d4174562f"
+  },
+  "origin": {
+    "preparation": ".session-temp/platform-1693/prepare.py and continue.py",
+    "templates": [
+      {
+        "kind": "ChartOfAccounts",
+        "name": "Accounts",
+        "template": "tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml",
+        "templateSha256": "d204a3b14e28cf77c523c1f28af497bb1d91989365ab055b2b198e4273142178",
+        "preImportTransformations": "rename identifiers and self references; set code/description lengths and initial presentation; remove child metadata"
+      },
+      {
+        "kind": "ChartOfCalculationTypes",
+        "name": "CalculationTypes",
+        "template": "tests/fixtures/platform_8_3_27/incomplete_borrowed/parent-chart-of-calculation-types.xml",
+        "templateSha256": "33d1f0bc7d49d17ae4e2c03865cbce303cba6fd68b428ffd228df7bca5d5d409",
+        "preImportTransformations": "rename identifiers and self references; set code/description lengths and initial presentation; remove child metadata"
+      },
+      {
+        "kind": "ChartOfCharacteristicTypes",
+        "name": "Properties",
+        "template": "tests/fixtures/acceptance/workspace-metadata-values/src/ChartsOfCharacteristicTypes/Properties.xml",
+        "templateSha256": "1638ee44476cc34749a3939a73074e33fb138133ce16403464213a45e671517f",
+        "preImportTransformations": "rename identifiers and self references; set code/description lengths and initial presentation; remove child metadata"
+      },
+      {
+        "kind": "ExchangePlan",
+        "name": "Exchange",
+        "template": "tests/fixtures/acceptance/workspace-exchange-content/src/ExchangePlans/CorpusExchangePlan.xml",
+        "templateSha256": "afe9df804baaee575460af805f08c9d13383aa344f40c4ae8dd3c87deec69fe0",
+        "preImportTransformations": "rename identifiers and self references; set code/description lengths and initial presentation; remove child metadata"
+      },
+      {
+        "kind": "Task",
+        "name": "Tasks",
+        "template": null,
+        "preImportTransformations": "minimal authored Task descriptor; platform fills native properties and generated types"
+      },
+      {
+        "kind": "Catalog",
+        "name": "Items",
+        "template": "tests/fixtures/platform_8_3_27/new-xml/native-catalog-descriptor.xml",
+        "templateSha256": "3b73bd8e59c50683d1ec80a59f35495c323e8d7fc9907a255ba186dd1592ea31",
+        "preImportTransformations": "rename identifiers and self references; set code/description lengths and initial presentation; remove child metadata"
+      }
+    ],
+    "configurationTemplate": "tests/fixtures/platform_8_3_27/template-new-xml/seed",
+    "configurationTemplateSha256": "dd7430dd62af9a41dcdef7cd03216312ea03e1f7964b819cc1c91109af3c5156",
+    "sourceFiles": [
+      {
+        "path": "Catalogs/Items.xml",
+        "size": 13456,
+        "sha256": "6f3adbc06f55287ea448493ee17a804751531f51a61728c6e7ba1ae70d38ec1f"
+      },
+      {
+        "path": "ChartsOfAccounts/Accounts.xml",
+        "size": 19380,
+        "sha256": "6c5c8476b8514cb6f6f165183777958bb910bbe9d3924680055ee8995fb6da97"
+      },
+      {
+        "path": "ChartsOfCalculationTypes/CalculationTypes.xml",
+        "size": 5804,
+        "sha256": "b1b10ac5afe255705c3e287166ebd6d6508f72135b161f655f68155c6424b134"
+      },
+      {
+        "path": "ChartsOfCharacteristicTypes/Properties.xml",
+        "size": 2227,
+        "sha256": "d8c9c0329f2830e60279ab4fee67e82e372966582e1a6561e0ca741c9ee2aeac"
+      },
+      {
+        "path": "Configuration.xml",
+        "size": 10442,
+        "sha256": "05ba1b4233a0bf976c86e11727205cd43fa197bc27e737d4546d8f75024ef418"
+      },
+      {
+        "path": "ExchangePlans/Exchange/Ext/Content.xml",
+        "size": 118,
+        "sha256": "e18bf4e389c3649cf997a98638f3a84ec55403180e975d3c0c4aa7d0af949848"
+      },
+      {
+        "path": "ExchangePlans/Exchange.xml",
+        "size": 12158,
+        "sha256": "17ab03c5f7205314c33ec690c51e7bdf8fa4dd9bfb16e6de21b3d97294caaaec"
+      },
+      {
+        "path": "Ext/ClientApplicationInterface.xml",
+        "size": 836,
+        "sha256": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+      },
+      {
+        "path": "Languages/Русский.xml",
+        "size": 1251,
+        "sha256": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+      },
+      {
+        "path": "Tasks/Tasks.xml",
+        "size": 1733,
+        "sha256": "55ed78940b40850da50143b72331d8cea79d88332f30d5ae5f043e2160337b6f"
+      }
+    ]
+  },
+  "cycles": {
+    "baseline": "authored minimal seed -> fresh baseline1 infobase -> raw export1 -> fresh baseline2 infobase -> raw export2 retained byte-for-byte in src/",
+    "changedCopy": "raw export2 copy; replace DefaultPresentation in six descriptors and FoldersOnTop for hierarchical characteristic types; fresh modified1 and modified2 infobases",
+    "baselineChangedFilesBetweenExports": [
+      "ConfigDumpInfo.xml"
+    ],
+    "modifiedChangedFilesBetweenExports": [
+      "ConfigDumpInfo.xml"
+    ]
+  },
+  "evidence": {
+    "report": ".session-temp/platform-1693/report.json",
+    "reportSha256": "288e8466088a56c1c8a8a69dddb26c5627749d37a3840cf7273116deaaca8a64",
+    "result": "18 successful import/apply, check and export commands across six isolated infobases; two seed-preparation failures are recorded separately"
+  },
+  "baselineFacts": {
+    "ChartsOfAccounts/Accounts.xml": {
+      "Name": "Accounts",
+      "DefaultPresentation": "AsDescription",
+      "CodeLength": "9",
+      "DescriptionLength": "50"
+    },
+    "ChartsOfCalculationTypes/CalculationTypes.xml": {
+      "Name": "CalculationTypes",
+      "DefaultPresentation": "AsDescription",
+      "CodeLength": "9",
+      "DescriptionLength": "50"
+    },
+    "ChartsOfCharacteristicTypes/Properties.xml": {
+      "Name": "Properties",
+      "DefaultPresentation": "AsDescription",
+      "CodeLength": "9",
+      "DescriptionLength": "50",
+      "Hierarchical": "true",
+      "FoldersOnTop": "true"
+    },
+    "ExchangePlans/Exchange.xml": {
+      "Name": "Exchange",
+      "DefaultPresentation": "AsDescription",
+      "CodeLength": "9",
+      "DescriptionLength": "50"
+    },
+    "Tasks/Tasks.xml": {
+      "Name": "Tasks",
+      "DefaultPresentation": "AsDescription",
+      "DescriptionLength": "50",
+      "NumberLength": "9"
+    },
+    "Catalogs/Items.xml": {
+      "Name": "Items",
+      "DefaultPresentation": "AsDescription",
+      "CodeLength": "9",
+      "DescriptionLength": "50",
+      "Hierarchical": "false",
+      "FoldersOnTop": "true"
+    }
+  },
+  "changedCopyFacts": {
+    "ChartsOfAccounts/Accounts.xml": {
+      "Name": "Accounts",
+      "DefaultPresentation": "AsCode",
+      "CodeLength": "9",
+      "DescriptionLength": "50"
+    },
+    "ChartsOfCalculationTypes/CalculationTypes.xml": {
+      "Name": "CalculationTypes",
+      "DefaultPresentation": "AsCode",
+      "CodeLength": "9",
+      "DescriptionLength": "50"
+    },
+    "ChartsOfCharacteristicTypes/Properties.xml": {
+      "Name": "Properties",
+      "DefaultPresentation": "AsCode",
+      "CodeLength": "9",
+      "DescriptionLength": "50",
+      "Hierarchical": "true",
+      "FoldersOnTop": "false"
+    },
+    "ExchangePlans/Exchange.xml": {
+      "Name": "Exchange",
+      "DefaultPresentation": "AsCode",
+      "CodeLength": "9",
+      "DescriptionLength": "50"
+    },
+    "Tasks/Tasks.xml": {
+      "Name": "Tasks",
+      "DefaultPresentation": "AsNumber",
+      "DescriptionLength": "50",
+      "NumberLength": "9"
+    },
+    "Catalogs/Items.xml": {
+      "Name": "Items",
+      "DefaultPresentation": "AsCode",
+      "CodeLength": "9",
+      "DescriptionLength": "50",
+      "Hierarchical": "false",
+      "FoldersOnTop": "true"
+    }
+  },
+  "files": [
+    {
+      "path": "src/Catalogs/Items.xml",
+      "size": 13793,
+      "sha256": "ca1a36cb07fa382c9f4c61dff5692351db4af286a61132e1b2a8f7a6ff99b6b6"
+    },
+    {
+      "path": "src/ChartsOfAccounts/Accounts.xml",
+      "size": 19866,
+      "sha256": "8651d91e811208762991dea258cc3ada0dfdd5e4ee7dc4cc51c53fb3c750a45d"
+    },
+    {
+      "path": "src/ChartsOfCalculationTypes/CalculationTypes.xml",
+      "size": 5904,
+      "sha256": "80efb667ad8d44ad4db172e6c848c32c2e6d6f9cb61c44e461536e7e9176a0e0"
+    },
+    {
+      "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+      "size": 4763,
+      "sha256": "1c403ffe22c7ccba95c1c621d174c3b515b5368441d580f051ef17c02e74e6de"
+    },
+    {
+      "path": "src/ConfigDumpInfo.xml",
+      "size": 1849,
+      "sha256": "08a646ee5743d59a76213c99587ff3393194ab4e67a2dd41be54f549d46d7c05"
+    },
+    {
+      "path": "src/Configuration.xml",
+      "size": 10727,
+      "sha256": "f7fc40bf7c729cc9d80575875fa9dc9cc3bfc65e0a3f96c73c11970e86cad007"
+    },
+    {
+      "path": "src/ExchangePlans/Exchange/Ext/Content.xml",
+      "size": 265,
+      "sha256": "22b5a6dcdfad07f29c3af911a487edc1c7c1222e5415ab65ca366d77f85181eb"
+    },
+    {
+      "path": "src/ExchangePlans/Exchange.xml",
+      "size": 12455,
+      "sha256": "ef3399c94bbd38135c77c3d9e4c45987c9c3831601939654dfdbc61cb16dd017"
+    },
+    {
+      "path": "src/Ext/ClientApplicationInterface.xml",
+      "size": 836,
+      "sha256": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+    },
+    {
+      "path": "src/Languages/Русский.xml",
+      "size": 1251,
+      "sha256": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+    },
+    {
+      "path": "src/Tasks/Tasks.xml",
+      "size": 4000,
+      "sha256": "826e245720c745a0bc5852a51ff0b8d46d5a57214051e10039b8765233870b66"
+    }
+  ],
+  "emptyDirectories": [],
+  "restoredFacts": {
+    "Catalogs/Items.xml": {
+      "DefaultPresentation": "AsDescription",
+      "Hierarchical": "false",
+      "FoldersOnTop": "true"
+    },
+    "ChartsOfAccounts/Accounts.xml": {
+      "DefaultPresentation": "AsDescription"
+    },
+    "ChartsOfCalculationTypes/CalculationTypes.xml": {
+      "DefaultPresentation": "AsDescription"
+    },
+    "ChartsOfCharacteristicTypes/Properties.xml": {
+      "DefaultPresentation": "AsDescription",
+      "Hierarchical": "true",
+      "FoldersOnTop": "true"
+    },
+    "ExchangePlans/Exchange.xml": {
+      "DefaultPresentation": "AsDescription"
+    },
+    "Tasks/Tasks.xml": {
+      "DefaultPresentation": "AsDescription"
+    }
+  },
+  "nonhierarchicalFacts": {
+    "Catalogs/Items.xml": {
+      "DefaultPresentation": "AsDescription",
+      "Hierarchical": "false",
+      "FoldersOnTop": "true"
+    },
+    "ChartsOfAccounts/Accounts.xml": {
+      "DefaultPresentation": "AsDescription"
+    },
+    "ChartsOfCalculationTypes/CalculationTypes.xml": {
+      "DefaultPresentation": "AsDescription"
+    },
+    "ChartsOfCharacteristicTypes/Properties.xml": {
+      "DefaultPresentation": "AsDescription",
+      "Hierarchical": "false",
+      "FoldersOnTop": "false"
+    },
+    "ExchangePlans/Exchange.xml": {
+      "DefaultPresentation": "AsDescription"
+    },
+    "Tasks/Tasks.xml": {
+      "DefaultPresentation": "AsDescription"
+    }
+  }
+}

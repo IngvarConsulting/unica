@@ -374,7 +374,7 @@ mod tests {
             (
                 MetadataKind::Task,
                 json!({"DefaultPresentation":"AsNumber"}),
-                false,
+                true,
             ),
             (
                 MetadataKind::Task,
