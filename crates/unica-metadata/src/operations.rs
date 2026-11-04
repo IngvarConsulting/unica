@@ -559,6 +559,7 @@ pub struct MetaElementUpdateInput {
     pub indexing: Option<String>,
     /// `DenyIncompleteValues` of a register dimension.
     pub deny_incomplete_values: Option<bool>,
+    pub type_reduction_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -573,6 +574,7 @@ pub struct MetaElementUpdate {
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
     pub deny_incomplete_values: Option<bool>,
+    pub type_reduction_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -858,6 +860,7 @@ impl MetaElementUpdate {
             && input.position.is_none()
             && input.indexing.is_none()
             && input.deny_incomplete_values.is_none()
+            && input.type_reduction_mode.is_none()
         {
             return Err(invalid_operation(
                 field,
@@ -869,6 +872,16 @@ impl MetaElementUpdate {
                 format!("{field}.denyIncompleteValues"),
                 "denyIncompleteValues is a property of register dimensions",
             ));
+        }
+        if let Some(value) = &input.type_reduction_mode {
+            if collection != MetaCollection::Dimensions
+                || !matches!(value.as_str(), "Deny" | "TransformValues")
+            {
+                return Err(invalid_operation(
+                    format!("{field}.typeReductionMode"),
+                    "typeReductionMode requires a dimension and Deny or TransformValues",
+                ));
+            }
         }
         let spec = metadata_collection_spec(collection);
         validate_element_fields(
@@ -893,6 +906,7 @@ impl MetaElementUpdate {
             position: input.position,
             indexing: input.indexing,
             deny_incomplete_values: input.deny_incomplete_values,
+            type_reduction_mode: input.type_reduction_mode,
         })
     }
 }
@@ -1698,6 +1712,13 @@ pub fn validate_metadata_operation_capabilities(
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
             for (index, element) in elements.iter().enumerate() {
+                if element.type_reduction_mode.is_some()
+                    && (owner_kind != MetadataKind::InformationRegister
+                        || *collection != MetaCollection::Dimensions
+                        || scope.is_some())
+                {
+                    return Err(invalid_operation(format!("elements[{index}].typeReductionMode"), "typeReductionMode is available only for direct information register dimensions"));
+                }
                 if element.deny_incomplete_values.is_some()
                     && !metadata_deny_incomplete_values_is_allowed(owner_kind)
                 {
@@ -3404,5 +3425,100 @@ mod tests {
         .unwrap();
 
         assert!(update.validate_targets(&existing).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod reduction_tests {
+    use super::*;
+    use crate::contracts::{metadata_member_add, metadata_member_set, MetadataSite};
+    #[test]
+    fn reduction_contract_and_model_keep_the_owner_collection_and_input_matrix_closed() {
+        for owner in MetadataKind::ALL {
+            for in_section in [false, true] {
+                let site = Some(MetadataSite {
+                    owner: *owner,
+                    in_section,
+                });
+                for collection in [
+                    MetaCollection::Dimensions,
+                    MetaCollection::Resources,
+                    MetaCollection::Attributes,
+                ] {
+                    let expected = *owner == MetadataKind::InformationRegister
+                        && collection == MetaCollection::Dimensions
+                        && !in_section;
+                    let schema = metadata_member_set(collection, site).schema;
+                    assert_eq!(
+                        schema["properties"]["values"]["properties"]
+                            .get("typeReductionMode")
+                            .is_some(),
+                        expected,
+                        "{owner:?} {collection:?} {in_section}"
+                    );
+                    assert!(
+                        metadata_member_add(collection, site).schema["properties"]["items"]
+                            ["items"]["properties"]
+                            .get("typeReductionMode")
+                            .is_none()
+                    );
+                }
+            }
+        }
+        for value in ["Deny", "TransformValues"] {
+            let input = crate::request::parse_element_update(
+                &serde_json::json!({"name":"Item", "typeReductionMode": value}),
+                "element",
+            )
+            .unwrap();
+            let element =
+                MetaElementUpdate::convert_at(MetaCollection::Dimensions, input.clone(), "element")
+                    .unwrap();
+            assert_eq!(element.type_reduction_mode.as_deref(), Some(value));
+            assert!(
+                MetaElementUpdate::convert_at(MetaCollection::Resources, input, "element").is_err()
+            );
+            for kind in [
+                MetadataKind::InformationRegister,
+                MetadataKind::AccumulationRegister,
+            ] {
+                let owner = MetadataAddress::parse(
+                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("{}.Facts", kind.as_str()),
+                )
+                .unwrap();
+                let op = MetaEditOperation::Update {
+                    collection: MetaCollection::Dimensions,
+                    scope: None,
+                    elements: vec![element.clone()],
+                };
+                assert_eq!(
+                    validate_metadata_operation_capabilities(kind, &owner, &op).is_ok(),
+                    kind == MetadataKind::InformationRegister
+                );
+            }
+        }
+        for value in [
+            serde_json::json!("DeleteData"),
+            serde_json::json!("deny"),
+            serde_json::json!("Future"),
+            serde_json::json!(""),
+            serde_json::json!(false),
+            serde_json::json!(null),
+            serde_json::json!(1),
+        ] {
+            assert!(crate::request::parse_element_update(
+                &serde_json::json!({"name":"Item", "typeReductionMode":value}),
+                "element"
+            )
+            .is_err());
+        }
+        for key in ["TypeReductionMode", "unknown"] {
+            assert!(crate::request::parse_element_update(
+                &serde_json::json!({"name":"Item", key:"Deny"}),
+                "element"
+            )
+            .is_err());
+        }
     }
 }

@@ -681,6 +681,14 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<FormInfoData, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
+        if form_content_profile(&descriptor)
+            .is_ok_and(|profile| profile == MetadataChildProfile::OrdinaryForm)
+        {
+            return Err(ViewError::new(RefusalCode::UnsupportedSource, format!(
+                "ordinary Form.bin content is not supported; read `{}:{}.Metadata` for the form declaration",
+                self.source_set(), target.as_str(),
+            )));
+        }
         let relative = self.attached_resource_relative(target, "Form.xml")?;
         let bytes = self.read_relative_whole(&relative)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
@@ -1223,6 +1231,27 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "FunctionalOption" {
+            let name = target.as_str().split('.').nth(1).unwrap_or_default();
+            match std::str::from_utf8(&descriptor)
+                .map_err(|error| error.to_string())
+                .and_then(|source| unica_metadata_designer::functional_option::read(source, name))
+            {
+                Ok((location, flag)) => {
+                    if !payload["properties"].is_array() {
+                        payload["properties"] = json!([]);
+                    }
+                    let properties = payload["properties"]
+                        .as_array_mut()
+                        .expect("identity property array");
+                    properties.push(json!({"key":"Location", "value":unica_metadata::MetaObservedPropertyValue::Text { value: location }}));
+                    properties.push(json!({"key":"PrivilegedGetMode", "value":unica_metadata::MetaObservedPropertyValue::Boolean { value: flag }}));
+                }
+                Err(message) => {
+                    payload["unreadable"] = json!([{"field":"properties", "message":message}])
+                }
+            }
+        }
         if evidence.artifact_kind() == "SessionParameter" {
             match unica_metadata_designer::session_parameter_comment::read_comment(&descriptor) {
                 Ok(Some(comment)) => {
@@ -1250,6 +1279,71 @@ impl ProviderReadAuthority {
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
         }
         Ok(payload)
+    }
+
+    pub(crate) fn wsreference_payload(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
+        // Prove the admitted descriptor's identity before opening its companion.
+        let mut payload = self.identity_metadata_payload(target)?;
+        let relative = self.attached_resource_relative(target, "WSDefinition.xml")?;
+        let definition = if self.open_buffer(&relative).is_none()
+            && self.wsreference_companion_is_directory(&relative, checkpoint)?
+        {
+            unica_metadata::wsdl::Definition::unavailable(
+                "local WSDL companion WSDefinition.xml is a directory; its declarations are unknown",
+            )
+        } else {
+            match self.read_optional_relative_with_checkpoint(&relative, checkpoint)? {
+                Some(bytes) => unica_metadata_designer::wsdl_read::read(&bytes, checkpoint)?,
+                None => unica_metadata::wsdl::Definition::unavailable(
+                    "local WSDL companion WSDefinition.xml is absent; its declarations are unknown",
+                ),
+            }
+        };
+        payload["wsdlDefinition"] = serde_json::to_value(definition).map_err(|error| {
+            ViewError::new(
+                RefusalCode::InvalidResult,
+                format!("cannot serialize local WSDL observation: {error}"),
+            )
+        })?;
+        Ok(payload)
+    }
+
+    fn wsreference_companion_is_directory(
+        &self,
+        relative: &Path,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<bool, ViewError> {
+        use unica_source_contract::read::SourceEntry;
+
+        let mut directory = self.root.as_ref().clone();
+        let mut components = relative.components().peekable();
+        while let Some(component) = components.next() {
+            checkpoint()?;
+            let entry = match directory.retain_immediate_child_nofollow(component.as_os_str()) {
+                Ok(entry) => entry,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => {
+                    return Err(ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
+                        error.to_string(),
+                    ))
+                }
+            };
+            checkpoint()?;
+            if components.peek().is_none() {
+                return Ok(matches!(entry, SourceEntry::Directory(_)));
+            }
+            match entry {
+                SourceEntry::Directory(child) => directory = child,
+                // Let the existing no-follow reader retain its precise refusal.
+                _ => return Ok(false),
+            }
+        }
+        Ok(false)
     }
 
     pub(crate) fn metadata_owner_evidence(
@@ -2371,6 +2465,22 @@ fn encode_export_path_components<'a>(
         encoded.push_str(component);
     }
     Ok(encoded)
+}
+
+/// Only a proven Ordinary discriminator changes the content reader. A damaged
+/// declaration keeps the existing Form.xml path and its independent diagnostics;
+/// neither unrelated properties nor a support UUID decide the content format.
+fn form_content_profile(descriptor: &[u8]) -> Result<MetadataChildProfile, String> {
+    use unica_metadata_designer::validation::{
+        exact_mdclasses_children, exact_metadata_artifact, form_profile, MetadataAdmission,
+    };
+    let (_, document) = unica_xml_format::read::parse_metadata_image(descriptor)?;
+    let artifact = exact_metadata_artifact(&document, MetadataAdmission::Read)?;
+    let properties = exact_mdclasses_children(artifact, "Properties", "Form descriptor")?;
+    let [properties] = properties.as_slice() else {
+        return Err("Form descriptor must contain one Properties element".to_string());
+    };
+    form_profile(*properties)
 }
 
 /// Missing marker is proven absence; with a marker the descriptor UUID is
