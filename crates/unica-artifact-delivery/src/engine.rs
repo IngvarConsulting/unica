@@ -77,7 +77,7 @@ fn next_step(tool: &str, target: &str, stage: EngineStage, install_mode: Install
             "check that security software and file permissions allow Unica's bundled {tool} to run, then repeat the call"
         ),
         (_, InstallMode::Source) => format!(
-            "build it from third-party/tools.lock.json: python3 scripts/ci/build-unica-tools.py --target {target}"
+            "from the checkout root run: python3.12 scripts/ci/build-unica-tools.py --dev --target {target} (Windows: py -3.12); then restart the Unica daemon and repeat the call"
         ),
         (EngineStage::Delivery, InstallMode::Marketplace) => format!(
             "it is delivered by the next call that needs {tool}; reinstall the Unica plugin if it never arrives"

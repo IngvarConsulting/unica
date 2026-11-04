@@ -21,6 +21,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 from collections import defaultdict
 from collections.abc import Callable
@@ -895,18 +896,58 @@ def build_locked_bundle(
     return cargo_build_seconds, archive_download_seconds
 
 
+def build_dev_bundle(args: argparse.Namespace, lock: dict, cfg: dict) -> tuple[float, float]:
+    """Publish a new local runtime without replacing files used by a running daemon."""
+    plugin = args.repo_root.resolve() / "plugins/unica"
+    dev_root = plugin / ".dev-tools"
+    lock_digest = sha256(args.lock_file)
+    if load_lock(args.lock_file) != lock:
+        raise SystemExit("tools lock changed before the dev build; retry the command")
+    output = dev_root / uuid.uuid4().hex
+    result = build_bundle_atomically(
+        output, lambda staging: build_locked_bundle(args, lock, cfg, output_dir=staging)
+    )
+    bundle = json.loads((output / "tools.json").read_text(encoding="utf-8"))
+    if sha256(args.lock_file) != lock_digest:
+        raise SystemExit("tools lock changed during the dev build; retry the command")
+    for tool in bundle["tools"]:
+        tool["binaryPath"] = (output.relative_to(plugin) / tool["binaryPath"]).as_posix()
+    manifest = {
+        "schemaVersion": 2,
+        "sourceManifest": True,
+        "sourceLockSha256": lock_digest,
+        "targetTriple": bundle["targetTriple"],
+        "tools": bundle["tools"],
+    }
+    temporary = dev_root / f"manifest-{output.name}.tmp"
+    try:
+        temporary.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, dev_root / "manifest.json")
+    finally:
+        temporary.unlink(missing_ok=True)
+    print(f"Dev tools ready in {output}; restart the Unica daemon before retrying.", flush=True)
+    return result
+
+
 def main() -> None:
     if sys.version_info < (3, 12):
         raise SystemExit("build-unica-tools.py requires Python >= 3.12")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", required=True)
-    parser.add_argument("--lock-file", type=Path, default=Path("plugins/unica/third-party/tools.lock.json"))
+    parser.add_argument("--lock-file", type=Path)
     parser.add_argument("--repo-root", type=Path, default=Path("."))
-    parser.add_argument("--out-dir", type=Path, required=True)
+    destination = parser.add_mutually_exclusive_group(required=True)
+    destination.add_argument("--out-dir", type=Path)
+    destination.add_argument("--dev", action="store_true", help="prepare checkout tools without packaging")
     parser.add_argument("--work-dir", type=Path, default=Path(".build/unica-tools"))
     parser.add_argument("--metrics-file", type=Path)
     args = parser.parse_args()
+    source_lock = args.repo_root.resolve() / "plugins/unica/third-party/tools.lock.json"
+    if args.lock_file is None:
+        args.lock_file = source_lock
+    if args.dev and args.lock_file.resolve() != source_lock:
+        parser.error("--dev uses the checkout's plugins/unica/third-party/tools.lock.json")
 
     lock = load_lock(args.lock_file)
     targets = lock["targets"]
@@ -915,15 +956,13 @@ def main() -> None:
 
     assert_host(args.target, targets)
     cfg = targets[args.target]
-    cargo_build_seconds, archive_download_seconds = build_bundle_atomically(
-        args.out_dir,
-        lambda output_dir: build_locked_bundle(
-            args,
-            lock,
-            cfg,
-            output_dir=output_dir,
-        ),
-    )
+    if args.dev:
+        cargo_build_seconds, archive_download_seconds = build_dev_bundle(args, lock, cfg)
+    else:
+        cargo_build_seconds, archive_download_seconds = build_bundle_atomically(
+            args.out_dir,
+            lambda output_dir: build_locked_bundle(args, lock, cfg, output_dir=output_dir),
+        )
     if args.metrics_file is not None:
         write_build_metrics(
             args.metrics_file,
