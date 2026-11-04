@@ -28,9 +28,11 @@ import re
 import tomllib
 import tempfile
 import unittest
+from unittest.mock import patch
 from copy import deepcopy
 from functools import cache
 from pathlib import Path
+from types import SimpleNamespace
 
 from tree_sitter import Language, Parser
 import tree_sitter_rust
@@ -144,6 +146,119 @@ class ComponentSourceOwnershipTests(unittest.TestCase):
             self.assertEqual(terms, ["(binary(unica_network) & test(/^(tests|windows_tests)::/))"])
 
 
+class MeasuredPlatformTests(unittest.TestCase):
+    UNIX_CASE = (
+        "unica-execution", "unica_execution",
+        "store::file_tests::raw_frame_exact_result_bound_reopens_and_rejects_corruption",
+    )
+
+    @staticmethod
+    def inventory(module):
+        suites = {}
+        for case in module.MEASURED_MEDIUM_CASES:
+            binary_id, binary_name, name = case[:3]
+            suite = suites.setdefault(binary_id, {
+                "kind": "lib", "binary-id": binary_id,
+                "binary-name": binary_name, "testcases": {},
+            })
+            suite["testcases"][name] = {}
+        return {"rust-suites": suites}
+
+    def test_windows_inventory_preserves_the_unix_case_and_shared_blocks(self):
+        module = load_size_filters()
+        listed = self.inventory(module)
+        full = module.medium_terms(listed, {})
+        windows = deepcopy(listed)
+        binary_id, binary_name, name = self.UNIX_CASE
+        del windows["rust-suites"][binary_id]["testcases"][name]
+        with patch.object(module, "os", SimpleNamespace(name="nt")):
+            selected = module.medium_terms(windows, {})
+        self.assertEqual(selected, full)
+        self.assertIn(f"(binary({binary_name}) & test(/^{re.escape(name)}$/))", selected)
+        self.assertEqual(module.blocks(selected, "test(/^large$/)", ["binary(platform)"]),
+                         module.blocks(full, "test(/^large$/)", ["binary(platform)"]))
+
+    def test_write_from_windows_inventory_keeps_the_complete_unix_config(self):
+        module = load_size_filters()
+        listed = self.inventory(module)
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config = root / ".config/nextest.toml"
+            config.parent.mkdir()
+            config.write_bytes(NEXTEST_TOML.read_bytes())
+            module.REPO_ROOT, module.NEXTEST_TOML = root, config
+            with patch.object(module, "source_modules", return_value={}), \
+                    patch.object(module, "platform_terms", return_value=["binary(platform)"]):
+                with patch.object(module, "os", SimpleNamespace(name="posix")), \
+                        patch.object(module, "nextest_list", return_value=listed):
+                    self.assertEqual(module.main(["--write"]), 0)
+                before = config.read_bytes()
+                windows = deepcopy(listed)
+                binary_id, _, name = self.UNIX_CASE
+                del windows["rust-suites"][binary_id]["testcases"][name]
+                with patch.object(module, "os", SimpleNamespace(name="nt")), \
+                        patch.object(module, "nextest_list", return_value=windows):
+                    self.assertEqual(module.main(["--write"]), 0)
+                self.assertEqual(config.read_bytes(), before)
+
+    def test_missing_unix_case_still_fails_on_unix(self):
+        module = load_size_filters()
+        listed = self.inventory(module)
+        binary_id, _, name = self.UNIX_CASE
+        del listed["rust-suites"][binary_id]["testcases"][name]
+        with patch.object(module, "os", SimpleNamespace(name="posix")), self.assertRaisesRegex(ValueError, "must exist once"):
+            module.measured_medium_terms(listed)
+
+    def test_windows_still_rejects_missing_or_renamed_available_test(self):
+        module = load_size_filters()
+        binary_id, _, name = module.MEASURED_MEDIUM_CASES[0][:3]
+        for renamed in (False, True):
+            with self.subTest(renamed=renamed):
+                listed = self.inventory(module)
+                cases = listed["rust-suites"][binary_id]["testcases"]
+                del cases[name]
+                if renamed:
+                    cases[name + "_renamed"] = {}
+                with patch.object(module, "os", SimpleNamespace(name="nt")), self.assertRaisesRegex(ValueError, "must exist once"):
+                    module.measured_medium_terms(listed)
+
+    def test_present_unix_case_is_validated_even_on_windows(self):
+        module = load_size_filters()
+        module.MEASURED_MEDIUM_CASES = tuple(case for case in module.MEASURED_MEDIUM_CASES if case[:3] == self.UNIX_CASE)
+        binary_id, _, name = self.UNIX_CASE
+        for field, value in (("kind", "bin"), ("binary-id", "foreign"), ("binary-name", "foreign_binary")):
+            listed = self.inventory(module)
+            listed["rust-suites"][binary_id][field] = value
+            with self.subTest(field=field), patch.object(module, "os", SimpleNamespace(name="nt")), self.assertRaisesRegex(ValueError, "another binary"):
+                module.measured_medium_terms(listed)
+        duplicate = self.inventory(module)
+        duplicate["rust-suites"]["foreign"] = {
+            "kind": "lib", "binary-id": "foreign", "binary-name": "foreign_binary",
+            "testcases": {name: {}},
+        }
+        with patch.object(module, "os", SimpleNamespace(name="nt")), self.assertRaisesRegex(ValueError, "must exist once"):
+            module.measured_medium_terms(duplicate)
+
+    def test_rejected_inventory_leaves_config_bytes_unchanged(self):
+        module = load_size_filters()
+        listed = self.inventory(module)
+        binary_id, _, name = module.MEASURED_MEDIUM_CASES[0][:3]
+        del listed["rust-suites"][binary_id]["testcases"][name]
+        before = NEXTEST_TOML.read_bytes()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            config = root / ".config/nextest.toml"
+            config.parent.mkdir()
+            config.write_bytes(before)
+            module.REPO_ROOT, module.NEXTEST_TOML = root, config
+            with patch.object(module, "os", SimpleNamespace(name="nt")), patch.object(module, "nextest_list", return_value=listed), \
+                    patch.object(module, "source_modules", return_value={}), \
+                    patch.object(module, "platform_terms", return_value=["binary(platform)"]), \
+                    self.assertRaisesRegex(ValueError, "must exist once"):
+                module.main(["--write"])
+            self.assertEqual(config.read_bytes(), before)
+
+
 class SizeGuardTests(unittest.TestCase):
     def setUp(self) -> None:
         self.config = tomllib.loads(NEXTEST_TOML.read_text(encoding="utf-8"))
@@ -164,7 +279,7 @@ class SizeGuardTests(unittest.TestCase):
     def test_measured_volume_case_is_exact_medium_without_its_layout_neighbor(self) -> None:
         module = load_size_filters()
         suites = {}
-        for binary_id, binary_name, name in module.MEASURED_MEDIUM_CASES:
+        for binary_id, binary_name, name, _ in module.MEASURED_MEDIUM_CASES:
             suite = suites.setdefault(binary_id, {
                 "kind": "lib", "binary-id": binary_id, "binary-name": binary_name, "testcases": {},
             })
@@ -172,19 +287,19 @@ class SizeGuardTests(unittest.TestCase):
         terms = module.medium_terms({"rust-suites": suites}, {})
         expected = sorted(
             f"(binary({binary_name}) & test(/^{re.escape(name)}$/))"
-            for _, binary_name, name in module.MEASURED_MEDIUM_CASES
+            for _, binary_name, name, _ in module.MEASURED_MEDIUM_CASES
         )
         self.assertEqual(terms, expected)
         spec = importlib.util.spec_from_file_location("allure_results", REPO_ROOT / "scripts" / "ci" / "allure_results.py")
         results = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(results)
         matcher = results.SizeMatcher.from_toml(NEXTEST_TOML)
-        for (binary_id, _, name), term in zip(module.MEASURED_MEDIUM_CASES, module.measured_medium_terms({"rust-suites": suites}), strict=True):
+        for (binary_id, _, name, _), term in zip(module.MEASURED_MEDIUM_CASES, module.measured_medium_terms({"rust-suites": suites}), strict=True):
             with self.subTest(name=name):
                 self.assertIn(term, self.medium)
                 self.assertIsNotNone(re.fullmatch(re.search(r"test\(/(.*?)/\)", term)[1], name))
                 self.assertEqual(matcher.size(binary_id, name), "medium")
-        binary_id, binary_name, name = module.MEASURED_MEDIUM_CASES[0]
+        binary_id, binary_name, name = module.MEASURED_MEDIUM_CASES[0][:3]
         pattern = re.search(r"test\(/(.*?)/\)", module.measured_medium_terms({"rust-suites": suites})[0])[1]
         for neighbor in [name + "_neighbor", name.rsplit("::", 1)[0] + "::malformed_project_config_is_a_typed_incomplete_snapshot"]:
             self.assertIsNone(re.fullmatch(pattern, neighbor))
@@ -193,7 +308,7 @@ class SizeGuardTests(unittest.TestCase):
 
     def test_measured_volume_case_refuses_missing_renamed_or_wrong_binary(self) -> None:
         module = load_size_filters()
-        binary_id, binary_name, name = module.MEASURED_MEDIUM_CASES[0]
+        binary_id, binary_name, name = module.MEASURED_MEDIUM_CASES[0][:3]
         base = {"rust-suites": {binary_id: {
             "kind": "lib", "binary-id": binary_id, "binary-name": binary_name,
             "testcases": {name: {}},

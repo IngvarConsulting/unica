@@ -176,3 +176,119 @@ fn data_history_document_preserves_neighbors_and_inactive_flags() {
 fn data_history_register_preserves_neighbors_and_inactive_flags() {
     verify_history("InformationRegister", "InformationRegisters", "Цены");
 }
+
+fn verify_prefixed_history(key: &str, old: Value, new: Value) {
+    for (kind, file, name) in [
+        ("Catalog", "Catalogs/Codes.xml", "Codes"),
+        ("Document", "Documents/Приход.xml", "Приход"),
+        (
+            "InformationRegister",
+            "InformationRegisters/Цены.xml",
+            "Цены",
+        ),
+    ] {
+        let fixture = Fixture::new("workspace-data-history-settings");
+        let path = fixture.source.join(file);
+        let initial = std::fs::read_to_string(&path).unwrap();
+        let doc = roxmltree::Document::parse(&initial).unwrap();
+        let mut inserts = Vec::new();
+        for node in doc.descendants().filter(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
+        }) {
+            let range = node.range();
+            inserts.push(range.start + 1);
+            if let Some(close) = initial[range.clone()].rfind("</") {
+                inserts.push(range.start + close + 2);
+            }
+        }
+        inserts.sort_unstable_by(|a, b| b.cmp(a));
+        let mut prefixed = initial.clone();
+        for offset in inserts {
+            prefixed.insert_str(offset, "md:");
+        }
+        prefixed = prefixed.replacen(
+            "xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
+            "xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\"",
+            1,
+        );
+        let doc = roxmltree::Document::parse(&prefixed).unwrap();
+        let properties = doc
+            .descendants()
+            .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Properties")))
+            .unwrap();
+        assert_eq!(properties.lookup_namespace_uri(None), None);
+        std::fs::write(&path, &prefixed).unwrap();
+        let project = std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap();
+        let mut expected = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        let runtime = runtime();
+        let at = format!("main:{kind}.{name}");
+        assert_eq!(view(&runtime, &fixture, &at)["props"][key], old);
+        let scalar = |value: &Value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string())
+        };
+        let before = format!("<md:{key}>{}</md:{key}>", scalar(&old));
+        let after = format!("<md:{key}>{}</md:{key}>", scalar(&new));
+        assert_eq!(prefixed.matches(&before).count(), 1);
+        expected.insert(
+            PathBuf::from(file),
+            prefixed.replace(&before, &after).into_bytes(),
+        );
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":at,"ops":[{"op":"props.set","args":{"values":{key:new}}}]}),
+        );
+        assert_eq!(view(&runtime, &fixture, &at)["props"][key], new);
+        let actual = std::fs::read_to_string(&path).unwrap();
+        let doc = roxmltree::Document::parse(&actual).unwrap();
+        let properties = doc
+            .descendants()
+            .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Properties")))
+            .unwrap();
+        let changed = properties
+            .children()
+            .find(|node| node.is_element() && node.tag_name().name() == key)
+            .unwrap();
+        assert_eq!(
+            changed.tag_name().namespace(),
+            Some("http://v8.1c.ru/8.3/MDClasses"),
+            "{kind} {key}"
+        );
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            expected,
+            "{kind} {key}"
+        );
+        assert_eq!(
+            std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap(),
+            project
+        );
+    }
+}
+
+#[test]
+fn data_history_enum_preserves_prefixed_property_namespace() {
+    verify_prefixed_history("DataHistory", json!("DontUse"), json!("Use"));
+}
+
+#[test]
+fn data_history_immediate_flag_preserves_prefixed_property_namespace() {
+    verify_prefixed_history(
+        "UpdateDataHistoryImmediatelyAfterWrite",
+        json!(false),
+        json!(true),
+    );
+}
+
+#[test]
+fn data_history_processing_flag_preserves_prefixed_property_namespace() {
+    verify_prefixed_history(
+        "ExecuteAfterWriteDataHistoryVersionProcessing",
+        json!(false),
+        json!(true),
+    );
+}

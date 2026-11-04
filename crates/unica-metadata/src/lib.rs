@@ -10,6 +10,7 @@ mod properties;
 mod results;
 mod schema;
 mod types;
+pub mod wsdl;
 
 pub use diagnostics::*;
 pub use event_subscription::*;
@@ -77,3 +78,5 @@ pub mod configuration;
 pub mod extension;
 
 mod source_contracts;
+
+pub mod style_color;

@@ -1,5 +1,12 @@
+#[path = "metadata_can_tests/ws_reference.rs"]
+mod ws_reference;
+
+#[path = "metadata_can_tests/functional_option.rs"]
+mod functional_option;
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
+#[path = "metadata_can_tests/search_input.rs"]
+mod search_input;
 
 use super::actor_capacity_tests::direct_v5;
 use super::*;
@@ -2821,3 +2828,5 @@ fn an_oversized_form_item_title_is_named_by_a_limit() {
 
 #[path = "metadata_can_tests/data_history.rs"]
 mod data_history;
+#[path = "metadata_can_tests/style_color.rs"]
+mod style_color;
