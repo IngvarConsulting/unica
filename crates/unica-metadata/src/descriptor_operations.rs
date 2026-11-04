@@ -46,6 +46,7 @@ properties_operations!(
 pub enum PropertiesSite {
     Metadata(MetadataKind),
     CommentOnly(NodeKind),
+    FunctionalOption,
     Role,
     Subsystem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
@@ -94,6 +95,7 @@ macro_rules! descriptor_properties {
                     }
                     PropertiesSite::Metadata(_) => false,
                     PropertiesSite::CommentOnly(_) => self == Self::Comment,
+                    PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
                 }
             }
         }
@@ -107,6 +109,8 @@ macro_rules! descriptor_properties {
 // re-export of 8.3.27 resets a configuration's own
 // `ConfigurationExtensionCompatibilityMode`, so only an extension sets it.
 descriptor_properties!(
+    Location => ("Location", "location", String, false, false, false, false),
+    PrivilegedGetMode => ("PrivilegedGetMode", "privilegedGetMode", Boolean, false, false, false, false),
     Synonym => ("Synonym", "synonym", String, true, true, true, true),
     Comment => ("Comment", "comment", String, true, true, true, true),
     Explanation => ("Explanation", "explanation", String, true, false, false, false),
@@ -210,10 +214,10 @@ impl PropertiesSite {
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::FunctionalOption => Some(Self::FunctionalOption),
             NodeKind::Role => Some(Self::Role),
             NodeKind::Subsystem => Some(Self::Subsystem),
             NodeKind::CommonAttribute
-            | NodeKind::FunctionalOption
             | NodeKind::FunctionalOptionsParameter
             | NodeKind::SessionParameter
             | NodeKind::FilterCriterion
@@ -246,7 +250,11 @@ impl PropertiesSite {
         let mut groups = Vec::new();
         match self {
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
-            Self::Role | Self::Subsystem | Self::Configuration { .. } | Self::CommentOnly(_) => {
+            Self::FunctionalOption
+            | Self::Role
+            | Self::Subsystem
+            | Self::Configuration { .. }
+            | Self::CommentOnly(_) => {
                 for field in self.descriptor_fields() {
                     let schema = match field.kind() {
                         DescriptorPropertyKind::String => json!({"type":"string"}),
@@ -254,6 +262,13 @@ impl PropertiesSite {
                         DescriptorPropertyKind::Enum => {
                             json!({"type":"string", "enum":field.allowed_values()})
                         }
+                    };
+                    let schema = if field == DescriptorProperty::Location {
+                        let mut schema = schema;
+                        schema["description"] = json!("Existing Constant.Name, Kind.Name.Attribute.Name, Kind.Name.Resource.Name or Kind.Name.TabularSection.Name.Attribute.Name in this source set, where the owner supports that collection. Empty storage is invalid.");
+                        schema
+                    } else {
+                        schema
                     };
                     for name in field.names() {
                         properties.insert((*name).to_string(), schema.clone());
@@ -289,13 +304,14 @@ impl PropertiesOperation {
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
-                notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
+                notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 example_args: match site {
+                    PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) | PropertiesSite::CommentOnly(_) => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -349,7 +365,6 @@ mod tests {
     fn additional_root_comments_have_a_closed_string_only_profile() {
         for kind in [
             "CommonAttribute",
-            "FunctionalOption",
             "FunctionalOptionsParameter",
             "SessionParameter",
             "FilterCriterion",
@@ -430,6 +445,54 @@ mod tests {
                 "{at}"
             );
         }
+    }
+
+    #[test]
+    fn functional_option_storage_properties_have_an_addressed_contract() {
+        let at = QualifiedAddress::parse("main:FunctionalOption.UseGoods").unwrap();
+        let site = PropertiesSite::from_address(&at).expect("FunctionalOption property profile");
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        assert!(oracle.is_valid(
+            &json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}})
+        ));
+        assert_eq!(
+            contract.schema["properties"]["values"]["properties"]
+                .as_object()
+                .unwrap()
+                .len(),
+            6
+        );
+        for values in [
+            json!({"Comment":"Текст"}),
+            json!({"comment":"Текст", "Location":"Constant.UseGoods", "privilegedGetMode":false}),
+        ] {
+            assert!(oracle.is_valid(&json!({"values":values})), "{values}");
+            assert!(crate::property_input::decode_properties(
+                PropertiesOperation::Set,
+                site,
+                &json!({"values":values}),
+                "args"
+            )
+            .is_ok());
+        }
+        for values in [
+            json!({"Comment":false}),
+            json!({"Unknown":"x"}),
+            json!({"Synonym":"x"}),
+            json!({"Name":"x"}),
+            json!({"Comment":"A", "comment":"B", "Location":"Constant.UseGoods"}),
+        ] {
+            assert!(crate::property_input::decode_properties(
+                PropertiesOperation::Set,
+                site,
+                &json!({"values":values}),
+                "args"
+            )
+            .is_err());
+        }
+        assert!(!oracle.is_valid(&json!({"values":{"PrivilegedGetMode":"true"}})));
+        assert!(!oracle.is_valid(&json!({"values":{"Content":[]}})));
     }
 
     #[test]

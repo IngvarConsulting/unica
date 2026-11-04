@@ -1397,6 +1397,38 @@ fn stage_descriptor_properties(
                 })?;
             (*kind, text)
         }
+        DescriptorPropertyChanges::FunctionalOption(values) => {
+            let text =
+                crate::functional_option::patch(&source, name, values).map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?;
+            let (location, _) = crate::functional_option::read(&text, name).map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            })?;
+            crate::functional_option::validate_location(staged, source_kind, &location).map_err(
+                |message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                        .at_path(format!("ops[{op_index}].args.values.Location"))
+                },
+            )?;
+            let text = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(
+                    &text,
+                    NodeKind::FunctionalOption,
+                    name,
+                    comment,
+                )
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?
+            } else {
+                text
+            };
+            (NodeKind::FunctionalOption, text)
+        }
         DescriptorPropertyChanges::Role(unica_metadata::property_input::RolePropertyChanges {
             synonym,
             comment,
@@ -1558,7 +1590,9 @@ fn stage_descriptor_properties(
             (NodeKind::Configuration, text)
         }
     };
-    let postimage = if matches!(changes, DescriptorPropertyChanges::CommentOnly { .. }) {
+    let postimage = if matches!(changes, DescriptorPropertyChanges::CommentOnly { .. })
+        || matches!(changes, DescriptorPropertyChanges::FunctionalOption(values) if values.comment.is_some())
+    {
         let mut image = preimage[..preimage.len() - source.len()].to_vec();
         image.extend_from_slice(postimage_text.as_bytes());
         image

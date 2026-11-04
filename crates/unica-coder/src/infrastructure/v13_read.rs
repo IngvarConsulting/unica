@@ -380,6 +380,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let path = self.identity_export_path(at)?.ok_or_else(|| {
             ViewError::new(RefusalCode::NotFound, "the logical node has no source file")
         })?;
+        if matches!(at.segments(), [owner, definition]
+            if owner.kind() == NodeKind::WsReference && definition.kind() == NodeKind::Definition)
+        {
+            let target = route
+                .reader_metadata_path()
+                .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "WSDL route has no owner"))?;
+            if !self
+                .read
+                .attached_resource_exists(target, "WSDefinition.xml")?
+            {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the local WSDefinition.xml source file does not exist",
+                ));
+            }
+        }
         if route.reader() == LogicalReader::Form {
             let target = route
                 .reader_metadata_path()
@@ -1343,6 +1359,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(payload);
         }
         let kind = target.as_str().split('.').next().unwrap_or_default();
+        if kind == NodeKind::WsReference.as_str() {
+            return self
+                .read
+                .wsreference_payload(target, &mut || self.read_checkpoint());
+        }
         if kind == NodeKind::WebSocketClient.as_str() {
             let name = target.as_str().split('.').nth(1).unwrap_or_default();
             return Ok(identity_only_metadata_payload(kind, name));
@@ -2355,6 +2376,13 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let target_depth = target.as_str().split('.').count().div_ceil(2);
         let is_detail = at.segments().len() > target_depth;
         let path = match route.reader() {
+            LogicalReader::Metadata
+                if matches!(at.segments(), [owner, definition]
+                if owner.kind() == NodeKind::WsReference && definition.kind() == NodeKind::Definition) =>
+            {
+                self.read
+                    .attached_resource_export_path(target, "WSDefinition.xml")?
+            }
             LogicalReader::Metadata
                 if matches!(at.segments(), [owner, schedule]
                 if owner.kind() == NodeKind::ScheduledJob && schedule.kind() == NodeKind::Schedule) =>

@@ -55,7 +55,7 @@ allowed-tools:
 [соглашениях по метаданным](../../references/platform/metadata-conventions.md).
 
 `props.set` изменяет только строковый `Comment` у существующих
-`CommonAttribute`, `FunctionalOption`, `FunctionalOptionsParameter`,
+`CommonAttribute`, `FunctionalOptionsParameter`,
 `SessionParameter`, `FilterCriterion`, `SettingsStorage`, `CommonCommand`,
 `CommandGroup`, `CommonForm`, `CommonTemplate`, `CommonPicture`, `Language`,
 `IntegrationService`, `DocumentNumerator`, `WSReference`, `XDTOPackage`,
@@ -65,6 +65,14 @@ allowed-tools:
 пустая строка очищает комментарий. Имя `comment` — допустимый псевдоним,
 одновременно оба написания не передаются. Отсутствующий, неоднозначный
 или составной `Comment` требует исправления исходного дескриптора.
+
+У `FunctionalOption` тот же `props.set` поддерживает строковый `Comment`,
+строковый `Location` и булев `PrivilegedGetMode`, в том числе в одном `values`.
+`Location` указывает существующее хранилище: константу, реквизит или ресурс.
+Изменение только `Comment` сохраняет остальные свойства без проверки хранилища;
+при переданном `Location` или `PrivilegedGetMode` хранилище проверяется.
+Пользуйся точным набором полей и псевдонимов из подробного `Can.props.set`.
+
 
 **Член создаётся на владельце, а изменяется и удаляется по своему адресу.**
 `*.add` адресует того, кому член принадлежит, и несёт новые элементы в

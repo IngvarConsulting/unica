@@ -45,9 +45,17 @@ pub enum PropertiesIntent {
         kind: unica_address::address::NodeKind,
         comment: String,
     },
+    FunctionalOption(FunctionalOptionPropertyChanges),
     Role(RolePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionalOptionPropertyChanges {
+    pub comment: Option<String>,
+    pub location: Option<String>,
+    pub privileged_get_mode: Option<bool>,
 }
 
 type DecodeResult<T> = Result<T, ContractError>;
@@ -313,6 +321,24 @@ fn decode_with_contract(
                         )?;
                     }
                     PropertiesIntent::Metadata(changes)
+                }
+                PropertiesSite::FunctionalOption => {
+                    let changes = FunctionalOptionPropertyChanges {
+                        comment: values_reader.string(DescriptorProperty::Comment)?,
+                        location: values_reader.string(DescriptorProperty::Location)?,
+                        privileged_get_mode: values_reader
+                            .boolean(DescriptorProperty::PrivilegedGetMode)?,
+                    };
+                    if changes.location.is_none() && changes.privileged_get_mode.is_none() {
+                        PropertiesIntent::CommentOnly {
+                            kind: unica_address::address::NodeKind::FunctionalOption,
+                            comment: changes
+                                .comment
+                                .ok_or_else(|| invalid(&values_path, "Comment is required"))?,
+                        }
+                    } else {
+                        PropertiesIntent::FunctionalOption(changes)
+                    }
                 }
                 PropertiesSite::Role => PropertiesIntent::Role(RolePropertyChanges {
                     synonym: values_reader.string(DescriptorProperty::Synonym)?,

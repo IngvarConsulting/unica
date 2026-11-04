@@ -89,6 +89,7 @@ pub enum MetadataPlanKind {
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
     CommentOnly { kind: NodeKind, comment: String },
+    FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
     Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
@@ -1105,6 +1106,10 @@ pub fn parse_properties(
                 DescriptorPropertyChanges::CommentOnly { kind, comment },
             )
         }
+        unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
+            "FunctionalOptions",
+            DescriptorPropertyChanges::FunctionalOption(values),
+        ),
         unica_metadata::property_input::PropertiesIntent::Metadata(values) => {
             let (target, _) = metadata_owner(&target, op_index)?;
             return Ok(MetadataPlanKind::Edit {

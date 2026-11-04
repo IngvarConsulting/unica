@@ -20,6 +20,7 @@ use unica_source_designer::roots::root_version_literal;
 use unica_xml_format::text::*;
 use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
 
+mod command_properties;
 mod conditional_appearance;
 
 pub const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
@@ -1442,25 +1443,9 @@ fn form_info_parameters(params: roxmltree::Node<'_, '_>) -> Vec<FormInfoParamete
 }
 
 fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand> {
-    form_children(commands, "Command")
+    form_children_in_ns(commands, "Command", FORM_LOGFORM_NS)
         .into_iter()
-        .map(|command| FormInfoCommand {
-            name: command.attribute("name").unwrap_or("").to_string(),
-            actions: form_children(command, "Action")
-                .into_iter()
-                .map(|action| FormInfoEvent {
-                    name: "Execute".to_string(),
-                    handler: action.text().unwrap_or("").to_string(),
-                    call_type: action.attribute("callType").map(str::to_string),
-                })
-                .collect(),
-            title: form_child_text(command, "Title"),
-            tooltip: form_child_text(command, "ToolTip"),
-            shortcut: form_child_text(command, "Shortcut"),
-            picture: form_child(command, "Picture")
-                .and_then(|picture| form_child_text(picture, "Ref")),
-            representation: form_child_text(command, "Representation"),
-        })
+        .map(command_properties::read)
         .collect()
 }
 
