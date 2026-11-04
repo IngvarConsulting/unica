@@ -360,6 +360,23 @@ class TwoRunnerLayoutTests(unittest.TestCase):
         self.assertEqual(result["gateEquivalentSeconds"], 1200.0)
         self.assertEqual(result["lastGateJob"], "Unica CI")
 
+    def test_current_macos15_artifacts_are_read_without_retagging_historical_macos14(self):
+        base = f"repos/{REPO}/actions"
+        api = queue_api(jobs=two_runner_jobs(), artifacts=[
+            {"id": 25, "name": "plan-macos-15", "expired": False},
+            {"id": 26, "name": "results-macos-15", "expired": False},
+        ])
+        for identifier, name, document in [(25, "plan-rust-macos-15-ordinary/lane.json", lane_document()),
+                                            (26, "results-rust-macos-15-ordinary-1/shard.json", shard_document())]:
+            payload = io.BytesIO()
+            with zipfile.ZipFile(payload, "w") as archive:
+                archive.writestr(name, json.dumps({**document, "runner": "macos-15"}))
+            api.responses[f"{base}/artifacts/{identifier}/zip"] = payload.getvalue()
+        result = metrics.collect(metrics.GitHub(REPO, None, api), 7, None, logs=False, artifacts=True)
+        self.assertEqual([item["runner"] for item in result["lanes"]], ["macos-15"])
+        self.assertEqual([item["runner"] for item in result["shards"]], ["macos-15"])
+        self.assertEqual(lane_document()["runner"], "macos-14")
+
     def test_lane_directories_inside_runner_artifacts_are_read(self):
         base = f"repos/{REPO}/actions"
         artifacts = [

@@ -1,0 +1,172 @@
+{
+  "id": "S-1697-report-variants-storage-local-absence",
+  "issue": 1697,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-report-variants-local-absence",
+  "task": "Прочитать обычный и заимствованный Report без локального VariantsStorage: независимые факты сохраняются, локальные значение и связь не синтезируются, Relation не получает ограничение; непустое значение родителя остаётся доступным по собственному адресу. Синтетическая read-only fixture.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Local"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "independent"
+        },
+        {
+          "pointer": "/data/props/VariantsStorage",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Local.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Report.Parent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/belonging",
+          "eq": "borrowed"
+        },
+        {
+          "pointer": "/data/props/parentStatus",
+          "eq": "resolved"
+        },
+        {
+          "pointer": "/data/props/extends",
+          "eq": "main:Report.Parent"
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "local"
+        },
+        {
+          "pointer": "/data/props/VariantsStorage",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Report.Parent.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Parent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/VariantsStorage",
+          "eq": "SettingsStorage.Storage"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Parent.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "contains": {
+            "relation": "variantsStorage",
+            "at": "main:SettingsStorage.Storage",
+            "kind": "SettingsStorage"
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "ad66bbc36bcab2877eae70d9b5eb5e9233f0d0c0018de56429b3c5f757236945"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "b599eba46f7059dc2ca259d67222c547a2aee056757f63b0dc8a9fbac3a543b1"
+        },
+        {
+          "path": "src/Reports/Local.xml",
+          "kind": "sha256",
+          "eq": "16deafc01bdc401a8cb356e09de37ddda133bd31fe837d5f9fcb4fe82c42236e"
+        },
+        {
+          "path": "src/Reports/Parent.xml",
+          "kind": "sha256",
+          "eq": "58dd49eb5aa1e9422c35a76cc51654d5cb6092b603c6f53e4a395eeeac813fe4"
+        },
+        {
+          "path": "src/SettingsStorages/Storage.xml",
+          "kind": "sha256",
+          "eq": "c4376bba86af87e878b29b61e700282b9e844780248ba2eea8ce5eede3834ad2"
+        },
+        {
+          "path": "src-ext/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a13e4b8d90462c5f202d1a5d2ba31d1fca9efb24ef0987cfc75205595dfa4079"
+        },
+        {
+          "path": "src-ext/Reports/Parent.xml",
+          "kind": "sha256",
+          "eq": "b51a35b207a6ee2336e30109b4fd468fa6df764f628ae0baa7452b0a5937a4b3"
+        }
+      ]
+    }
+  ]
+}

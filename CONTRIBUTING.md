@@ -318,7 +318,7 @@ Guards сохраняют проверку форматирования чере
 смена типа или режима файла также не получают этот пропуск.
 
 Прогон занимает одну джобу на ОС: запись очереди — Linux-джоба `Unica CI`,
-джоба `Rust (macos-14)` и лёгкая `Clippy (windows-latest)`, pull request — `Unica CI` и `Lint and Python` (Clippy
+джоба `Rust (macos-15)` и лёгкая `Clippy (windows-latest)`, pull request — `Unica CI` и `Lint and Python` (Clippy
 и Python small; метка `ci:full` добавляет macOS). `Unica CI` подряд исполняет guards, сборки, тесты, Clippy
 и Python, в конце ждёт джобы macOS и Clippy Windows и сверяет общий инвентарь. Красный шаг
 не отменяет следующие: ошибка линта или отправки SARIF не лишает отчёт
@@ -667,8 +667,14 @@ python3.12 -m unittest discover -s tests/agent_evaluation -p 'test_*.py'
 python3.12 -m unittest tests.agent_evaluation.test_codex_cli
 ```
 
-Эта проверка выполняет короткий запрос к модели без инструментов и сохраняет
-версию CLI, команду и JSONL в `.session-temp/acceptance-agent/CodexCLI-*`.
+Эта проверка выполняет короткий запрос без инструментов и отдельное чтение
+подготовленного файла справки. Версия CLI, команда и JSONL сохраняются в
+`.session-temp/acceptance-agent/CodexCLI-*` и `CodexHelp-*`.
+На Windows команда явно выбирает native sandbox `unelevated`, сохраняя
+`read-only`. Разрешено только буквальное `Get-Content -LiteralPath` одного
+подготовленного файла; на POSIX — его `cat`. CLI запускается в Windows
+приостановленным, включается в удерживаемый Job Object и только затем
+продолжается. Очистка должна подтвердить ноль активных процессов этого Job.
 Ошибки и неизвестные события CLI считаются отказом проверки, в том числе
 предупреждения о нераспознанных настройках; они не отфильтровываются.
 
