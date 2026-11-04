@@ -86,7 +86,7 @@ fn composition_slot(path: &Path, node: Node<'_, '_>, attribute: Option<&str>) ->
     })
 }
 
-fn code_mentions(value: &str, old: &str) -> bool {
+fn code_mention_patterns(old: &str) -> Vec<String> {
     let mut heads = vec![
         "Catalog".to_string(),
         "Catalogs".into(),
@@ -101,10 +101,16 @@ fn code_mentions(value: &str, old: &str) -> bool {
         ));
         heads.push(kind);
     }
+    heads
+        .iter()
+        .map(|head| lower(&format!("{head}.{old}")))
+        .collect()
+}
+
+fn code_mentions(value: &str, patterns: &[String]) -> bool {
     let value = lower(value);
-    heads.iter().any(|head| {
-        let pattern = lower(&format!("{head}.{old}"));
-        value.match_indices(&pattern).any(|(start, _)| {
+    patterns.iter().any(|pattern| {
+        value.match_indices(pattern.as_str()).any(|(start, _)| {
             !value[..start].chars().next_back().is_some_and(identifier)
                 && !value[start + pattern.len()..]
                     .chars()
@@ -141,6 +147,7 @@ fn rename_xml(
     old: &str,
     new: &str,
     owner: bool,
+    code_patterns: &[String],
 ) -> Result<Vec<u8>, ApplyPlanError> {
     let text = std::str::from_utf8(bytes).map_err(|_| xml_error("rename input is not UTF-8"))?;
     let source = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -284,7 +291,7 @@ fn rename_xml(
                 unica_xml_format::text::escape_xml_text(&updated),
             ));
         } else if !is_prose(node)
-            && (code_mentions(&value, old)
+            && (code_mentions(&value, code_patterns)
                 || (bare_mentions(&value, old) && !(ns == Some(MD) && tag == "Name")))
         {
             return Err(invalid(format!(
@@ -543,6 +550,7 @@ pub fn stage_catalog_rename(
     }
     let mut changed = Vec::new();
     let mut moved = Vec::new();
+    let code_patterns = code_mention_patterns(old);
     for path in files {
         staged
             .checkpoint("rename dependencies")
@@ -554,7 +562,7 @@ pub fn stage_catalog_rename(
             .ok_or_else(|| invalid("rename input disappeared"))?;
         let extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
         let updated = if extension.eq_ignore_ascii_case("xml") {
-            rename_xml(&path, &bytes, old, new, path == descriptor)?
+            rename_xml(&path, &bytes, old, new, path == descriptor, &code_patterns)?
         } else {
             let text = String::from_utf8_lossy(&bytes);
             if bare_mentions(&text, old) {
@@ -650,6 +658,38 @@ pub fn stage_catalog_rename(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn code_mentions_preserves_case_and_identifier_boundaries() {
+        for old in ["Old", "СтарыйСклад"] {
+            let patterns = code_mention_patterns(old);
+            for head in [
+                "Catalog",
+                "Catalogs",
+                "CatalogRef",
+                "Справочники",
+                "СправочникСсылка",
+            ] {
+                for reference in [
+                    format!("{head}.{old}"),
+                    format!("{head}.{old}").to_uppercase(),
+                ] {
+                    assert!(
+                        code_mentions(&format!("({reference}).Select()"), &patterns),
+                        "{reference}"
+                    );
+                    for value in [
+                        format!("Prefix{reference}"),
+                        format!("_{reference}"),
+                        format!("{reference}Long"),
+                        format!("{reference}_"),
+                        format!("{reference}1"),
+                    ] {
+                        assert!(!code_mentions(&value, &patterns), "{value}");
+                    }
+                }
+            }
+        }
+    }
     fn xml(body: &str) -> Vec<u8> {
         format!(r#"<MetaDataObject xmlns="{MD}" xmlns:v8="{CORE}" xmlns:t="{CFG}" xmlns:xr="{XR}" xmlns:xsi="{XSI}" version="2.20">{body}</MetaDataObject>"#).into_bytes()
     }
@@ -658,8 +698,15 @@ mod tests {
         let original = xml(
             r#"<Catalog uuid="11111111-1111-4111-8111-111111111111"><InternalInfo><xr:GeneratedType name="CatalogRef.Old" category="Ref"><xr:TypeId>type-id</xr:TypeId><xr:ValueId>value-id</xr:ValueId></xr:GeneratedType><xr:GeneratedType name="CatalogTabularSectionRow.Old.Lines" category="TabularSectionRow"/></InternalInfo><Properties><Name>Old</Name><Synonym><v8:item><v8:content>Catalog.Old</v8:content></v8:item></Synonym><Comment>Old</Comment></Properties><ChildObjects/></Catalog>"#,
         );
-        let actual =
-            rename_xml(Path::new("Catalogs/Old.xml"), &original, "Old", "New", true).unwrap();
+        let actual = rename_xml(
+            Path::new("Catalogs/Old.xml"),
+            &original,
+            "Old",
+            "New",
+            true,
+            &code_mention_patterns("Old"),
+        )
+        .unwrap();
         let expected = String::from_utf8(original)
             .unwrap()
             .replace("<Name>Old</Name>", "<Name>New</Name>")
@@ -681,6 +728,7 @@ mod tests {
             "Old",
             "New",
             false,
+            &code_mention_patterns("Old"),
         )
         .unwrap();
         assert_eq!(
@@ -698,7 +746,8 @@ mod tests {
             &foreign,
             "Old",
             "New",
-            false
+            false,
+            &code_mention_patterns("Old")
         )
         .is_err());
     }
@@ -719,7 +768,8 @@ mod tests {
                     &xml(body),
                     "Old",
                     "New",
-                    false
+                    false,
+                    &code_mention_patterns("Old"),
                 )
                 .is_err(),
                 "{body}"
@@ -738,8 +788,15 @@ mod tests {
     #[test]
     fn catalog_rename_updates_its_standard_field_references() {
         let original = xml("<Catalog><Properties><Name>Old</Name><InputByString><xr:Field>Catalog.Old.StandardAttribute.Code</xr:Field><xr:Field>Catalog.OldLong.StandardAttribute.Code</xr:Field></InputByString></Properties></Catalog>");
-        let actual =
-            rename_xml(Path::new("Catalogs/Old.xml"), &original, "Old", "New", true).unwrap();
+        let actual = rename_xml(
+            Path::new("Catalogs/Old.xml"),
+            &original,
+            "Old",
+            "New",
+            true,
+            &code_mention_patterns("Old"),
+        )
+        .unwrap();
         let expected = String::from_utf8(original)
             .unwrap()
             .replace("<Name>Old</Name>", "<Name>New</Name>")
@@ -752,7 +809,15 @@ mod tests {
     #[test]
     fn catalog_rename_refuses_foreign_attributes_in_typed_reference_nodes() {
         let original = xml("<Catalog xmlns:evil=\"urn:foreign\"><InternalInfo><xr:GeneratedType evil:name=\"CatalogRef.Old\"/></InternalInfo><Properties><Name>Old</Name></Properties></Catalog>");
-        assert!(rename_xml(Path::new("Catalogs/Old.xml"), &original, "Old", "New", true).is_err());
+        assert!(rename_xml(
+            Path::new("Catalogs/Old.xml"),
+            &original,
+            "Old",
+            "New",
+            true,
+            &code_mention_patterns("Old")
+        )
+        .is_err());
         let dump = format!(
             r#"<ConfigDumpInfo xmlns="{DUMP}" xmlns:evil="urn:foreign" version="2.20"><Metadata evil:name="Catalog.Old"/></ConfigDumpInfo>"#
         );
@@ -761,7 +826,8 @@ mod tests {
             dump.as_bytes(),
             "Old",
             "New",
-            false
+            false,
+            &code_mention_patterns("Old")
         )
         .is_err());
         let command = r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" xmlns:evil="urn:foreign" version="2.20"><Command evil:name="Catalog.Old.StandardCommand.OpenList"/></CommandInterface>"#;
@@ -770,7 +836,8 @@ mod tests {
             command.as_bytes(),
             "Old",
             "New",
-            false
+            false,
+            &code_mention_patterns("Old")
         )
         .is_err());
     }
@@ -783,6 +850,7 @@ mod tests {
             "Old",
             "New",
             false,
+            &code_mention_patterns("Old"),
         )
         .unwrap();
         assert_eq!(
