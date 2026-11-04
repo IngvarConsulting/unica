@@ -51,6 +51,40 @@ fn equivalent_numerator_properties_do_not_stage_a_write() {
 }
 
 #[test]
+fn numerator_properties_require_a_registered_configuration_owner() {
+    for registration in [
+        "",
+        "<DocumentNumerator>Other</DocumentNumerator>",
+        "<DocumentNumerator xmlns=\"urn:foreign\">Sales</DocumentNumerator>",
+        "<Subsystem><DocumentNumerator>Sales</DocumentNumerator></Subsystem>",
+    ] {
+        for check_unique in [false, true] {
+            let fixture = fixture();
+            let root = fixture.binding.source_root().join("Configuration.xml");
+            let original = std::fs::read_to_string(&root).unwrap();
+            std::fs::write(
+                root,
+                original.replace("<DocumentNumerator>Sales</DocumentNumerator>", registration),
+            )
+            .unwrap();
+            let before = unica_workspace::test_support::tree_snapshot(fixture.binding.source_root());
+            let error = plan_all(&fixture, &[("props.set", json!({
+                "at":"main:DocumentNumerator.Sales", "values":{"CheckUnique":check_unique}
+            }))])
+            .expect_err("an orphan numerator must refuse both a change and an equivalent no-op");
+            assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource);
+            assert_eq!(error.path(), Some("ops[0].args.at"));
+            assert!(error.to_string().contains("not registered"), "{error:?}");
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(fixture.binding.source_root()),
+                before,
+                "a registration refusal writes no source files"
+            );
+        }
+    }
+}
+
+#[test]
 fn each_numerator_property_changes_only_its_own_scalar() {
     for (field, value, old, new) in [
         ("NumberType", json!("Number"), "String", "Number"),

@@ -41,6 +41,23 @@ fn canonical_numerator_invalid_type_length_and_invalid_noop_refuse_without_write
 
 #[test]
 fn canonical_numerator_saved_plan_refuses_a_changed_descriptor_and_preserves_neighbors() {
+    saved_plan_refuses_changed_file(
+        "DocumentNumerators/Target.xml",
+        "<Comment/>",
+        "<Comment>external edit</Comment>",
+    );
+}
+
+#[test]
+fn canonical_numerator_saved_plan_refuses_a_removed_registration_and_preserves_neighbors() {
+    saved_plan_refuses_changed_file(
+        "Configuration.xml",
+        "<DocumentNumerator>Target</DocumentNumerator>",
+        "",
+    );
+}
+
+fn saved_plan_refuses_changed_file(relative: &str, old_value: &str, new_value: &str) {
     let fixture = numerator_fixture("String", 11);
     let request = request("main:DocumentNumerator.Target", json!([
         {"op":"props.set","args":{"values":{"CheckUnique":false}}},
@@ -51,14 +68,16 @@ fn canonical_numerator_saved_plan_refuses_a_changed_descriptor_and_preserves_nei
     let mut preview = DomainResult::success("preview");
     preview.rev = Some(previewed.rev().to_owned());
     let token = fixture.actor.save_prepared_apply(batch, preview).unwrap();
-    let path = fixture.source.join("DocumentNumerators/Target.xml");
+    let path = fixture.source.join(relative);
     let old = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(path, old.replace("<Comment/>", "<Comment>external edit</Comment>")).unwrap();
+    let changed = old.replace(old_value, new_value);
+    assert_ne!(changed, old, "the fixture must change an observed input");
+    std::fs::write(path, changed).unwrap();
     let before = tree_snapshot(&fixture.source);
     fixture.actor.execute_saved_apply(&token,
         ProviderDeadline::no_deadline(), &CancellationToken::new(),
         |result, publication| {
-            let error = publication.map(|_| ()).expect_err("stale descriptor must refuse publication");
+            let error = publication.map(|_| ()).expect_err("stale input must refuse publication");
             assert_eq!(error.kind(), ApplyPublicationErrorKind::ConcurrentRevision);
             result
         }

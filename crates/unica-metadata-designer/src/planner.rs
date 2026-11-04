@@ -1432,6 +1432,26 @@ fn stage_descriptor_properties(
     })?;
     let (kind, postimage_text) = match changes {
         DescriptorPropertyChanges::DocumentNumerator(changes) => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".to_string()))?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if !root.registers("DocumentNumerator", name) {
+                return Err(invalid(format!(
+                    "DocumentNumerator `{name}` is not registered in Configuration.xml"
+                )));
+            }
             let text =
                 crate::numerator_write::patch(&source, name, changes).map_err(|message| {
                     ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
