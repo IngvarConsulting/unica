@@ -1,3 +1,4 @@
+mod constant_choice;
 #[cfg(any(test, feature = "test-support"))]
 use roxmltree::Document;
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
@@ -722,9 +723,22 @@ pub fn project_meta_info_details(
     };
 
     match kind {
-        MetadataKind::Constant => MetaInfoDetails::Constant {
-            r#type: observed_type(),
-        },
+        MetadataKind::Constant => {
+            let r#type = observed_type();
+            let choice_parameters = properties
+                .and_then(|node| unique_direct_md_child(node, "ChoiceParameters"))
+                .and_then(|node| match constant_choice::parse(node) {
+                    Ok(value) => Some(value),
+                    Err(error) => {
+                        diagnostic(error, diagnostics);
+                        None
+                    }
+                });
+            MetaInfoDetails::Constant {
+                r#type,
+                choice_parameters,
+            }
+        }
         MetadataKind::DefinedType => MetaInfoDetails::DefinedType {
             r#type: observed_type(),
         },
@@ -1838,7 +1852,7 @@ static META_INFO_PROPERTY_ROUTES: &[MetaInfoPropertyRouteSpec] = &[
     },
     MetaInfoPropertyRouteSpec {
         name: "ChoiceParameters",
-        route: MetaInfoPropertyRoute::Ignored(MetaInfoIgnoredReason::ProvenEmptyPlaceholder),
+        route: MetaInfoPropertyRoute::Details,
         kinds: &[MetadataKind::Constant],
     },
 ];
