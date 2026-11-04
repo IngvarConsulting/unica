@@ -21,6 +21,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from tests.ci.acceptance_profiles import REPO, host_target, isolated_environment
+from tests.agent_evaluation import cli_host
 
 FIXTURE = REPO / "tests/fixtures/acceptance/agent-dcs"
 PLATFORM_DCS_SCAFFOLD = REPO / "tests/fixtures/platform_8_3_27/template-new-xml/native-canonical-dcs-content.xml"
@@ -85,6 +86,8 @@ def codex_command(workspace, schema, final, skill_paths):
                "--output-last-message", str(final), "-c", 'web_search="disabled"']
     command += ["-c", "project_doc_max_bytes=0"]
     command += ["-c", "features.code_mode=false", "-c", "features.code_mode_only=false"]
+    if cli_host.IS_WINDOWS:
+        command += ["-c", 'windows.sandbox="unelevated"']
     for feature in DISABLED:
         command += ["--disable", feature]
     if skill_paths:
@@ -98,14 +101,19 @@ def run_cli(command, prompt, environment, output, *, timeout=900):
     stdout = output.with_suffix(".jsonl")
     stderr = output.with_suffix(".stderr")
     with stdout.open("wb") as out, stderr.open("wb") as err:
-        process = subprocess.Popen(command + ["-"], stdin=subprocess.PIPE, stdout=out,
-                                   stderr=err, env=environment, start_new_session=True)
+        windows_run = cli_host.WindowsRun(command + ["-"], environment, out, err) if cli_host.IS_WINDOWS else None
+        process = windows_run.process if windows_run else subprocess.Popen(
+            command + ["-"], stdin=subprocess.PIPE, stdout=out,
+            stderr=err, env=environment, start_new_session=True)
         try:
             process.communicate(prompt.encode(), timeout=timeout)
         finally:
             # Kill only the process group created by this invocation; child
             # MCP frontends must also stop on success and partial initialization.
-            terminate_group(process.pid)
+            if windows_run:
+                windows_run.close()
+            else:
+                terminate_group(process.pid)
             process.wait(timeout=10)
         if process.returncode != 0:
             raise ValueError(f"Codex failed ({process.returncode}); see {stderr}")
@@ -133,7 +141,12 @@ def terminate_group(pid):
 
 
 def allowed_help_command(command, help_path):
-    parts = shlex.split(command)
+    if cli_host.IS_WINDOWS:
+        return cli_host.windows_help_allowed(command, help_path)
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
     if len(parts) == 3 and parts[0] in {"/bin/zsh", "/bin/bash", "/bin/sh"} and parts[1] in {"-lc", "-c"}:
         parts = shlex.split(parts[2])
     return parts == ["cat", str(help_path)]
@@ -679,6 +692,9 @@ def terminal_calls(calls):
 
 
 def stop_owned_daemons(state, binary):
+    if cli_host.IS_WINDOWS:
+        cli_host.consume_cleanup(state)
+        return
     for endpoint in state.glob("daemon-p5-*/endpoint.json"):
         pid = json.loads(endpoint.read_text())["pid"]
         def owned_alive(require_owned=False):
@@ -729,6 +745,7 @@ def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", cha
         shutil.copy2(fixture / name, proof / name)
     help_path = packet / help_ref
     agents = (proof / "AGENTS.md").read_text().replace("{{HELP_PATH}}", str(help_path))
+    agents = agents.replace("{{HELP_COMMAND}}", cli_host.help_command(help_path))
     (proof / "AGENTS.md").write_text(agents)
     (server.workspace / "AGENTS.md").write_text(agents)
     environment = isolated_environment(packet, state)

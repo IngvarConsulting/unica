@@ -667,8 +667,14 @@ python3.12 -m unittest discover -s tests/agent_evaluation -p 'test_*.py'
 python3.12 -m unittest tests.agent_evaluation.test_codex_cli
 ```
 
-Эта проверка выполняет короткий запрос к модели без инструментов и сохраняет
-версию CLI, команду и JSONL в `.session-temp/acceptance-agent/CodexCLI-*`.
+Эта проверка выполняет короткий запрос без инструментов и отдельное чтение
+подготовленного файла справки. Версия CLI, команда и JSONL сохраняются в
+`.session-temp/acceptance-agent/CodexCLI-*` и `CodexHelp-*`.
+На Windows команда явно выбирает native sandbox `unelevated`, сохраняя
+`read-only`. Разрешено только буквальное `Get-Content -LiteralPath` одного
+подготовленного файла; на POSIX — его `cat`. CLI запускается в Windows
+приостановленным, включается в удерживаемый Job Object и только затем
+продолжается. Очистка должна подтвердить ноль активных процессов этого Job.
 Ошибки и неизвестные события CLI считаются отказом проверки, в том числе
 предупреждения о нераспознанных настройках; они не отфильтровываются.
 

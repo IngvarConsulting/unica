@@ -7,6 +7,14 @@ pub mod route;
 use serde::Serialize;
 use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
 
+/// Built-in script language, independent of multilingual presentation values.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScriptVariant {
+    #[default]
+    Russian,
+    English,
+}
+
 pub const ACTIVE_PLATFORM_LINE: &str = "8.3.27";
 pub const ACTIVE_SERIALIZATION_FORMAT: &str = "2.20";
 
