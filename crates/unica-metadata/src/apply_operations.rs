@@ -56,6 +56,7 @@ macro_rules! metadata_operations {
 metadata_operations!(
     ObjectBorrow => ("object.borrow", ExtensionRoot, From),
     ObjectCreate => ("object.create", Configuration, Values),
+    ObjectCopy => ("object.copy", ConfigurationCatalog, Values),
     ObjectRemove => ("object.remove", MetadataOrCommonTemplate, Target),
     RelationAdd => ("relation.add", Metadata, Values),
     RelationRemove => ("relation.remove", Metadata, Values),
@@ -118,6 +119,7 @@ impl MetadataOperation {
             }
             Self::ObjectBorrow
             | Self::ObjectCreate
+            | Self::ObjectCopy
             | Self::ObjectRemove
             | Self::RelationAdd
             | Self::RelationRemove
@@ -176,6 +178,7 @@ impl MetadataOperation {
             Self::AttributeCopy => crate::contracts::metadata_attribute_copy(),
             Self::ObjectBorrow => crate::contracts::metadata_object_borrow(),
             Self::ObjectCreate => crate::contracts::metadata_object_create(),
+            Self::ObjectCopy => crate::contracts::metadata_object_copy(),
             Self::ObjectRemove => crate::contracts::metadata_object_remove(),
             Self::TemplateAdd => crate::contracts::metadata_template_add(),
             Self::TemplateSet => crate::contracts::metadata_template_set(),

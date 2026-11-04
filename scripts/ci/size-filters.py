@@ -54,6 +54,14 @@ TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::")
 # 400 000 исходных наборов: 34.447 с отдельно, 41.729 с совместно, macOS.
 # Это размер конкретной проверки; соседние layout-проверки остаются small.
 MEASURED_MEDIUM_CASES = (
+    # Local Windows run for #1688: retained workspace scenarios exceeded 3 seconds.
+    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::object_copy_tests::object_copy_rollback_preserves_a_foreign_file_and_reports_incomplete_cleanup"),
+    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::object_copy_tests::object_copy_preserves_empty_directories_and_guards_their_membership"),
+    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::object_copy_tests::object_copy_previews_a_registered_catalog_without_writing_the_source"),
+    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::object_copy_tests::object_copy_saved_plan_preserves_resources_and_remaps_only_its_own_identities"),
+    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::object_copy_tests::object_copy_publication_failure_rolls_back_the_complete_copy"),
+    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::object_copy_tests::object_copy_collisions_and_invalid_sources_leave_the_tree_unchanged"),
+    ("unica-coder", "unica_coder", "infrastructure::native_operations::apply_families::metadata::tests::object_copy_tests::object_copy_saved_plan_rejects_changed_payload_and_directory_membership"),
     (
         "unica-project-health",
         "unica_project_health",

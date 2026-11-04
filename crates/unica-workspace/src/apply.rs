@@ -355,6 +355,7 @@ impl RetainedNamespaceGuard {
 /// This is independent of the overlay entry's first, possibly aliased path.
 #[derive(Debug)]
 pub(super) struct RetainedPathSpellingGuard {
+    target_directory: bool,
     root: Arc<RetainedDirectoryCapability>,
     relative: PathBuf,
     entry_limit: usize,
@@ -460,7 +461,15 @@ impl RetainedPathSpellingGuard {
                 RetainedChildCapability::Directory(directory) if components.peek().is_some() => {
                     parent = directory;
                 }
-                RetainedChildCapability::RegularFile(_) if components.peek().is_none() => {
+                RetainedChildCapability::Directory(_)
+                    if components.peek().is_none() && self.target_directory =>
+                {
+                    self.checkpoint()?;
+                    return Ok(());
+                }
+                RetainedChildCapability::RegularFile(_)
+                    if components.peek().is_none() && !self.target_directory =>
+                {
                     self.checkpoint()?;
                     return Ok(());
                 }
@@ -499,6 +508,7 @@ pub struct ApplyStagedState {
     namespaces: std::collections::BTreeMap<PathBuf, RetainedNamespaceGuard>,
     path_spellings: std::collections::BTreeMap<usize, RetainedPathSpellingGuard>,
     directory_removals: Vec<super::retained_directory::DirectoryRemoval>,
+    directory_creations: std::collections::BTreeSet<usize>,
     deadline: ProviderDeadline,
     cancellation: CancellationToken,
     writer_authority: crate::actor::ApplyWriterAuthority,
@@ -525,6 +535,7 @@ impl ApplyStagedState {
             namespaces: Default::default(),
             path_spellings: Default::default(),
             directory_removals: Vec::new(),
+            directory_creations: Default::default(),
             deadline,
             cancellation,
             writer_authority,
@@ -546,6 +557,70 @@ impl ApplyStagedState {
             MAX_APPLY_NAMESPACE_DEPTH,
             MAX_APPLY_NAMESPACE_ENTRIES,
         )
+    }
+
+    /// Reuse an already captured tree rather than reopening every directory.
+    pub fn enumerate_directories(
+        &mut self,
+        relative: &Path,
+    ) -> Result<Vec<PathBuf>, ApplyStagingError> {
+        if !self.namespaces.contains_key(relative) {
+            self.enumerate_tree(relative)?;
+        }
+        self.checkpoint("apply directory enumeration")?;
+        let mut directories = Vec::new();
+        for (path, guard) in &self.namespaces {
+            if path.starts_with(relative) {
+                self.checkpoint("apply directory enumeration entry")?;
+                if guard.identity.is_some() {
+                    directories.push(path.clone());
+                }
+            }
+        }
+        Ok(directories)
+    }
+
+    pub fn create_directory(&mut self, relative: &Path) -> Result<(), ApplyStagingError> {
+        if !self.generated_subtree_forbidden {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::Invariant,
+                "directory creation requires the source participant",
+            ));
+        }
+        let relative = strict_relative(relative)?;
+        let index = self.ensure_loaded(&relative)?;
+        let entry = &self.entries[index];
+        if entry.original != StagedFileState::Absent || entry.current != StagedFileState::Absent {
+            return Err(ApplyStagingError::new(
+                ApplyStagingErrorKind::AbsentChainOccupied,
+                "directory creation target is occupied by a file image",
+            ));
+        }
+        let guard = RetainedNamespaceGuard::capture(
+            Arc::clone(&self.root),
+            relative.clone(),
+            MAX_APPLY_NAMESPACE_ENTRIES,
+            self.deadline,
+            self.cancellation.clone(),
+        )?;
+        if let Some(previous) = self.namespaces.get(&relative) {
+            previous.validate(&[])?;
+        } else {
+            self.namespaces.insert(relative.clone(), guard);
+        }
+        self.directory_creations.insert(index);
+        self.path_spellings.insert(
+            index,
+            RetainedPathSpellingGuard {
+                root: Arc::clone(&self.root),
+                relative,
+                target_directory: true,
+                entry_limit: MAX_APPLY_NAMESPACE_ENTRIES,
+                deadline: self.deadline,
+                cancellation: self.cancellation.clone(),
+            },
+        );
+        Ok(())
     }
 
     /// Retain the enumerated membership and distinguish a missing root from
@@ -647,6 +722,7 @@ impl ApplyStagedState {
         self.path_spellings.insert(
             index,
             RetainedPathSpellingGuard {
+                target_directory: self.directory_creations.contains(&index),
                 root: Arc::clone(&self.root),
                 relative,
                 entry_limit: MAX_APPLY_NAMESPACE_ENTRIES,
@@ -1016,6 +1092,20 @@ impl ApplyStagedState {
             hash.update(guard.expected_len.to_be_bytes());
             hash.update(guard.expected_sha256);
         }
+        let mut created_directories = self
+            .directory_creations
+            .iter()
+            .map(|index| &self.entries[*index].relative_path)
+            .collect::<Vec<_>>();
+        created_directories.sort();
+        hash.update((created_directories.len() as u64).to_be_bytes());
+        for directory in created_directories {
+            self.checkpoint("apply directory intention")?;
+            let path = crate::platform::filesystem::stable_path_identity_bytes(directory)
+                .map_err(path_identity_error)?;
+            hash.update((path.len() as u64).to_be_bytes());
+            hash.update(path);
+        }
         let directories = self.active_directory_removals();
         hash.update((directories.len() as u64).to_be_bytes());
         for plan in &directories {
@@ -1028,7 +1118,10 @@ impl ApplyStagedState {
         let mut path_spellings = self
             .path_spellings
             .iter()
-            .filter(|(index, _)| matches!(self.entries[**index].current, StagedFileState::Bytes(_)))
+            .filter(|(index, _)| {
+                self.directory_creations.contains(index)
+                    || matches!(self.entries[**index].current, StagedFileState::Bytes(_))
+            })
             .map(|(_, guard)| guard)
             .collect::<Vec<_>>();
         path_spellings.sort_by(|left, right| left.relative.cmp(&right.relative));
@@ -1079,34 +1172,40 @@ impl ApplyStagedState {
         let path_spellings = self
             .path_spellings
             .into_iter()
-            .filter(|(index, _)| matches!(self.entries[*index].current, StagedFileState::Bytes(_)))
+            .filter(|(index, _)| {
+                self.directory_creations.contains(index)
+                    || matches!(self.entries[*index].current, StagedFileState::Bytes(_))
+            })
             .map(|(_, guard)| guard)
             .collect::<Vec<_>>();
         for guard in &path_spellings {
             guard.validate_initial()?;
         }
         transaction.bind_retained_path_spellings(path_spellings);
-        let mut entries = self.entries;
-        entries.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-        for entry in entries {
-            transaction
-                .bind_retained_apply_change(
-                    RetainedApplyChangeBinding {
-                        root: Arc::clone(&self.root),
-                        relative_path: entry.relative_path,
-                        route_identities: entry.route_identities,
-                        missing_parent_chain: entry.missing_parent_chain,
-                        name: entry.name,
-                        original: entry.original.as_option(),
-                        current: entry.current.as_option(),
-                        original_file_identity: entry.original_file_identity,
-                        original_len: entry.original_len,
-                        original_sha256: entry.original_sha256,
-                        deadline: self.deadline,
-                        cancellation: self.cancellation.clone(),
-                    },
-                    &self.writer_authority,
-                )
+        let mut entries = self.entries.into_iter().enumerate().collect::<Vec<_>>();
+        entries.sort_by(|(_, left), (_, right)| left.relative_path.cmp(&right.relative_path));
+        for (index, entry) in entries {
+            let directory = self.directory_creations.contains(&index);
+            let binding = RetainedApplyChangeBinding {
+                root: Arc::clone(&self.root),
+                relative_path: entry.relative_path,
+                route_identities: entry.route_identities,
+                missing_parent_chain: entry.missing_parent_chain,
+                name: entry.name,
+                original: entry.original.as_option(),
+                current: entry.current.as_option(),
+                original_file_identity: entry.original_file_identity,
+                original_len: entry.original_len,
+                original_sha256: entry.original_sha256,
+                deadline: self.deadline,
+                cancellation: self.cancellation.clone(),
+            };
+            let result = if directory {
+                transaction.bind_retained_directory_creation(binding, &self.writer_authority)
+            } else {
+                transaction.bind_retained_apply_change(binding, &self.writer_authority)
+            };
+            result
                 .map_err(|error| ApplyStagingError::new(ApplyStagingErrorKind::Invariant, error))?;
         }
         transaction
@@ -1484,6 +1583,15 @@ impl unica_source_contract::proposal::SourceProposal for ApplyStagedState {
     fn enumerate_tree(&mut self, relative: &Path) -> Result<Vec<PathBuf>, ApplyStagingError> {
         self.enumerate_tree(relative)
     }
+    fn enumerate_directories(
+        &mut self,
+        relative: &Path,
+    ) -> Result<Vec<PathBuf>, ApplyStagingError> {
+        self.enumerate_directories(relative)
+    }
+    fn create_directory(&mut self, relative: &Path) -> Result<(), ApplyStagingError> {
+        self.create_directory(relative)
+    }
     fn enumerate_tree_with_root_absence(
         &mut self,
         relative: &Path,
@@ -1604,6 +1712,287 @@ pub(crate) mod tests {
         let canonical = std::fs::canonicalize(root).unwrap();
         let retained = RetainedDirectoryCapability::open(&canonical).unwrap();
         crate::actor::workspace_cache_participant_authority_for_test(authority, &retained)
+    }
+
+    #[test]
+    fn retained_directory_creation_preserves_empty_tree_without_preview_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir_all(root.join("Source/Empty/Nested")).unwrap();
+        std::fs::create_dir(root.join("Source/WithFile")).unwrap();
+        std::fs::write(root.join("Source/WithFile/input.bin"), b"payload").unwrap();
+        let authority = crate::actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority(root, authority.clone()).forbid_generated_subtree();
+        assert_eq!(
+            state.enumerate_tree(Path::new("Source")).unwrap(),
+            vec![PathBuf::from("Source/WithFile/input.bin")]
+        );
+        assert_eq!(
+            state.enumerate_directories(Path::new("Source")).unwrap(),
+            vec![
+                PathBuf::from("Source"),
+                PathBuf::from("Source/Empty"),
+                PathBuf::from("Source/Empty/Nested"),
+                PathBuf::from("Source/WithFile")
+            ]
+        );
+        state
+            .create("Target.xml", b"<descriptor/>".to_vec())
+            .unwrap();
+        state
+            .create("Target/WithFile/input.bin", b"payload".to_vec())
+            .unwrap();
+        for directory in [
+            "Target",
+            "Target/Empty",
+            "Target/Empty/Nested",
+            "Target/WithFile",
+        ] {
+            state.create_directory(Path::new(directory)).unwrap();
+        }
+        let transaction = state.finalize().unwrap();
+        assert!(!root.join("Target").exists());
+        assert!(!root.join("Target.xml").exists());
+        transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+        assert!(root.join("Target/Empty/Nested").is_dir());
+        assert_eq!(
+            std::fs::read(root.join("Target/WithFile/input.bin")).unwrap(),
+            b"payload"
+        );
+        assert!(std::fs::read_dir(root.join("Target/Empty/Nested"))
+            .unwrap()
+            .next()
+            .is_none());
+    }
+
+    #[test]
+    fn retained_directory_creation_rejects_source_or_destination_races_before_writes() {
+        for mutation in ["source", "destination-directory", "destination-file"] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::create_dir(root.join("Source")).unwrap();
+            let authority = crate::actor::apply_writer_authority_for_test();
+            let mut state =
+                staged_with_authority(root, authority.clone()).forbid_generated_subtree();
+            assert_eq!(
+                state.enumerate_directories(Path::new("Source")).unwrap(),
+                vec![PathBuf::from("Source")]
+            );
+            state.create_directory(Path::new("Target/Empty")).unwrap();
+            state
+                .create("Target.xml", b"<descriptor/>".to_vec())
+                .unwrap();
+            let transaction = state.finalize().unwrap();
+            match mutation {
+                "source" => std::fs::create_dir(root.join("Source/Late")).unwrap(),
+                "destination-directory" => std::fs::create_dir(root.join("Target")).unwrap(),
+                _ => std::fs::write(root.join("Target"), b"foreign").unwrap(),
+            }
+            transaction
+                .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+                .unwrap_err();
+            assert!(!root.join("Target.xml").exists());
+            assert!(!root.join("Target/Empty").exists());
+            if mutation == "destination-file" {
+                assert_eq!(std::fs::read(root.join("Target")).unwrap(), b"foreign");
+            }
+        }
+    }
+
+    #[test]
+    fn retained_directory_creation_rolls_back_owned_directories_and_preserves_foreign_children() {
+        for foreign_child in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::create_dir(root.join("Preexisting")).unwrap();
+            let authority = crate::actor::apply_writer_authority_for_test();
+            let mut state =
+                staged_with_authority(root, authority.clone()).forbid_generated_subtree();
+            state
+                .create_directory(Path::new("Preexisting/Target/Empty"))
+                .unwrap();
+            state
+                .create("ZDescriptor.xml", b"<descriptor/>".to_vec())
+                .unwrap();
+            let transaction = state.finalize().unwrap();
+            let error = transaction
+                .commit_retained_apply_with(
+                    authority,
+                    || {
+                        if root.join("Preexisting/Target/Empty").is_dir() {
+                            if foreign_child {
+                                std::fs::write(
+                                    root.join("Preexisting/Target/Empty/foreign.bin"),
+                                    b"foreign",
+                                )
+                                .unwrap();
+                            }
+                            return Err("injected failure after directory publication".to_string());
+                        }
+                        Ok(())
+                    },
+                    || Ok(()),
+                )
+                .unwrap_err();
+            assert!(error.contains("injected failure"), "{error}");
+            assert!(root.join("Preexisting").is_dir());
+            assert!(!root.join("ZDescriptor.xml").exists());
+            if foreign_child {
+                assert_eq!(
+                    std::fs::read(root.join("Preexisting/Target/Empty/foreign.bin")).unwrap(),
+                    b"foreign"
+                );
+                assert!(error.contains("rollback encountered"), "{error}");
+            } else {
+                assert!(!root.join("Preexisting/Target").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn retained_directory_creation_refuses_a_foreign_empty_leaf_at_final_validation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let authority = crate::actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority(root, authority.clone()).forbid_generated_subtree();
+        state.create_directory(Path::new("Target/Empty")).unwrap();
+        state
+            .create("Target.xml", b"<descriptor/>".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        let target = root.join("Target/Empty");
+        let moved = root.join("MovedEmpty");
+        let hook_target = target.clone();
+        let hook_moved = moved.clone();
+        crate::compile_transaction::set_retained_apply_before_post_validation_hook(move || {
+            std::fs::rename(&hook_target, &hook_moved).unwrap();
+            std::fs::create_dir(&hook_target).unwrap();
+        });
+        let error = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap_err();
+        assert!(error.contains("identity"), "{error}");
+        assert!(target.is_dir());
+        assert!(moved.is_dir());
+        assert!(!root.join("Target.xml").exists());
+    }
+
+    #[test]
+    fn retained_directory_creation_reuses_implicit_parents_and_rolls_back_files_together() {
+        for fail_after_files in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::create_dir(root.join("Existing")).unwrap();
+            let authority = crate::actor::apply_writer_authority_for_test();
+            let mut state =
+                staged_with_authority(root, authority.clone()).forbid_generated_subtree();
+            state
+                .create("Existing/Target/Parent/file.bin", b"payload".to_vec())
+                .unwrap();
+            state
+                .create_directory(Path::new("Existing/Target/ZEmpty/Nested"))
+                .unwrap();
+            let transaction = state.finalize().unwrap();
+            let result = transaction.commit_retained_apply_with(
+                authority,
+                || Ok(()),
+                || {
+                    if fail_after_files {
+                        Err("injected failure after directories and files".to_string())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            if fail_after_files {
+                assert!(result.is_err());
+                assert!(!root.join("Existing/Target").exists());
+            } else {
+                result.unwrap();
+                assert!(root.join("Existing/Target/ZEmpty/Nested").is_dir());
+                assert_eq!(
+                    std::fs::read(root.join("Existing/Target/Parent/file.bin")).unwrap(),
+                    b"payload"
+                );
+            }
+            assert!(root.join("Existing").is_dir());
+        }
+    }
+
+    #[test]
+    fn retained_directory_creation_rejects_file_overlap_and_generated_paths_without_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let mut state = staged(root).forbid_generated_subtree();
+        state.create("Target", b"file".to_vec()).unwrap();
+        state.create_directory(Path::new("Target/Empty")).unwrap();
+        assert_eq!(
+            state.finalize().unwrap_err().kind(),
+            ApplyStagingErrorKind::Invariant
+        );
+        assert!(!root.join("Target").exists());
+        let mut state = staged(root).forbid_generated_subtree();
+        for path in [".build/Empty", "Target/.build", "../Outside", "/Absolute"] {
+            assert_eq!(
+                state.create_directory(Path::new(path)).unwrap_err().kind(),
+                ApplyStagingErrorKind::ContainmentIdentity,
+                "{path}"
+            );
+        }
+        assert!(!root.join("Target").exists());
+        assert!(!root.join(".build").exists());
+    }
+
+    #[test]
+    fn retained_directory_creation_cancels_between_parent_publications_and_rolls_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let authority = crate::actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority(root, authority.clone()).forbid_generated_subtree();
+        state.create_directory(Path::new("Target/Empty")).unwrap();
+        state
+            .create("ZDescriptor.xml", b"<descriptor/>".to_vec())
+            .unwrap();
+        let cancellation = state.cancellation.clone();
+        let transaction = state.finalize().unwrap();
+        crate::compile_transaction::take_retained_apply_observed_events();
+        set_before_identity_bound_no_replace_rename_hook(move || cancellation.cancel());
+        let error = transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap_err();
+        assert!(error.contains("cancelled"), "{error}");
+        let events = crate::compile_transaction::take_retained_apply_observed_events();
+        assert!(
+            events.is_empty(),
+            "publication continued past cancellation: {events:?}"
+        );
+        assert!(std::fs::read_dir(root).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn retained_directory_creation_binds_empty_root_and_write_intent_to_fingerprint() {
+        use sha2::Digest;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join("Source")).unwrap();
+        let mut state = staged(root).forbid_generated_subtree();
+        assert!(state
+            .enumerate_directories(Path::new("Absent"))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            state.enumerate_directories(Path::new("Source")).unwrap(),
+            vec![PathBuf::from("Source")]
+        );
+        let mut initial = sha2::Sha256::new();
+        state.fingerprint_inputs(&mut initial).unwrap();
+        state.create_directory(Path::new("Target")).unwrap();
+        let mut changed = sha2::Sha256::new();
+        state.fingerprint_inputs(&mut changed).unwrap();
+        assert_ne!(initial.finalize(), changed.finalize());
+        assert!(!root.join("Target").exists());
     }
 
     #[test]

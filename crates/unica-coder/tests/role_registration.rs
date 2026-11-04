@@ -131,7 +131,7 @@ fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &st
             pub const fn bind<T: 'static>(_: &'static TypedOperationBundle<T>) -> Self {{ Self }}
         }}
         enum OperationApplicability {{
-            Configuration, ExtensionRoot, Metadata, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
+            Configuration, ConfigurationCatalog, ExtensionRoot, Metadata, MetadataOrCommonTemplate, Role, RoleRight, SupportRule, MetadataAttributeContainer,
             CatalogTabularAttribute,
             MetadataAttribute, MetadataCommands, MetadataCommand, MetadataForms,
             Form, FormItemContainer, FormItem, FormEvent,
@@ -385,6 +385,12 @@ fn remaining_metadata_registrations_require_their_typed_variants() {
         ("ObjectBorrow", "object.borrow", "ExtensionRoot", "From"),
         ("ObjectCreate", "object.create", "Configuration", "Values"),
         (
+            "ObjectCopy",
+            "object.copy",
+            "ConfigurationCatalog",
+            "Values",
+        ),
+        (
             "ObjectRemove",
             "object.remove",
             "MetadataOrCommonTemplate",
@@ -499,6 +505,12 @@ fn raw_metadata_guards_follow_literals_while_the_form_family_requires_typed_regi
         ),
         ("Metadata", "ExtensionRoot", "ObjectBorrow", "object.borrow"),
         ("Metadata", "Configuration", "ObjectCreate", "object.create"),
+        (
+            "Metadata",
+            "ConfigurationCatalog",
+            "ObjectCopy",
+            "object.copy",
+        ),
         (
             "Metadata",
             "MetadataOrCommonTemplate",

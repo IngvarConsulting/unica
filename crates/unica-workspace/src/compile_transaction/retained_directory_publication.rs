@@ -21,6 +21,28 @@ impl CompileTransaction {
     }
 
     pub(super) fn validate_directory_plans(&self) -> Result<(), RetainedApplyValidationError> {
+        for directory in self
+            .retained_apply
+            .iter()
+            .filter(|entry| entry.create_directory)
+        {
+            for entry in &self.retained_apply {
+                if directory.root.identity() == entry.root.identity()
+                    && !entry.create_directory
+                    && entry.current.is_some()
+                    && retained_path_is_prefix(
+                        &directory.root,
+                        &entry.relative_path,
+                        &directory.relative_path,
+                    )?
+                {
+                    return Err(RetainedApplyValidationError::new(
+                        RetainedApplyValidationErrorKind::Invariant,
+                        "directory creation overlaps a file target",
+                    ));
+                }
+            }
+        }
         for (index, plan) in self.retained_directory_removals.iter().enumerate() {
             let invariant = self
                 .retained_apply_root
@@ -32,7 +54,7 @@ impl CompileTransaction {
                 || self.retained_apply.iter().any(|entry| {
                     plan.root.identity() == entry.root.identity()
                         && plan.contains(&entry.relative_path)
-                        && entry.current.is_some()
+                        && (entry.current.is_some() || entry.create_directory)
                 })
                 || self.retained_apply_read_guards.iter().any(|guard| {
                     plan.root.identity() == guard.root.identity()
@@ -53,10 +75,33 @@ impl CompileTransaction {
         cache: &Self,
         participant: &WorkspaceCacheParticipantAuthority,
     ) -> Result<(), String> {
-        if !cache.retained_directory_removals.is_empty() {
+        if !cache.retained_directory_removals.is_empty()
+            || cache
+                .retained_apply
+                .iter()
+                .any(|entry| entry.create_directory)
+        {
             return Err(
                 "workspace-cache participant cannot supply source directory removals".to_string(),
             );
+        }
+        for entry in self
+            .retained_apply
+            .iter()
+            .filter(|entry| entry.create_directory)
+        {
+            let source = entry.root.path().join(&entry.relative_path);
+            if participant.logical_root().starts_with(&source)
+                || source.starts_with(participant.logical_root())
+                || cache.retained_apply.iter().any(|entry| {
+                    let target = entry.root.path().join(&entry.relative_path);
+                    source.starts_with(&target) || target.starts_with(&source)
+                })
+            {
+                return Err(
+                    "source directory creation and workspace-cache targets overlap".to_string(),
+                );
+            }
         }
         for plan in &self.retained_directory_removals {
             let source = plan.root.path().join(&plan.relative);
@@ -153,4 +198,47 @@ impl CompileTransaction {
             }
         }
     }
+}
+
+/// Match absent suffixes using the retained existing parent's name policy,
+/// just as file staging does; lexical prefixes miss filesystem aliases.
+fn retained_path_is_prefix(
+    root: &RetainedDirectoryCapability,
+    prefix: &Path,
+    path: &Path,
+) -> Result<bool, RetainedApplyValidationError> {
+    let left = prefix.components().collect::<Vec<_>>();
+    let right = path.components().collect::<Vec<_>>();
+    if left.len() > right.len() {
+        return Ok(false);
+    }
+    let prefix_len = left.len();
+    let mut parent = root.clone();
+    let mut absent = false;
+    for (index, (left, right)) in left.iter().zip(&right).enumerate() {
+        if !parent
+            .child_names_equivalent(left.as_os_str(), right.as_os_str())
+            .map_err(|error| {
+                RetainedApplyValidationError::new(
+                    RetainedApplyValidationErrorKind::UnsupportedProvider,
+                    format!("directory overlap name identity failed: {error}"),
+                )
+            })?
+        {
+            return Ok(false);
+        }
+        if index + 1 < prefix_len && !absent {
+            match parent.retain_immediate_child_nofollow(left.as_os_str()) {
+                Ok(RetainedChildCapability::Directory(child)) => parent = child,
+                Err(error) if error.kind() == ErrorKind::NotFound => absent = true,
+                _ => {
+                    return Err(RetainedApplyValidationError::new(
+                        RetainedApplyValidationErrorKind::ContainmentIdentity,
+                        "directory overlap route changed",
+                    ))
+                }
+            }
+        }
+    }
+    Ok(true)
 }

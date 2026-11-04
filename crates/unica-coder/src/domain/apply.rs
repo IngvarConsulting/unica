@@ -506,6 +506,7 @@ macro_rules! operation_descriptors {
 operation_descriptors!(
     (unica_metadata::apply_operations::MetadataOperation::ObjectBorrow),
     (unica_metadata::apply_operations::MetadataOperation::ObjectCreate),
+    (unica_metadata::apply_operations::MetadataOperation::ObjectCopy),
     (unica_metadata::apply_operations::MetadataOperation::ObjectRemove),
     (PropertiesOperation::Set),
     (unica_metadata::apply_operations::MetadataOperation::ContentSet),

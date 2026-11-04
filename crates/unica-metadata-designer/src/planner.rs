@@ -297,6 +297,17 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 )?;
                 continue;
             }
+            MetadataPlanKind::Copy { source, name } => {
+                crate::object_copy::stage_copy(
+                    staged,
+                    authority,
+                    source,
+                    name,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
             MetadataPlanKind::Remove {
                 target,
                 layout,
