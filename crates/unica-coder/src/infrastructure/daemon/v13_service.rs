@@ -3077,7 +3077,7 @@ impl CanonicalV13ReadService {
         // Кандидаты на присоединённые файлы подтверждаются тем же читателем,
         // что и view: регистрацию владельца и точный ресурс нельзя вывести
         // только из правдоподобной раскладки.
-        if matches!(entry.kind(), "Module" | "Metadata")
+        if matches!(entry.kind(), "Module" | "Metadata" | "Definition")
             || entry
                 .placed_path()
                 .is_some_and(|path| path.ends_with("/Ext/Form.xml"))
