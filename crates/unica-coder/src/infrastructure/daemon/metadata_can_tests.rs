@@ -1,5 +1,7 @@
 #[path = "metadata_can_tests/constant_choice.rs"]
 mod constant_choice;
+#[path = "metadata_can_tests/functional_option.rs"]
+mod functional_option;
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
 
