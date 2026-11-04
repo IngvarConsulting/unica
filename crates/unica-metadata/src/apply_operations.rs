@@ -4,6 +4,24 @@ use crate::{MetaCollection, RelationEditMode};
 use unica_operation_contract::OperationContract;
 use unica_operation_contract::OperationSkeleton;
 
+#[cfg(test)]
+mod rename_contract_tests {
+    #[test]
+    fn object_rename_has_a_closed_new_name_contract() {
+        let operation = super::MetadataOperation::named("object.rename")
+            .expect("existing catalog identity can be renamed through apply");
+        let contract = operation.contract_at(None);
+        assert_eq!(
+            contract.schema["properties"]["values"]["required"],
+            serde_json::json!(["newName"])
+        );
+        assert_eq!(
+            contract.schema["properties"]["values"]["additionalProperties"],
+            false
+        );
+    }
+}
+
 macro_rules! metadata_operations {
     ($($variant:ident => ($name:literal, $applicability:ident, $skeleton:ident)),+ $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +75,7 @@ metadata_operations!(
     ObjectBorrow => ("object.borrow", ExtensionRoot, From),
     ObjectCreate => ("object.create", Configuration, Values),
     ObjectRemove => ("object.remove", MetadataOrCommonTemplate, Target),
+    ObjectRename => ("object.rename", ConfigurationCatalog, Values),
     RelationAdd => ("relation.add", Metadata, Values),
     RelationRemove => ("relation.remove", Metadata, Values),
     RelationReplace => ("relation.replace", Metadata, Values),
@@ -119,6 +138,7 @@ impl MetadataOperation {
             Self::ObjectBorrow
             | Self::ObjectCreate
             | Self::ObjectRemove
+            | Self::ObjectRename
             | Self::RelationAdd
             | Self::RelationRemove
             | Self::RelationReplace
@@ -177,6 +197,7 @@ impl MetadataOperation {
             Self::ObjectBorrow => crate::contracts::metadata_object_borrow(),
             Self::ObjectCreate => crate::contracts::metadata_object_create(),
             Self::ObjectRemove => crate::contracts::metadata_object_remove(),
+            Self::ObjectRename => crate::contracts::metadata_object_rename(),
             Self::TemplateAdd => crate::contracts::metadata_template_add(),
             Self::TemplateSet => crate::contracts::metadata_template_set(),
             Self::TemplateRemove => crate::contracts::metadata_template_remove(),
