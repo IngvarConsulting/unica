@@ -407,11 +407,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
 
     match key {
         // Constant Type is observed through MetaInfoDetails, not scalar properties.
-        Type
-        | ClientOrdinaryApplication
-        | ChoiceForm
-        | ChoiceFoldersAndItems
-        | ChoiceHistoryOnInput => false,
+        Type | ClientOrdinaryApplication | ChoiceForm | ChoiceFoldersAndItems => false,
         Synonym | Comment => true,
         ActionPeriod | BasePeriod => kind == CalculationRegister,
         ActionPeriodUse | DependenceOnCalculationTypes => kind == ChartOfCalculationTypes,
@@ -427,6 +423,12 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | ReturnValuesReuse
         | Server
         | ServerCall => kind == CommonModule,
+        FullTextSearch
+        | SearchStringModeOnInputByString
+        | FullTextSearchOnInputByString
+        | ChoiceDataGetModeOnInputByString
+        | CreateOnInput
+        | ChoiceHistoryOnInput => matches!(kind, Catalog | Document),
         Correspondence | PeriodAdjustmentLength => kind == AccountingRegister,
         Description | Predefined | RestartCountOnFailure | RestartIntervalOnFailure | Use => {
             kind == ScheduledJob

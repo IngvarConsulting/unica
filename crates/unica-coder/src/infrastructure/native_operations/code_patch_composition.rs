@@ -17,7 +17,7 @@ use unica_bsl::text::test_support::arguments;
 use unica_bsl::text::*;
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_metadata_designer::borrowed_image::stage_borrowed_module_state;
-use unica_metadata_designer::code_support::prove_staged_code_support;
+use unica_metadata_designer::code_support::{prove_staged_code_support, CodeSupportLock};
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
 use unica_source_contract::proposal::{
     ApplyPlanError, ApplyPlanErrorKind, ApplyProposal, ApplySourceAuthority, ApplyStagingError,
@@ -55,6 +55,42 @@ enum PatchMode {
     Preview,
 }
 
+pub(crate) struct CodeBatchEffects {
+    pub effects: PlannedApplyEffects,
+    pub support_warnings: Vec<CodeSupportWarning>,
+}
+
+pub(crate) struct CodeSupportWarning {
+    owner: String,
+    paths: Vec<PathBuf>,
+}
+
+impl CodeSupportWarning {
+    /// Only the final request postimage determines whether the locked owner changed.
+    pub(crate) fn append_if_changed(
+        &self,
+        changed: &[unica_source_contract::proposal::StagedApplyChange],
+        effects: &mut PlannedApplyEffects,
+    ) {
+        if !changed
+            .iter()
+            .any(|change| self.paths.contains(&change.relative_path))
+            || effects
+                .warnings()
+                .iter()
+                .any(|warning| warning["code"] == "support_locked" && warning["at"] == self.owner)
+        {
+            return;
+        }
+        effects.push_warning(serde_json::json!({
+            "code": "support_locked",
+            "severity": "warning",
+            "at": self.owner,
+            "message": format!("`{}` is a vendor module owner with the support rule `locked`; the project support policy `warn` permits this edit", self.owner),
+        }));
+    }
+}
+
 /// Plans a run of code operations; `first_index` is the place of the first
 /// of them in the call's `ops`, so a refusal names the operation the caller
 /// sent.
@@ -63,7 +99,7 @@ pub(crate) fn plan_code_batch(
     authority: &dyn ApplySourceAuthority,
     operations: &[CodePlanOperation],
     first_index: usize,
-) -> Result<PlannedApplyEffects, ApplyPlanError> {
+) -> Result<CodeBatchEffects, ApplyPlanError> {
     if !authority.owns_staged_state(staged) {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::InvalidState,
@@ -71,10 +107,12 @@ pub(crate) fn plan_code_batch(
         ));
     }
     let mut provisional_effects = Vec::new();
+    let mut support_warnings = Vec::new();
     for (op_index, operation) in operations.iter().enumerate() {
         plan_one_code_operation(
             staged,
             &mut provisional_effects,
+            &mut support_warnings,
             authority,
             operation,
             first_index + op_index,
@@ -90,12 +128,16 @@ pub(crate) fn plan_code_batch(
             effects.append_at(event, vec![relative]);
         }
     }
-    Ok(effects)
+    Ok(CodeBatchEffects {
+        effects,
+        support_warnings,
+    })
 }
 
 fn plan_one_code_operation(
     staged: &mut ApplyProposal<'_>,
     effects: &mut Vec<(PathBuf, DomainEvent)>,
+    support_warnings: &mut Vec<CodeSupportWarning>,
     authority: &dyn ApplySourceAuthority,
     operation: &CodePlanOperation,
     op_index: usize,
@@ -161,12 +203,35 @@ fn plan_one_code_operation(
         &identity,
         &at_path,
     )?;
-    prove_staged_code_support(
+    let support_lock = prove_staged_code_support(
         staged,
         authority.support_policy_mode(),
         &owner_bytes,
         &at_path,
     )?;
+    // The common gate handles configuration and top-level owner locks.
+    // A nested owner can independently be locked while its parent is editable.
+    if matches!(support_lock, Some(CodeSupportLock::Owner { evidence_index }) if evidence_index + 1 == owner_bytes.len())
+        && identity.descriptors.len() > 1
+    {
+        let owner = identity
+            .address
+            .as_str()
+            .rsplit_once('.')
+            .expect("module owner")
+            .0;
+        support_warnings.push(CodeSupportWarning {
+            owner: format!("{}:{owner}", authority.source_set_name()),
+            paths: vec![
+                relative.clone(),
+                identity
+                    .descriptors
+                    .last()
+                    .expect("owner descriptor")
+                    .clone(),
+            ],
+        });
+    }
     let before = staged
         .read(&relative)
         .map_err(|error| staged_code_error(error, &at_path))?;
@@ -440,7 +505,11 @@ pub(crate) fn plan_code_batch_owned_for_test(
     ),
     ApplyPlanError,
 > {
-    let effects = plan_code_batch(&mut staged.proposal(), &authority, operations, 0)?;
+    let planned = plan_code_batch(&mut staged.proposal(), &authority, operations, 0)?;
+    let mut effects = planned.effects;
+    for warning in planned.support_warnings {
+        warning.append_if_changed(&staged.planned_changes(), &mut effects);
+    }
     Ok((staged, effects))
 }
 

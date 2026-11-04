@@ -170,6 +170,16 @@ pub(crate) fn plan_form_resource_batch(
                     &mut provisional,
                     &reader,
                 )?;
+                if let unica_forms_designer::planner::FormPlan::FormRemove { owner, form } = plan {
+                    resource_planner::stage_removed_form_home_page(
+                        staged,
+                        authority,
+                        owner,
+                        form,
+                        op_index,
+                        &mut provisional,
+                    )?;
+                }
             }
             FormResourcePlanKind::Unsupported => {
                 return Err(hidden_apply_family_unimplemented(op_index));
