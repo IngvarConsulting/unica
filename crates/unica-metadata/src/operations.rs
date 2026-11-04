@@ -535,7 +535,7 @@ impl MetaElementInput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct MetaElementDefinition {
     pub name: String,
     pub synonym: Option<String>,
@@ -550,6 +550,35 @@ pub struct MetaElementDefinition {
     pub master: Option<bool>,
     pub main_filter: Option<bool>,
     pub deny_incomplete_values: Option<bool>,
+}
+
+impl std::fmt::Debug for MetaElementDefinition {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The planner's UUID seed includes this representation. Keep the
+        // established form when the added dimension flags are absent.
+        let mut value = formatter.debug_struct("MetaElementDefinition");
+        value
+            .field("name", &self.name)
+            .field("synonym", &self.synonym)
+            .field("comment", &self.comment)
+            .field("type", &self.r#type)
+            .field("required", &self.required)
+            .field("fill_value", &self.fill_value)
+            .field("attributes", &self.attributes)
+            .field("position", &self.position)
+            .field("template_type", &self.template_type)
+            .field("indexing", &self.indexing);
+        if self.master.is_some() {
+            value.field("master", &self.master);
+        }
+        if self.main_filter.is_some() {
+            value.field("main_filter", &self.main_filter);
+        }
+        if self.deny_incomplete_values.is_some() {
+            value.field("deny_incomplete_values", &self.deny_incomplete_values);
+        }
+        value.finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
