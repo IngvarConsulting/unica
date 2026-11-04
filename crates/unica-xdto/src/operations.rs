@@ -796,19 +796,7 @@ impl<'a> ArgumentReader<'a> {
 
     fn max_occurs(&mut self, key: &str) -> Result<Option<i64>, ContractError> {
         self.read(key, |value, shape, path| {
-            // Accept integral values represented exactly by the parsed JSON number;
-            // the original decimal spelling is no longer available here.
-            let parsed = value.as_i64().or_else(|| {
-                value.as_f64().and_then(|number| {
-                    // i64::MAX rounds to 2^63 as f64; a saturating cast would
-                    // otherwise appear exact at this out-of-range boundary.
-                    if number >= i64::MAX as f64 {
-                        return None;
-                    }
-                    let integer = number as i64;
-                    (number.fract() == 0.0 && integer as f64 == number).then_some(integer)
-                })
-            });
+            let parsed = exact_json_integer(value);
             match parsed {
                 Some(parsed) if parsed == -1 || parsed >= 1 => {
                     shape.validate_field(&json!(parsed), path)?;
@@ -883,6 +871,50 @@ impl<'a> ArgumentReader<'a> {
         }
         Ok(parsed)
     }
+}
+
+/// Decode the retained JSON decimal without rounding through a binary float.
+/// Work is proportional to its spelling, never to the exponent's magnitude.
+fn exact_json_integer(value: &Value) -> Option<i64> {
+    let raw = value.as_number()?.as_str();
+    let (negative, raw) = match raw.strip_prefix('-') {
+        Some(raw) => (true, raw),
+        None => (false, raw),
+    };
+    let (mantissa, exponent) = raw.split_once(['e', 'E']).unwrap_or((raw, "0"));
+    let fractional = mantissa.find('.').map_or(0, |dot| mantissa.len() - dot - 1);
+    let digits = mantissa.bytes().filter(|byte| *byte != b'.');
+    let count = mantissa.len() - usize::from(mantissa.contains('.'));
+    let leading = digits.clone().take_while(|byte| *byte == b'0').count();
+    if leading == count {
+        return Some(0);
+    }
+    let trailing = digits
+        .clone()
+        .rev()
+        .take_while(|byte| *byte == b'0')
+        .count();
+    let significant = count - leading - trailing;
+    // Any exponent outside i64 cannot cancel a mantissa that fits in a str.
+    let exponent = exponent.parse::<i64>().ok()?;
+    let zeros = i128::from(exponent) - fractional as i128 + trailing as i128;
+    if zeros < 0 || significant as i128 + zeros > 19 {
+        return None;
+    }
+    let mut integer = 0_i64;
+    for digit in digits.skip(leading).take(significant) {
+        let digit = i64::from(digit - b'0');
+        integer = integer.checked_mul(10)?;
+        integer = if negative {
+            integer.checked_sub(digit)?
+        } else {
+            integer.checked_add(digit)?
+        };
+    }
+    for _ in 0..zeros {
+        integer = integer.checked_mul(10)?;
+    }
+    Some(integer)
 }
 
 impl unica_operations::FamilyOperation for XdtoOperation {
@@ -1291,7 +1323,7 @@ mod tests {
         );
         assert_eq!(bound(json!(i64::MAX)), Ok(Some(i64::MAX)));
         assert_eq!(
-            bound(json!(9223372036854774784.0)),
+            bound(serde_json::from_str("9223372036854774784.0").unwrap()),
             Ok(Some(9223372036854774784))
         );
         for value in [
@@ -1304,18 +1336,62 @@ mod tests {
                 Err("ops[0].args.values.property.upperBound".to_string())
             );
         }
-        // The transport has already rounded both decimal spellings to 2^63.
-        // Refuse that lossy value; an exact integer spelling keeps i64::MAX.
-        assert_eq!(
-            bound(serde_json::from_str("9223372036854775807").unwrap()),
-            Ok(Some(i64::MAX))
-        );
-        for raw in ["9223372036854775807.0", "9223372036854775808.0"] {
+        for raw in [
+            "9223372036854775807",
+            "9223372036854775807.0",
+            "9.223372036854775807e18",
+            "92233720368547758070e-1",
+        ] {
             assert_eq!(
                 bound(serde_json::from_str(raw).unwrap()),
-                Err("ops[0].args.values.property.upperBound".to_string())
+                Ok(Some(i64::MAX)),
+                "{raw}"
             );
         }
+        for raw in [
+            "9223372036854775808",
+            "9223372036854775808.0",
+            "9.223372036854775808e18",
+            "92233720368547758080e-1",
+            "9223372036854775807.1",
+            "1.000000000000000000001",
+            "1e99999999999999999999999999999999999",
+            "1e-99999999999999999999999999999999999",
+        ] {
+            assert_eq!(
+                bound(serde_json::from_str(raw).unwrap()),
+                Err("ops[0].args.values.property.upperBound".to_string()),
+                "{raw}"
+            );
+        }
+        assert_eq!(
+            bound(serde_json::from_str("9007199254740993.0").unwrap()),
+            Ok(Some(9007199254740993))
+        );
+        for (raw, expected) in [
+            ("-1.0", -1),
+            ("-10e-1", -1),
+            ("0.1e1", 1),
+            ("100000e-5", 1),
+            ("9223372036854775806.0", i64::MAX - 1),
+            ("9007199254740992.0", 9007199254740992),
+        ] {
+            assert_eq!(
+                bound(serde_json::from_str(raw).unwrap()),
+                Ok(Some(expected)),
+                "{raw}"
+            );
+        }
+        for raw in ["0", "-0.0e999999", "-2", "-9223372036854775808.0", "0.001"] {
+            assert_eq!(
+                bound(serde_json::from_str(raw).unwrap()),
+                Err("ops[0].args.values.property.upperBound".to_string()),
+                "{raw}"
+            );
+        }
+        // A long mantissa can cancel a long exponent without expansion.
+        let raw = format!("1{}e-600", "0".repeat(600));
+        assert_eq!(bound(serde_json::from_str(&raw).unwrap()), Ok(Some(1)));
         assert_eq!(bound(json!(2.0)), Ok(Some(2)));
         assert_eq!(bound(json!(-1.0)), Ok(Some(-1)));
         assert_eq!(
