@@ -39,6 +39,12 @@ pub struct ConfigurationPropertyChanges {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WsReferencePropertyChanges {
+    pub location_url: String,
+    pub comment: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
     Metadata(MetaPropertyChanges),
     CommentOnly {
@@ -47,6 +53,7 @@ pub enum PropertiesIntent {
     },
     FunctionalOption(FunctionalOptionPropertyChanges),
     Role(RolePropertyChanges),
+    WSReference(WsReferencePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
     StyleItem(StyleItemPropertyChanges),
@@ -351,6 +358,24 @@ fn decode_with_contract(
                         )?;
                     }
                     PropertiesIntent::Metadata(changes)
+                }
+                PropertiesSite::WSReference => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    let location_url = values_reader.string(DescriptorProperty::LocationUrl)?;
+                    match location_url {
+                        Some(location_url) => {
+                            PropertiesIntent::WSReference(WsReferencePropertyChanges {
+                                location_url,
+                                comment,
+                            })
+                        }
+                        None => PropertiesIntent::CommentOnly {
+                            kind: unica_address::address::NodeKind::WsReference,
+                            comment: comment.ok_or_else(|| {
+                                invalid(&values_path, "Comment or LocationURL is required")
+                            })?,
+                        },
+                    }
                 }
                 PropertiesSite::FunctionalOption => {
                     let changes = FunctionalOptionPropertyChanges {

@@ -100,6 +100,8 @@ fn root_comments_preview_publish_read_and_repeat_preserve_native_companions() {
                 .len(),
             if kind == "FunctionalOption" {
                 6
+            } else if kind == "WSReference" {
+                4
             } else if kind == "StyleItem" {
                 3
             } else {

@@ -58,7 +58,7 @@ allowed-tools:
 `CommonAttribute`, `FunctionalOptionsParameter`,
 `SessionParameter`, `FilterCriterion`, `SettingsStorage`, `CommonCommand`,
 `CommandGroup`, `CommonForm`, `CommonTemplate`, `CommonPicture`, `Language`,
-`IntegrationService`, `DocumentNumerator`, `WSReference`, `XDTOPackage`,
+`IntegrationService`, `DocumentNumerator`, `XDTOPackage`,
 `Sequence` и `Style`. Для общей формы адресуй дескриптор
 `main:CommonForm.<Имя>.Metadata`; остальные владельцы адресуются как
 `main:<Вид>.<Имя>`. Например, `{"values":{"Comment":"Назначение параметра"}}`;
@@ -73,6 +73,13 @@ allowed-tools:
 при переданном `Location` или `PrivilegedGetMode` хранилище проверяется.
 Пользуйся точным набором полей и псевдонимов из подробного `Can.props.set`.
 
+
+У `WSReference` строковый `Comment`/`comment` изменяется независимо от состояния
+`LocationURL`. В конфигурации можно также изменить существующий `LocationURL`
+или его псевдоним `locationURL`, в том числе вместе с комментарием. Пустая
+строка очищает переданное поле. Смешанная операция проверяет оба поля и
+регистрацию WS-ссылки до публикации; WSDL и соседние файлы сохраняются.
+В расширении доступен профиль только комментария.
 
 У `StyleItem` строковый `Comment`/`comment` изменяется независимо от типа и
 состояния Value. Для подтверждённого цвета подробный `Can.props.set` дополнительно
