@@ -1981,7 +1981,7 @@ mod tests {
                     (json!({"values": {"type": string_type}}), Some(typed)),
                     (
                         json!({"values": {"required": true}}),
-                        Some(spec.is_some_and(|spec| spec.allows_required)),
+                        Some(family == "tabularSection" || spec.is_some_and(|spec| spec.allows_required)),
                     ),
                     (
                         json!({"values": {"type": string_type, "fillValue": string_fill}}),

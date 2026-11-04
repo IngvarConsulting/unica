@@ -964,6 +964,7 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             elements.iter().map(|element| element.name.as_str()),
             &target,
+            &[],
         )?,
         MetaEditOperation::Update {
             collection,
@@ -983,6 +984,17 @@ pub fn typed_operation_effect_value(
                     }
                 }),
                 &target,
+                &elements
+                    .iter()
+                    .filter(|element| element.tabular_section_use.is_some())
+                    .map(|element| {
+                        if after {
+                            element.new_name.as_deref().unwrap_or(&element.name)
+                        } else {
+                            &element.name
+                        }
+                    })
+                    .collect::<Vec<_>>(),
             )?;
             if elements
                 .iter()
@@ -1019,6 +1031,7 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             names.iter().map(String::as_str),
             &target,
+            &[],
         )?,
         MetaEditOperation::Copy {
             collection,
@@ -1032,6 +1045,7 @@ pub fn typed_operation_effect_value(
             scope.as_ref(),
             std::iter::once(new_name.as_str()),
             &target,
+            &[],
         )?,
         MetaEditOperation::EditRelations { relation, .. } => {
             let mut diagnostics = Vec::new();
@@ -1079,6 +1093,7 @@ pub fn typed_collection_effect_value<'a>(
     scope: Option<&unica_metadata::MetaScope>,
     names: impl Iterator<Item = &'a str>,
     target: &MetadataAddress,
+    use_names: &[&str],
 ) -> Result<Value, MetaDiagnostic> {
     let top = unica_xml_format::read::child_element(object, "ChildObjects");
     let parent = if let Some(scope) = scope {
@@ -1118,7 +1133,7 @@ pub fn typed_collection_effect_value<'a>(
     {
         return Err(diagnostic);
     }
-    let selected = elements
+    let mut selected = elements
         .into_iter()
         .filter(|element| {
             requested
@@ -1132,6 +1147,27 @@ pub fn typed_collection_effect_value<'a>(
             "metadata element is unavailable for semantic effect",
             Some("elements"),
         ));
+    }
+    for element in &mut selected {
+        if use_names
+            .iter()
+            .any(|name| metadata_name_eq(name, &element.name))
+        {
+            let section =
+                meta_edit_find_tabular_section(object, &element.name).ok_or_else(|| {
+                    typed_diagnostic(
+                        MetaDiagnosticCode::TargetNotFound,
+                        "tabular section was not found",
+                        Some("Use"),
+                    )
+                })?;
+            let (_, value) =
+                tabular_property_value(xml, section, "Use", "Use", TABULAR_SECTION_USES)?;
+            element.properties.push(MetaObservedProperty {
+                name: "Use".into(),
+                value: MetaObservedPropertyValue::Text { value },
+            });
+        }
     }
     serde_json::to_value(selected).map_err(|_| {
         typed_diagnostic(
@@ -2043,7 +2079,19 @@ pub fn update_typed_element(
     {
         ensure_typed_name_free(xml_text, tag, scope, new_name)?;
     }
-    let node_xml = xml_text[range.clone()].to_string();
+    let mut node_xml = xml_text[range.clone()].to_string();
+    if collection == MetaCollection::TabularSections {
+        update_tabular_properties(xml_text, range.clone(), &mut node_xml, update)?;
+        if (update.tabular_section_use.is_some() || update.required.is_some())
+            && update.new_name.is_none()
+            && update.synonym.is_none()
+            && update.comment.is_none()
+            && update.position.is_none()
+        {
+            xml_text.replace_range(range, &node_xml);
+            return Ok(());
+        }
+    }
     let properties_range = typed_properties_text_range(&node_xml).ok_or_else(|| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -2167,7 +2215,10 @@ pub fn update_typed_element(
             )
         })?;
     }
-    if let Some(required) = update.required {
+    if let Some(required) = update
+        .required
+        .filter(|_| collection != MetaCollection::TabularSections)
+    {
         let replacement = format!(
             "{indent}<FillChecking>{}</FillChecking>",
             if required { "ShowError" } else { "DontCheck" }
@@ -2278,6 +2329,129 @@ pub fn update_typed_element(
         })?;
     }
     Ok(())
+}
+
+fn update_tabular_properties(
+    xml: &str,
+    section_range: std::ops::Range<usize>,
+    section_xml: &mut String,
+    update: &MetaElementUpdate,
+) -> Result<(), MetaDiagnostic> {
+    if update.tabular_section_use.is_none() && update.required.is_none() {
+        return Ok(());
+    }
+    let doc = Document::parse(xml).map_err(|_| {
+        typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "tabular section XML is malformed",
+            None,
+        )
+    })?;
+    let mut replacements = Vec::new();
+    for (property, field, value, allowed) in [
+        (
+            "Use",
+            "Use",
+            update.tabular_section_use.as_deref(),
+            TABULAR_SECTION_USES,
+        ),
+        (
+            "FillChecking",
+            "required",
+            update
+                .required
+                .map(|value| if value { "ShowError" } else { "DontCheck" }),
+            &["DontCheck", "ShowError"][..],
+        ),
+    ] {
+        let Some(value) = value else {
+            continue;
+        };
+        if !allowed.contains(&value) {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "unsupported tabular section property value",
+                Some(field),
+            ));
+        }
+        let section = doc
+            .descendants()
+            .find(|node| node.is_element() && node.range() == section_range)
+            .ok_or_else(|| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "tabular section was not found",
+                    Some(field),
+                )
+            })?;
+        let (value_range, _) = tabular_property_value(xml, section, property, field, allowed)?;
+        let start = value_range.start;
+        let end = value_range.end;
+        replacements.push((
+            start - section_range.start..end - section_range.start,
+            value,
+        ));
+    }
+    replacements.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    for (range, value) in replacements {
+        section_xml.replace_range(range, value);
+    }
+    Ok(())
+}
+
+fn tabular_property_value(
+    xml: &str,
+    section: roxmltree::Node<'_, '_>,
+    property: &str,
+    field: &str,
+    allowed: &[&str],
+) -> Result<(std::ops::Range<usize>, String), MetaDiagnostic> {
+    let refused = || {
+        typed_diagnostic(MetaDiagnosticCode::InvalidArguments,
+        format!("tabular section {property} must be a single existing property with a supported value"), Some(field))
+    };
+    if section.document().root_element().attribute("version") != Some("2.20")
+        || section.tag_name().namespace() != Some(super::info_projection::MD_CLASSES_NAMESPACE)
+    {
+        return Err(refused());
+    }
+    let properties = section
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+        .collect::<Vec<_>>();
+    let [properties] = properties.as_slice() else {
+        return Err(refused());
+    };
+    if properties.tag_name().namespace() != Some(super::info_projection::MD_CLASSES_NAMESPACE)
+        || properties.attributes().len() != 0
+    {
+        return Err(refused());
+    }
+    let nodes = properties
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == property)
+        .collect::<Vec<_>>();
+    let [node] = nodes.as_slice() else {
+        return Err(refused());
+    };
+    let children = node.children().collect::<Vec<_>>();
+    let [text] = children.as_slice() else {
+        return Err(refused());
+    };
+    if node.tag_name().namespace() != Some(super::info_projection::MD_CLASSES_NAMESPACE)
+        || node.attributes().len() != 0
+        || !text.is_text()
+        || !allowed.contains(&text.text().unwrap_or_default().trim())
+    {
+        return Err(refused());
+    }
+    let raw = &xml[text.range()];
+    let start = text.range().start + raw.len() - raw.trim_start().len();
+    let end = text.range().end - (raw.len() - raw.trim_end().len());
+    Ok((
+        start..end,
+        text.text().unwrap_or_default().trim().to_owned(),
+    ))
 }
 /// A tabular section's generated types carry its name
 /// (`CatalogTabularSection.<Owner>.<Name>`, `CatalogTabularSectionRow.<Owner>.<Name>`).
@@ -3764,3 +3938,7 @@ mod dimension_deny_tests;
 #[cfg(test)]
 #[path = "../tests/platform/edit_attribute_copy.rs"]
 mod attribute_copy_tests;
+
+#[cfg(test)]
+#[path = "../tests/platform/edit_tabular_properties.rs"]
+mod tabular_properties_tests;

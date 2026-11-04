@@ -6,6 +6,46 @@ const CATALOG: &str = include_str!(
     "../../../../../../tests/fixtures/acceptance/workspace-catalog-tabular-properties/src/Catalogs/Items.xml"
 );
 
+#[test]
+fn chart_tabular_profile_publishes_use_in_collection_and_detail_without_column_promises() {
+    let fixture = RealReaderFixture::new();
+    let configuration = fixture.source.join("Configuration.xml");
+    let xml = std::fs::read_to_string(&configuration).unwrap();
+    write(
+        &configuration,
+        &xml.replace(
+            "</ChildObjects>",
+            "<ChartOfCharacteristicTypes>Properties</ChartOfCharacteristicTypes></ChildObjects>",
+        ),
+    );
+    write(&fixture.source.join("ChartsOfCharacteristicTypes/Properties.xml"), include_str!(
+        "../../../../../../tests/fixtures/acceptance/workspace-tabular-section-properties/src/ChartsOfCharacteristicTypes/Properties.xml"
+    ));
+    let before = tree_snapshot(&fixture.source);
+    let collection = read(
+        &fixture,
+        "main:ChartOfCharacteristicTypes.Properties.TabularSection",
+    );
+    let detail = read(
+        &fixture,
+        "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines",
+    );
+    for section in [&collection["items"][0], &detail] {
+        assert_eq!(section["props"]["Use"], "ForItem");
+        assert!(section["props"].get("LineNumberLength").is_none());
+    }
+    let columns = read(
+        &fixture,
+        "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines.Attribute",
+    );
+    for column in columns["items"].as_array().unwrap() {
+        for property in ["Indexing", "FullTextSearch", "DataHistory", "ToolTip"] {
+            assert!(column["props"].get(property).is_none());
+        }
+    }
+    assert_eq!(tree_snapshot(&fixture.source), before);
+}
+
 fn fixture_with_catalog(xml: &str) -> RealReaderFixture {
     let fixture = RealReaderFixture::new();
     write(&fixture.source.join("Catalogs/Items.xml"), xml);

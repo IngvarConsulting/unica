@@ -1,0 +1,2992 @@
+{
+  "id": "S-1689-tabular-section-properties",
+  "issue": 1689,
+  "area": "Реквизиты и состав",
+  "task": "Изменить Use и FillChecking самой табличной части по закрытой матрице владельцев, проверить preview, сохранённый executionToken, чтение, XML, байтовый возврат и конфликт сохранённого плана.",
+  "workspace": "tests/fixtures/acceptance/workspace-tabular-section-properties",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        }
+      ],
+      "captures": {
+        "items0": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines.Can.tabularSection.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Use/enum",
+          "eq": [
+            "ForItem",
+            "ForFolder",
+            "ForFolderAndItem"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/required/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/type",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/indexing",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fillValue",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForFolder"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/truncated",
+          "eq": false
+        },
+        {
+          "pointer": "/data/chunks",
+          "notEq": []
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolder"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForFolder"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForFolderAndItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolder"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolderAndItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForFolderAndItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolderAndItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        }
+      ],
+      "captures": {
+        "flatitems0": {
+          "file": "src/Catalogs/FlatItems.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines.Can.tabularSection.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Use/enum",
+          "eq": [
+            "ForItem",
+            "ForFolder",
+            "ForFolderAndItem"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/required/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/type",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/indexing",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fillValue",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForFolder"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolder"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForFolder"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForFolderAndItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolder"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolderAndItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForFolderAndItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolderAndItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "sha256",
+          "eq": "$capture.flatitems0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.FlatItems.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "sha256",
+          "eq": "$capture.flatitems0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/FlatItems.xml",
+          "kind": "sha256",
+          "eq": "$capture.flatitems0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        }
+      ],
+      "captures": {
+        "properties0": {
+          "file": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines.Can.tabularSection.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Use/enum",
+          "eq": [
+            "ForItem",
+            "ForFolder",
+            "ForFolderAndItem"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/required",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/type",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/indexing",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fillValue",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForFolder"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}ChartOfCharacteristicTypes/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}ChartOfCharacteristicTypes/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolder"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForFolder"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForFolderAndItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}ChartOfCharacteristicTypes/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolder"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}ChartOfCharacteristicTypes/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolderAndItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForFolderAndItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}ChartOfCharacteristicTypes/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolderAndItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}ChartOfCharacteristicTypes/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "sha256",
+          "eq": "$capture.properties0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "sha256",
+          "eq": "$capture.properties0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "sha256",
+          "eq": "$capture.properties0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Properties.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Properties.xml",
+          "kind": "sha256",
+          "eq": "$capture.properties0"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: required is not available for this tabular section owner"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Order.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "order0": {
+          "file": "src/Documents/Order.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Order.TabularSection.Lines.Can.tabularSection.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Use",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/required/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/type",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/indexing",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fillValue",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Order.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Order.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Document/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Order.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Document/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Order.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Order.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Order.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Document/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Order.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Document/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Order.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Order.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Order.xml",
+          "kind": "sha256",
+          "eq": "$capture.order0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Order.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Order.xml",
+          "kind": "sha256",
+          "eq": "$capture.order0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Order.xml",
+          "kind": "sha256",
+          "eq": "$capture.order0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Order.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Order.xml",
+          "kind": "sha256",
+          "eq": "$capture.order0"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: Use is available only for Catalog and ChartOfCharacteristicTypes tabular sections"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Process.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "process0": {
+          "file": "src/BusinessProcesses/Process.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Process.TabularSection.Lines.Can.tabularSection.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Use",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/required/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/type",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/indexing",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fillValue",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Process.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Process.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}BusinessProcess/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Process.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}BusinessProcess/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Process.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Process.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Process.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}BusinessProcess/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Process.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}BusinessProcess/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Process.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Process.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Process.xml",
+          "kind": "sha256",
+          "eq": "$capture.process0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Process.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Process.xml",
+          "kind": "sha256",
+          "eq": "$capture.process0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Process.xml",
+          "kind": "sha256",
+          "eq": "$capture.process0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Process.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Process.xml",
+          "kind": "sha256",
+          "eq": "$capture.process0"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: Use is available only for Catalog and ChartOfCharacteristicTypes tabular sections"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Exchange.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "exchange0": {
+          "file": "src/ExchangePlans/Exchange.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Exchange.TabularSection.Lines.Can.tabularSection.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Use",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/required/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/type",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/indexing",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fillValue",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Exchange.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Exchange.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}ExchangePlan/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Exchange.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}ExchangePlan/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Exchange.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Exchange.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Exchange.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}ExchangePlan/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Exchange.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}ExchangePlan/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Exchange.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Exchange.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Exchange.xml",
+          "kind": "sha256",
+          "eq": "$capture.exchange0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Exchange.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Exchange.xml",
+          "kind": "sha256",
+          "eq": "$capture.exchange0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Exchange.xml",
+          "kind": "sha256",
+          "eq": "$capture.exchange0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Exchange.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Exchange.xml",
+          "kind": "sha256",
+          "eq": "$capture.exchange0"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: Use is available only for Catalog and ChartOfCharacteristicTypes tabular sections"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Report.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "report0": {
+          "file": "src/Reports/Report.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Report.TabularSection.Lines.Can.tabularSection.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Use",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/required/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/type",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/indexing",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fillValue",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.Report.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/Report.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/Report.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Report.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.Report.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/Report.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/Report.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Report.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Report.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/Report.xml",
+          "kind": "sha256",
+          "eq": "$capture.report0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.Report.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/Report.xml",
+          "kind": "sha256",
+          "eq": "$capture.report0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/Report.xml",
+          "kind": "sha256",
+          "eq": "$capture.report0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.Report.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/Report.xml",
+          "kind": "sha256",
+          "eq": "$capture.report0"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: Use is available only for Catalog and ChartOfCharacteristicTypes tabular sections"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "processor0": {
+          "file": "src/DataProcessors/Processor.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.TabularSection.Lines.Can.tabularSection.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Use",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/required/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/type",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/indexing",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fillValue",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DataProcessor.Processor.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}DataProcessor/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}DataProcessor/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DataProcessor.Processor.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}DataProcessor/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}DataProcessor/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "DontCheck"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.TabularSection.Lines"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "$capture.processor0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DataProcessor.Processor.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "$capture.processor0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "$capture.processor0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DataProcessor.Processor.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "$capture.processor0"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: Use is available only for Catalog and ChartOfCharacteristicTypes tabular sections"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "Unknown"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": "true"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: `required` must be a boolean"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForFolder",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: field is not legal for collection"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForFolder",
+                "fillValue": {
+                  "kind": "boolean",
+                  "value": true
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: field is not legal for collection"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForFolder",
+                "indexing": "Index"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "refusal": "bad_value: field is not legal for collection"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForFolder"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "staleToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.staleToken"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForItem"
+          ]
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "stale_revision"
+        }
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Catalogs/Items.xml; input `Catalogs/Items.xml`: source write target; the plan retains its original state to prevent overwriting"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForFolder",
+                "required": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolder"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}TabularSection/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}FillChecking",
+          "eq": [
+            "ShowError"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "Use": "ForItem",
+                "required": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.items0"
+        }
+      ]
+    }
+  ]
+}
