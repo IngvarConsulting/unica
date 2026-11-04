@@ -1,0 +1,700 @@
+{
+  "id": "S-1672-task-number-auto-prefix",
+  "name": "task-number-auto-prefix-roundtrip",
+  "issue": 1672,
+  "area": "Метаданные",
+  "task": "Изменить автопрефикс номера задачи в обоих направлениях, сохранив остальные свойства; повтор и отказы не меняют байты",
+  "workspace": "tests/fixtures/acceptance/workspace-task-auto-prefix",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.ProbeTask"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/TaskNumberAutoPrefix",
+          "eq": "BusinessProcessNumber"
+        }
+      ],
+      "captures": {
+        "initialTask": {
+          "file": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256"
+        },
+        "initialProcess": {
+          "file": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256"
+        },
+        "initialConfiguration": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.ProbeTask.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/TaskNumberAutoPrefix/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/TaskNumberAutoPrefix/enum",
+          "eq": [
+            "DontUse",
+            "BusinessProcessNumber"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.ProbeProcess.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/TaskNumberAutoPrefix",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/TaskNumberAutoPrefix",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.ProbeTask",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "TaskNumberAutoPrefix": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Task/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}TaskNumberAutoPrefix",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ],
+      "captures": {
+        "disabledTask": {
+          "file": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.ProbeTask"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/TaskNumberAutoPrefix",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.ProbeTask",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "TaskNumberAutoPrefix": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.disabledTask"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.disabledTask"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.ProbeTask",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "TaskNumberAutoPrefix": "BusinessProcessNumber"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.disabledTask"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "xml",
+          "select": "{http://v8.1c.ru/8.3/MDClasses}Task/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}TaskNumberAutoPrefix",
+          "eq": [
+            "BusinessProcessNumber"
+          ]
+        },
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.ProbeTask"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/TaskNumberAutoPrefix",
+          "eq": "BusinessProcessNumber"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.ProbeTask",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not leak",
+                "TaskNumberAutoPrefix": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ],
+      "refusal": "bad_value: property `TaskNumberAutoPrefix` value `Auto` is invalid; expected one of: DontUse, BusinessProcessNumber"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.ProbeTask",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not leak",
+                "TaskNumberAutoPrefix": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ],
+      "refusal": "bad_value: property `TaskNumberAutoPrefix` value `` is invalid; expected one of: DontUse, BusinessProcessNumber"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.ProbeTask",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not leak",
+                "TaskNumberAutoPrefix": "dontuse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ],
+      "refusal": "bad_value: property `TaskNumberAutoPrefix` value `dontuse` is invalid; expected one of: DontUse, BusinessProcessNumber"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.ProbeTask",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not leak",
+                "TaskNumberAutoPrefix": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ],
+      "refusal": "bad_value: property value must be a string"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.ProbeTask",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must not leak",
+                "TaskNumberAutoPrefix": 0
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ],
+      "refusal": "bad_value: property value must be a string"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.ProbeProcess",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "TaskNumberAutoPrefix": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ],
+      "refusal": "bad_value: property `TaskNumberAutoPrefix` is not supported for BusinessProcess"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.ProbeTask.StandardAttribute.Number",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "TaskNumberAutoPrefix": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ],
+      "refusal": "bad_value: apply operation `props.set` does not apply to StandardAttribute `main:Task.ProbeTask.StandardAttribute.Number`; it applies at `main:Task.ProbeTask`"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.ProbeTask",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "TaskNumberAutoPrefix": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ],
+      "captures": {
+        "stalePlan": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.ProbeTask",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "concurrent edit"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "concurrentTask": {
+          "file": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stalePlan"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/ProbeTask.xml",
+          "kind": "sha256",
+          "eq": "$capture.concurrentTask"
+        },
+        {
+          "path": "src/BusinessProcesses/ProbeProcess.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialProcess"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.initialConfiguration"
+        }
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Tasks/ProbeTask.xml; input `Tasks/ProbeTask.xml`: source write target; the plan retains its original state to prevent overwriti"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.ProbeTask"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/TaskNumberAutoPrefix",
+          "eq": "BusinessProcessNumber"
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "concurrent edit"
+        }
+      ]
+    }
+  ]
+}

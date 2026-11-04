@@ -66,6 +66,7 @@ pub enum MetaPropertyKey {
     ServerCall,
     SessionMaxAge,
     SubordinationUse,
+    TaskNumberAutoPrefix,
     UnpostInPrivilegedMode,
     Use,
     WriteMode,
@@ -225,6 +226,7 @@ const EXCHANGE_PLAN_KINDS: &[MetadataKind] = &[MetadataKind::ExchangePlan];
 const HTTP_SERVICE_KINDS: &[MetadataKind] = &[MetadataKind::HTTPService];
 const WEB_SERVICE_KINDS: &[MetadataKind] = &[MetadataKind::WebService];
 const EVENT_SUBSCRIPTION_KINDS: &[MetadataKind] = &[MetadataKind::EventSubscription];
+const TASK_KINDS: &[MetadataKind] = &[MetadataKind::Task];
 const WEB_SERVICE_SESSION_KINDS: &[MetadataKind] =
     &[MetadataKind::HTTPService, MetadataKind::WebService];
 
@@ -575,6 +577,13 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::Namespace,
         MetaPropertyValueKind::String,
         WEB_SERVICE_KINDS,
+    ),
+    enum_property(
+        "TaskNumberAutoPrefix",
+        "TaskNumberAutoPrefix",
+        MetaPropertyKey::TaskNumberAutoPrefix,
+        TASK_KINDS,
+        &["DontUse", "BusinessProcessNumber"],
     ),
     enum_property(
         "NumberAllowedLength",
@@ -942,6 +951,32 @@ mod tests {
                 "{property_name} for {}",
                 kind.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn task_number_auto_prefix_has_a_closed_task_only_contract() {
+        for value in ["DontUse", "BusinessProcessNumber"] {
+            assert_property_kind_matrix(
+                "TaskNumberAutoPrefix",
+                MetaPropertyValue::String(value.to_string()),
+                &[MetadataKind::Task],
+            );
+        }
+        for value in [
+            MetaPropertyValue::String("Auto".to_string()),
+            MetaPropertyValue::String("dontuse".to_string()),
+            MetaPropertyValue::String(String::new()),
+            MetaPropertyValue::Boolean(false),
+            MetaPropertyValue::UnsignedInteger(0),
+        ] {
+            let error = MetaPropertyChanges::convert(
+                MetadataKind::Task,
+                vec![MetaPropertyInput::new("TaskNumberAutoPrefix", value)],
+            )
+            .expect_err("only the platform string enumeration is accepted");
+            assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+            assert_eq!(error.field.as_deref(), Some("values.TaskNumberAutoPrefix"));
         }
     }
 

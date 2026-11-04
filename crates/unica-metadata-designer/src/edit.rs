@@ -1420,6 +1420,7 @@ pub fn apply_typed_properties(
                 | MetaPropertyKey::ChoiceDataGetModeOnInputByString
                 | MetaPropertyKey::CreateOnInput
                 | MetaPropertyKey::ChoiceHistoryOnInput
+                | MetaPropertyKey::TaskNumberAutoPrefix
         ) {
             let same_name_count = properties
                 .children()
@@ -3714,6 +3715,10 @@ fn collapse_children(
     }
     collapsed
 }
+
+#[cfg(test)]
+#[path = "task_number_auto_prefix_tests.rs"]
+mod task_number_auto_prefix_tests;
 
 #[cfg(test)]
 mod legacy_inline_collapse_tests {

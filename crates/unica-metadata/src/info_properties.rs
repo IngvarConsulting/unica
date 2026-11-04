@@ -407,7 +407,9 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
 
     match key {
         // Constant Type is observed through MetaInfoDetails, not scalar properties.
-        Type | ClientOrdinaryApplication => false,
+        // ClientOrdinaryApplication and TaskNumberAutoPrefix use the independent
+        // additional-property read profile, not mutation-compatible read keys.
+        Type | ClientOrdinaryApplication | TaskNumberAutoPrefix => false,
         Synonym | Comment => true,
         ActionPeriod | BasePeriod => kind == CalculationRegister,
         ActionPeriodUse | DependenceOnCalculationTypes => kind == ChartOfCalculationTypes,
@@ -913,6 +915,20 @@ mod tests {
             .expect("the independent read profile already observes this platform property");
         assert_eq!(observed.key, "ClientOrdinaryApplication");
         assert_eq!(observed.value_kind, MetaInfoPropertyValueKind::Boolean);
+    }
+
+    #[test]
+    fn task_number_auto_prefix_read_profile_stays_independent_and_task_only() {
+        assert!(mutation_compatible_read_key("TaskNumberAutoPrefix").is_none());
+
+        for kind in MetadataKind::ALL {
+            let observed = META_INFO_PROPERTY_PROFILE.resolve(*kind, "TaskNumberAutoPrefix");
+            assert_eq!(observed.is_some(), *kind == MetadataKind::Task, "{kind:?}");
+            if let Some(observed) = observed {
+                assert_eq!(observed.key, "TaskNumberAutoPrefix");
+                assert_eq!(observed.value_kind, MetaInfoPropertyValueKind::String);
+            }
+        }
     }
 
     #[test]
