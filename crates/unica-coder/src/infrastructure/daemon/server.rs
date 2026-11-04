@@ -14387,7 +14387,7 @@ struct ActorLogicalReadLease {"#,
             (
                 AnalyzerRunFailureKind::EngineMissing,
                 Some("provider_absent"),
-                "bsl-analyzer is not available for darwin-arm64: its file is not on this machine; build it from third-party/tools.lock.json",
+                "scripts/ci/build-unica-tools.py --dev --target darwin-arm64",
             ),
             (
                 AnalyzerRunFailureKind::StartFailed,
@@ -14438,7 +14438,9 @@ struct ActorLogicalReadLease {"#,
             let diagnostic = &checked.diagnostics[0];
             assert_eq!(diagnostic["code"], "provider_unavailable", "{kind:?}");
             assert_eq!(
-                diagnostic.get("detailCode").and_then(serde_json::Value::as_str),
+                diagnostic
+                    .get("detailCode")
+                    .and_then(serde_json::Value::as_str),
                 detail,
                 "{kind:?}"
             );
@@ -14449,7 +14451,7 @@ struct ActorLogicalReadLease {"#,
                 ),
                 "{kind:?}"
             );
-            assert!(message.contains(cause), "{kind:?}");
+            assert!(message.contains(cause), "{kind:?}: {message}");
             assert!(!checked_text_leaks(&checked), "{kind:?}");
         }
     }
