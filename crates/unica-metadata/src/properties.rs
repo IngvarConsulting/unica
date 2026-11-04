@@ -5,6 +5,12 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum MetaPropertyKey {
+    FullTextSearch,
+    SearchStringModeOnInputByString,
+    FullTextSearchOnInputByString,
+    ChoiceDataGetModeOnInputByString,
+    CreateOnInput,
+    ChoiceHistoryOnInput,
     Type,
     Synonym,
     Comment,
@@ -340,6 +346,48 @@ const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "T
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
+    enum_property(
+        "FullTextSearch",
+        "FullTextSearch",
+        MetaPropertyKey::FullTextSearch,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Use", "DontUse"],
+    ),
+    enum_property(
+        "SearchStringModeOnInputByString",
+        "SearchStringModeOnInputByString",
+        MetaPropertyKey::SearchStringModeOnInputByString,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Begin", "AnyPart"],
+    ),
+    enum_property(
+        "FullTextSearchOnInputByString",
+        "FullTextSearchOnInputByString",
+        MetaPropertyKey::FullTextSearchOnInputByString,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Use", "DontUse"],
+    ),
+    enum_property(
+        "ChoiceDataGetModeOnInputByString",
+        "ChoiceDataGetModeOnInputByString",
+        MetaPropertyKey::ChoiceDataGetModeOnInputByString,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Directly", "Background"],
+    ),
+    enum_property(
+        "CreateOnInput",
+        "CreateOnInput",
+        MetaPropertyKey::CreateOnInput,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Auto", "Use", "DontUse"],
+    ),
+    enum_property(
+        "ChoiceHistoryOnInput",
+        "ChoiceHistoryOnInput",
+        MetaPropertyKey::ChoiceHistoryOnInput,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Auto", "DontUse"],
+    ),
     property(
         "Type",
         MetaPropertyKey::Type,
@@ -1190,6 +1238,36 @@ mod tests {
                 "Correspondence",
                 MetaPropertyValue::Boolean(true),
                 &[AccountingRegister],
+            ),
+            (
+                "FullTextSearch",
+                MetaPropertyValue::String("Use".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "SearchStringModeOnInputByString",
+                MetaPropertyValue::String("Begin".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "FullTextSearchOnInputByString",
+                MetaPropertyValue::String("Use".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "ChoiceDataGetModeOnInputByString",
+                MetaPropertyValue::String("Directly".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "CreateOnInput",
+                MetaPropertyValue::String("Auto".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "ChoiceHistoryOnInput",
+                MetaPropertyValue::String("Auto".into()),
+                &[Catalog, Document],
             ),
             (
                 "DefaultPresentation",
