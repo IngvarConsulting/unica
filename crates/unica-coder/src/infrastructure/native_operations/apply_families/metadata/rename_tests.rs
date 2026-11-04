@@ -77,6 +77,29 @@ fn catalog_rename_stages_then_atomically_publishes_identity_and_references() {
     assert!(order.contains("cfg:CatalogRef.OldLong<"));
 }
 #[test]
+fn catalog_rename_preserves_the_default_form_identity_and_payload() {
+    let form_descriptor = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/acceptance/workspace-object-rename/src/Catalogs/СтарыйСклад/Forms/CorpusForm.xml"));
+    let form_xml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/acceptance/workspace-object-rename/src/Catalogs/СтарыйСклад/Forms/CorpusForm/Ext/Form.xml")).replace("CatalogObject.СтарыйСклад", "CatalogObject.Old");
+    let module = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/acceptance/workspace-object-rename/src/Catalogs/СтарыйСклад/Forms/CorpusForm/Ext/Form/Module.bsl"));
+    let catalog = CATALOG.replace("<Comment/>", "<Comment/><DefaultObjectForm>Catalog.Old.Form.CorpusForm</DefaultObjectForm>").replace("<ChildObjects/>", "<ChildObjects><Form>CorpusForm</Form></ChildObjects>");
+    let fixture = fixture(&[
+        ("Catalogs/Old.xml", &catalog),
+        ("Catalogs/Old/Forms/CorpusForm.xml", form_descriptor),
+        ("Catalogs/Old/Forms/CorpusForm/Ext/Form.xml", &form_xml),
+        ("Catalogs/Old/Forms/CorpusForm/Ext/Form/Module.bsl", module),
+    ]);
+    let root = fixture.descriptor.parent().unwrap().parent().unwrap();
+    let staged = plan(&fixture).unwrap();
+    assert_eq!(std::fs::read_to_string(root.join("Catalogs/Old.xml")).unwrap(), catalog);
+    assert!(!root.join("Catalogs/New").exists());
+    fixture.actor.publish_prepared_apply(staged).unwrap();
+    assert!(!root.join("Catalogs/Old").exists());
+    assert_eq!(std::fs::read_to_string(root.join("Catalogs/New.xml")).unwrap(), catalog.replace("<Name>Old</Name>", "<Name>New</Name>").replace("CatalogRef.Old", "CatalogRef.New").replace("Catalog.Old.Form.CorpusForm", "Catalog.New.Form.CorpusForm"));
+    assert_eq!(std::fs::read_to_string(root.join("Catalogs/New/Forms/CorpusForm.xml")).unwrap(), form_descriptor);
+    assert_eq!(std::fs::read_to_string(root.join("Catalogs/New/Forms/CorpusForm/Ext/Form.xml")).unwrap(), form_xml.replace("CatalogObject.Old", "CatalogObject.New"));
+    assert_eq!(std::fs::read_to_string(root.join("Catalogs/New/Forms/CorpusForm/Ext/Form/Module.bsl")).unwrap(), module);
+}
+#[test]
 fn catalog_rename_refuses_collision_code_unknown_xml_and_empty_directories_without_writing() {
     for extra in [
         vec![("Catalogs/new.xml", "collision")],

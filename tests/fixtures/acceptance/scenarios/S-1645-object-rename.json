@@ -2,7 +2,7 @@
   "id": "S-1645-object-rename",
   "issue": 1645,
   "area": "Метаданные",
-  "task": "Переименовать каталог с сохранением UUID, генерируемых типов, модуля и точных XML-ссылок; preview и отказы не меняют файлы",
+  "task": "Переименовать каталог с сохранением UUID, генерируемых типов, формы по умолчанию, модулей и точных XML-ссылок; preview и отказы не меняют файлы",
   "workspace": "tests/fixtures/acceptance/workspace-object-rename",
   "wire": [
     {
@@ -59,7 +59,7 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/СтарыйСклад.xml",
-          "eq": "8f1567cc6a827e75578e3eb0e0081ba3a8936f9fa3783358ad4f8f0807012965"
+          "eq": "4589295b262270bbc7f6509f4f26da75c8af0e16fdd52049af4110f4a1c5e942"
         },
         {
           "kind": "sha256",
@@ -80,6 +80,21 @@
           "kind": "exists",
           "path": "src/Catalogs/НовыйСклад.xml",
           "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm.xml",
+          "eq": "527665701da0bfc68194a7e8e390bc8f27984efa52e89fda5d942a618b8c21e3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm/Ext/Form.xml",
+          "eq": "c474c44f86dae1e1fda4decfb34d9e61b1eea1d6ec449858fc67455cb3df5a1d"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "eq": "356b4673e18b5c3dda27058f3ed5ce9f889b8c5c396010f3e0d2c1b334fd3755"
         }
       ],
       "refusal": "invalid_state: rename destination already exists"
@@ -111,7 +126,7 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/СтарыйСклад.xml",
-          "eq": "8f1567cc6a827e75578e3eb0e0081ba3a8936f9fa3783358ad4f8f0807012965"
+          "eq": "4589295b262270bbc7f6509f4f26da75c8af0e16fdd52049af4110f4a1c5e942"
         },
         {
           "kind": "sha256",
@@ -132,6 +147,21 @@
           "kind": "exists",
           "path": "src/Catalogs/НовыйСклад.xml",
           "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm.xml",
+          "eq": "527665701da0bfc68194a7e8e390bc8f27984efa52e89fda5d942a618b8c21e3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm/Ext/Form.xml",
+          "eq": "c474c44f86dae1e1fda4decfb34d9e61b1eea1d6ec449858fc67455cb3df5a1d"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "eq": "356b4673e18b5c3dda27058f3ed5ce9f889b8c5c396010f3e0d2c1b334fd3755"
         }
       ],
       "refusal": "bad_value: newName must be a 1C identifier without surrounding whitespace"
@@ -173,7 +203,7 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/СтарыйСклад.xml",
-          "eq": "8f1567cc6a827e75578e3eb0e0081ba3a8936f9fa3783358ad4f8f0807012965"
+          "eq": "4589295b262270bbc7f6509f4f26da75c8af0e16fdd52049af4110f4a1c5e942"
         },
         {
           "kind": "sha256",
@@ -194,6 +224,21 @@
           "kind": "exists",
           "path": "src/Catalogs/НовыйСклад.xml",
           "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm.xml",
+          "eq": "527665701da0bfc68194a7e8e390bc8f27984efa52e89fda5d942a618b8c21e3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm/Ext/Form.xml",
+          "eq": "c474c44f86dae1e1fda4decfb34d9e61b1eea1d6ec449858fc67455cb3df5a1d"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "eq": "356b4673e18b5c3dda27058f3ed5ce9f889b8c5c396010f3e0d2c1b334fd3755"
         }
       ]
     },
@@ -225,7 +270,7 @@
         {
           "kind": "sha256",
           "path": "src/Catalogs/НовыйСклад.xml",
-          "eq": "90fa43521640630c0919c03682dbab8af8f40d9b0a7c80814109bd4c7193a58d"
+          "eq": "5b9498063ba3a10a78b48984ec04ca159de4495c281546e3cc119d8f54c1b7ea"
         },
         {
           "kind": "sha256",
@@ -263,6 +308,44 @@
             "cfg:CatalogRef.НовыйСклад",
             "cfg:CatalogRef.СтарыйСкладскойУчасток"
           ]
+        },
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm.xml",
+          "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/НовыйСклад/Forms/CorpusForm.xml",
+          "eq": "527665701da0bfc68194a7e8e390bc8f27984efa52e89fda5d942a618b8c21e3"
+        },
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm/Ext/Form.xml",
+          "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/НовыйСклад/Forms/CorpusForm/Ext/Form.xml",
+          "eq": "ce67d5abec96f2fb8f7fa26fcf547179849cbdcc88d02425e74ce7ee6fab40f4"
+        },
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/СтарыйСклад/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/НовыйСклад/Forms/CorpusForm/Ext/Form/Module.bsl",
+          "eq": "356b4673e18b5c3dda27058f3ed5ce9f889b8c5c396010f3e0d2c1b334fd3755"
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/НовыйСклад.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DefaultObjectForm",
+          "eq": [
+            "Catalog.НовыйСклад.Form.CorpusForm"
+          ]
         }
       ]
     },
@@ -293,6 +376,15 @@
         "refused"
       ],
       "refusal": "not_found: metadata owner `Catalog.СтарыйСклад` is not registered"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.НовыйСклад.Form.CorpusForm"
+      },
+      "expect": [
+        "ok"
+      ]
     }
   ]
 }

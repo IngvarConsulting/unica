@@ -131,6 +131,64 @@ fn qname_rename(node: Node<'_, '_>, value: &str, old: &str, new: &str) -> Option
         .map(|renamed| format!("{prefix}:{renamed}"))
 }
 
+fn catalog_properties(node: Node<'_, '_>) -> bool {
+    node.tag_name().namespace() == Some(MD)
+        && node.tag_name().name() == "Properties"
+        && node.parent_element().is_some_and(|catalog| {
+            catalog.tag_name().namespace() == Some(MD)
+                && catalog.tag_name().name() == "Catalog"
+                && catalog.parent_element().is_some_and(|root| {
+                    root == node.document().root_element()
+                        && root.tag_name().namespace() == Some(MD)
+                        && root.tag_name().name() == "MetaDataObject"
+                })
+        })
+}
+
+fn catalog_form_reference_slot(node: Node<'_, '_>) -> bool {
+    let Some(parent) = node.parent_element() else {
+        return false;
+    };
+    if node.tag_name().namespace() == Some(MD)
+        && matches!(
+            node.tag_name().name(),
+            "DefaultObjectForm"
+                | "DefaultFolderForm"
+                | "DefaultListForm"
+                | "DefaultChoiceForm"
+                | "DefaultFolderChoiceForm"
+                | "AuxiliaryObjectForm"
+                | "AuxiliaryFolderForm"
+                | "AuxiliaryListForm"
+                | "AuxiliaryChoiceForm"
+                | "AuxiliaryFolderChoiceForm"
+        )
+    {
+        return catalog_properties(parent);
+    }
+    node.tag_name().namespace() == Some(XR)
+        && node.tag_name().name() == "ChoiceForm"
+        && parent.tag_name().namespace() == Some(XR)
+        && parent.tag_name().name() == "StandardAttribute"
+        && parent.parent_element().is_some_and(|attributes| {
+            attributes.tag_name().namespace() == Some(MD)
+                && attributes.tag_name().name() == "StandardAttributes"
+                && attributes.parent_element().is_some_and(catalog_properties)
+        })
+}
+
+fn renamed_form_reference(value: &str, old: &str, new: &str) -> Option<String> {
+    let mut parts = value.split('.');
+    if parts.next() != Some("Catalog") || parts.next().is_none() || parts.next() != Some("Form") {
+        return None;
+    }
+    let form = parts.next()?;
+    if !unica_metadata::identifier::is_1c_identifier(form) || parts.next().is_some() {
+        return None;
+    }
+    renamed_reference(value, "Catalog", old, new)
+}
+
 fn is_prose(node: Node<'_, '_>) -> bool {
     node.ancestors().any(|ancestor| {
         ancestor.is_element()
@@ -259,6 +317,8 @@ fn rename_xml(
         } else if registration && lower(trimmed) == lower(old) {
             registrations += 1;
             Some(new.to_string())
+        } else if catalog_form_reference_slot(node) {
+            renamed_form_reference(trimmed, old, new)
         } else if composition_slot(path, node, None) || (ns == Some(XR) && tag == "Field") {
             renamed_reference(trimmed, "Catalog", old, new)
         } else if ns == Some(CORE) && tag == "Type" {
@@ -689,6 +749,111 @@ mod tests {
                 }
             }
         }
+    }
+    #[test]
+    fn catalog_rename_updates_its_default_form_reference() {
+        let original = xml("<Catalog><Properties><Name>Old</Name><DefaultObjectForm>Catalog.Old.Form.ItemForm</DefaultObjectForm><DefaultListForm>Catalog.OldLong.Form.ListForm</DefaultListForm></Properties><ChildObjects><Form>ItemForm</Form></ChildObjects></Catalog>");
+        let actual = rename_xml(
+            Path::new("Catalogs/Old.xml"),
+            &original,
+            "Old",
+            "New",
+            true,
+            &code_mention_patterns("Old"),
+        )
+        .unwrap();
+        assert_eq!(
+            actual,
+            String::from_utf8(original)
+                .unwrap()
+                .replace("<Name>Old</Name>", "<Name>New</Name>")
+                .replace("Catalog.Old.Form.ItemForm", "Catalog.New.Form.ItemForm")
+                .into_bytes()
+        );
+    }
+    #[test]
+    fn catalog_rename_updates_only_typed_catalog_form_slots() {
+        for property in [
+            "DefaultObjectForm",
+            "DefaultFolderForm",
+            "DefaultListForm",
+            "DefaultChoiceForm",
+            "DefaultFolderChoiceForm",
+            "AuxiliaryObjectForm",
+            "AuxiliaryFolderForm",
+            "AuxiliaryListForm",
+            "AuxiliaryChoiceForm",
+            "AuxiliaryFolderChoiceForm",
+        ] {
+            let original = xml(&format!("<Catalog><Properties><Name>Old</Name><{property}>Catalog.Old.Form.ItemForm</{property}></Properties><ChildObjects><Form>ItemForm</Form></ChildObjects></Catalog>"));
+            let actual = rename_xml(
+                Path::new("Catalogs/Old.xml"),
+                &original,
+                "Old",
+                "New",
+                true,
+                &code_mention_patterns("Old"),
+            )
+            .unwrap();
+            assert_eq!(
+                actual,
+                String::from_utf8(original)
+                    .unwrap()
+                    .replace("<Name>Old</Name>", "<Name>New</Name>")
+                    .replace("Catalog.Old.Form.ItemForm", "Catalog.New.Form.ItemForm")
+                    .into_bytes(),
+                "{property}"
+            );
+        }
+        let original = xml("<Catalog><Properties><Name>Old</Name><DefaultObjectForm/><StandardAttributes><xr:StandardAttribute name=\"Ref\"><xr:ChoiceForm>Catalog.Old.Form.SelectForm</xr:ChoiceForm></xr:StandardAttribute></StandardAttributes></Properties></Catalog>");
+        let actual = rename_xml(
+            Path::new("Catalogs/Old.xml"),
+            &original,
+            "Old",
+            "New",
+            true,
+            &code_mention_patterns("Old"),
+        )
+        .unwrap();
+        assert_eq!(
+            actual,
+            String::from_utf8(original)
+                .unwrap()
+                .replace("<Name>Old</Name>", "<Name>New</Name>")
+                .replace("Catalog.Old.Form.SelectForm", "Catalog.New.Form.SelectForm")
+                .into_bytes()
+        );
+    }
+    #[test]
+    fn catalog_rename_refuses_untyped_or_malformed_form_references() {
+        for property in [
+            "<Unknown><DefaultObjectForm>Catalog.Old.Form.Main</DefaultObjectForm></Unknown>",
+            "<DefaultObjectForm xmlns=\"urn:foreign\">Catalog.Old.Form.Main</DefaultObjectForm>",
+            "<DefaultObjectForm>Catalog.Old.Attribute.Main</DefaultObjectForm>",
+            "<DefaultObjectForm>Catalog.Old.Form.</DefaultObjectForm>",
+            "<DefaultObjectForm>Catalog.Old.Form.Main.Extra</DefaultObjectForm>",
+            "<DefaultObjectForm>Catalog.Old.Form.Not A Name</DefaultObjectForm>",
+            "<DefaultObjectForm>Catalog.Old.Form.Main²</DefaultObjectForm>",
+            "<DefaultObjectForm>Catalog.Old.Form.名</DefaultObjectForm>",
+            "<DefaultObjectForm>Catalog.Old.Form.Ma&#105;n</DefaultObjectForm>",
+            "<DefaultObjectForm><![CDATA[Catalog.Old.Form.Main]]></DefaultObjectForm>",
+            "<DefaultObjectForm>Catalog.Old.Form.Mai<!--split-->n</DefaultObjectForm>",
+            "<StandardAttributes><StandardAttribute xmlns=\"urn:foreign\"><xr:ChoiceForm>Catalog.Old.Form.Main</xr:ChoiceForm></StandardAttribute></StandardAttributes>",
+            "<StandardAttributes><xr:StandardAttribute><ChoiceForm>Catalog.Old.Form.Main</ChoiceForm></xr:StandardAttribute></StandardAttributes>",
+        ] {
+            let original = xml(&format!("<Catalog><Properties><Name>Old</Name>{property}</Properties></Catalog>"));
+            assert!(rename_xml(Path::new("Catalogs/Old.xml"), &original, "Old", "New", true, &code_mention_patterns("Old")).is_err(), "{property}");
+        }
+        let original = xml("<Catalog><Properties><Name>Old</Name></Properties><ChildObjects><Attribute><Properties><ChoiceForm>Catalog.Old.Form.Main</ChoiceForm></Properties></Attribute></ChildObjects></Catalog>");
+        assert!(rename_xml(
+            Path::new("Catalogs/Old.xml"),
+            &original,
+            "Old",
+            "New",
+            true,
+            &code_mention_patterns("Old")
+        )
+        .is_err());
     }
     fn xml(body: &str) -> Vec<u8> {
         format!(r#"<MetaDataObject xmlns="{MD}" xmlns:v8="{CORE}" xmlns:t="{CFG}" xmlns:xr="{XR}" xmlns:xsi="{XSI}" version="2.20">{body}</MetaDataObject>"#).into_bytes()
