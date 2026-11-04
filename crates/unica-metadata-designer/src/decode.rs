@@ -89,6 +89,7 @@ pub enum MetadataPlanKind {
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
     DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
+    FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
     Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
@@ -1099,6 +1100,10 @@ pub fn parse_properties(
         unica_metadata::property_input::PropertiesIntent::DocumentNumerator(values) => (
             "DocumentNumerators",
             DescriptorPropertyChanges::DocumentNumerator(values),
+        ),
+        unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
+            "FunctionalOptions",
+            DescriptorPropertyChanges::FunctionalOption(values),
         ),
         unica_metadata::property_input::PropertiesIntent::Metadata(values) => {
             let (target, _) = metadata_owner(&target, op_index)?;
