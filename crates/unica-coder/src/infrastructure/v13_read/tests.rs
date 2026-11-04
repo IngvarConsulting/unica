@@ -1,12 +1,16 @@
 mod catalog_attribute_properties;
 mod catalog_attribute_tooltip;
 mod catalog_tabular_properties;
+mod common_module_synonym;
 mod dcs_parameter_expression;
 mod defined_type_reference;
 mod external_artifact_alias;
 mod form;
+mod form_command_properties;
 mod form_conditional_appearance;
+mod form_item_bindings;
 mod form_support;
+mod interface_reference_kind;
 mod job_schedule;
 mod metadata;
 mod metadata_declaration_diagnostics;
@@ -14,6 +18,8 @@ mod numerator_read_profile;
 mod session_parameter_comment;
 mod structured_property_names;
 mod support;
+mod task_addressing;
+mod wsreference_definition;
 mod xdto_missing_target;
 
 use support::*;

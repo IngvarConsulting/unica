@@ -319,8 +319,55 @@ fn form_node(
     item: &Value,
     semantic_events: Option<&[EventProjection]>,
 ) -> NodeView {
-    let props = node_props(kind, item);
-    let limits = dropped_by_size(item, &props, address, |probe| node_props(kind, probe));
+    let mut props = node_props(kind, item);
+    let mut limits = dropped_by_size(item, &props, address, |probe| node_props(kind, probe));
+    if kind == NodeKind::Item {
+        for (source, property) in [("dataPath", "DataPath"), ("commandName", "CommandName")] {
+            if let Some(value) = item.get(source).filter(|value| value.is_string()) {
+                super::place_prop(
+                    &mut props,
+                    &mut limits,
+                    address,
+                    property,
+                    value,
+                    false,
+                    property,
+                );
+            }
+        }
+        limits.extend(
+            item.get("bindingLimits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
+    }
+    if kind == NodeKind::Command {
+        if let Some(options) = item
+            .get("functionalOptions")
+            .filter(|value| value.is_array())
+        {
+            super::place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                "functionalOptions",
+                options,
+                false,
+                "functionalOptions",
+            );
+        }
+        limits.extend(
+            item.get("propertyLimits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
+    }
     let mut node = NodeView::new(
         address.to_string(),
         kind.as_str(),
@@ -376,7 +423,17 @@ pub(super) fn node_props(kind: NodeKind, value: &Value) -> Map<String, Value> {
         NodeKind::Event => &["handler", "callType"],
         NodeKind::Attribute | NodeKind::Column => &["type", "isMain", "mainTable"],
         NodeKind::Parameter => &["type", "isKey"],
-        NodeKind::Command => &["title", "tooltip", "shortcut", "picture", "representation"],
+        NodeKind::Command => &[
+            "title",
+            "tooltip",
+            "shortcut",
+            "picture",
+            "representation",
+            "currentRowUse",
+            "modifiesSavedData",
+            "associatedTableElementId",
+            "pictureLoadTransparent",
+        ],
         _ => &[],
     };
     selected_scalar_props(value, keys)

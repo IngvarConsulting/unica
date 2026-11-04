@@ -80,7 +80,7 @@ HOST_MARKER_KINDS = {
 DOMAIN_COMPONENTS = frozenset({
     "unica-address", "unica-source-contract", "unica-operation-contract",
     "unica-metadata", "unica-forms", "unica-roles", "unica-dcs", "unica-xdto",
-    "unica-templates", "unica-bsl", "unica-bindings", "unica-documentation",
+    "unica-templates", "unica-bsl", "unica-bsl-applied", "unica-bindings", "unica-documentation",
 })
 
 
