@@ -6795,6 +6795,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(any(unix, windows))]
     #[test]
     fn atomic_directory_publication_accepts_a_one_character_name() {
         use super::RetainedDirectoryCapability;
