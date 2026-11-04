@@ -3,7 +3,7 @@
  <dataSource><name>LocalSource</name><dataSourceType>Local</dataSourceType></dataSource>
  <dataSet xsi:type="DataSetQuery"><name>F05Data</name>
   <field xsi:type="DataSetFieldField"><dataPath>Category</dataPath><field>Category</field></field>
-  <field xsi:type="DataSetFieldField"><dataPath>Amount</dataPath><field>Amount</field><q:title xmlns:q="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:d="http://v8.1c.ru/8.1/data/core" xmlns:i="http://www.w3.org/2001/XMLSchema-instance" i:type="d:LocalStringType"><d:item><d:lang>ru</d:lang><c:content xmlns:c="http://v8.1c.ru/8.1/data/core">Старый</c:content></d:item></q:title></field>
+  <field xsi:type="DataSetFieldField"><dataPath>Amount</dataPath><field>Amount</field><q:title xmlns:q="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:d="http://v8.1c.ru/8.1/data/core" xmlns:i="http://www.w3.org/2001/XMLSchema-instance" i:type=" d:LocalStringType "><d:item><d:lang>ru</d:lang><c:content xmlns:c="http://v8.1c.ru/8.1/data/core">Старый</c:content></d:item></q:title></field>
   <dataSource>LocalSource</dataSource><query>ВЫБРАТЬ "<!-- preserve-query-note -->Test"<?preserve query?> КАК Category, 1 КАК Amount, 2 КАК Added</query>
  </dataSet>
  <settingsVariant><dcsset:name>F05Variant</dcsset:name><dcsset:settings>

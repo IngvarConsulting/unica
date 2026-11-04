@@ -2565,3 +2565,24 @@ fn untyped_empty_local_string_still_acquires_its_required_type() {
         assert_value_qname(doc.root_element(), V, "LocalStringType");
     }
 }
+
+#[test]
+fn clearing_local_string_preserves_xml_whitespace_in_type_qname() {
+    let original = format!("<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type=' d:LocalStringType '><d:item><d:lang>ru</d:lang><d:content>Текст</d:content></d:item></q:title>");
+    let doc = Document::parse(&original).unwrap();
+    let result = super::mltext_update(
+        &original,
+        Some(doc.root_element()),
+        "title",
+        &json!(""),
+        S,
+        Some("ru"),
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        format!(
+            "<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type=' d:LocalStringType '/>"
+        )
+    );
+}

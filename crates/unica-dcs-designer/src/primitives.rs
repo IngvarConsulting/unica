@@ -256,7 +256,9 @@ fn mltext_update(
             .iter()
             .all(|item| text(*item, V, "lang").trim() == lang);
         let local_string = existing.attribute((X, "type")).is_some_and(|qname| {
-            canonical_node_value_type(existing, qname).as_deref() == Ok("v8:LocalStringType")
+            canonical_node_value_type(existing, qname.trim_matches([' ', '\t', '\r', '\n']))
+                .as_deref()
+                == Ok("v8:LocalStringType")
         });
         // Preserve a declared local-string header even for an empty value.
         // Untyped empty elements still acquire the required type as before.
