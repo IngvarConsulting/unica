@@ -448,15 +448,17 @@ pub(crate) fn observation_lookup<'a>(
 
 /// The same registry observations with the closed Color profile owned by
 /// metadata. The caller obtains it from retained descriptor bytes.
-pub(crate) fn observation_lookup_with_color<'a>(
+pub(crate) fn observation_lookup_with_style_properties<'a>(
     template: &'a dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     item: &'a dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
-    color: &'a dyn Fn(&QualifiedAddress) -> Option<unica_metadata::style_color::StyleItemColor>,
+    color: &'a dyn Fn(
+        &QualifiedAddress,
+    ) -> Option<unica_metadata::style_color::StyleItemPropertiesObservation>,
 ) -> impl Fn(&QualifiedAddress, unica_operations::ObservationType) -> Option<Box<dyn std::any::Any>> + 'a
 {
     let ordinary = observation_lookup(template, item);
     move |at, requested| {
-        if requested.is::<unica_metadata::style_color::StyleItemColor>() {
+        if requested.is::<unica_metadata::style_color::StyleItemPropertiesObservation>() {
             color(at).map(|value| Box::new(value) as Box<dyn std::any::Any>)
         } else {
             ordinary(at, requested)

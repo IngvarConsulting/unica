@@ -44,13 +44,12 @@ pub fn read_comment(bytes: &[u8], kind: &str) -> Result<Option<String>, String> 
         .map_err(|error| error.message)
 }
 
-pub(crate) fn set_comment(
+fn writable_comment<'a, 'input>(
     source: &str,
+    document: &'a Document<'input>,
     kind: NodeKind,
     name: &str,
-    value: &str,
-) -> Result<String, String> {
-    let document = Document::parse(source).map_err(|error| error.to_string())?;
+) -> Result<(Node<'a, 'input>, String), String> {
     let root = document.root_element();
     if !root.has_tag_name((MD_CLASSES_NS, "MetaDataObject")) {
         return Err("descriptor requires the metadata MetaDataObject root".into());
@@ -62,7 +61,7 @@ pub(crate) fn set_comment(
     ) {
         return Err(refusal.message);
     }
-    let properties = descriptor_properties(&document, kind.as_str())?;
+    let properties = descriptor_properties(document, kind.as_str())?;
     // Legacy inline form/template descriptions are not valid registrations
     // in the writable profile. Refuse instead of letting global legacy repair
     // rewrite unrelated bytes after this comment-only patch.
@@ -90,6 +89,23 @@ pub(crate) fn set_comment(
     let previous = crate::info_projection::observe_collection_item_comment(properties)
         .map_err(|error| error.message)?
         .ok_or_else(|| "descriptor requires a canonical Comment".to_string())?;
+    Ok((comment, previous))
+}
+
+/// Prove the Comment writer's preconditions without changing any source bytes.
+pub fn comment_patch_capability(source: &str, kind: NodeKind, name: &str) -> Result<(), String> {
+    let document = Document::parse(source).map_err(|error| error.to_string())?;
+    writable_comment(source, &document, kind, name).map(|_| ())
+}
+
+pub(crate) fn set_comment(
+    source: &str,
+    kind: NodeKind,
+    name: &str,
+    value: &str,
+) -> Result<String, String> {
+    let document = Document::parse(source).map_err(|error| error.to_string())?;
+    let (comment, previous) = writable_comment(source, &document, kind, name)?;
     if previous == value {
         return Ok(source.to_string());
     }

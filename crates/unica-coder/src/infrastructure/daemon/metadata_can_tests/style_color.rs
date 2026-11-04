@@ -340,46 +340,60 @@ fn canonical_style_color_bad_arguments_are_closed_and_saved_input_changes_are_fe
 
 #[test]
 fn canonical_style_color_contract_does_not_outlive_parent_format_admission() {
-    for version in ["2.19", "2.21", "2.&#50;0"] {
-        let fixture = color_fixture("#123456");
-        let runtime = runtime();
-        let path = fixture.source.join("Configuration.xml");
-        let source = std::fs::read_to_string(&path).unwrap();
-        std::fs::write(
-            &path,
-            source.replace("version=\"2.20\"", &format!("version=\"{version}\"")),
-        )
-        .unwrap();
-        let observed = call(
-            &runtime,
-            &fixture,
-            ToolIdentity::View,
-            json!({"at":"main:StyleItem.Accent"}),
-        );
-        assert!(observed.ok, "{version}: {observed:?}");
-        let data = observed.data.unwrap();
-        assert_eq!(data["props"]["Value"], "#123456");
-        assert!(
-            data["can"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|operation| operation["op"] == "props.set"),
-            "{version}: unsupported parent cannot grant a Color writer: {data}"
-        );
-        let contract = call(
-            &runtime,
-            &fixture,
-            ToolIdentity::View,
-            json!({"at":"main:StyleItem.Accent.Can.props.set"}),
-        );
-        assert!(contract.ok, "{version}: {contract:?}");
-        assert!(
-            contract.data.unwrap()["props"]["contract"]["argsSchema"]["properties"]["values"]
-                ["properties"]
-                .get("Value")
-                .is_none()
-        );
+    for file in ["Configuration.xml", "StyleItems/Accent.xml"] {
+        for version in ["2.19", "2.21", "2.&#50;0"] {
+            let fixture = color_fixture("#123456");
+            let runtime = runtime();
+            let path = fixture.source.join(file);
+            let source = std::fs::read_to_string(&path).unwrap();
+            std::fs::write(
+                &path,
+                source.replace("version=\"2.20\"", &format!("version=\"{version}\"")),
+            )
+            .unwrap();
+            let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+            let observed = call(
+                &runtime,
+                &fixture,
+                ToolIdentity::View,
+                json!({"at":"main:StyleItem.Accent"}),
+            );
+            assert!(observed.ok, "{version}: {observed:?}");
+            let data = observed.data.unwrap();
+            assert_eq!(data["props"]["Value"], "#123456");
+            assert!(
+                !data["can"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|operation| operation["op"] == "props.set"),
+                "{file}/{version}: a read-only owner chain cannot grant either writer: {data}"
+            );
+            let contract = call(
+                &runtime,
+                &fixture,
+                ToolIdentity::View,
+                json!({"at":"main:StyleItem.Accent.Can.props.set"}),
+            );
+            assert!(!contract.ok, "{file}/{version}: {contract:?}");
+            for values in [
+                json!({"Comment":"cannot publish"}),
+                json!({"Value":"#ABCDEF"}),
+            ] {
+                let refused = call(
+                    &runtime,
+                    &fixture,
+                    ToolIdentity::Apply,
+                    json!({"at":"main:StyleItem.Accent","ops":[{"op":"props.set","args":{"values":values}}]}),
+                );
+                assert!(!refused.ok, "{file}/{version}: {refused:?}");
+                assert_eq!(refused.diagnostics[0]["code"], "invalid_source");
+                assert_eq!(
+                    unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+                    before
+                );
+            }
+        }
     }
 }
 
@@ -484,5 +498,133 @@ fn canonical_style_color_read_failure_after_node_projection_is_not_an_absent_cap
             "{result:?}"
         );
         assert!(result.data.is_none(), "{result:?}");
+    }
+}
+
+#[test]
+fn style_item_contract_requires_independent_comment_and_color_evidence() {
+    let fixture = color_fixture("#123456");
+    let runtime = runtime();
+    let at = "main:StyleItem.Accent";
+    let path = fixture.source.join("StyleItems/Accent.xml");
+    let original = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, original.replace("<Comment>keep</Comment>", "")).unwrap();
+    let can = contract(&runtime, &fixture, at, "props.set");
+    let fields = &can["argsSchema"]["properties"]["values"]["properties"];
+    assert!(
+        fields.get("Value").is_some(),
+        "existing Color capability remains"
+    );
+    assert!(
+        fields.get("Comment").is_none(),
+        "missing Comment is not a write capability: {can}"
+    );
+    assert!(fields.get("comment").is_none());
+    publish(
+        &runtime,
+        &fixture,
+        json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"Value":"#ABCDEF"}}}]}),
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        original
+            .replace("<Comment>keep</Comment>", "")
+            .replace("#123456", "#ABCDEF")
+    );
+    std::fs::write(
+        &path,
+        original
+            .replace("<Comment>keep</Comment>", "")
+            .replace("<Type>Color</Type>", "<Type>Font</Type>"),
+    )
+    .unwrap();
+    let observed = view(&runtime, &fixture, at);
+    assert!(
+        !observed["can"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["op"] == "props.set"),
+        "neither capability was proven: {observed}"
+    );
+}
+
+#[test]
+fn style_item_argument_errors_precede_failed_descriptor_evidence() {
+    let fixture = color_fixture("#123456");
+    let runtime = runtime();
+    let path = fixture.source.join("StyleItems/Accent.xml");
+    let original = std::fs::read_to_string(&path).unwrap();
+    for damaged in [
+        original.replace("1de549ac-39a2-49ce-9f31-c13040173894", "invalid-uuid"),
+        original.replace("<Name>Accent</Name>", "<Name>Other</Name>"),
+        "<broken".into(),
+    ] {
+        std::fs::write(&path, &damaged).unwrap();
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+        for values in [
+            json!({"Value":"invalid"}),
+            json!({"Value":null}),
+            json!({"Comment":"a","comment":"b"}),
+            json!({"Unknown":"x"}),
+        ] {
+            let refused = call(
+                &runtime,
+                &fixture,
+                ToolIdentity::Apply,
+                json!({"at":"main:StyleItem.Accent","ops":[{"op":"props.set","args":{"values":values}}]}),
+            );
+            assert!(!refused.ok, "{refused:?}");
+            assert_eq!(
+                refused.diagnostics[0]["code"], "bad_value",
+                "arguments first: {refused:?}"
+            );
+        }
+        let batch = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:StyleItem.Accent","ops":[
+                {"op":"props.set","args":{"values":{"Comment":"valid"}}},
+                {"op":"props.set","args":{"values":{"Value":"invalid"}}}
+            ]}),
+        );
+        assert!(!batch.ok, "{batch:?}");
+        assert_eq!(
+            batch.diagnostics[0]["code"], "bad_value",
+            "all arguments precede descriptor state: {batch:?}"
+        );
+        assert!(
+            batch
+                .at
+                .as_deref()
+                .is_some_and(|path| path.starts_with("ops[1].args")),
+            "{batch:?}"
+        );
+        let refused = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:StyleItem.Accent","ops":[{"op":"props.set","args":{"values":{"Comment":"valid"}}}]}),
+        );
+        assert!(
+            !refused.ok,
+            "descriptor identity must be proven: {refused:?}"
+        );
+        assert_eq!(refused.diagnostics[0]["code"], "invalid_source");
+        let read = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::View,
+            json!({"at":"main:StyleItem.Accent"}),
+        );
+        assert!(
+            !read.ok,
+            "unreadable identity is not an absent capability: {read:?}"
+        );
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+            before
+        );
     }
 }

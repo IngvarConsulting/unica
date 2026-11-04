@@ -257,9 +257,13 @@ impl PropertiesSite {
     }
 
     fn values_schema(self) -> Value {
+        self.values_schema_with_style_capabilities(true, true)
+    }
+
+    fn values_schema_with_style_capabilities(self, comment: bool, color: bool) -> Value {
         let mut properties = Map::new();
         let mut groups = Vec::new();
-        if self == Self::StyleItem {
+        if self == Self::StyleItem && color {
             properties.insert(
                 "Value".into(),
                 crate::style_color::StyleItemColor::argument_schema(),
@@ -275,6 +279,9 @@ impl PropertiesSite {
             | Self::Configuration { .. }
             | Self::CommentOnly(_) => {
                 for field in self.descriptor_fields() {
+                    if self == Self::StyleItem && field == DescriptorProperty::Comment && !comment {
+                        continue;
+                    }
                     let schema = match field.kind() {
                         DescriptorPropertyKind::String => json!({"type":"string"}),
                         DescriptorPropertyKind::Boolean => json!({"type":"boolean"}),
@@ -353,16 +360,15 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
     fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
         crate::recovery::RETIRED_ARGUMENTS
     }
-    type Observation = crate::style_color::StyleItemColor;
+    type Observation = crate::style_color::StyleItemPropertiesObservation;
     fn needs_observation(
         self,
         site: Option<&unica_source_contract::context::OperationSite<'_>>,
     ) -> bool {
         site.and_then(PropertiesSite::from_site) == Some(PropertiesSite::StyleItem)
     }
-    fn admits_observation(self, _observation: Option<&Self::Observation>) -> bool {
-        // Missing color evidence still permits the independent Comment writer.
-        true
+    fn admits_observation(self, observation: Option<&Self::Observation>) -> bool {
+        observation.is_some_and(|observed| observed.comment || observed.color.is_some())
     }
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Properties
@@ -390,7 +396,7 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
         self,
         site: &unica_source_contract::context::OperationSite<'_>,
     ) -> Option<unica_operation_contract::OperationContract> {
-        self.contract_at_with_observation(site, None)
+        PropertiesSite::from_site(site).map(|profile| self.contract(profile))
     }
 
     fn contract_at_with_observation(
@@ -398,14 +404,29 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
         site: &unica_source_contract::context::OperationSite<'_>,
         observation: Option<&Self::Observation>,
     ) -> Option<OperationContract> {
-        PropertiesSite::from_site(site).map(|profile| {
-            let profile = if profile == PropertiesSite::StyleItem && observation.is_none() {
-                PropertiesSite::CommentOnly(NodeKind::StyleItem)
-            } else {
-                profile
-            };
-            self.contract(profile)
-        })
+        let profile = PropertiesSite::from_site(site)?;
+        if profile != PropertiesSite::StyleItem {
+            return Some(self.contract(profile));
+        }
+        let observed = observation?;
+        if !observed.comment && observed.color.is_none() {
+            return None;
+        }
+        if observed.color.is_none() {
+            return Some(self.contract(PropertiesSite::CommentOnly(NodeKind::StyleItem)));
+        }
+        let mut contract = self.contract(profile);
+        contract.schema = object(
+            &[(
+                "values",
+                profile.values_schema_with_style_capabilities(observed.comment, true),
+            )],
+            &["values"],
+        );
+        if !observed.comment {
+            contract.notes = "Only Value is writable on this descriptor: #RRGGBB or an enumerated web/builtin style color. Comment has no confirmed write capability. Type, identity and bytes outside Value stay. The same semantic color is a byte-preserving no-op. Preview writes nothing; execute only its saved executionToken.";
+        }
+        Some(contract)
     }
 }
 
@@ -484,6 +505,7 @@ mod tests {
 
     #[test]
     fn style_item_contract_uses_only_typed_color_evidence() {
+        use crate::style_color::{StyleItemColor, StyleItemPropertiesObservation};
         use unica_operations::FamilyOperation;
         use unica_source_contract::context::{OperationSite, SourceSetTraits};
         use unica_source_contract::route::RouteClass;
@@ -493,53 +515,81 @@ mod tests {
         let source =
             SourceSetTraits::from_profiles(SourceSetKind::Configuration, Some(profile), profile);
         let site = OperationSite::from_route(&at, source, RouteClass::Metadata);
-        let operation = PropertiesOperation::Set.descriptor();
-        let plain = operation.argument_contract_at(&site).unwrap();
-        let absent = operation
-            .argument_contract_at_with_observations(&site, &|_, _| None)
-            .unwrap();
-        assert_eq!(plain.schema, absent.schema);
+        let descriptor = PropertiesOperation::Set.descriptor();
+        let plain = descriptor.argument_contract_at(&site).unwrap();
         assert!(plain.schema["properties"]["values"]["properties"]
             .get("Value")
+            .is_some());
+        assert!(descriptor
+            .argument_contract_at_with_observations(&site, &|_, _| None)
             .is_none());
-        let color = crate::style_color::StyleItemColor::parse_argument("#123456").unwrap();
-        let observed = operation
-            .argument_contract_at_with_observations(&site, &|_, requested| {
-                assert!(requested.is::<crate::style_color::StyleItemColor>());
-                Some(Box::new(color))
-            })
-            .unwrap();
-        assert_eq!(
-            observed.schema["properties"]["values"]["properties"]
-                .as_object()
-                .unwrap()
-                .len(),
-            3
-        );
-        assert!(operation
+        assert!(!descriptor.admits_node(&site, &|_, _| None));
+        assert!(descriptor
             .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(String::new())))
             .is_none());
-        let oracle = jsonschema::validator_for(&observed.schema).unwrap();
-        for values in [
-            json!({"Value":"#123456", "Comment":""}),
-            json!({"comment":"text"}),
+        let color = StyleItemColor::parse_argument("#123456").unwrap();
+        for observed in [
+            StyleItemPropertiesObservation {
+                comment: true,
+                color: None,
+            },
+            StyleItemPropertiesObservation {
+                comment: false,
+                color: Some(color),
+            },
+            StyleItemPropertiesObservation {
+                comment: true,
+                color: Some(color),
+            },
         ] {
-            assert!(oracle.is_valid(&json!({"values":values})));
-            assert!(crate::property_input::decode_properties(
-                PropertiesOperation::Set,
-                PropertiesSite::StyleItem,
-                &json!({"values":values}),
-                "args"
-            )
-            .is_ok());
+            let lookup = |_: &QualifiedAddress, requested: unica_operations::ObservationType| {
+                assert!(requested.is::<StyleItemPropertiesObservation>());
+                Some(Box::new(observed) as Box<dyn std::any::Any>)
+            };
+            assert!(descriptor.admits_node(&site, &lookup));
+            let contract = descriptor
+                .argument_contract_at_with_observations(&site, &lookup)
+                .unwrap();
+            let fields = &contract.schema["properties"]["values"]["properties"];
+            assert_eq!(fields.get("Comment").is_some(), observed.comment);
+            assert_eq!(fields.get("comment").is_some(), observed.comment);
+            assert_eq!(fields.get("Value").is_some(), observed.color.is_some());
+            assert!(contract.normalize(&contract.example_args, "args").is_ok());
+            for values in [
+                json!({"Comment":""}),
+                json!({"comment":"text"}),
+                json!({"Value":"#123456"}),
+                json!({"Value":"#123456", "Comment":""}),
+            ] {
+                let args = json!({"values":values});
+                let expected = (!values.as_object().unwrap().keys().any(|key| key == "Value")
+                    || observed.color.is_some())
+                    && (!values.as_object().unwrap().keys().any(|key| key != "Value")
+                        || observed.comment);
+                assert_eq!(contract.normalize(&args, "args").is_ok(), expected);
+                assert!(crate::property_input::decode_properties(
+                    PropertiesOperation::Set,
+                    PropertiesSite::StyleItem,
+                    &args,
+                    "args"
+                )
+                .is_ok());
+            }
         }
-        // Another metadata owner ignores irrelevant Color evidence.
+        let empty = StyleItemPropertiesObservation {
+            comment: false,
+            color: None,
+        };
+        assert!(!descriptor.admits_node(&site, &|_, _| Some(Box::new(empty))));
+        assert!(descriptor
+            .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(empty)))
+            .is_none());
         let at = QualifiedAddress::parse("main:Role.Reader").unwrap();
         let site = OperationSite::from_route(&at, source, RouteClass::Metadata);
         assert_eq!(
             PropertiesOperation::Set.contract_at(&site).unwrap().schema,
-            operation
-                .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(color)))
+            descriptor
+                .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(empty)))
                 .unwrap()
                 .schema
         );

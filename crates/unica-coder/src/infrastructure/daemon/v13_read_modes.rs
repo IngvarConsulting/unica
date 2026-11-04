@@ -2,8 +2,9 @@ use serde_json::{json, Map, Value};
 use std::fmt;
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_forms::FormItemRole;
-use unica_metadata::style_color::StyleItemColor;
-type ColorLookup<'a> = &'a dyn Fn(&QualifiedAddress) -> Option<StyleItemColor>;
+use unica_metadata::style_color::StyleItemPropertiesObservation;
+type StyleItemPropertiesLookup<'a> =
+    &'a dyn Fn(&QualifiedAddress) -> Option<StyleItemPropertiesObservation>;
 use unica_refusal::RefusalCode;
 use unica_source_designer::layout::metadata_kind;
 use unica_templates::TemplateFormat;
@@ -139,7 +140,7 @@ fn inherited_node(data: &Map<String, Value>) -> bool {
 fn computed_can_entries(
     data: &Map<String, Value>,
     context: CanContext,
-    color: ColorLookup<'_>,
+    color: StyleItemPropertiesLookup<'_>,
 ) -> Option<Vec<Value>> {
     let (at, format, item) = node_site(data, context)?;
     let site = crate::domain::apply::operation_site(&at, context)?;
@@ -154,7 +155,7 @@ fn computed_can_entries(
             .filter(|descriptor| {
                 descriptor.applies_with_observations(
                     &site,
-                    &crate::domain::apply::observation_lookup_with_color(
+                    &crate::domain::apply::observation_lookup_with_style_properties(
                         &|_| format,
                         &|_| item,
                         color,
@@ -178,7 +179,11 @@ fn computed_can_entries(
 pub(super) fn attach_can(data: &mut Value, context: CanContext) {
     attach_can_with_color(data, context, &|_| None);
 }
-pub(super) fn attach_can_with_color(data: &mut Value, context: CanContext, color: ColorLookup<'_>) {
+pub(super) fn attach_can_with_color(
+    data: &mut Value,
+    context: CanContext,
+    color: StyleItemPropertiesLookup<'_>,
+) {
     let Some(node) = data.as_object_mut() else {
         return;
     };
@@ -209,7 +214,7 @@ pub(super) fn operation_node_with(
     at: &str,
     context: CanContext,
     ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
-    color: ColorLookup<'_>,
+    color: StyleItemPropertiesLookup<'_>,
 ) -> Result<Value, ReadModeError> {
     let data = data
         .as_object()
@@ -240,7 +245,11 @@ pub(super) fn operation_node_with(
     }
     if !descriptor.applies_with_observations(
         &site,
-        &crate::domain::apply::observation_lookup_with_color(&|_| format, &|_| item, color),
+        &crate::domain::apply::observation_lookup_with_style_properties(
+            &|_| format,
+            &|_| item,
+            color,
+        ),
     ) {
         let kind = owner
             .segments()
@@ -252,7 +261,11 @@ pub(super) fn operation_node_with(
     }
     let mut contract = descriptor.argument_contract_at_with_observations(
         &site,
-        &crate::domain::apply::observation_lookup_with_color(&|_| format, &|_| item, color),
+        &crate::domain::apply::observation_lookup_with_style_properties(
+            &|_| format,
+            &|_| item,
+            color,
+        ),
     );
     // Командная панель принимает только кнопки: её контракт `item.add`
     // публикует один вид, как и отвечает писатель (#1447).
@@ -294,7 +307,7 @@ fn retired_operation_contract(
     (format, item): (Option<TemplateFormat>, Option<FormItemRole>),
     inherited: bool,
     ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
-    color: ColorLookup<'_>,
+    color: StyleItemPropertiesLookup<'_>,
 ) -> ReadModeError {
     let Some(retired) = crate::domain::apply::retired_operation(operation) else {
         return ReadModeError::bad_value(format!(
@@ -324,7 +337,7 @@ fn retired_operation_contract(
         }
     };
     let observations =
-        crate::domain::apply::observation_lookup_with_color(&format_of, &role_of, color);
+        crate::domain::apply::observation_lookup_with_style_properties(&format_of, &role_of, color);
     let replacement = retired.replacement_with_observations(
         site,
         crate::domain::apply::operation_registry().context(),
