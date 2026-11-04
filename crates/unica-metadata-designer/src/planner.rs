@@ -1402,6 +1402,24 @@ fn stage_descriptor_properties(
             )?;
             (owner.node_kind(), text)
         }
+        DescriptorPropertyChanges::FunctionalOption(values) => {
+            let text =
+                crate::functional_option::patch(&source, name, values).map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?;
+            let (location, _) = crate::functional_option::read(&text, name).map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            })?;
+            crate::functional_option::validate_location(staged, source_kind, &location).map_err(
+                |message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                        .at_path(format!("ops[{op_index}].args.values.Location"))
+                },
+            )?;
+            (NodeKind::FunctionalOption, text)
+        }
         DescriptorPropertyChanges::Role(unica_metadata::property_input::RolePropertyChanges {
             synonym,
             comment,

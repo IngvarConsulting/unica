@@ -45,9 +45,16 @@ pub enum PropertiesIntent {
         owner: crate::descriptor_operations::TypePropertyOwner,
         metadata_type: crate::MetadataType,
     },
+    FunctionalOption(FunctionalOptionPropertyChanges),
     Role(RolePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionalOptionPropertyChanges {
+    pub location: Option<String>,
+    pub privileged_get_mode: Option<bool>,
 }
 
 type DecodeResult<T> = Result<T, ContractError>;
@@ -347,6 +354,13 @@ fn decode_with_contract(
                         )?;
                     }
                     PropertiesIntent::Metadata(changes)
+                }
+                PropertiesSite::FunctionalOption => {
+                    PropertiesIntent::FunctionalOption(FunctionalOptionPropertyChanges {
+                        location: values_reader.string(DescriptorProperty::Location)?,
+                        privileged_get_mode: values_reader
+                            .boolean(DescriptorProperty::PrivilegedGetMode)?,
+                    })
                 }
                 PropertiesSite::Role => PropertiesIntent::Role(RolePropertyChanges {
                     synonym: values_reader.string(DescriptorProperty::Synonym)?,

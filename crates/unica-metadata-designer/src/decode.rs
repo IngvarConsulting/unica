@@ -92,6 +92,7 @@ pub enum DescriptorPropertyChanges {
         owner: unica_metadata::descriptor_operations::TypePropertyOwner,
         metadata_type: unica_metadata::MetadataType,
     },
+    FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
     Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
@@ -1135,6 +1136,10 @@ pub fn parse_properties(
                 },
             });
         }
+        unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
+            "FunctionalOptions",
+            DescriptorPropertyChanges::FunctionalOption(values),
+        ),
         unica_metadata::property_input::PropertiesIntent::Metadata(values) => {
             let (target, _) = metadata_owner(&target, op_index)?;
             return Ok(MetadataPlanKind::Edit {
