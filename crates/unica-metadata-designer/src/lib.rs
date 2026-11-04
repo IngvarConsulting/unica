@@ -8,6 +8,7 @@ pub mod info_projection;
 
 pub mod integrity_check;
 
+mod constant_choice;
 pub mod exchange_content;
 pub mod form_metadata;
 

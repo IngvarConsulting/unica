@@ -35,6 +35,12 @@ allowed-tools:
 
 ## Операции
 
+Для константы `props.set` принимает `ChoiceFoldersAndItems`
+(`Items/Folders/FoldersAndItems`), `ChoiceHistoryOnInput` (`Auto/DontUse`),
+`QuickChoice` (`Auto/Use/DontUse`) и `ChoiceForm` — адрес существующей
+зарегистрированной формы без префикса набора или пустую строку для очистки.
+У справочника `QuickChoice` остаётся boolean. Полный контракт читай в `Can`.
+
 | Предмет | Операции |
 |---|---|
 | Свойства объекта | `props.set` |

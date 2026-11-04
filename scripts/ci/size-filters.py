@@ -54,6 +54,11 @@ TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::")
 # 400 000 исходных наборов: 34.447 с отдельно, 41.729 с совместно, macOS.
 # Это размер конкретной проверки; соседние layout-проверки остаются small.
 MEASURED_MEDIUM_CASES = (
+    # Public Constant choice workflows: 20-50 s on Windows, 2026-11-04.
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::constant_choice::constant_choice_roundtrip_preserves_other_settings_and_catalog_contract"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::constant_choice::constant_choice_rejects_invalid_values_and_forms_without_any_writes"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::constant_choice::constant_choice_saved_token_guards_form_and_owner"),
+    ("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::constant_choice::constant_choice_accepts_platform_inactive_settings_and_checks_noop_references"),
     (
         "unica-project-health",
         "unica_project_health",

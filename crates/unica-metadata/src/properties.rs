@@ -13,6 +13,9 @@ pub enum MetaPropertyKey {
     AutoOrderByCode,
     BasePeriod,
     ChoiceMode,
+    ChoiceFoldersAndItems,
+    ChoiceHistoryOnInput,
+    ChoiceForm,
     ClientManagedApplication,
     ClientOrdinaryApplication,
     CodeAllowedLength,
@@ -340,6 +343,33 @@ const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "T
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
+    enum_property(
+        "ChoiceFoldersAndItems",
+        "ChoiceFoldersAndItems",
+        MetaPropertyKey::ChoiceFoldersAndItems,
+        &[MetadataKind::Constant],
+        &["Items", "Folders", "FoldersAndItems"],
+    ),
+    enum_property(
+        "ChoiceHistoryOnInput",
+        "ChoiceHistoryOnInput",
+        MetaPropertyKey::ChoiceHistoryOnInput,
+        &[MetadataKind::Constant],
+        &["Auto", "DontUse"],
+    ),
+    property(
+        "ChoiceForm",
+        MetaPropertyKey::ChoiceForm,
+        MetaPropertyValueKind::String,
+        &[MetadataKind::Constant],
+    ),
+    enum_property(
+        "QuickChoice",
+        "QuickChoice",
+        MetaPropertyKey::QuickChoice,
+        &[MetadataKind::Constant],
+        &["Auto", "Use", "DontUse"],
+    ),
     property(
         "Type",
         MetaPropertyKey::Type,
@@ -875,6 +905,61 @@ impl MetaPropertyChanges {
 mod tests {
     use super::*;
     use crate::{MetaDiagnosticCode, MetadataKind};
+
+    #[test]
+    fn constant_choice_profile_is_typed_and_keeps_catalog_quick_choice_boolean() {
+        use serde_json::json;
+        for values in [
+            json!({"ChoiceFoldersAndItems":"FoldersAndItems"}),
+            json!({"ChoiceHistoryOnInput":"DontUse"}),
+            json!({"ChoiceForm":"Catalog.Products.Form.Choice"}),
+            json!({"QuickChoice":"Auto"}),
+            json!({"QuickChoice":"Use"}),
+            json!({"QuickChoice":"DontUse"}),
+        ] {
+            let result = crate::request::parse_property_changes(
+                values.as_object().unwrap(),
+                MetadataKind::Constant,
+            );
+            assert!(result.is_ok(), "{values}: {result:?}");
+        }
+        for values in [
+            json!({"QuickChoice":true}),
+            json!({"QuickChoice":"Unknown"}),
+            json!({"ChoiceHistoryOnInput":"Unknown"}),
+            json!({"ChoiceFoldersAndItems":"Unknown"}),
+        ] {
+            assert!(crate::request::parse_property_changes(
+                values.as_object().unwrap(),
+                MetadataKind::Constant
+            )
+            .is_err());
+        }
+        assert!(crate::request::parse_property_changes(
+            json!({"QuickChoice":true}).as_object().unwrap(),
+            MetadataKind::Catalog
+        )
+        .is_ok());
+        assert!(crate::request::parse_property_changes(
+            json!({"QuickChoice":"Auto"}).as_object().unwrap(),
+            MetadataKind::Catalog
+        )
+        .is_err());
+        let schema = crate::schema::metadata_property_schemas(None);
+        let validator = jsonschema::validator_for(&schema["QuickChoice"]).unwrap();
+        for valid in [
+            json!(true),
+            json!(false),
+            json!("Auto"),
+            json!("Use"),
+            json!("DontUse"),
+        ] {
+            assert!(validator.is_valid(&valid));
+        }
+        for invalid in [json!("Never"), json!(0), json!(null)] {
+            assert!(!validator.is_valid(&invalid));
+        }
+    }
 
     fn assert_property_kind_matrix(
         property_name: &str,

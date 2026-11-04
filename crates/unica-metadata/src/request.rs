@@ -708,7 +708,12 @@ pub fn parse_property_changes(
         let field = format!("values.{name}");
         let spec = METADATA_PROPERTY_SPECS
             .iter()
-            .find(|spec| spec.public_name == name)
+            .find(|spec| spec.public_name == name && spec.allowed_kinds.contains(&kind))
+            .or_else(|| {
+                METADATA_PROPERTY_SPECS
+                    .iter()
+                    .find(|spec| spec.public_name == name)
+            })
             .ok_or_else(|| invalid(&field, unknown_metadata_property_message(kind, name)))?;
         let value = match spec.value_kind {
             MetaPropertyValueKind::Type => {
