@@ -1,4 +1,4 @@
-use super::{replace_language_value, DATA_CORE_NS};
+use super::{replace_language_value, replace_language_value_keeping_empty, DATA_CORE_NS};
 
 const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -24,6 +24,51 @@ fn assert_translation(xml: &str, lang: &str, value: &str) {
         .find(|child| child.has_tag_name((DATA_CORE_NS, "content")))
         .expect("content keeps its expanded name");
     assert_eq!(crate::read::direct_text(content), value);
+}
+
+#[test]
+fn explicit_empty_translation_keeps_its_item_and_other_namespace_bound_bytes() {
+    let english = format!(
+        "<c:item xmlns:c='{DATA_CORE_NS}'><c:lang>en</c:lang><c:content>Keep</c:content></c:item>"
+    );
+    for body in [
+        String::new(),
+        "\r\n".to_string(),
+        english.clone(),
+        "<d:item><d:lang>ru</d:lang></d:item>".to_string(),
+        "<d:item><d:lang>ru</d:lang><d:content/></d:item>".to_string(),
+        "<d:item><d:lang>ru</d:lang><c:content xmlns:c='http://v8.1c.ru/8.1/data/core' a='>'>Old</c:content></d:item>".to_string(),
+    ] {
+        let source = format!("<v8:Title xmlns:v8='{MD}' xmlns:d='{DATA_CORE_NS}' a='>'>{body}</v8:Title>");
+        let doc = roxmltree::Document::parse(&source).unwrap();
+        let result = replace_language_value_keeping_empty(&source, doc.root_element(), "", "ru", "");
+        assert_translation(&result, "ru", "");
+        let doc = roxmltree::Document::parse(&result).unwrap();
+        assert!(doc.root_element().has_tag_name((MD, "Title")));
+        assert_eq!(doc.root_element().attribute("a"), Some(">"));
+        assert_eq!(replace_language_value_keeping_empty(&result, doc.root_element(), "", "ru", ""), result);
+        if body == english {
+            assert!(result.contains(&english));
+            assert_translation(&result, "en", "Keep");
+        }
+        if body.contains("<d:content/>") {
+            assert_eq!(result, source);
+        }
+        if body.contains("a='>'") {
+            assert!(result.contains(&format!("<c:content xmlns:c='{DATA_CORE_NS}' a='>'>")));
+        }
+        if body.contains("\r\n") {
+            assert!(!result.replace("\r\n", "").contains('\n'));
+        }
+    }
+    let source = format!("<v8:Title xmlns:v8='{MD}'/>");
+    let doc = roxmltree::Document::parse(&source).unwrap();
+    let result = replace_language_value_keeping_empty(&source, doc.root_element(), "", "ru", "");
+    assert_translation(&result, "ru", "");
+    assert!(roxmltree::Document::parse(&result)
+        .unwrap()
+        .root_element()
+        .has_tag_name((MD, "Title")));
 }
 
 #[test]

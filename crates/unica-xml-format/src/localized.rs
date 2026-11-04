@@ -17,6 +17,42 @@ pub fn replace_language_value(
     lang: &str,
     text: &str,
 ) -> String {
+    replace_language_value_with_empty(
+        source,
+        property,
+        indent,
+        lang,
+        text,
+        EmptyTranslation::Remove,
+    )
+}
+
+/// Set a language value, retaining an explicit content item when `text` is empty.
+/// Existing headers, namespace bindings and unrelated translations keep their bytes.
+pub fn replace_language_value_keeping_empty(
+    source: &str,
+    property: roxmltree::Node<'_, '_>,
+    indent: &str,
+    lang: &str,
+    text: &str,
+) -> String {
+    replace_language_value_with_empty(source, property, indent, lang, text, EmptyTranslation::Keep)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EmptyTranslation {
+    Remove,
+    Keep,
+}
+
+fn replace_language_value_with_empty(
+    source: &str,
+    property: roxmltree::Node<'_, '_>,
+    indent: &str,
+    lang: &str,
+    text: &str,
+    empty: EmptyTranslation,
+) -> String {
     fn core_child<'a, 'input>(
         node: roxmltree::Node<'a, 'input>,
         name: &str,
@@ -93,7 +129,7 @@ pub fn replace_language_value(
         .collect::<Vec<_>>();
     debug_assert!(!lang.is_empty(), "a multilingual value needs a language");
     if items.is_empty() {
-        if text.is_empty() {
+        if text.is_empty() && empty == EmptyTranslation::Remove {
             return existing.to_string();
         }
         let prefix = if property.lookup_namespace_uri(None) == Some(DATA_CORE_NS) {
@@ -135,7 +171,7 @@ pub fn replace_language_value(
     });
     let mut updated = existing.to_string();
     match target {
-        Some(item) if !text.is_empty() => {
+        Some(item) if !text.is_empty() || empty == EmptyTranslation::Keep => {
             if let Some(content) = core_child(item, "content") {
                 if !content.children().any(|node| node.is_element())
                     && crate::read::direct_text(content) == text
@@ -191,7 +227,7 @@ pub fn replace_language_value(
                 return format!("{}/>", &updated[..end - 1]);
             }
         }
-        None if text.is_empty() => {}
+        None if text.is_empty() && empty == EmptyTranslation::Remove => {}
         None => {
             let last = *items.last().expect("items are not empty");
             let (core, declaration) = core_name(property, prefix_of(qualified_name(source, last)));

@@ -444,7 +444,17 @@
           "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
           "kind": "xml",
           "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
-          "eq": []
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}lang",
+          "eq": [
+            "ru"
+          ]
         }
       ]
     },
