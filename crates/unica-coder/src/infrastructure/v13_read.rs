@@ -233,6 +233,58 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self
     }
 
+    /// A capability comes from the same retained owner proof as its value,
+    /// never from a truncated property projection or a guessed object name.
+    pub(crate) fn style_item_color_observation(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<Option<unica_metadata::style_color::StyleItemColor>, ViewError> {
+        let [owner] = at.segments() else {
+            return Ok(None);
+        };
+        if owner.kind() != NodeKind::StyleItem {
+            return Ok(None);
+        }
+        let Some(name) = owner.name() else {
+            return Ok(None);
+        };
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let route = route_logical_address(&canonical, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        let Some(target) = route.reader_metadata_path() else {
+            return Ok(None);
+        };
+        self.verify_registered_owner(target, &admitted)?;
+        let parent_version = self
+            .read
+            .configuration_root_version_literal(&|| self.read_checkpoint())?;
+        if unica_source_designer::format_profile::writable_profile_refusal(
+            "Configuration.xml",
+            parent_version.as_deref(),
+        )
+        .is_some()
+        {
+            return Ok(None);
+        }
+        let raw = self.read.metadata_descriptor(target)?;
+        self.read_checkpoint()?;
+        let Ok(text) = std::str::from_utf8(&raw) else {
+            return Ok(None);
+        };
+        let relative = unica_source_designer::layout::metadata_descriptor_relative(
+            target,
+            self.read.source_set_kind(),
+        )
+        .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        let observed =
+            unica_metadata_designer::style_color::StyleColorImage::parse(text, name, &relative)
+                .ok()
+                .map(|image| image.color());
+        self.read_checkpoint()?;
+        Ok(observed)
+    }
+
     pub(crate) fn object_borrowing(
         &self,
         at: &QualifiedAddress,

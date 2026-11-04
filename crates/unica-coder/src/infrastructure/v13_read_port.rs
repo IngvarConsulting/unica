@@ -449,6 +449,26 @@ impl ProviderReadAuthority {
         Ok(Value::Object(payload))
     }
 
+    /// Lexical parent version without materializing a large Configuration DOM.
+    pub(crate) fn configuration_root_version_literal(
+        &self,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<Option<String>, ViewError> {
+        let relative = Path::new("Configuration.xml");
+        if let Some(buffer) = self.open_buffer(relative) {
+            return crate::infrastructure::v13_large_configuration::read_configuration_root_version_literal(std::io::Cursor::new(buffer.text.as_bytes()),checkpoint);
+        }
+        let file = self
+            .root
+            .open_relative_regular_nofollow(relative)
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        crate::infrastructure::v13_large_configuration::read_configuration_root_version_literal(
+            file, checkpoint,
+        )
+    }
+
     pub(crate) fn streamed_configuration_root(
         &self,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
