@@ -79,3 +79,5 @@ pub mod configuration;
 pub mod extension;
 
 mod source_contracts;
+
+pub mod style_color;

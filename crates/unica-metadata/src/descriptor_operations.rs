@@ -49,6 +49,7 @@ pub enum PropertiesSite {
     FunctionalOption,
     Role,
     Subsystem,
+    StyleItem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
     /// or an extension's, which may change only its identity properties.
     Configuration {
@@ -93,7 +94,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension: true } => {
                         match self { $(Self::$field => $extension),+ }
                     }
-                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator => false,
+                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::StyleItem => false,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode),
                 }
             }
@@ -210,6 +211,7 @@ impl PropertiesSite {
         owner.name()?;
         match owner.kind() {
             NodeKind::DocumentNumerator => Some(Self::DocumentNumerator),
+            NodeKind::StyleItem => Some(Self::StyleItem),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
             NodeKind::Role => Some(Self::Role),
             NodeKind::Subsystem => Some(Self::Subsystem),
@@ -230,6 +232,12 @@ impl PropertiesSite {
         match self {
             Self::DocumentNumerator => return crate::document_numerator::values_schema(),
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
+            Self::StyleItem => {
+                properties.insert(
+                    "Value".into(),
+                    crate::style_color::StyleItemColor::argument_schema(),
+                );
+            }
             Self::FunctionalOption | Self::Role | Self::Subsystem | Self::Configuration { .. } => {
                 for field in self.descriptor_fields() {
                     let schema = match field.kind() {
@@ -273,20 +281,25 @@ impl PropertiesOperation {
             Self::Set => OperationContract {
                 schema: object(&[("values", site.values_schema())], &["values"]),
                 target: match site {
+                    PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
-                notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
+                notes: match site {
+                    PropertiesSite::StyleItem => "Only values.Value is accepted: #RRGGBB or an enumerated web/builtin style color. Empty, null and arbitrary XML are refused. Type, identity and bytes outside Value stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
+                    _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
+                },
                 example_args: match site {
                     PropertiesSite::DocumentNumerator => json!({"values":{"NumberLength":12,"CheckUnique":true}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
+                    PropertiesSite::StyleItem => json!({"values":{"Value":"#F0F0F0"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::FunctionalOption => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -301,7 +314,16 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
     fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
         crate::recovery::RETIRED_ARGUMENTS
     }
-    type Observation = ();
+    type Observation = crate::style_color::StyleItemColor;
+    fn needs_observation(
+        self,
+        site: Option<&unica_source_contract::context::OperationSite<'_>>,
+    ) -> bool {
+        site.and_then(PropertiesSite::from_site) == Some(PropertiesSite::StyleItem)
+    }
+    fn admits_observation(self, observation: Option<&Self::Observation>) -> bool {
+        observation.is_some()
+    }
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Properties
     }

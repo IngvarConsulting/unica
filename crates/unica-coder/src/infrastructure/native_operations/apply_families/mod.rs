@@ -826,6 +826,49 @@ fn descriptor_node(
 }
 
 /// Формат макета по его описанию в стадированном состоянии допуска.
+/// Recovery uses the same closed staged preimage as the final Color writer.
+pub(crate) fn staged_style_item_color(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    at: &unica_address::address::QualifiedAddress,
+) -> Option<unica_metadata::style_color::StyleItemColor> {
+    let [owner] = at.segments() else {
+        return None;
+    };
+    if owner.kind() != unica_address::address::NodeKind::StyleItem
+        || at.source_set() != binding.source_set_name()
+    {
+        return None;
+    }
+    let name = owner.name()?;
+    let (address, covered) = descriptor_node(at)?;
+    if covered != 1 {
+        return None;
+    }
+    let relative = unica_source_designer::layout::metadata_descriptor_relative(
+        &address,
+        binding.source_kind(),
+    )
+    .ok()?;
+    let mut staged = admission.staged_state().ok()?;
+    let parent = staged
+        .read(std::path::Path::new("Configuration.xml"))
+        .ok()??;
+    let raw = staged.read(&relative).ok()??;
+    let text = std::str::from_utf8(&raw)
+        .ok()?
+        .trim_start_matches('\u{feff}');
+    unica_metadata_designer::style_color::StyleColorImage::parse_registered(
+        text,
+        name,
+        &relative,
+        &parent,
+        binding.source_kind(),
+    )
+    .ok()
+    .map(|image| image.color())
+}
+
 pub(crate) fn staged_template_format(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,

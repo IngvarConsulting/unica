@@ -46,6 +46,7 @@ pub enum PropertiesIntent {
     Role(RolePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
+    StyleItem(crate::style_color::StyleItemColor),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,6 +314,19 @@ fn decode_with_contract(
                             .field("CheckUnique", false)?
                             .and_then(Value::as_bool),
                     })
+                }
+                PropertiesSite::StyleItem => {
+                    let value = values_reader
+                        .field("Value", false)?
+                        .and_then(Value::as_str)
+                        .and_then(crate::style_color::StyleItemColor::parse_argument)
+                        .ok_or_else(|| {
+                            invalid(
+                                format!("{values_path}.Value"),
+                                "Value must be a supported RGB, web or builtin style color",
+                            )
+                        })?;
+                    PropertiesIntent::StyleItem(value)
                 }
                 PropertiesSite::Metadata(kind) => {
                     // Preserve Metadata's existing conversion diagnostics and

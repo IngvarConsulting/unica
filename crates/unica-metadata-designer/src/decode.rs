@@ -89,6 +89,7 @@ pub enum MetadataPlanKind {
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
     DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
+    StyleItem(unica_metadata::style_color::StyleItemColor),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
@@ -1112,6 +1113,9 @@ pub fn parse_properties(
                 operation: MetaEditOperation::SetProperties { values },
                 addressed: None,
             });
+        }
+        unica_metadata::property_input::PropertiesIntent::StyleItem(value) => {
+            ("StyleItems", DescriptorPropertyChanges::StyleItem(value))
         }
         unica_metadata::property_input::PropertiesIntent::Role(values) => {
             ("Roles", DescriptorPropertyChanges::Role(values))
