@@ -11,6 +11,7 @@ pub enum OperationApplicability {
     ExchangePlan,
     Configuration,
     ConfigurationRoot,
+    ConfigurationCatalog,
     Event,
     ExtensionRoot,
     Interface,
@@ -47,6 +48,7 @@ impl OperationApplicability {
         match self {
             Self::ExchangePlan => "`ExchangePlan.Name`",
             Self::Configuration => "`Configuration`",
+            Self::ConfigurationCatalog => "`Catalog.Name` of a configuration",
             Self::ConfigurationRoot => "`Configuration` of a configuration, not of an extension",
             Self::ExtensionRoot => "`Configuration` of an extension",
             Self::Metadata => "`Kind.Name`",
@@ -100,6 +102,10 @@ impl OperationApplicability {
             Self::ExtensionRoot => {
                 site.route() == RouteClass::Configuration
                     && site.source().kind() == SourceSetKind::Extension
+            }
+            Self::ConfigurationCatalog => {
+                site.source().kind() == SourceSetKind::Configuration
+                    && matches!(segments, [only] if only.kind() == NodeKind::Catalog && only.name().is_some())
             }
             Self::Metadata => site.metadata_object().is_some(),
             // A common template is a top-level object the configurator

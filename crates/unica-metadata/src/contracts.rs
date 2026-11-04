@@ -24,6 +24,37 @@ pub fn metadata_object_create_input_schema() -> &'static Value {
     })
 }
 
+pub fn metadata_object_rename_input_schema() -> &'static Value {
+    static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        object(
+            &[
+                ("at", text(true)),
+                (
+                    "values",
+                    object(
+                        &[("newName", json!({"type":"string", "minLength":1}))],
+                        &["newName"],
+                    ),
+                ),
+            ],
+            &["values"],
+        )
+    })
+}
+
+pub fn metadata_object_rename() -> OperationContract {
+    OperationContract {
+        schema: metadata_object_rename_input_schema().clone(),
+        target: "An existing Catalog.Name in a configuration source set.",
+        effect: "Rename the catalog, its registration, generated type names and supported XML references while preserving UUIDs and resource bytes.",
+        notes: "Supports Catalog in configuration sources, configuration registration, generated catalog types, v8:Type QNames in the current-config namespace, xr:Item MDObjectRef values, xr:Field metadata paths, ConfigDumpInfo Metadata names, subsystem content, role rights, command interfaces, home page, exchange-plan and functional-option content. Significant BSL/query or other unhandled references refuse before writing. Resource trees containing empty directories and case-only renames are refused. Plan this root-inspecting operation before other changes in the batch. Preview retains all inspected source inputs; execution publishes the saved plan atomically.",
+        example_args: json!({"values":{"newName":"RenamedCatalog"}}),
+        help: METADATA_HELP,
+        format_validators: &[],
+    }
+}
+
 pub fn metadata_object_remove_input_schema() -> &'static Value {
     static SCHEMA: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
     SCHEMA.get_or_init(|| object(&[("at", text(true))], &[]))

@@ -52,6 +52,11 @@ pub enum MetadataPlanKind {
         kind: MetadataKind,
         name: String,
     },
+    Rename {
+        target: MetadataAddress,
+        name: String,
+        new_name: String,
+    },
     Remove {
         target: MetadataAddress,
         /// The removed object's layout: a typed kind or a common template.
@@ -396,6 +401,9 @@ pub fn parse_metadata_plan_operation_in(
                 // before this lower MetadataPlan parser is called.
                 return Err(hidden_apply_family_unimplemented(op_index));
             }
+            RegisteredMetadataOperation::ObjectRename => {
+                parse_object_rename(object, op_index, binding)?
+            }
             RegisteredMetadataOperation::ObjectCreate => {
                 parse_object_create(object, op_index, binding)?
             }
@@ -722,6 +730,56 @@ pub fn parse_template_remove(
     let (owner, name) = template_target(&target, op_index)?;
     Ok(MetadataPlanKind::TemplateRemove { owner, name })
 }
+pub fn parse_object_rename(
+    args: &Map<String, Value>,
+    op_index: usize,
+    binding: &MetadataDecodeContext<'_>,
+) -> Result<MetadataPlanKind, ApplyPlanError> {
+    use unica_source_contract::proposal::input::{bad, qualified_target, required_values};
+    reject_unknown_input_args(
+        "object.rename",
+        args,
+        unica_metadata::contracts::metadata_object_rename_input_schema(),
+        op_index,
+        binding.registry,
+    )?;
+    let target = qualified_target(args, op_index, binding.source_set_name())?;
+    let name = match target.segments() {
+        [owner]
+            if binding.source_kind == unica_source_contract::SourceSetKind::Configuration
+                && owner.kind() == NodeKind::Catalog =>
+        {
+            owner.name()
+        }
+        _ => None,
+    }
+    .ok_or_else(|| {
+        bad(
+            op_index,
+            "at",
+            "object.rename supports a named top-level Catalog of a configuration",
+        )
+    })?;
+    let values = required_values(args, op_index, &["newName"])?;
+    let new_name = values
+        .get("newName")
+        .and_then(Value::as_str)
+        .filter(|name| unica_metadata::identifier::is_1c_identifier(name))
+        .ok_or_else(|| {
+            bad(
+                op_index,
+                "values.newName",
+                "newName must be a 1C identifier without surrounding whitespace",
+            )
+        })?;
+    Ok(MetadataPlanKind::Rename {
+        target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("Catalog.{name}"))
+            .map_err(|error| bad(op_index, "at", error.to_string()))?,
+        name: name.to_string(),
+        new_name: new_name.to_string(),
+    })
+}
+
 pub fn parse_object_create(
     args: &Map<String, Value>,
     op_index: usize,

@@ -1,0 +1,298 @@
+{
+  "id": "S-1645-object-rename",
+  "issue": 1645,
+  "area": "Метаданные",
+  "task": "Переименовать каталог с сохранением UUID, генерируемых типов, модуля и точных XML-ссылок; preview и отказы не меняют файлы",
+  "workspace": "tests/fixtures/acceptance/workspace-object-rename",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.СтарыйСклад"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "object.rename",
+            "args": "values"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.СтарыйСклад.Can.object.rename"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.СтарыйСклад",
+        "ops": [
+          {
+            "op": "object.rename",
+            "args": {
+              "values": {
+                "newName": "СтарыйСкладскойУчасток"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "2fb55b3c1ad99d3e218be1c20f34cc94168006bab54e1125b8adee2482e20edc"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад.xml",
+          "eq": "8f1567cc6a827e75578e3eb0e0081ba3a8936f9fa3783358ad4f8f0807012965"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Documents/Приход.xml",
+          "eq": "970f3e699dba0044ebd634e983acf2e8b627738b649b01b30ba3d2e66ef37955"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСкладскойУчасток.xml",
+          "eq": "828a8c654e2309e24c2063a6c95f49c26fbbeff34a7083005e9a0d09be187f12"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Ext/ObjectModule.bsl",
+          "eq": "b8fedf667f25108a8ed5a80731cfd90f234f3724f81f16a8d28940a4983dccf6"
+        },
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/НовыйСклад.xml",
+          "eq": false
+        }
+      ],
+      "refusal": "invalid_state: rename destination already exists"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.СтарыйСклад",
+        "ops": [
+          {
+            "op": "object.rename",
+            "args": {
+              "values": {
+                "newName": " НовыйСклад "
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "2fb55b3c1ad99d3e218be1c20f34cc94168006bab54e1125b8adee2482e20edc"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад.xml",
+          "eq": "8f1567cc6a827e75578e3eb0e0081ba3a8936f9fa3783358ad4f8f0807012965"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Documents/Приход.xml",
+          "eq": "970f3e699dba0044ebd634e983acf2e8b627738b649b01b30ba3d2e66ef37955"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСкладскойУчасток.xml",
+          "eq": "828a8c654e2309e24c2063a6c95f49c26fbbeff34a7083005e9a0d09be187f12"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Ext/ObjectModule.bsl",
+          "eq": "b8fedf667f25108a8ed5a80731cfd90f234f3724f81f16a8d28940a4983dccf6"
+        },
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/НовыйСклад.xml",
+          "eq": false
+        }
+      ],
+      "refusal": "bad_value: newName must be a 1C identifier without surrounding whitespace"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.СтарыйСклад",
+        "ops": [
+          {
+            "op": "object.rename",
+            "args": {
+              "values": {
+                "newName": "НовыйСклад"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "2fb55b3c1ad99d3e218be1c20f34cc94168006bab54e1125b8adee2482e20edc"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад.xml",
+          "eq": "8f1567cc6a827e75578e3eb0e0081ba3a8936f9fa3783358ad4f8f0807012965"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Documents/Приход.xml",
+          "eq": "970f3e699dba0044ebd634e983acf2e8b627738b649b01b30ba3d2e66ef37955"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСкладскойУчасток.xml",
+          "eq": "828a8c654e2309e24c2063a6c95f49c26fbbeff34a7083005e9a0d09be187f12"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСклад/Ext/ObjectModule.bsl",
+          "eq": "b8fedf667f25108a8ed5a80731cfd90f234f3724f81f16a8d28940a4983dccf6"
+        },
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/НовыйСклад.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/СтарыйСклад.xml",
+          "eq": false
+        },
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/СтарыйСклад/Ext/ObjectModule.bsl",
+          "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/НовыйСклад.xml",
+          "eq": "90fa43521640630c0919c03682dbab8af8f40d9b0a7c80814109bd4c7193a58d"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "287da6f5ab9dfa13d096e8c89ab55e0d7d63da78e12897ac492ab0edcc60c798"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Documents/Приход.xml",
+          "eq": "dc96412831021680b75bb963387e160923f2466792365374fa919016b6cfe28e"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/СтарыйСкладскойУчасток.xml",
+          "eq": "828a8c654e2309e24c2063a6c95f49c26fbbeff34a7083005e9a0d09be187f12"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/НовыйСклад/Ext/ObjectModule.bsl",
+          "eq": "b8fedf667f25108a8ed5a80731cfd90f234f3724f81f16a8d28940a4983dccf6"
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/НовыйСклад.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "НовыйСклад"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Documents/Приход.xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Document/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "cfg:CatalogRef.НовыйСклад",
+            "cfg:CatalogRef.СтарыйСкладскойУчасток"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.НовыйСклад"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход.Attribute.Склад"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.СтарыйСклад"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner `Catalog.СтарыйСклад` is not registered"
+    }
+  ]
+}

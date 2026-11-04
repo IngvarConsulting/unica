@@ -35,6 +35,7 @@ pub mod decode;
 pub mod resource_plan;
 
 pub mod remove;
+pub mod rename;
 
 pub mod help;
 

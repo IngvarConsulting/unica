@@ -283,6 +283,22 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 )?;
                 continue;
             }
+            MetadataPlanKind::Rename {
+                target,
+                name,
+                new_name,
+            } => {
+                crate::rename::stage_catalog_rename(
+                    staged,
+                    authority,
+                    target,
+                    name,
+                    new_name,
+                    op_index,
+                    &mut provisional,
+                )?;
+                continue;
+            }
             MetadataPlanKind::Create { kind, name } => {
                 stage_object_create(
                     reader,
