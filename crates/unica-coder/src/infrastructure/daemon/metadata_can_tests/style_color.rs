@@ -628,3 +628,63 @@ fn style_item_argument_errors_precede_failed_descriptor_evidence() {
         );
     }
 }
+
+fn verify_local_comment_namespace(tag: &str, raw: &str) {
+    let fixture = color_fixture("#123456");
+    let runtime = runtime();
+    let owner = PathBuf::from("StyleItems/Accent.xml");
+    let path = fixture.source.join(&owner);
+    let original = std::fs::read_to_string(&path).unwrap();
+    let tags = regex::Regex::new(r"<(/?)([A-Za-z_][A-Za-z0-9_]*)([ >/\t\r\n])").unwrap();
+    let prefixed = tags
+        .replace_all(&original, "<${1}m:${2}${3}")
+        .replace(
+            "xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
+            "xmlns:m=\"http://v8.1c.ru/8.3/MDClasses\"",
+        )
+        .replace("<m:Comment>keep</m:Comment>", raw);
+    std::fs::write(&path, &prefixed).unwrap();
+    let at = "main:StyleItem.Accent";
+    assert_eq!(view(&runtime, &fixture, at)["props"]["Comment"], "keep");
+    let original_tree = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let opening = &raw[..raw.find('>').unwrap()];
+    for value in ["new", "", "expanded", "expanded"] {
+        publish(
+            &runtime,
+            &fixture,
+            json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"Comment":value}}}]}),
+        );
+        let expected_element = if value.is_empty() {
+            format!("{opening}/>")
+        } else {
+            format!("{opening}>{value}</{tag}>")
+        };
+        let mut expected = original_tree.clone();
+        expected.insert(
+            owner.clone(),
+            prefixed.replace(raw, &expected_element).into_bytes(),
+        );
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            expected
+        );
+        assert_eq!(view(&runtime, &fixture, at)["props"]["Comment"], value);
+        assert_eq!(view(&runtime, &fixture, at)["props"]["Value"], "#123456");
+    }
+}
+
+#[test]
+fn canonical_comment_retains_a_locally_declared_prefix() {
+    verify_local_comment_namespace(
+        "c:Comment",
+        "<c:Comment xmlns:c=\"http://v8.1c.ru/8.3/MDClasses\">keep</c:Comment>",
+    );
+}
+
+#[test]
+fn canonical_comment_retains_a_locally_declared_default_namespace() {
+    verify_local_comment_namespace(
+        "Comment",
+        "<Comment xmlns=\"http://v8.1c.ru/8.3/MDClasses\">keep</Comment>",
+    );
+}

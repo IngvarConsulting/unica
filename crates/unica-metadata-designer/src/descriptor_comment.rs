@@ -119,14 +119,41 @@ pub(crate) fn set_comment(
         .replace('\r', "&#13;")
         .replace('\n', "&#10;")
         .replace('\t', "&#9;");
+    let raw = &source[comment.range()];
+    let mut quote = None;
+    let opening_end = raw
+        .char_indices()
+        .find_map(|(offset, ch)| {
+            match (quote, ch) {
+                (Some(delimiter), ch) if delimiter == ch => quote = None,
+                (None, '\'' | '"') => quote = Some(ch),
+                (None, '>') => return Some(offset),
+                _ => {}
+            }
+            None
+        })
+        .ok_or_else(|| "Comment opening tag is malformed".to_string())?;
+    // Namespace declarations are not ordinary attributes. Keep the complete
+    // opening tag so local prefix/default bindings survive scalar replacement.
+    let opening = raw[..opening_end]
+        .strip_suffix('/')
+        .map(str::trim_end)
+        .unwrap_or(&raw[..opening_end]);
     let replacement = if value.is_empty() {
-        format!("<{spelling}/>")
+        format!("{opening}/>")
     } else {
-        format!("<{spelling}>{escaped}</{spelling}>")
+        format!("{opening}>{escaped}</{spelling}>")
     };
     let mut updated = source.to_string();
     updated.replace_range(comment.range(), &replacement);
-    Document::parse(&updated).map_err(|error| format!("Comment is not valid XML text: {error}"))?;
+    let postimage = Document::parse(&updated)
+        .map_err(|error| format!("Comment is not valid XML text: {error}"))?;
+    let properties = descriptor_properties(&postimage, kind.as_str())?;
+    let observed = crate::info_projection::observe_collection_item_comment(properties)
+        .map_err(|error| error.message)?;
+    if observed.as_deref() != Some(value) {
+        return Err("Comment postimage does not contain the requested canonical value".into());
+    }
     Ok(updated)
 }
 
@@ -216,5 +243,49 @@ mod tests {
         for value in ["bad\0text", "bad\u{1}text", "bad\u{fffe}text"] {
             assert!(set_comment(&source, NodeKind::SessionParameter, "Probe", value).is_err());
         }
+    }
+    #[test]
+    fn comment_patch_preserves_namespace_bindings_declared_on_the_scalar() {
+        let mut failures = Vec::new();
+        for (tag, raw) in [
+            (
+                "c:Comment",
+                format!("<c:Comment xmlns:keep=\"urn:retained>binding\" xmlns:c=\"{MD_CLASSES_NS}\">old</c:Comment>"),
+            ),
+            (
+                "Comment",
+                format!("<Comment xmlns=\"{MD_CLASSES_NS}\">old</Comment>"),
+            ),
+        ] {
+            let source = descriptor(&raw);
+            assert_eq!(read_comment(source.as_bytes(), "SessionParameter"), Ok(Some("old".to_owned())));
+            let opening = &raw[..raw.find(">old</").unwrap()];
+            let mut current = source.clone();
+            for value in ["new", "", "expanded", "expanded"] {
+                let expected_element = if value.is_empty() {
+                    format!("{opening}/>")
+                } else {
+                    format!("{opening}>{value}</{tag}>")
+                };
+                let expected = source.replace(&raw, &expected_element);
+                match set_comment(&current, NodeKind::SessionParameter, "Probe", value) {
+                    Err(error) => {
+                        failures.push(format!("{tag}/{value}: {error}"));
+                        break;
+                    }
+                    Ok(updated) => {
+                        let observed = read_comment(updated.as_bytes(), "SessionParameter");
+                        if updated != expected || observed != Ok(Some(value.to_owned())) {
+                            failures.push(format!(
+                                "{tag}/{value}: namespace or bytes changed: {observed:?}"
+                            ));
+                            break;
+                        }
+                        current = updated;
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("; "));
     }
 }
