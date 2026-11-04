@@ -5,6 +5,12 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum MetaPropertyKey {
+    FullTextSearch,
+    SearchStringModeOnInputByString,
+    FullTextSearchOnInputByString,
+    ChoiceDataGetModeOnInputByString,
+    CreateOnInput,
+    ChoiceHistoryOnInput,
     Type,
     Synonym,
     Comment,
@@ -236,6 +242,8 @@ const CODE_KINDS: &[MetadataKind] = &[
     MetadataKind::ChartOfCalculationTypes,
     MetadataKind::ExchangePlan,
 ];
+const CODE_TYPE_KINDS: &[MetadataKind] =
+    &[MetadataKind::Catalog, MetadataKind::ChartOfCalculationTypes];
 const DESCRIPTION_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
     MetadataKind::ChartOfAccounts,
@@ -342,6 +350,48 @@ const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "T
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
+    enum_property(
+        "FullTextSearch",
+        "FullTextSearch",
+        MetaPropertyKey::FullTextSearch,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Use", "DontUse"],
+    ),
+    enum_property(
+        "SearchStringModeOnInputByString",
+        "SearchStringModeOnInputByString",
+        MetaPropertyKey::SearchStringModeOnInputByString,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Begin", "AnyPart"],
+    ),
+    enum_property(
+        "FullTextSearchOnInputByString",
+        "FullTextSearchOnInputByString",
+        MetaPropertyKey::FullTextSearchOnInputByString,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Use", "DontUse"],
+    ),
+    enum_property(
+        "ChoiceDataGetModeOnInputByString",
+        "ChoiceDataGetModeOnInputByString",
+        MetaPropertyKey::ChoiceDataGetModeOnInputByString,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Directly", "Background"],
+    ),
+    enum_property(
+        "CreateOnInput",
+        "CreateOnInput",
+        MetaPropertyKey::CreateOnInput,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Auto", "Use", "DontUse"],
+    ),
+    enum_property(
+        "ChoiceHistoryOnInput",
+        "ChoiceHistoryOnInput",
+        MetaPropertyKey::ChoiceHistoryOnInput,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Auto", "DontUse"],
+    ),
     property(
         "Type",
         MetaPropertyKey::Type,
@@ -420,7 +470,7 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "CodeType",
         "CodeType",
         MetaPropertyKey::CodeType,
-        CATALOG_KINDS,
+        CODE_TYPE_KINDS,
         CODE_TYPE_VALUES,
     ),
     property(
@@ -898,6 +948,35 @@ mod tests {
     }
 
     #[test]
+    fn code_type_keeps_its_closed_enum_and_argument_type_for_both_supported_owners() {
+        for kind in [MetadataKind::Catalog, MetadataKind::ChartOfCalculationTypes] {
+            for value in ["String", "Number"] {
+                assert!(MetaPropertyChanges::convert(
+                    kind,
+                    vec![MetaPropertyInput::new(
+                        "CodeType",
+                        MetaPropertyValue::String(value.into())
+                    )]
+                )
+                .is_ok());
+            }
+            for value in [
+                MetaPropertyValue::Boolean(true),
+                MetaPropertyValue::UnsignedInteger(9),
+                MetaPropertyValue::String("Unknown".into()),
+            ] {
+                let error = MetaPropertyChanges::convert(
+                    kind,
+                    vec![MetaPropertyInput::new("CodeType", value)],
+                )
+                .expect_err("CodeType keeps its exact value kind and enum");
+                assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+                assert_eq!(error.field.as_deref(), Some("values.CodeType"));
+            }
+        }
+    }
+
+    #[test]
     fn code_length_uses_the_current_writer_kind_matrix() {
         assert_property_kind_matrix(
             "CodeLength",
@@ -1186,12 +1265,42 @@ mod tests {
             (
                 "CodeType",
                 MetaPropertyValue::String("Number".into()),
-                &[Catalog],
+                &[Catalog, ChartOfCalculationTypes],
             ),
             (
                 "Correspondence",
                 MetaPropertyValue::Boolean(true),
                 &[AccountingRegister],
+            ),
+            (
+                "FullTextSearch",
+                MetaPropertyValue::String("Use".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "SearchStringModeOnInputByString",
+                MetaPropertyValue::String("Begin".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "FullTextSearchOnInputByString",
+                MetaPropertyValue::String("Use".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "ChoiceDataGetModeOnInputByString",
+                MetaPropertyValue::String("Directly".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "CreateOnInput",
+                MetaPropertyValue::String("Auto".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "ChoiceHistoryOnInput",
+                MetaPropertyValue::String("Auto".into()),
+                &[Catalog, Document],
             ),
             (
                 "DefaultPresentation",

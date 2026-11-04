@@ -39,11 +39,25 @@ pub struct ConfigurationPropertyChanges {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WsReferencePropertyChanges {
+    pub location_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
     Metadata(MetaPropertyChanges),
+    FunctionalOption(FunctionalOptionPropertyChanges),
     Role(RolePropertyChanges),
+    WSReference(WsReferencePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
+    StyleItem(crate::style_color::StyleItemColor),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionalOptionPropertyChanges {
+    pub location: Option<String>,
+    pub privileged_get_mode: Option<bool>,
 }
 
 type DecodeResult<T> = Result<T, ContractError>;
@@ -283,6 +297,19 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::StyleItem => {
+                    let value = values_reader
+                        .field("Value", false)?
+                        .and_then(Value::as_str)
+                        .and_then(crate::style_color::StyleItemColor::parse_argument)
+                        .ok_or_else(|| {
+                            invalid(
+                                format!("{values_path}.Value"),
+                                "Value must be a supported RGB, web or builtin style color",
+                            )
+                        })?;
+                    PropertiesIntent::StyleItem(value)
+                }
                 PropertiesSite::Metadata(kind) => {
                     // Preserve Metadata's existing conversion diagnostics and
                     // structured Type model, then verify the shared shape.
@@ -303,6 +330,25 @@ fn decode_with_contract(
                         )?;
                     }
                     PropertiesIntent::Metadata(changes)
+                }
+                PropertiesSite::WSReference => {
+                    PropertiesIntent::WSReference(WsReferencePropertyChanges {
+                        location_url: values_reader
+                            .string(DescriptorProperty::LocationUrl)?
+                            .ok_or_else(|| {
+                                invalid(
+                                    format!("{path}.values.LocationURL"),
+                                    "LocationURL is required",
+                                )
+                            })?,
+                    })
+                }
+                PropertiesSite::FunctionalOption => {
+                    PropertiesIntent::FunctionalOption(FunctionalOptionPropertyChanges {
+                        location: values_reader.string(DescriptorProperty::Location)?,
+                        privileged_get_mode: values_reader
+                            .boolean(DescriptorProperty::PrivilegedGetMode)?,
+                    })
                 }
                 PropertiesSite::Role => PropertiesIntent::Role(RolePropertyChanges {
                     synonym: values_reader.string(DescriptorProperty::Synonym)?,
