@@ -71,8 +71,8 @@ BINARY = binary_path(REPO_ROOT)
 from tests.ci.form_runtime_diagnostics import WORKSPACE as FORM_RUNTIME_WORKSPACE
 
 from tests.ci.acceptance_profiles import (
-    DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
-    select_profile,
+    DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SOURCE_WORKSPACE_PROFILES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
+    prepare_source_workspace, select_profile,
 )
 
 from tests.ci.acceptance_pull_validation import WORKSPACE as PULL_VALIDATION_WORKSPACE
@@ -2214,6 +2214,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
             initialize_vendor_source(workspace)
         if workspace_relative == FORMAT_WORKSPACE:
             derive_source_sets(REPO_ROOT / default_workspace / "src", workspace)
+        prepare_source_workspace(workspace, SOURCE_WORKSPACE_PROFILES.get(workspace_relative, {}))
         state = home / "state"
         state.mkdir()
         environment = isolated_environment(plugin, state) if plugin else None
