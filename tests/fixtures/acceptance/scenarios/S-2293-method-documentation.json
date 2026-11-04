@@ -1,0 +1,189 @@
+{
+  "id": "S-2293-method-documentation",
+  "issue": 2293,
+  "area": "Код BSL",
+  "task": "Заменить метод с двумя прежними блоками документации на метод с одним блоком, сохранить соседний метод, BOM и CRLF и повторить замену без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-method-documentation",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Target.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "// Returns the sample value.\r\n// Number.\r\n// Returns the sample value.\r\n// Number.\r\nFunction Target() Export\r\n    Return 1;\r\nEndFunction\r\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "3cc8bb6b2c57db60137fc2ec613dbb9d2d1dcb4c62292bc5d6302a7aac89c84b"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Target",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "// Returns the sample value.\n// Number.\nFunction Target() Export\n    Return 2;\nEndFunction\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "3cc8bb6b2c57db60137fc2ec613dbb9d2d1dcb4c62292bc5d6302a7aac89c84b"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "8d9cb5ea91544e0a2b0f9a2359c1ea224a5e0fa78d0394ee8eb8f24e9d9ff9ea"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Target.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "// Returns the sample value.\r\n// Number.\r\nFunction Target() Export\r\n    Return 2;\r\nEndFunction\r\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "8d9cb5ea91544e0a2b0f9a2359c1ea224a5e0fa78d0394ee8eb8f24e9d9ff9ea"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Target",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "// Returns the sample value.\n// Number.\nFunction Target() Export\n    Return 2;\nEndFunction\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "8d9cb5ea91544e0a2b0f9a2359c1ea224a5e0fa78d0394ee8eb8f24e9d9ff9ea"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "8d9cb5ea91544e0a2b0f9a2359c1ea224a5e0fa78d0394ee8eb8f24e9d9ff9ea"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Method.Neighbor.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "// Neighbor documentation.\r\nProcedure Neighbor() Export\r\n    Message(\"keep\");\r\nEndProcedure\r\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "8d9cb5ea91544e0a2b0f9a2359c1ea224a5e0fa78d0394ee8eb8f24e9d9ff9ea"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "// Separate module note.\r\n\r\n// Returns the sample value.\r\n// Number.\r\nFunction Target() Export\r\n    Return 2;\r\nEndFunction\r\n\r\n// Neighbor documentation.\r\nProcedure Neighbor() Export\r\n    Message(\"keep\");\r\nEndProcedure\r\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "8d9cb5ea91544e0a2b0f9a2359c1ea224a5e0fa78d0394ee8eb8f24e9d9ff9ea"
+        }
+      ]
+    }
+  ]
+}

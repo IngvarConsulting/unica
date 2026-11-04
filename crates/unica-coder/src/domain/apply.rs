@@ -446,6 +446,24 @@ pub(crate) fn observation_lookup<'a>(
     }
 }
 
+/// The same registry observations with the closed Color profile owned by
+/// metadata. The caller obtains it from retained descriptor bytes.
+pub(crate) fn observation_lookup_with_color<'a>(
+    template: &'a dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    item: &'a dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    color: &'a dyn Fn(&QualifiedAddress) -> Option<unica_metadata::style_color::StyleItemColor>,
+) -> impl Fn(&QualifiedAddress, unica_operations::ObservationType) -> Option<Box<dyn std::any::Any>> + 'a
+{
+    let ordinary = observation_lookup(template, item);
+    move |at, requested| {
+        if requested.is::<unica_metadata::style_color::StyleItemColor>() {
+            color(at).map(|value| Box::new(value) as Box<dyn std::any::Any>)
+        } else {
+            ordinary(at, requested)
+        }
+    }
+}
+
 impl OperationDescriptorExt for OperationDescriptor {
     fn admits_template_format(self, format: Option<TemplateFormat>) -> bool {
         !self.observation_type().is::<TemplateFormat>()
@@ -1144,6 +1162,11 @@ mod tests {
             (
                 SourceSetKind::Configuration,
                 "main:Subsystem.Sales.Subsystem.Child",
+                true,
+            ),
+            (
+                SourceSetKind::Configuration,
+                "main:Subsystem.Sales.Interface",
                 false,
             ),
         ] {
@@ -2234,7 +2257,7 @@ mod tests {
 
         let data_set = address("main:Report.Sales.Template.Schema.DataSet.Main");
         let data_site = operation_site(&data_set, traits).unwrap();
-        let args = json!({"values": {"field": "Amount", "title": "x"}});
+        let args = json!({"values": {"dataPath": "Amount", "title": "x"}});
         let redirect = registry
             .retired_argument_redirect("field.set", &data_site, args.as_object().unwrap())
             .unwrap();
@@ -2727,8 +2750,8 @@ mod tests {
             (
                 "field.set",
                 format!("{schema}.DataSet.Main"),
-                json!({"values": {"field": "Amount", "title": "x"}}),
-                "values.field",
+                json!({"values": {"dataPath": "Amount", "title": "x"}}),
+                "values.dataPath",
                 format!("{schema}.DataSet.Main.Field.Amount"),
             ),
             (
@@ -2796,7 +2819,7 @@ mod tests {
             .retired_argument_redirect(
                 "field.set",
                 &site,
-                json!({"values": {"field": "Owner.Code", "title": "x"}})
+                json!({"values": {"dataPath": "Owner.Code", "title": "x"}})
                     .as_object()
                     .unwrap(),
             )

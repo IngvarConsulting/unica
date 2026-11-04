@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tests.agent_evaluation import event_data_driver as driver
+from tests.agent_evaluation import cli_host as driver_cli_host
 
 
 def transcript():
@@ -38,7 +39,7 @@ class EventDataEvidenceAuditTests(unittest.TestCase):
     def test_reviewer_receives_observed_skill_reads_not_just_transcript_hash(self):
         with tempfile.TemporaryDirectory() as temp:
             proof = Path(temp)
-            read = {"type": "command_execution", "command": "cat " + str(proof / "plugin" / driver.HELP_REFS[0]),
+            read = {"type": "command_execution", "command": driver_cli_host.help_command(proof / "plugin" / driver.HELP_REFS[0]),
                     "aggregated_output": "candidate skill contents", "exit_code": 0, "status": "completed"}
             unrelated = {"type": "reasoning", "text": "unrelated reasoning"}
             (proof / "agent.jsonl").write_text("\n".join(json.dumps({"type": "item.completed", "item": item})
