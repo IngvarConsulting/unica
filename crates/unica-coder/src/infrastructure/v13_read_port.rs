@@ -1231,6 +1231,21 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "WSReference" {
+            match unica_metadata_designer::ws_reference::read_location_url(&descriptor) {
+                Ok(Some(value)) => {
+                    payload["properties"] = json!([{
+                        "key": "LocationURL",
+                        "value": unica_metadata::MetaObservedPropertyValue::Text { value },
+                    }])
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    payload["unreadable"] =
+                        json!([{"field":"properties.LocationURL","message":message}])
+                }
+            }
+        }
         if evidence.artifact_kind() == "FunctionalOption" {
             let name = target.as_str().split('.').nth(1).unwrap_or_default();
             match std::str::from_utf8(&descriptor)

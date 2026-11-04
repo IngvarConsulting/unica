@@ -1,5 +1,7 @@
 #[path = "metadata_can_tests/report_variants_storage.rs"]
 mod report_variants_storage;
+#[path = "metadata_can_tests/ws_reference.rs"]
+mod ws_reference;
 
 #[path = "metadata_can_tests/functional_option.rs"]
 mod functional_option;
