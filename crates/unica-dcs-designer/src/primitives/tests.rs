@@ -2516,3 +2516,52 @@ fn plain_string_text_without_a_language_is_a_typed_refusal() {
     apply(&mut xml, &intent, &selected, None).unwrap();
     assert!(xml.contains("<v8:lang>en</v8:lang>"), "{xml}");
 }
+
+#[test]
+fn local_string_single_language_clear_preserves_local_type_binding_and_header() {
+    let original = format!("<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type='d:LocalStringType'><d:item><d:lang>ru</d:lang><d:content>Текст</d:content></d:item></q:title>");
+    let doc = Document::parse(&original).unwrap();
+    let result = super::mltext_update(
+        &original,
+        Some(doc.root_element()),
+        "title",
+        &json!(""),
+        S,
+        Some("ru"),
+    )
+    .unwrap();
+    let doc = Document::parse(&result).unwrap();
+    let title = doc.root_element();
+    assert!(title.has_tag_name((S, "title")));
+    assert_eq!(title.attribute((X, "type")), Some("d:LocalStringType"));
+    assert_eq!(title.lookup_namespace_uri(Some("d")), Some(V));
+    assert!(result.starts_with(&format!(
+        "<q:title xmlns:q='{S}' xmlns:d='{V}' xmlns:i='{X}' i:type='d:LocalStringType'"
+    )));
+    assert!(title.children().all(|node| !node.has_tag_name((V, "item"))));
+    let again =
+        super::mltext_update(&result, Some(title), "title", &json!(""), S, Some("ru")).unwrap();
+    assert_eq!(
+        again, result,
+        "clearing an already empty local string is an exact no-op"
+    );
+}
+
+#[test]
+fn untyped_empty_local_string_still_acquires_its_required_type() {
+    for value in [json!(""), json!("Текст")] {
+        let original = format!("<title xmlns='{S}'/>");
+        let doc = Document::parse(&original).unwrap();
+        let result = super::mltext_update(
+            &original,
+            Some(doc.root_element()),
+            "title",
+            &value,
+            S,
+            Some("ru"),
+        )
+        .unwrap();
+        let doc = Document::parse(&result).unwrap();
+        assert_value_qname(doc.root_element(), V, "LocalStringType");
+    }
+}
