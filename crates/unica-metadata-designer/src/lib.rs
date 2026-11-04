@@ -23,6 +23,7 @@ pub mod functional_option;
 pub mod info;
 pub mod numerator_read;
 pub mod session_parameter_comment;
+pub mod ws_reference;
 pub mod wsdl_read;
 
 pub mod job_schedule;
