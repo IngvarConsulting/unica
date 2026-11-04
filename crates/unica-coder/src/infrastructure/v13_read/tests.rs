@@ -6,6 +6,7 @@ mod dcs_parameter_expression;
 mod defined_type_reference;
 mod external_artifact_alias;
 mod form;
+mod form_command_properties;
 mod form_conditional_appearance;
 mod form_item_bindings;
 mod form_support;
