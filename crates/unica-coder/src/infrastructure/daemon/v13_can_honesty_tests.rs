@@ -1968,6 +1968,7 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
                 unica_operations::recovery::NamedLookup::Missing
             }
         },
+        &|_| None,
     )
     .expect_err("the dataSet argument is retired");
     let actual = refusal
@@ -2361,6 +2362,7 @@ fn retired_dcs_container_arguments_route_next_to_the_structure_item() {
             &|_| None,
             &|_| None,
             &lookup,
+            &|_| None,
         )
         .expect_err("a retired DCS argument refuses before planning");
         let case = format!("{op} at {at}");

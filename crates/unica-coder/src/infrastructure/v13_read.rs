@@ -233,6 +233,58 @@ impl<'a> LogicalViewReadAuthority<'a> {
         self
     }
 
+    /// A capability comes from the same retained owner proof as its value,
+    /// never from a truncated property projection or a guessed object name.
+    pub(crate) fn style_item_color_observation(
+        &self,
+        at: &QualifiedAddress,
+    ) -> Result<Option<unica_metadata::style_color::StyleItemColor>, ViewError> {
+        let [owner] = at.segments() else {
+            return Ok(None);
+        };
+        if owner.kind() != NodeKind::StyleItem {
+            return Ok(None);
+        }
+        let Some(name) = owner.name() else {
+            return Ok(None);
+        };
+        let admitted = self.snapshot(at)?;
+        let canonical = self.canonical_address(at, &admitted)?;
+        let route = route_logical_address(&canonical, self.profile)
+            .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
+        let Some(target) = route.reader_metadata_path() else {
+            return Ok(None);
+        };
+        self.verify_registered_owner(target, &admitted)?;
+        let parent_version = self
+            .read
+            .configuration_root_version_literal(&|| self.read_checkpoint())?;
+        if unica_source_designer::format_profile::writable_profile_refusal(
+            "Configuration.xml",
+            parent_version.as_deref(),
+        )
+        .is_some()
+        {
+            return Ok(None);
+        }
+        let raw = self.read.metadata_descriptor(target)?;
+        self.read_checkpoint()?;
+        let Ok(text) = std::str::from_utf8(&raw) else {
+            return Ok(None);
+        };
+        let relative = unica_source_designer::layout::metadata_descriptor_relative(
+            target,
+            self.read.source_set_kind(),
+        )
+        .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        let observed =
+            unica_metadata_designer::style_color::StyleColorImage::parse(text, name, &relative)
+                .ok()
+                .map(|image| image.color());
+        self.read_checkpoint()?;
+        Ok(observed)
+    }
+
     pub(crate) fn object_borrowing(
         &self,
         at: &QualifiedAddress,
@@ -380,6 +432,22 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let path = self.identity_export_path(at)?.ok_or_else(|| {
             ViewError::new(RefusalCode::NotFound, "the logical node has no source file")
         })?;
+        if matches!(at.segments(), [owner, definition]
+            if owner.kind() == NodeKind::WsReference && definition.kind() == NodeKind::Definition)
+        {
+            let target = route
+                .reader_metadata_path()
+                .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "WSDL route has no owner"))?;
+            if !self
+                .read
+                .attached_resource_exists(target, "WSDefinition.xml")?
+            {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "the local WSDefinition.xml source file does not exist",
+                ));
+            }
+        }
         if route.reader() == LogicalReader::Form {
             let target = route
                 .reader_metadata_path()
@@ -1343,6 +1411,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
             return Ok(payload);
         }
         let kind = target.as_str().split('.').next().unwrap_or_default();
+        if kind == NodeKind::WsReference.as_str() {
+            return self
+                .read
+                .wsreference_payload(target, &mut || self.read_checkpoint());
+        }
         if kind == NodeKind::WebSocketClient.as_str() {
             let name = target.as_str().split('.').nth(1).unwrap_or_default();
             return Ok(identity_only_metadata_payload(kind, name));
@@ -1436,6 +1509,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
                             .strip_prefix(prefix)
                             .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
                     })
+                    || field
+                        .strip_prefix("collections.addressingAttributes")
+                        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
                     || (field.starts_with("collections.tabularSections[")
                         && field.contains("].standardAttributes"))
                     || local
@@ -2345,6 +2421,13 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
         let target_depth = target.as_str().split('.').count().div_ceil(2);
         let is_detail = at.segments().len() > target_depth;
         let path = match route.reader() {
+            LogicalReader::Metadata
+                if matches!(at.segments(), [owner, definition]
+                if owner.kind() == NodeKind::WsReference && definition.kind() == NodeKind::Definition) =>
+            {
+                self.read
+                    .attached_resource_export_path(target, "WSDefinition.xml")?
+            }
             LogicalReader::Metadata
                 if matches!(at.segments(), [owner, schedule]
                 if owner.kind() == NodeKind::ScheduledJob && schedule.kind() == NodeKind::Schedule) =>
