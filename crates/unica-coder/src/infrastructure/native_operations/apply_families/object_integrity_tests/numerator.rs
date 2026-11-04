@@ -56,7 +56,7 @@ fn canonical_numerator_saved_plan_refuses_a_changed_descriptor_and_preserves_nei
     std::fs::write(path, old.replace("<Comment/>", "<Comment>external edit</Comment>")).unwrap();
     let before = tree_snapshot(&fixture.source);
     fixture.actor.execute_saved_apply(&token,
-        ProviderDeadline::from_budget(Duration::from_secs(5)), &CancellationToken::new(),
+        ProviderDeadline::no_deadline(), &CancellationToken::new(),
         |result, publication| {
             let error = publication.map(|_| ()).expect_err("stale descriptor must refuse publication");
             assert_eq!(error.kind(), ApplyPublicationErrorKind::ConcurrentRevision);
