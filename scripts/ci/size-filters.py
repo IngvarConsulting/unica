@@ -107,6 +107,8 @@ MEASURED_MEDIUM_CASES = (
     # История данных: локально macOS arm64, 04.11.2026, 3.177 и 3.444 с.
     MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::data_history::data_history_catalog_preserves_neighbors_and_inactive_flags"),
     MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::data_history::data_history_register_preserves_neighbors_and_inactive_flags"),
+    # Документ: 4.475 с в локальном профиле queue, macOS arm64, 04.11.2026.
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::data_history::data_history_document_preserves_neighbors_and_inactive_flags"),
 )
 
 
