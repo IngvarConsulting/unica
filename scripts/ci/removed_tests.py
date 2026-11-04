@@ -32,6 +32,7 @@ import os
 import posixpath
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -48,7 +49,10 @@ TEST_FUNCTION = re.compile(
 
 
 def git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+    # Git writes manifests and sources as UTF-8 whatever the locale. Decoding
+    # here, not in `subprocess`, keeps a bad byte an error: a reader thread
+    # would swallow it and return no output at all (#2445).
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True).stdout.decode("utf-8")
 
 
 _spec = importlib.util.spec_from_file_location("rust_platform_boundary", Path(__file__).with_name("check-rust-platform-boundary.py"))
@@ -358,7 +362,14 @@ def main() -> int:
         description = event_description()
         if description is None:
             parser.error("give --description-file or --description outside a pull request run")
-    problems = check(args.repo_root, args.base, description, args.head)
+    try:
+        problems = check(args.repo_root, args.base, description, args.head)
+    except subprocess.CalledProcessError as error:
+        # No verdict: git could not read the revisions, so nothing was checked.
+        detail = error.stderr.decode("utf-8", "replace").strip()
+        message = f"{shlex.join(error.cmd)} failed with exit code {error.returncode}: {detail}"
+        print(f"::error::{message}" if os.environ.get("GITHUB_ACTIONS") else message, file=sys.stderr)
+        return 2
     for problem in problems:
         print(f"::error::{problem}" if os.environ.get("GITHUB_ACTIONS") else problem)
     if not problems:

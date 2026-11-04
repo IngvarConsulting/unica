@@ -1,7 +1,5 @@
 use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService};
 use crate::domain::apply::OperationDescriptorExt;
-use crate::domain::apply::OperationRegistryExt;
-use crate::domain::apply::RetiredOperationExt;
 use crate::domain::apply::SourceSetWriteSupport;
 use crate::domain::engine::MissingEngineRefusal;
 use unica_work_control::provider_deadline::ProviderDeadline;
@@ -25,7 +23,7 @@ use super::v13_call_graph::{
     unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
 use super::v13_read_modes::{
-    attach_can, operation_node_with, search_scope_route, source_backed, SearchScopeRoute,
+    attach_can_with_color, operation_node_with, search_scope_route, source_backed, SearchScopeRoute,
 };
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
@@ -470,12 +468,18 @@ impl CanonicalV13ReadService {
                 &admission, &binding, item,
             )
         };
+        let color = |at: &QualifiedAddress| {
+            crate::infrastructure::native_operations::apply_families::staged_style_item_color(
+                &admission, &binding, at,
+            )
+        };
         if let Err(refusal) = preflight_apply_operations_with(
             &request,
             traits,
             &template_format,
             &form_item,
             &member_path,
+            &color,
         ) {
             return *refusal;
         }
@@ -990,6 +994,26 @@ impl CanonicalV13ReadService {
             if let Some(node) = data.as_object_mut() {
                 declare_method_branches(node);
             }
+            // Read failures are not evidence that this Color profile is absent.
+            // Resolve the fallible observation before passing a pure lookup to Can.
+            let observed_color = if address.segments().len() == 1
+                && address.segments()[0].kind() == NodeKind::StyleItem
+                && address.segments()[0].name().is_some()
+            {
+                source
+                    .logical_view_read_authority(cancellation)
+                    .map_err(|message| ViewError::detailed(RefusalDetail::ProviderAbsent, message))?
+                    .style_item_color_observation(&address)?
+            } else {
+                None
+            };
+            let color = |at: &QualifiedAddress| {
+                if at == &address {
+                    observed_color
+                } else {
+                    None
+                }
+            };
             match operation.as_deref() {
                 Some(op) => {
                     let owner_at = data
@@ -1010,8 +1034,8 @@ impl CanonicalV13ReadService {
                             .as_str()
                             .map(unica_forms::FormItemRole::from_tag)
                     };
-                    operation_node_with(&data, op, &owner_at, can_context, &ancestor_role).map_err(
-                        |error| {
+                    operation_node_with(&data, op, &owner_at, can_context, &ancestor_role, &color)
+                        .map_err(|error| {
                             let mut refused = ViewError::new(error.code(), error.to_string());
                             // Снятая операция ведёт к контракту заменившей (#1465).
                             refused.set_next(match error.next() {
@@ -1027,11 +1051,10 @@ impl CanonicalV13ReadService {
                                 }),
                             });
                             refused
-                        },
-                    )
+                        })
                 }
                 None => {
-                    attach_can(&mut data, can_context);
+                    attach_can_with_color(&mut data, can_context, &color);
                     Ok(data)
                 }
             }
@@ -3077,7 +3100,7 @@ impl CanonicalV13ReadService {
         // Кандидаты на присоединённые файлы подтверждаются тем же читателем,
         // что и view: регистрацию владельца и точный ресурс нельзя вывести
         // только из правдоподобной раскладки.
-        if matches!(entry.kind(), "Module" | "Metadata")
+        if matches!(entry.kind(), "Module" | "Metadata" | "Definition")
             || entry
                 .placed_path()
                 .is_some_and(|path| path.ends_with("/Ext/Form.xml"))
@@ -5372,6 +5395,7 @@ pub(super) fn preflight_apply_operations(
         template_format,
         &|_| None,
         &unica_operations::recovery::no_member_lookup,
+        &|_| None,
     )
 }
 
@@ -5384,6 +5408,7 @@ pub(super) fn preflight_apply_operations_with(
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
     members: unica_operations::recovery::MemberPathLookup<'_>,
+    color: &dyn Fn(&QualifiedAddress) -> Option<unica_metadata::style_color::StyleItemColor>,
 ) -> Result<(), Box<DomainResult>> {
     let registry = crate::domain::apply::operation_registry();
     for (index, operation) in request.ops().iter().enumerate() {
@@ -5397,6 +5422,7 @@ pub(super) fn preflight_apply_operations_with(
                     source,
                     template_format,
                     form_item,
+                    color,
                 )));
             }
             return Err(Box::new(with_node_dictionary(
@@ -5452,11 +5478,14 @@ pub(super) fn preflight_apply_operations_with(
             if !redirect.listing && !admits_form_item_at(descriptor, &redirect.at, form_item) {
                 if let Some(target) = crate::domain::apply::operation_site(&redirect.at, source)
                     .and_then(|target| {
-                        descriptor.nearest_applicable_ancestor_with(
+                        descriptor.nearest_ancestor_with_observations(
                             &target,
                             registry.context(),
-                            template_format,
-                            form_item,
+                            &crate::domain::apply::observation_lookup_with_color(
+                                template_format,
+                                form_item,
+                                color,
+                            ),
                         )
                     })
                 {
@@ -5626,11 +5655,10 @@ pub(super) fn preflight_apply_operations_with(
             target_kind.as_str(),
             operation.at()
         );
-        let nearest = registry.nearest_applicable_ancestor_with(
+        let nearest = registry.nearest_ancestor_with_observations(
             operation.name(),
             &site,
-            template_format,
-            form_item,
+            &crate::domain::apply::observation_lookup_with_color(template_format, form_item, color),
         );
         let refusal = match nearest {
             Some((descriptor, target)) => with_operation_dictionary(
@@ -5703,15 +5731,15 @@ fn retired_operation_refusal(
     source: unica_source_contract::context::SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
+    color: &dyn Fn(&QualifiedAddress) -> Option<unica_metadata::style_color::StyleItemColor>,
 ) -> DomainResult {
     let location = Some(format!("ops[{index}].op"));
     let site = crate::domain::apply::operation_site(at, source);
     let target = site.as_ref().and_then(|site| {
-        retired.replacement_target(
+        retired.replacement_with_observations(
             site,
             crate::domain::apply::operation_registry().context(),
-            template_format,
-            form_item,
+            &crate::domain::apply::observation_lookup_with_color(template_format, form_item, color),
         )
     });
     let replacement = retired.descriptor();
@@ -9246,7 +9274,7 @@ mod tests {
                 <= crate::application::v13::view::PREFERRED_PAGE_BYTES
         );
         let mut enriched = data;
-        super::attach_can(
+        super::super::v13_read_modes::attach_can(
             &mut enriched,
             super::super::v13_read_modes::configuration_context(),
         );

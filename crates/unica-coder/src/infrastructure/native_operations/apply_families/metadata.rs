@@ -58,7 +58,10 @@ pub(crate) fn plan_metadata_batch_owned_for_test(
     ),
     ApplyPlanError,
 > {
-    let effects = unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml), &mut staged.proposal(), &authority, operations)?;
+    let code_type_plan =
+        unica_metadata_designer::planner::PredefinedCodeTypePlan::from_operations(operations);
+    let effects = unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml), &mut staged.proposal(), &authority, operations, &code_type_plan)?;
+    code_type_plan.validate_final(&mut staged.proposal(), authority.source_kind())?;
     Ok((staged, effects))
 }
 
@@ -3500,66 +3503,90 @@ mod tests {
 
     #[test]
     fn command_lifecycle_refuses_links_at_the_source_or_destination_module_route() {
+        assert_command_module_link_refusal(true, false);
+    }
+
+    #[test]
+    fn command_lifecycle_refuses_links_at_the_source_or_destination_module_route_destination_file()
+    {
+        assert_command_module_link_refusal(false, false);
+    }
+
+    #[test]
+    fn command_lifecycle_refuses_links_at_the_source_or_destination_module_route_source_directory()
+    {
+        assert_command_module_link_refusal(true, true);
+    }
+
+    #[test]
+    fn command_lifecycle_refuses_links_at_the_source_or_destination_module_route_destination_directory(
+    ) {
+        assert_command_module_link_refusal(false, true);
+    }
+
+    fn assert_command_module_link_refusal(source: bool, directory: bool) {
         use unica_workspace::test_support::{
             create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
             FileLinkFixtureOutcome,
         };
-        for (source, directory) in [(true, false), (false, false), (true, true), (false, true)] {
-            let fixture = command_fixture();
-            let original = fixture.disk_bytes();
-            let outside = tempfile::tempdir().unwrap();
-            let foreign = outside.path().join("CommandModule.bsl");
-            std::fs::write(&foreign, b"foreign module").unwrap();
-            let name = if source { "Refresh" } else { "Updated" };
-            let ext = fixture
-                .binding
-                .source_root()
-                .join(format!("Documents/Order/Commands/{name}/Ext"));
-            if source {
-                if directory {
-                    std::fs::rename(&ext, ext.with_file_name("ExtSaved")).unwrap();
-                } else {
-                    std::fs::remove_file(ext.join("CommandModule.bsl")).unwrap();
-                }
+        let fixture = command_fixture();
+        let original = fixture.disk_bytes();
+        let outside = tempfile::tempdir().unwrap();
+        let foreign = outside.path().join("CommandModule.bsl");
+        std::fs::write(&foreign, b"foreign module").unwrap();
+        let name = if source { "Refresh" } else { "Updated" };
+        let ext = fixture
+            .binding
+            .source_root()
+            .join(format!("Documents/Order/Commands/{name}/Ext"));
+        if source {
+            if directory {
+                std::fs::rename(&ext, ext.with_file_name("ExtSaved")).unwrap();
             } else {
-                std::fs::create_dir_all(ext.parent().unwrap()).unwrap();
-                if !directory {
-                    std::fs::create_dir(&ext).unwrap();
-                }
+                std::fs::remove_file(ext.join("CommandModule.bsl")).unwrap();
             }
-            let outcome = if directory {
-                create_directory_link_fixture_for_test(outside.path(), &ext)
-            } else {
-                create_file_link_fixture_for_test(&foreign, ext.join("CommandModule.bsl"))
+        } else {
+            std::fs::create_dir_all(ext.parent().unwrap()).unwrap();
+            if !directory {
+                std::fs::create_dir(&ext).unwrap();
             }
-            .unwrap();
-            if outcome != FileLinkFixtureOutcome::Created {
-                continue;
-            }
-            let error = plan_all(&fixture, &[("command.set", json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}))]).unwrap_err();
-            use unica_source_contract::proposal::ApplyStagingErrorKind;
-            assert!(
-                matches!(
-                    error.kind(),
-                    ApplyPlanErrorKind::Staging(
-                        ApplyStagingErrorKind::ContainmentIdentity
-                            | ApplyStagingErrorKind::UnsupportedProvider
-                    )
-                ),
-                "{source}, {directory}: {error}"
-            );
-            assert!(error.to_string().contains("link"), "{error}");
-            assert_eq!(
-                error.path(),
-                Some(if source {
-                    "ops[0].args.at"
-                } else {
-                    "ops[0].args.values.newName"
-                })
-            );
-            assert_eq!(fixture.disk_bytes(), original);
-            assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign module");
         }
+        let outcome = if directory {
+            create_directory_link_fixture_for_test(outside.path(), &ext)
+        } else {
+            create_file_link_fixture_for_test(&foreign, ext.join("CommandModule.bsl"))
+        }
+        .unwrap();
+        if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "command module link fixture is unavailable",
+            );
+            return;
+        }
+        let error = plan_all(&fixture, &[("command.set", json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}))]).unwrap_err();
+        use unica_source_contract::proposal::ApplyStagingErrorKind;
+        assert!(
+            matches!(
+                error.kind(),
+                ApplyPlanErrorKind::Staging(
+                    ApplyStagingErrorKind::ContainmentIdentity
+                        | ApplyStagingErrorKind::UnsupportedProvider
+                )
+            ),
+            "{source}, {directory}: {error}"
+        );
+        assert!(error.to_string().contains("link"), "{error}");
+        assert_eq!(
+            error.path(),
+            Some(if source {
+                "ops[0].args.at"
+            } else {
+                "ops[0].args.values.newName"
+            })
+        );
+        assert_eq!(fixture.disk_bytes(), original);
+        assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign module");
     }
 
     const KINDS_ENUM_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">

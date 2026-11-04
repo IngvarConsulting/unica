@@ -826,6 +826,49 @@ fn descriptor_node(
 }
 
 /// Формат макета по его описанию в стадированном состоянии допуска.
+/// Recovery uses the same closed staged preimage as the final Color writer.
+pub(crate) fn staged_style_item_color(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    at: &unica_address::address::QualifiedAddress,
+) -> Option<unica_metadata::style_color::StyleItemColor> {
+    let [owner] = at.segments() else {
+        return None;
+    };
+    if owner.kind() != unica_address::address::NodeKind::StyleItem
+        || at.source_set() != binding.source_set_name()
+    {
+        return None;
+    }
+    let name = owner.name()?;
+    let (address, covered) = descriptor_node(at)?;
+    if covered != 1 {
+        return None;
+    }
+    let relative = unica_source_designer::layout::metadata_descriptor_relative(
+        &address,
+        binding.source_kind(),
+    )
+    .ok()?;
+    let mut staged = admission.staged_state().ok()?;
+    let parent = staged
+        .read(std::path::Path::new("Configuration.xml"))
+        .ok()??;
+    let raw = staged.read(&relative).ok()??;
+    let text = std::str::from_utf8(&raw)
+        .ok()?
+        .trim_start_matches('\u{feff}');
+    unica_metadata_designer::style_color::StyleColorImage::parse_registered(
+        text,
+        name,
+        &relative,
+        &parent,
+        binding.source_kind(),
+    )
+    .ok()
+    .map(|image| image.color())
+}
+
 pub(crate) fn staged_template_format(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
@@ -1089,7 +1132,14 @@ pub(crate) fn plan_hidden_v13_apply(
         )
         .at_path("ops"));
     }
+    let code_type_plan = unica_metadata_designer::planner::PredefinedCodeTypePlan::from_operations(
+        parsed.iter().filter_map(|operation| match operation {
+            ParsedApplyOperation::Metadata(operation) => Some(operation),
+            _ => None,
+        }),
+    );
     let mut provisional = Vec::new();
+    let mut code_support_warnings = Vec::new();
     let mut xdto_validation = unica_xdto_designer::planner::XdtoValidationLedger::default();
     let mut borrowing = Vec::new();
     let mut cursor = 0;
@@ -1134,8 +1184,12 @@ pub(crate) fn plan_hidden_v13_apply(
                     &operations,
                     cursor,
                 )?;
+                code_support_warnings.extend(planned.support_warnings);
                 provisional.extend(batch_effects_as_provisional(
-                    &before, &staged, planned, cursor,
+                    &before,
+                    &staged,
+                    planned.effects,
+                    cursor,
                 ));
             }
             ParsedApplyOperation::Event(_) => {
@@ -1197,7 +1251,7 @@ pub(crate) fn plan_hidden_v13_apply(
                     .collect::<Vec<_>>();
                 let authority = admission.metadata_planning_authority(binding)?;
                 let planned =
-                    unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml),&mut staged.proposal(), &authority, &operations)?;
+                    unica_metadata_designer::planner::plan_metadata_batch(&crate::infrastructure::native_operations::meta::template_source::MetadataPlanningReadAdapter::new(&authority),unica_metadata_designer::planner::TemplateSeedEmitter(unica_templates_designer::mxl_root::empty_spreadsheet_document_xml),&mut staged.proposal(), &authority, &operations, &code_type_plan)?;
                 provisional.extend(planned);
             }
             ParsedApplyOperation::FormResource(_) => {
@@ -1234,6 +1288,7 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
+    code_type_plan.validate_final(&mut staged.proposal(), binding.source_kind())?;
     unica_metadata_designer::planner::validate_final_object_integrity(
         &mut staged.proposal(),
         binding.source_set_name(),
@@ -1292,6 +1347,9 @@ pub(crate) fn plan_hidden_v13_apply(
     )?;
     let legacy_inline = collapse_legacy_inline_registrations(&mut staged, binding)?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
+    for warning in code_support_warnings {
+        warning.append_if_changed(&staged.planned_changes(), &mut effects);
+    }
     // A plan whose operations cancel out edits nothing protected.
     if let Some(warning) = support_warning.filter(|_| !staged.planned_changes().is_empty()) {
         effects.push_warning(warning);
@@ -1311,6 +1369,9 @@ pub(crate) fn plan_hidden_v13_apply(
     effects.set_borrowing(borrowing);
     Ok((staged, effects))
 }
+
+#[cfg(test)]
+mod calculation_code_type_tests;
 
 #[cfg(test)]
 mod inherited_content_tests;
@@ -1349,12 +1410,21 @@ mod tests {
         }
 
         pub(super) fn new() -> Self {
+            Self::with_kind(SourceSetKind::Configuration)
+        }
+
+        pub(super) fn with_kind(kind: SourceSetKind) -> Self {
             let root = tempfile::tempdir().unwrap();
             let source = root.path().join("src");
             std::fs::create_dir_all(source.join("Documents")).unwrap();
+            let project_kind = match kind {
+                SourceSetKind::Configuration => "CONFIGURATION",
+                SourceSetKind::Extension => "EXTENSION",
+                other => panic!("unsupported fixture kind {other:?}"),
+            };
             std::fs::write(
                 root.path().join("v8project.yaml"),
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
+                format!("format: DESIGNER\nsource-set:\n  - name: main\n    type: {project_kind}\n    path: src\n"),
             )
             .unwrap();
             std::fs::write(
@@ -1390,7 +1460,7 @@ mod tests {
                 [WorkspaceSourceSetInput::new(
                     "main",
                     &source,
-                    SourceSetKind::Configuration,
+                    kind,
                     SourceFormat::PlatformXml,
                     SourceProfile::platform_xml_8_3_27_format_2_20(),
                 )],

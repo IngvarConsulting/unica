@@ -424,6 +424,12 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | Server
         | ServerCall => kind == CommonModule,
         CreateTaskInPrivilegedMode => kind == BusinessProcess,
+        FullTextSearch
+        | SearchStringModeOnInputByString
+        | FullTextSearchOnInputByString
+        | ChoiceDataGetModeOnInputByString
+        | CreateOnInput
+        | ChoiceHistoryOnInput => matches!(kind, Catalog | Document),
         Correspondence | PeriodAdjustmentLength => kind == AccountingRegister,
         Description | Predefined | RestartCountOnFailure | RestartIntervalOnFailure | Use => {
             kind == ScheduledJob
