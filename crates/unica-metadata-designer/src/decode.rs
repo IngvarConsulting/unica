@@ -1069,7 +1069,7 @@ pub fn parse_properties(
     .ok_or_else(|| {
         ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
-            "properties require the configuration root, a named top-level metadata object, role or subsystem",
+            "properties require the configuration root, a named top-level metadata object, role or subsystem, or a nested subsystem",
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
@@ -1107,7 +1107,18 @@ pub fn parse_properties(
             ("Roles", DescriptorPropertyChanges::Role(values))
         }
         unica_metadata::property_input::PropertiesIntent::Subsystem(values) => {
-            ("Subsystems", DescriptorPropertyChanges::Subsystem(values))
+            // A nested subsystem lives under each owner's own `Subsystems`
+            // directory and is named by its whole address.
+            let (address, relative) =
+                crate::resource_planner::subsystem_descriptor_relative(&target, op_index)?;
+            return Ok(MetadataPlanKind::DescriptorProperties {
+                relative,
+                name: address
+                    .strip_prefix("Subsystem.")
+                    .unwrap_or(&address)
+                    .to_string(),
+                changes: DescriptorPropertyChanges::Subsystem(values),
+            });
         }
         unica_metadata::property_input::PropertiesIntent::Configuration(values) => {
             return Ok(MetadataPlanKind::DescriptorProperties {

@@ -51,9 +51,6 @@ use unica_source_designer::owner::{
     prove_already_read_metadata_owner, prove_already_read_source_set_owner,
     PlatformXmlSourceSetOwnerEvidence,
 };
-use unica_source_designer::probe::{
-    classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind,
-};
 use unica_templates_designer::mxl_codec::parse_mxl_info_xml;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
@@ -130,12 +127,20 @@ pub(crate) struct ProviderReadAuthority {
     source_set_kind: SourceSetKind,
     root: Arc<SourceDirectory>,
     snapshot_identity: String,
+    /// A physical-path lookup may prove one external owner without enumerating
+    /// unrelated artifacts. It never supplies a partial inventory payload.
+    point_external_artifact:
+        Option<unica_source_designer::external_artifact::ExternalArtifactBinding>,
     /// Parsed root artifacts retained by the workspace actor across calls.
     artifacts: Arc<RegistrationCache>,
     /// The parsed `Ext/ParentConfigurations.bin` marker. One authority serves
     /// one admitted operation, so the marker is read and parsed once instead
     /// of once per owner descriptor that asks for its support state.
     support_state: std::sync::Mutex<Option<RetainedSupportState>>,
+    /// Completed physical/logical external bindings for this admitted operation.
+    external_artifacts: std::sync::Mutex<
+        Option<Arc<unica_source_designer::external_artifact::ExternalArtifactInventory>>,
+    >,
     /// Open editor buffers of the session this read serves; a module with a
     /// buffer is read from it, never from its file.
     documents: Option<SessionDocuments>,
@@ -179,8 +184,10 @@ impl ProviderReadAuthority {
             source_set_kind,
             root,
             snapshot_identity,
+            point_external_artifact: None,
             artifacts: Arc::new(RegistrationCache::default()),
             support_state: std::sync::Mutex::new(None),
+            external_artifacts: std::sync::Mutex::new(None),
             documents: None,
             #[cfg(test)]
             module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
@@ -191,6 +198,19 @@ impl ProviderReadAuthority {
             #[cfg(test)]
             support_state_reads: std::sync::atomic::AtomicUsize::new(0),
         }
+    }
+
+    pub(crate) fn with_external_point_binding(
+        mut self,
+        binding: unica_source_designer::external_artifact::ExternalArtifactBinding,
+    ) -> Self {
+        self.point_external_artifact = Some(binding);
+        self
+    }
+    pub(crate) fn point_external_owner_matches(&self, kind: &str, name: &str) -> Option<bool> {
+        self.point_external_artifact
+            .as_ref()
+            .map(|binding| binding.kind() == kind && binding.name() == name)
     }
 
     /// Shares the actor-retained root artifacts of this source set.
@@ -492,113 +512,116 @@ impl ProviderReadAuthority {
             .is_ok_and(|metadata| metadata.len() > CONFIGURATION_STREAMING_THRESHOLD_BYTES)
     }
 
+    fn external_inventory_with_checkpoint(
+        &self,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Arc<unica_source_designer::external_artifact::ExternalArtifactInventory>, ViewError>
+    {
+        checkpoint()?;
+        if let Some(inventory) = self
+            .external_artifacts
+            .lock()
+            .map_err(|_| {
+                ViewError::detailed(
+                    RefusalDetail::CachePoisoned,
+                    "external inventory cache is poisoned",
+                )
+            })?
+            .as_ref()
+            .cloned()
+        {
+            return Ok(inventory);
+        }
+        let inventory = Arc::new(
+            crate::infrastructure::external_artifact_inventory::read_inventory(
+                &self.root,
+                self.source_set_kind,
+                checkpoint,
+            )?,
+        );
+        checkpoint()?;
+        // An empty root cannot establish an external source inventory. Do not
+        // retain that negative observation as a successful owner mapping.
+        if inventory.is_empty() {
+            return Ok(inventory);
+        }
+        *self.external_artifacts.lock().map_err(|_| {
+            ViewError::detailed(
+                RefusalDetail::CachePoisoned,
+                "external inventory cache is poisoned",
+            )
+        })? = Some(Arc::clone(&inventory));
+        Ok(inventory)
+    }
+
     fn external_inventory_payload(
         &self,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
-        let expected_kind = match self.source_set_kind {
-            SourceSetKind::ExternalProcessor => "ExternalDataProcessor",
-            SourceSetKind::ExternalReport => "ExternalReport",
-            SourceSetKind::Configuration | SourceSetKind::Extension => {
-                return Err(ViewError::detailed(
-                    RefusalDetail::WrongSourceKind,
-                    "external inventory requested for a configuration source set",
-                ));
-            }
-        };
-        let names = self
-            .root
-            .read_immediate_names_with_limit(None, || {
-                checkpoint().map_err(|error| {
-                    std::io::Error::new(std::io::ErrorKind::Interrupted, error.to_string())
-                })
-            })
-            .map_err(|error| match checkpoint() {
-                Err(checkpoint_error) => checkpoint_error,
-                Ok(()) => ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
-            })?;
-        let mut registered = std::collections::BTreeSet::new();
-        let mut owner_path_mismatches = Vec::new();
-        for name in names {
-            checkpoint()?;
-            let path = Path::new(&name);
-            if path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_none_or(|extension| !extension.eq_ignore_ascii_case("xml"))
-            {
-                continue;
-            }
-            let relative = PathBuf::from(&name);
-            let bytes = self.read_relative_with_checkpoint(&relative, checkpoint)?;
-            checkpoint()?;
-            if path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value.eq_ignore_ascii_case("ConfigDumpInfo.xml"))
-                && classify_already_read_config_dump_info_xml(&bytes)
-                    == ConfigDumpInfoXmlKind::RuntimeSidecar
-            {
-                continue;
-            }
-            let evidence =
-                prove_already_read_source_set_owner(&relative, &bytes, self.source_set_kind)
-                    .map_err(|error| {
-                        ViewError::detailed(RefusalDetail::SourceUnreadable, error.message)
-                    })?;
-            if evidence.artifact_kind() != expected_kind {
-                return Err(ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    format!(
-                        "external descriptor `{}` has kind `{}`, expected `{expected_kind}`",
-                        relative.portable(),
-                        evidence.artifact_kind()
-                    ),
-                ));
-            }
-            let artifact_name = evidence.artifact_name().ok_or_else(|| {
-                ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    format!(
-                        "external descriptor `{}` has no non-empty Properties/Name",
-                        relative.portable()
-                    ),
-                )
-            })?;
-            if !registered.insert((expected_kind.to_string(), artifact_name.to_string())) {
-                return Err(ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    format!("external owner `{expected_kind}.{artifact_name}` is ambiguous"),
-                ));
-            }
-            if path.file_stem().and_then(|value| value.to_str()) != Some(artifact_name) {
-                owner_path_mismatches.push(format!(
-                    "external descriptor `{}` belongs to `{artifact_name}`",
-                    relative.portable()
-                ));
-            }
-        }
-        if registered.is_empty() {
+        let inventory = self.external_inventory_with_checkpoint(checkpoint)?;
+        if inventory.is_empty() {
             return Err(ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
                 "external source set has no valid top-level owner descriptors",
             ));
         }
-        if let Some(message) = owner_path_mismatches.into_iter().next() {
-            return Err(ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                message,
-            ));
-        }
-        checkpoint()?;
-        Ok(json!({
-            "format": "PlatformXml",
-            "name": self.source_set,
-            "registeredObjects": registered
-                .into_iter()
-                .map(|(kind, name)| json!({"kind": kind, "name": name}))
-                .collect::<Vec<_>>()
+        Ok(json!({"format":"PlatformXml","name":self.source_set,
+            "registeredObjects":inventory.iter().map(|binding|json!({"kind":binding.kind(),"name":binding.name()})).collect::<Vec<_>>()
         }))
+    }
+
+    fn external_physical_path(
+        &self,
+        target: &MetadataAddress,
+        canonical: PathBuf,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<PathBuf, ViewError> {
+        let (_, name, _) =
+            unica_source_designer::layout::external_owner_parts(target, self.source_set_kind)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        if let Some(binding) = &self.point_external_artifact {
+            if binding.name() != name {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "target is outside the point-proven external owner",
+                ));
+            }
+            checkpoint()?;
+            return binding
+                .physical_path(&canonical)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message));
+        }
+        let was_cached = self
+            .external_artifacts
+            .lock()
+            .map_err(|_| {
+                ViewError::detailed(
+                    RefusalDetail::CachePoisoned,
+                    "external inventory cache is poisoned",
+                )
+            })?
+            .is_some();
+        let mut inventory = self.external_inventory_with_checkpoint(checkpoint)?;
+        if was_cached && inventory.get(name).is_none() {
+            // Positive bindings do not prove the absence of a later descriptor.
+            // Refresh on a miss before deciding absent versus unreadable.
+            *self.external_artifacts.lock().map_err(|_| {
+                ViewError::detailed(
+                    RefusalDetail::CachePoisoned,
+                    "external inventory cache is poisoned",
+                )
+            })? = None;
+            inventory = self.external_inventory_with_checkpoint(checkpoint)?;
+        }
+        let binding = inventory.get(name).ok_or_else(|| {
+            ViewError::new(
+                RefusalCode::NotFound,
+                format!("external owner `{}` is not registered", target.as_str()),
+            )
+        })?;
+        binding
+            .physical_path(&canonical)
+            .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))
     }
 
     pub(crate) fn form_metadata_payload(
@@ -1147,6 +1170,61 @@ impl ProviderReadAuthority {
         let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
+        if evidence.artifact_kind() == "DocumentNumerator" {
+            match unica_metadata_designer::numerator_read::read(&descriptor) {
+                Ok(facts) => {
+                    let mut properties = payload["properties"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    properties.extend(facts.properties.into_iter().map(|property| {
+                        json!({
+                            "key": property.name,
+                            "value": property.value,
+                        })
+                    }));
+                    payload["properties"] = json!(properties);
+                    if !facts.unreadable.is_empty() {
+                        payload["unreadable"] = json!(facts
+                            .unreadable
+                            .into_iter()
+                            .map(|error| json!({
+                                "field": error.field,
+                                "message": error.message,
+                            }))
+                            .collect::<Vec<_>>());
+                    }
+                }
+                Err(message) => {
+                    payload["unreadable"] = json!([{
+                        "field": "properties",
+                        "message": message,
+                    }])
+                }
+            }
+        }
+        if evidence.artifact_kind() == "SessionParameter" {
+            match unica_metadata_designer::session_parameter_comment::read_comment(&descriptor) {
+                Ok(Some(comment)) => {
+                    let property = json!({
+                        "key": "Comment",
+                        "value": unica_metadata::MetaObservedPropertyValue::Text { value: comment },
+                    });
+                    if let Some(properties) = payload["properties"].as_array_mut() {
+                        properties.push(property);
+                    } else {
+                        payload["properties"] = json!([property]);
+                    }
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    payload["unreadable"] = json!([{
+                        "field": "properties.Comment",
+                        "message": message,
+                    }]);
+                }
+            }
+        }
         if evidence.artifact_kind() == "StyleItem" {
             unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
@@ -1498,7 +1576,13 @@ impl ProviderReadAuthority {
                 .entry(target.as_str().to_string())
                 .or_default() += 1;
         }
-        let relative = self.metadata_descriptor_relative(target)?;
+        let canonical = shared_metadata_descriptor_relative(target, self.source_set_kind)
+            .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        let relative = if self.is_external_source_set() {
+            self.external_physical_path(target, canonical, checkpoint)?
+        } else {
+            canonical
+        };
         self.read_optional_relative_with_checkpoint(&relative, checkpoint)?
             .ok_or_else(|| {
                 ViewError::new(
@@ -2016,8 +2100,13 @@ impl ProviderReadAuthority {
     }
 
     fn metadata_descriptor_relative(&self, target: &MetadataAddress) -> Result<PathBuf, ViewError> {
-        shared_metadata_descriptor_relative(target, self.source_set_kind)
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+        let canonical = shared_metadata_descriptor_relative(target, self.source_set_kind)
+            .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        if self.is_external_source_set() {
+            self.external_physical_path(target, canonical, &mut || Ok(()))
+        } else {
+            Ok(canonical)
+        }
     }
 
     fn attached_resource_relative(
@@ -2025,13 +2114,24 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
         resource: &str,
     ) -> Result<PathBuf, ViewError> {
-        shared_attached_resource_relative(target, resource, self.source_set_kind)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
+        let canonical =
+            shared_attached_resource_relative(target, resource, self.source_set_kind)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        if self.is_external_source_set() {
+            self.external_physical_path(target, canonical, &mut || Ok(()))
+        } else {
+            Ok(canonical)
+        }
     }
 
     fn module_relative(&self, target: &MetadataAddress) -> Result<PathBuf, ViewError> {
-        shared_module_relative(target, self.source_set_kind)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
+        let canonical = shared_module_relative(target, self.source_set_kind)
+            .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        if self.is_external_source_set() {
+            self.external_physical_path(target, canonical, &mut || Ok(()))
+        } else {
+            Ok(canonical)
+        }
     }
 
     fn is_external_source_set(&self) -> bool {

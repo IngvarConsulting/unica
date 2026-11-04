@@ -47,6 +47,16 @@ pub trait BslToolClient: Send + Sync {
     ) -> Result<McpToolOutput, String> {
         self.call(tool, context, arguments, timeout, cancellation)
     }
+    /// A caller-owned cutoff, including absence, over the prepared service route.
+    fn call_before(
+        &self,
+        tool: &'static str,
+        context: &CodeIntelligenceContext,
+        arguments: Value,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        yields: bool,
+    ) -> Result<McpToolOutput, String>;
 }
 
 pub struct WorkspaceBslToolClient {
@@ -84,6 +94,27 @@ impl BslToolClient for WorkspaceBslToolClient {
             &context.source_root.path,
             WorkspaceServiceBslCall::new(tool, arguments, timeout, timeout).yielding(),
             cancellation,
+        )
+    }
+    fn call_before(
+        &self,
+        tool: &'static str,
+        context: &CodeIntelligenceContext,
+        arguments: Value,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+        yields: bool,
+    ) -> Result<McpToolOutput, String> {
+        WorkspaceServiceManager::new((self.environment)()).call_bsl_mcp_before(
+            &context.workspace,
+            &context.source_root.path,
+            unica_analysis_services::protocol::PreparedBslCall {
+                tool_name: tool.to_owned(),
+                tool_args: arguments,
+                yields,
+            },
+            cancellation,
+            deadline,
         )
     }
 }

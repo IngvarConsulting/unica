@@ -1,0 +1,143 @@
+{
+  "id": "S-1524-external-alias-batch-lines",
+  "issue": 1524,
+  "area": "Навигация по исходникам",
+  "task": "Получить адреса строк модуля внешней обработки при несовпадающем имени файла и повреждённом соседнем XML; сохранить порядок, повтор и локальный отказ строки за концом файла",
+  "workspace": "tests/fixtures/acceptance/workspace-external-alias-batch",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "f0": {
+          "file": ".gitattributes",
+          "kind": "sha256"
+        },
+        "f1": {
+          "file": ".gitignore",
+          "kind": "sha256"
+        },
+        "f2": {
+          "file": "README.md",
+          "kind": "sha256"
+        },
+        "f3": {
+          "file": "epf/broken.xml",
+          "kind": "sha256"
+        },
+        "f4": {
+          "file": "epf/source/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "f5": {
+          "file": "epf/source.xml",
+          "kind": "sha256"
+        },
+        "f6": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "epf/source/Ext/ObjectModule.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "paths": [
+          "epf/source/Ext/ObjectModule.bsl",
+          "epf/source/Ext/ObjectModule.bsl:1",
+          "epf/source/Ext/ObjectModule.bsl:3",
+          "epf/source/Ext/ObjectModule.bsl:99",
+          "epf/source/Ext/ObjectModule.bsl:1"
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object.Method.Probe"
+        },
+        {
+          "pointer": "/data/items/1/line",
+          "eq": "inMethod"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object"
+        },
+        {
+          "pointer": "/data/items/2/line",
+          "eq": "outsideMethod"
+        },
+        {
+          "pointer": "/data/items/3/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data/items/4/at",
+          "eq": "epf:ExternalDataProcessor.SyntheticProcessor.Module.Object.Method.Probe"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": ".gitattributes",
+          "eq": "$capture.f0"
+        },
+        {
+          "kind": "sha256",
+          "path": ".gitignore",
+          "eq": "$capture.f1"
+        },
+        {
+          "kind": "sha256",
+          "path": "README.md",
+          "eq": "$capture.f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/broken.xml",
+          "eq": "$capture.f3"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source/Ext/ObjectModule.bsl",
+          "eq": "$capture.f4"
+        },
+        {
+          "kind": "sha256",
+          "path": "epf/source.xml",
+          "eq": "$capture.f5"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.f6"
+        }
+      ]
+    }
+  ]
+}

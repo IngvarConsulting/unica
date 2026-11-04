@@ -2507,6 +2507,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "unica-bsl-applied"
+version = "0.15.0-rc.1"
+dependencies = [
+ "unica-bsl-types",
+]
+
+[[package]]
 name = "unica-bsl-parser"
 version = "0.15.0-rc.1"
 dependencies = [

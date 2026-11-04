@@ -52,6 +52,9 @@ impl AttachedPathResource {
             return match parts {
                 [_, "forms", _, "ext", "form.xml"] => Some(Self::Form),
                 [_, "forms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
+                [_, "ext", "objectmodule.bsl"] | [_, "commands", _, "ext", "commandmodule.bsl"] => {
+                    Some(Self::RoleModule)
+                }
                 _ => None,
             };
         }
@@ -649,7 +652,7 @@ impl WorkspaceFindDirectoryBuilder {
                 for entry in
                     matching_names(source.root, name, physical_name(0), deadline, cancellation)?
                 {
-                    let Some(stem) = entry.to_str().and_then(|name| name.strip_suffix(".xml"))
+                    let Some(_stem) = entry.to_str().and_then(|name| name.strip_suffix(".xml"))
                     else {
                         continue;
                     };
@@ -666,25 +669,27 @@ impl WorkspaceFindDirectoryBuilder {
                             SourceEntry::RegularFile(file) => file,
                             _ => return Err(unsafe_layout_entry()),
                         };
-                    let (_, synonym) = require_target_identity(self.read_target_identity(
-                        &file,
-                        &relative,
-                        source,
-                        kind.as_str(),
-                        Some(stem),
-                        deadline,
-                        cancellation,
-                    )?)?;
+                    let (logical_name, synonym) =
+                        require_target_identity(self.read_target_identity(
+                            &file,
+                            &relative,
+                            source,
+                            kind.as_str(),
+                            None,
+                            deadline,
+                            cancellation,
+                        )?)?;
                     add_path_match(
                         located,
                         find_document(
                             source,
-                            &format!("{}:{}.{stem}", source.name, kind.as_str()),
+                            &format!("{}:{}.{}", source.name, kind.as_str(), logical_name),
                             kind.as_str(),
-                            stem,
+                            &logical_name,
                             synonym.as_deref(),
                             &relative,
-                        )?,
+                        )?
+                        .with_owner_descriptor(path_text(&relative)),
                     )?;
                 }
             }
@@ -917,16 +922,18 @@ impl WorkspaceFindDirectoryBuilder {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(child_read_error(error)),
         }
-        add_path_match(
-            located,
-            FindDocument::new(
-                at,
-                if is_module { "Module" } else { "Form" },
-                owner.at(),
-                Vec::new(),
-            )
-            .with_path(relative),
+        let descriptor_witness = owner.owner_descriptor().map(str::to_string);
+        let mut document = FindDocument::new(
+            at,
+            if is_module { "Module" } else { "Form" },
+            owner.at(),
+            Vec::new(),
         )
+        .with_path(relative);
+        if let Some(descriptor) = descriptor_witness {
+            document = document.with_owner_descriptor(descriptor);
+        }
+        add_path_match(located, document)
     }
 
     fn locate_role_module_path(
@@ -964,6 +971,30 @@ impl WorkspaceFindDirectoryBuilder {
         let owner_address =
             QualifiedAddress::parse(owner.at()).map_err(|_| unsafe_layout_entry())?;
         let owner_address = owner_address.form_metadata_owner().unwrap_or(owner_address);
+        let binding = if matches!(
+            source.kind,
+            SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
+        ) {
+            let root_owner = owner_address
+                .segments()
+                .first()
+                .and_then(|part| part.name())
+                .ok_or_else(unsafe_layout_entry)?;
+            let descriptor = owner
+                .owner_descriptor()
+                .or_else(|| owner.placed_path())
+                .ok_or_else(unsafe_layout_entry)?;
+            Some(
+                unica_source_designer::external_artifact::ExternalArtifactBinding::new(
+                    source.kind,
+                    root_owner,
+                    Path::new(descriptor),
+                )
+                .map_err(|_| unsafe_layout_entry())?,
+            )
+        } else {
+            None
+        };
         let branch = if owner.kind() == "Configuration" {
             format!("{}:Module", source.name)
         } else {
@@ -983,7 +1014,11 @@ impl WorkspaceFindDirectoryBuilder {
                     child.capability().route_kind(),
                 )
                 .ok()?;
-                let relative = module_relative(&target, source.kind).ok()?;
+                let canonical = module_relative(&target, source.kind).ok()?;
+                let relative = match &binding {
+                    Some(binding) => binding.physical_path(&canonical).ok()?,
+                    None => canonical,
+                };
                 (normalize_layout_path(&relative.to_string_lossy()) == requested)
                     .then_some((child, relative))
             })
@@ -991,8 +1026,14 @@ impl WorkspaceFindDirectoryBuilder {
         else {
             return Ok(());
         };
+        let canonical = match &binding {
+            Some(binding) => binding
+                .logical_path(&relative)
+                .ok_or_else(unsafe_layout_entry)?,
+            None => relative.clone(),
+        };
         let Some(address) =
-            module_address_for_relative(source.name, source.kind, profile, &relative)
+            module_address_for_relative(source.name, source.kind, profile, &canonical)
         else {
             return Err(unsafe_layout_entry());
         };
@@ -1005,11 +1046,12 @@ impl WorkspaceFindDirectoryBuilder {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(child_read_error(error)),
         }
-        add_path_match(
-            located,
-            FindDocument::new(address.to_string(), "Module", owner.at(), Vec::new())
-                .with_path(path_text(&relative)),
-        )
+        let mut document = FindDocument::new(address.to_string(), "Module", owner.at(), Vec::new())
+            .with_path(path_text(&relative));
+        if let Some(binding) = binding {
+            document = document.with_owner_descriptor(path_text(binding.descriptor()));
+        }
+        add_path_match(located, document)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1246,15 +1288,16 @@ impl WorkspaceFindDirectoryBuilder {
                         || PathBuf::from(&descriptor_name),
                         |(_, name)| PathBuf::from(name).join(&descriptor_name),
                     );
-                    require_target_identity(self.read_target_identity(
-                        &owner_file,
-                        &owner_descriptor_relative,
-                        source,
-                        owner_kind,
-                        Some(owner_name_text),
-                        deadline,
-                        cancellation,
-                    )?)?;
+                    let (logical_owner_name, _) =
+                        require_target_identity(self.read_target_identity(
+                            &owner_file,
+                            &owner_descriptor_relative,
+                            source,
+                            owner_kind,
+                            collection.map(|_| owner_name_text),
+                            deadline,
+                            cancellation,
+                        )?)?;
                     let owner_relative = collection.map_or_else(
                         || PathBuf::from(owner_name_text),
                         |(_, name)| PathBuf::from(name).join(owner_name_text),
@@ -1296,7 +1339,7 @@ impl WorkspaceFindDirectoryBuilder {
                         find_document(
                             source,
                             &format!(
-                                "{}:{owner_kind}.{owner_name_text}.{}.{nested_name}",
+                                "{}:{owner_kind}.{logical_owner_name}.{}.{nested_name}",
                                 source.name,
                                 family_kind.as_str()
                             ),
@@ -1304,7 +1347,8 @@ impl WorkspaceFindDirectoryBuilder {
                             nested_name,
                             synonym.as_deref(),
                             &relative,
-                        )?,
+                        )?
+                        .with_owner_descriptor(path_text(&owner_descriptor_relative)),
                     )?;
                 }
             }
@@ -1604,7 +1648,7 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(())
     }
 
-    /// An external processor or report keeps its single owner descriptor at
+    /// An external processor or report keeps owner descriptors at
     /// the root of the source set.
     fn add_external_source(
         &self,
@@ -1618,6 +1662,7 @@ impl WorkspaceFindDirectoryBuilder {
         } else {
             NodeKind::ExternalReport
         };
+        let mut names = HashSet::new();
         for entry in immediate_names(
             source.root,
             self.collection_limit(build),
@@ -1629,7 +1674,7 @@ impl WorkspaceFindDirectoryBuilder {
             let Some(entry_name) = entry.to_str() else {
                 continue;
             };
-            let Some(stem) = entry_name.strip_suffix(".xml") else {
+            let Some(_) = entry_name.strip_suffix(".xml") else {
                 continue;
             };
             let file = match retain_enumerated_child(source.root, &entry, deadline, cancellation) {
@@ -1650,28 +1695,43 @@ impl WorkspaceFindDirectoryBuilder {
             else {
                 continue;
             };
-            if !declares_owner(&head, kind.as_str(), stem) {
+            let (Some(name), synonym) = descriptor_identity(&head) else {
+                continue;
+            };
+            if !declares_owner(&head, kind.as_str(), &name) {
                 continue;
             }
-            let synonym = descriptor_identity(&head).1;
+            let binding = unica_source_designer::external_artifact::ExternalArtifactBinding::new(
+                source.kind,
+                &name,
+                &relative,
+            )
+            .map_err(|message| FindBuildError::new(RefusalCode::InvalidSource, message))?;
+            if !names.insert(binding.name().to_string()) {
+                return Err(FindBuildError::new(
+                    RefusalCode::InvalidSource,
+                    "external owner name is ambiguous",
+                ));
+            }
+            let stem = binding.payload().as_os_str();
             self.push(
                 build,
                 source,
-                &format!("{}:{}.{stem}", source.name, kind.as_str()),
+                &format!("{}:{}.{}", source.name, kind.as_str(), binding.name()),
                 kind.as_str(),
-                stem,
+                binding.name(),
                 synonym.as_deref(),
                 &relative,
             )?;
-            match retain_optional_child(source.root, OsStr::new(stem), deadline, cancellation)? {
+            match retain_optional_child(source.root, stem, deadline, cancellation)? {
                 Some(SourceEntry::Directory(owner_root)) => {
                     self.add_nested_families(
                         source,
                         build,
                         &owner_root,
                         kind.as_str(),
-                        stem,
-                        &PathBuf::from(stem),
+                        binding.name(),
+                        binding.payload(),
                         deadline,
                         cancellation,
                     )?;
@@ -1962,10 +2022,12 @@ fn form_descriptor_location(document: FindDocument) -> Result<FindDocument, Find
     if address.form_metadata_owner().is_none() {
         return Err(unsafe_layout_entry());
     }
-    Ok(
-        FindDocument::new(address.to_string(), "Metadata", document.at(), Vec::new())
-            .with_path(document.placed_path().ok_or_else(unsafe_layout_entry)?),
-    )
+    let mut result = FindDocument::new(address.to_string(), "Metadata", document.at(), Vec::new())
+        .with_path(document.placed_path().ok_or_else(unsafe_layout_entry)?);
+    if let Some(descriptor) = document.owner_descriptor() {
+        result = result.with_owner_descriptor(descriptor);
+    }
+    Ok(result)
 }
 
 fn find_document(
@@ -4780,6 +4842,189 @@ mod tests {
             )
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn external_alias_name_search_keeps_proven_neighbours_after_a_local_read_failure() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().canonicalize().unwrap();
+        write(
+            &path.join("source.xml"),
+            &owner("Actual", "ExternalDataProcessor", "Actual title", ""),
+        );
+        write(
+            &path.join("unreadable.xml"),
+            &owner("Hidden", "ExternalDataProcessor", "Hidden", ""),
+        );
+        let root = unica_workspace::read::open_source_directory(&path).unwrap();
+        let reader = Arc::new(
+            |file: &unica_source_contract::read::SourceFile, relative: &Path| {
+                if relative == Path::new("unreadable.xml") {
+                    Err(super::DescriptorHeadReadError::Local(
+                        io::ErrorKind::PermissionDenied,
+                    ))
+                } else {
+                    super::read_descriptor_head_prefix(file, relative)
+                }
+            },
+        );
+        let builder = WorkspaceFindDirectoryBuilder::default().with_head_reader(reader);
+        let sources = [LayoutFindSource::new(
+            "external",
+            SourceSetKind::ExternalProcessor,
+            &root,
+        )];
+        let result = builder
+            .build_for_search(
+                &sources,
+                ProviderDeadline::from_budget(Duration::from_secs(7)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert_eq!(result.omissions.total, 1);
+        assert_eq!(result.omissions.details[0].reason, "descriptor_unreadable");
+        assert_eq!(
+            single(&result.index, "Actual").0,
+            "external:ExternalDataProcessor.Actual"
+        );
+        assert!(result
+            .index
+            .locate_address("external:ExternalDataProcessor.Hidden")
+            .is_none());
+    }
+
+    #[test]
+    fn external_alias_name_search_does_not_require_a_strict_native_inventory() {
+        use unica_process::test_support::{skip_without_host_capability, HostCapability};
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().canonicalize().unwrap();
+        write(
+            &path.join("source.xml"),
+            &owner("Actual", "ExternalDataProcessor", "Title", ""),
+        );
+        let unreadable = path.join("unreadable.xml");
+        write(
+            &unreadable,
+            &owner("Hidden", "ExternalDataProcessor", "Hidden", ""),
+        );
+        let root = unica_workspace::read::open_source_directory(&path).unwrap();
+        let permissions = fs::metadata(&unreadable).unwrap().permissions();
+        if !unica_workspace::test_support::set_unix_mode_for_test(&unreadable, 0).unwrap() {
+            skip_without_host_capability(
+                HostCapability::UnixPermissionBits,
+                "native denied-read control needs Unix permission bits",
+            );
+            return;
+        }
+        if fs::read(&unreadable).is_ok() {
+            fs::set_permissions(&unreadable, permissions).unwrap();
+            skip_without_host_capability(
+                HostCapability::EnforcedPermissionBits,
+                "privileged host bypasses denied permission bits",
+            );
+            return;
+        }
+        let result = WorkspaceFindDirectoryBuilder::default().build_for_search(
+            &[LayoutFindSource::new(
+                "external",
+                SourceSetKind::ExternalProcessor,
+                &root,
+            )],
+            ProviderDeadline::from_budget(Duration::from_secs(7)),
+            &CancellationToken::new(),
+        );
+        fs::set_permissions(&unreadable, permissions).unwrap();
+        let result = result.expect("a local file refusal must keep proven names");
+        assert_eq!(result.omissions.total, 1);
+        assert_eq!(
+            single(&result.index, "Actual").0,
+            "external:ExternalDataProcessor.Actual"
+        );
+    }
+
+    #[test]
+    fn external_alias_point_lookup_is_local_and_preserves_every_resource_path() {
+        for (source_kind, kind) in [
+            (SourceSetKind::ExternalProcessor, "ExternalDataProcessor"),
+            (SourceSetKind::ExternalReport, "ExternalReport"),
+        ] {
+            let fixture = tempfile::tempdir().unwrap();
+            let path = fixture.path().canonicalize().unwrap();
+            write(
+                &path.join("source.xml"),
+                &owner(
+                    "Actual",
+                    kind,
+                    "Title",
+                    "<Form>Main</Form><Command>Run</Command>",
+                ),
+            );
+            write(
+                &path.join("source/Forms/Main.xml"),
+                &owner("Main", "Form", "Main", ""),
+            );
+            write(&path.join("source/Forms/Main/Ext/Form.xml"), "<Form/>");
+            write(
+                &path.join("source/Forms/Main/Ext/Form/Module.bsl"),
+                "// form",
+            );
+            write(&path.join("source/Ext/ObjectModule.bsl"), "// object");
+            write(
+                &path.join("source/Commands/Run/Ext/CommandModule.bsl"),
+                "// command",
+            );
+            // A point lookup must never enumerate or parse this unrelated descriptor.
+            write(&path.join("broken.xml"), "<broken");
+            let retained = unica_workspace::read::open_source_directory(&path).unwrap();
+            let sources = [LayoutFindSource::new("external", source_kind, &retained)];
+            let builder = WorkspaceFindDirectoryBuilder::default();
+            for (physical, suffix) in [
+                ("source.xml", ""),
+                ("source/Ext/ObjectModule.bsl", ".Module.Object"),
+                ("source/Forms/Main.xml", ".Form.Main.Metadata"),
+                ("source/Forms/Main/Ext/Form.xml", ".Form.Main"),
+                (
+                    "source/Forms/Main/Ext/Form/Module.bsl",
+                    ".Form.Main.Module.Form",
+                ),
+                (
+                    "source/Commands/Run/Ext/CommandModule.bsl",
+                    ".Command.Run.Module.Command",
+                ),
+            ] {
+                let found = builder
+                    .locate_path(
+                        &sources,
+                        physical,
+                        ProviderDeadline::from_budget(Duration::from_secs(7)),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(found.at(), format!("external:{kind}.Actual{suffix}"));
+                assert_eq!(found.placed_path(), Some(physical));
+                assert_eq!(found.owner_descriptor(), Some("source.xml"));
+            }
+            // Name search preserves proven neighbours; logical inventory remains strict.
+            let index = builder
+                .build(
+                    &sources,
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(single(&index, "Actual").1, "source.xml");
+            fs::remove_file(path.join("broken.xml")).unwrap();
+            let index = builder
+                .build(
+                    &sources,
+                    ProviderDeadline::from_budget(Duration::from_secs(7)),
+                    &CancellationToken::new(),
+                )
+                .unwrap();
+            assert_eq!(single(&index, "Actual").1, "source.xml");
+            assert_eq!(single(&index, "Title").0, format!("external:{kind}.Actual"));
+        }
     }
 
     #[test]

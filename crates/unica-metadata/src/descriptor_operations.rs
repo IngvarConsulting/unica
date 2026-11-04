@@ -187,9 +187,18 @@ impl PropertiesSite {
     }
 
     /// Read routing is deliberately irrelevant here: CommonModule is read as
-    /// a module and still owns a metadata descriptor. Members and nested
-    /// subsystems do not acquire the owner's write profile.
+    /// a module and still owns a metadata descriptor. Members do not acquire
+    /// the owner's write profile; a nested subsystem owns a descriptor of its
+    /// own and the subsystem profile with it.
     pub fn from_address(at: &QualifiedAddress) -> Option<Self> {
+        if at.segments().len() > 1
+            && at
+                .segments()
+                .iter()
+                .all(|segment| segment.kind() == NodeKind::Subsystem && segment.name().is_some())
+        {
+            return Some(Self::Subsystem);
+        }
         let [owner] = at.segments() else {
             return None;
         };
@@ -251,7 +260,7 @@ impl PropertiesOperation {
                 target: match site {
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
-                    _ => "The existing named top-level metadata object, role or subsystem at its full address. The address selects the property profile.",
+                    _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
                 notes: "values is a nonempty object. Use JSON booleans for flags. An empty string clears text; null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
@@ -345,7 +354,11 @@ mod tests {
             ("main:Catalog", None),
             ("main:CommonForm.Card.Metadata", None),
             ("main:Catalog.Items.Attribute.Code", None),
-            ("main:Subsystem.Sales.Subsystem.Child", None),
+            (
+                "main:Subsystem.Sales.Subsystem.Child",
+                Some(PropertiesSite::Subsystem),
+            ),
+            ("main:Subsystem.Sales.Interface", None),
         ] {
             assert_eq!(
                 PropertiesSite::from_address(&QualifiedAddress::parse(at).unwrap()),
