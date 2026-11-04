@@ -106,7 +106,7 @@ fn deny_rejects_duplicate_foreign_and_nested_boolean_nodes() {
     for replacement in [
         "<DenyIncompleteValues>false</DenyIncompleteValues><DenyIncompleteValues>true</DenyIncompleteValues>",
         "<DenyIncompleteValues xmlns=\"urn:foreign\">false</DenyIncompleteValues>",
-        "<DenyIncompleteValues>false<!-- comment --></DenyIncompleteValues>",
+        "<DenyIncompleteValues><Nested>false</Nested></DenyIncompleteValues>",
         "<DenyIncompleteValues extra=\"value\">false</DenyIncompleteValues>",
     ] {
         assert!(apply(&before.replacen(original, replacement, 1), deny("Товар", true)).is_err(), "{replacement}");
@@ -175,12 +175,10 @@ fn every_information_flag_refuses_missing_foreign_duplicate_and_nonliteral_value
             String::new(),
             format!("<{tag} xmlns=\"urn:foreign\">false</{tag}>"),
             format!("{original}{original}"),
-            format!("<{tag}>false<!-- extra --></{tag}>"),
             format!("<{tag}><Nested>false</Nested></{tag}>"),
             format!("<{tag}>1</{tag}>"),
+            format!("<{tag} extra=\"value\">false</{tag}>"),
             format!("<{tag}/>"),
-            format!("<{tag}><![CDATA[false]]></{tag}>"),
-            format!("<{tag}>f&#97;lse</{tag}>"),
         ] {
             let before = information_register().replacen(&original, &replacement, 1);
             let (code, field) = apply(&before, flag("StringDimension", tag, true)).unwrap_err();
@@ -265,5 +263,107 @@ fn all_flags_in_one_update_keep_original_offsets_and_neighbor_bytes() {
         );
     }
     assert_eq!(apply(&before, operation.clone()).unwrap(), expected);
-    assert_eq!(apply(&expected, operation).unwrap(), expected);
+    assert_eq!(apply(&expected, operation.clone()).unwrap(), expected);
+    let mut decorated = before.clone();
+    let mut expected_decorated = before.clone();
+    for (tag, input, changed) in [
+        ("Master", "fa<!--keep-->lse", "true<!--keep-->"),
+        ("MainFilter", "f<![CDATA[al]]>se", "true<![CDATA[]]>"),
+        (
+            "DenyIncompleteValues",
+            "&#32;f&#97;lse&#x20;",
+            "&#32;true&#x20;",
+        ),
+    ] {
+        let original = format!("<{tag}>false</{tag}>");
+        decorated = decorated.replacen(&original, &format!("<{tag}>{input}</{tag}>"), 1);
+        expected_decorated =
+            expected_decorated.replacen(&original, &format!("<{tag}>{changed}</{tag}>"), 1);
+    }
+    assert_eq!(
+        apply(&decorated, operation.clone()).unwrap(),
+        expected_decorated
+    );
+    assert_eq!(
+        apply(&expected_decorated, operation).unwrap(),
+        expected_decorated
+    );
+}
+
+#[test]
+fn information_boolean_edits_preserve_split_text_markup_and_reader_values() {
+    for tag in ["Master", "MainFilter", "DenyIncompleteValues"] {
+        for (input, changed) in [
+            ("false<!-- trailing -->", "true<!-- trailing -->"),
+            ("fa<!-- middle -->lse", "true<!-- middle -->"),
+            ("f<?keep value?>alse", "true<?keep value?>"),
+            ("<![CDATA[false]]>", "<![CDATA[true]]>"),
+            ("f<![CDATA[al]]>se", "true<![CDATA[]]>"),
+            ("<![CDATA[f]]>alse", "<![CDATA[true]]>"),
+            ("f&#97;lse", "true"),
+            ("&#x20;f&#97;lse&#32;", "&#x20;true&#32;"),
+            (
+                "<![CDATA[fa]]><![CDATA[lse]]>",
+                "<![CDATA[true]]><![CDATA[]]>",
+            ),
+            (
+                " \n<![CDATA[ fa]]><!--keep-->lse\t",
+                " \n<![CDATA[ true]]><!--keep-->\t",
+            ),
+        ] {
+            let before = information_register()
+                .trim_start_matches('\u{feff}')
+                .replacen(
+                    &format!("<{tag}>false</{tag}>"),
+                    &format!("<{tag}>{input}</{tag}>"),
+                    1,
+                );
+            let expected = before.replacen(
+                &format!("<{tag}>{input}</{tag}>"),
+                &format!("<{tag}>{changed}</{tag}>"),
+                1,
+            );
+            let read = |xml: &str| {
+                let target = unica_address::source_target::MetadataAddress::parse(
+                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    "InformationRegister.Facts",
+                )
+                .unwrap();
+                let info = crate::info::parse_typed_meta_local_info(
+                    xml.as_bytes(),
+                    &target,
+                    unica_metadata::MetaSupportStatus::Unsupported,
+                )
+                .unwrap();
+                let dimension = info
+                    .collections
+                    .dimensions
+                    .iter()
+                    .find(|dimension| dimension.name == "StringDimension")
+                    .unwrap();
+                match tag {
+                    "Master" => dimension.master,
+                    "MainFilter" => dimension.main_filter,
+                    _ => dimension.deny_incomplete_values,
+                }
+            };
+            assert_eq!(read(&before), Some(false), "{tag}: {input}");
+            assert_eq!(
+                apply(&before, flag("StringDimension", tag, false))
+                    .unwrap_or_else(|error| panic!("no-op {tag}: {input}: {error:?}")),
+                before,
+                "reader-valid no-op: {tag}: {input}"
+            );
+            let after = apply(&before, flag("StringDimension", tag, true))
+                .unwrap_or_else(|error| panic!("change {tag}: {input}: {error:?}"));
+            assert_eq!(after, expected, "only boolean text changes: {tag}: {input}");
+            assert_eq!(read(&after), Some(true), "{tag}: {input}");
+            assert_eq!(
+                apply(&after, flag("StringDimension", tag, true)).unwrap(),
+                after
+            );
+            let reverted = apply(&after, flag("StringDimension", tag, false)).unwrap();
+            assert_eq!(read(&reverted), Some(false), "{tag}: {input}");
+        }
+    }
 }

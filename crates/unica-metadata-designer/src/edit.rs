@@ -1955,15 +1955,90 @@ pub fn find_typed_element_identity(
             )
         })
 }
+// The caller has parsed the whole document and proved a boolean text leaf.
+// Keep lexical whitespace (including character references) outside the value.
+fn dimension_boolean_text_range(
+    xml: &str,
+    range: std::ops::Range<usize>,
+    decode_references: bool,
+) -> Option<std::ops::Range<usize>> {
+    let mut cursor = range.start;
+    let mut first = None;
+    let mut last = range.start;
+    while cursor < range.end {
+        let raw = &xml[cursor..range.end];
+        let (value, length) = if decode_references && raw.starts_with("&#") {
+            let end = raw.find(';')?;
+            let number = &raw[2..end];
+            let code = if let Some(hex) = number.strip_prefix('x') {
+                u32::from_str_radix(hex, 16).ok()?
+            } else {
+                number.parse().ok()?
+            };
+            (char::from_u32(code)?, end + 1)
+        } else {
+            let value = raw.chars().next()?;
+            (value, value.len_utf8())
+        };
+        if !value.is_whitespace() {
+            first.get_or_insert(cursor);
+            last = cursor + length;
+        }
+        cursor += length;
+    }
+    first.map(|start| start..last)
+}
+
+// roxmltree merges adjacent Text/CDATA nodes without extending their source
+// range. Scan the already validated leaf instead, retaining its markup.
+fn dimension_boolean_text_edits(
+    xml: &str,
+    flag: roxmltree::Node<'_, '_>,
+    replacement: &'static str,
+) -> Option<Vec<(std::ops::Range<usize>, &'static str)>> {
+    let range = flag.range();
+    let end = range.start + xml[range.clone()].rfind("</")?;
+    let mut cursor = flag.first_child()?.range().start;
+    let mut edits = Vec::new();
+    while cursor < end {
+        let rest = &xml[cursor..end];
+        if rest.starts_with("<!--") {
+            cursor += rest.find("-->")? + 3;
+            continue;
+        }
+        if rest.starts_with("<?") {
+            cursor += rest.find("?>")? + 2;
+            continue;
+        }
+        let (text, decode_references) = if rest.starts_with("<![CDATA[") {
+            let start = cursor + 9;
+            let close = start + xml[start..end].find("]]>")?;
+            cursor = close + 3;
+            (start..close, false)
+        } else {
+            let start = cursor;
+            cursor += rest.find('<').unwrap_or(rest.len());
+            if cursor == start {
+                return None;
+            }
+            (start..cursor, true)
+        };
+        if let Some(range) = dimension_boolean_text_range(xml, text, decode_references) {
+            edits.push((range, if edits.is_empty() { replacement } else { "" }));
+        }
+    }
+    (!edits.is_empty()).then_some(edits)
+}
+
 // Read the original document so inherited namespace bindings remain authoritative.
-// Return only the literal boolean token: no other bytes belong to this edit.
+// Replace only the boolean text; markup and unrelated bytes stay unchanged.
 fn dimension_boolean_edit(
     xml: &str,
     element_range: std::ops::Range<usize>,
     tag: &str,
     field: &str,
     value: bool,
-) -> Result<Option<(std::ops::Range<usize>, &'static str)>, MetaDiagnostic> {
+) -> Result<Vec<(std::ops::Range<usize>, &'static str)>, MetaDiagnostic> {
     const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
     let refused =
         || {
@@ -1998,25 +2073,19 @@ fn dimension_boolean_edit(
     if flag.tag_name().namespace() != Some(MD) || flag.attributes().len() != 0 {
         return Err(refused());
     }
-    let children = flag.children().collect::<Vec<_>>();
-    let [text] = children.as_slice() else {
-        return Err(refused());
-    };
-    if !text.is_text() {
+    if !crate::info_projection::strict_text_leaf_is_valid(*flag) {
         return Err(refused());
     }
-    let range = text.range();
-    let raw = &xml[range.clone()];
-    let current = raw.trim();
+    let observed = crate::info_projection::direct_text_content(*flag);
+    let current = observed.trim();
     if !matches!(current, "true" | "false") {
         return Err(refused());
     }
     let replacement = if value { "true" } else { "false" };
     if current == replacement {
-        return Ok(None);
+        return Ok(Vec::new());
     }
-    let start = range.start + raw.len() - raw.trim_start().len();
-    Ok(Some((start..start + current.len(), replacement)))
+    dimension_boolean_text_edits(xml, *flag, replacement).ok_or_else(refused)
 }
 
 pub fn update_typed_element(
@@ -2055,10 +2124,13 @@ pub fn update_typed_element(
         ),
     ] {
         if let Some(value) = value {
-            if let Some(edit) = dimension_boolean_edit(xml_text, range.clone(), tag, field, value)?
-            {
-                flag_edits.push(edit);
-            }
+            flag_edits.extend(dimension_boolean_edit(
+                xml_text,
+                range.clone(),
+                tag,
+                field,
+                value,
+            )?);
         }
     }
     flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
