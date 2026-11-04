@@ -88,6 +88,7 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
+    StyleItem(unica_metadata::style_color::StyleItemColor),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
     WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
@@ -1138,6 +1139,9 @@ pub fn parse_properties(
                 "WSReferences",
                 DescriptorPropertyChanges::WSReference(values),
             )
+        }
+        unica_metadata::property_input::PropertiesIntent::StyleItem(value) => {
+            ("StyleItems", DescriptorPropertyChanges::StyleItem(value))
         }
         unica_metadata::property_input::PropertiesIntent::Role(values) => {
             ("Roles", DescriptorPropertyChanges::Role(values))
