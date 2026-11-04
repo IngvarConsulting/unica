@@ -640,6 +640,16 @@ hex-хеш фиксированной длины, его нельзя счита
 | `ExtendedPresentation` | `LocalString` | Расширенное представление |
 | `Explanation` | `LocalString` | Пояснение |
 
+В назначениях отчёта `DefaultForm`, `DefaultSettingsForm` и
+`DefaultVariantForm` ссылка на общую форму записывается как
+`CommonForm.<Имя>`, без регистрации подчинённой `Form` у отчёта.
+Подтверждённый профиль управляемой общей формы имеет основной реквизит
+типа `cfg:ReportObject` и `ReportFormType` Main, Settings или Variant
+соответственно. Отсутствующий `ReportFormType` означает Main.
+Для `Constant.DefaultForm` подтверждена общая форма с основным реквизитом
+типа `cfg:ConstantsSet`. Префикс `cfg` здесь обозначает namespace
+`http://v8.1c.ru/8.1/data/enterprise/current-config`.
+
 ### 6.5. CommonCommand — общая команда
 
 Каталог: `CommonCommands/`. Файлы: `<Имя>.xml` + `<Имя>/Ext/CommandModule.bsl`.
@@ -919,7 +929,7 @@ ChildObjects содержат `IntegrationServiceChannel` (каналы) — inl
 
 ### 6.15. WSReference — WS-ссылка
 
-Каталог: `WSReferences/`. Файлы: `<Имя>.xml` + `<Имя>/Ext/WSDefinition.wsdl`.
+Каталог: `WSReferences/`. Файлы: `<Имя>.xml` + `<Имя>/Ext/WSDefinition.xml`.
 
 ```xml
 <WSReference uuid="...">
@@ -938,6 +948,33 @@ ChildObjects содержат `IntegrationServiceChannel` (каналы) — inl
 | Свойство | Тип | Описание |
 |----------|-----|----------|
 | `LocationURL` | `xs:string` | URL WSDL-описания сервиса |
+
+Для Designer XML 2.20 платформы 8.3.27 локальное описание хранится в
+`Ext/WSDefinition.xml`; `LocationURL` остаётся отдельным свойством дескриптора.
+Чтение локального файла не загружает этот URL или зависимости.
+
+`view` WSReference объявляет коллекцию `Definition`. Её типизированные строки
+сохраняют WSDL definitions/types/message/part/portType/operation/input/output/fault,
+binding/service/port, SOAP binding/operation/body/fault/address и локальные XSD
+schema/complexType/sequence/element/attribute. QName содержат `namespace` и
+`localName`; роли ссылок остаются разными полями. `sourceOrder` — позиция
+XML-элемента в обходе документа, `parentOrder` — позиция его родителя.
+Это идентичности строк внутри данного описания, а не логические адреса.
+Полный обход страниц сохраняет вложенность, порядок и повторяющиеся имена.
+
+Отсутствующие наблюдаемые значения в строках имеют `null`; явные `false` и
+литералы границ сохраняются. Повреждение поля, неизвестная конструкция,
+неразрешённая ссылка или объявленный внешний import/include отражаются в
+`limits`, сохраняя независимые декларации. Пустое корректное definitions,
+отсутствующий companion и повреждённый XML различаются. Чтение не исполняет
+SOAP, не загружает imports/includes и не является полной валидацией WSDL/XSD.
+`resolve` владельца указывает дескриптор, `resolve` Definition — существующий
+локальный companion. Строки коллекции собственных адресов и операций записи
+не получают.
+
+Профиль следует объявлениям [WSDL 1.1](https://www.w3.org/TR/wsdl.html)
+и [XML Schema 1.0 Datatypes](https://www.w3.org/TR/xmlschema-2/);
+он ограничен перечисленными конструкциями.
 
 ### 6.16. StyleItem — элемент стиля
 
