@@ -297,6 +297,13 @@ pub fn parse_observed_metadata_type_contents_node(
                     "existing defined type uses an unsupported namespace",
                 ));
             }
+            if local_name == "ExchangePlanRef" {
+                variants.push(ObservedMetadataTypeVariant::ReferenceFamily {
+                    type_name: local_name,
+                    namespace_uri: namespace,
+                });
+                continue;
+            }
             if let Some(chart) = local_name.strip_prefix("Characteristic.") {
                 // `cfg:Characteristic.X` is the type set of a chart of
                 // characteristic types: read it, never rewrite it.
@@ -565,6 +572,9 @@ pub fn observed_type_is_strict_but_unmodelled(properties: roxmltree::Node<'_, '_
         if node.tag_name().name() == "TypeSet" {
             if namespace != CURRENT_CONFIG_NAMESPACE {
                 return false;
+            }
+            if local == "ExchangePlanRef" {
+                continue;
             }
             // Набор типов платформы (`AnyIBRef`, `CatalogRef`, `DocumentObject`,
             // `ConstantValueManager`…) синтаксически допустим, но не моделируется.

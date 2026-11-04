@@ -640,6 +640,16 @@ hex-хеш фиксированной длины, его нельзя счита
 | `ExtendedPresentation` | `LocalString` | Расширенное представление |
 | `Explanation` | `LocalString` | Пояснение |
 
+В назначениях отчёта `DefaultForm`, `DefaultSettingsForm` и
+`DefaultVariantForm` ссылка на общую форму записывается как
+`CommonForm.<Имя>`, без регистрации подчинённой `Form` у отчёта.
+Подтверждённый профиль управляемой общей формы имеет основной реквизит
+типа `cfg:ReportObject` и `ReportFormType` Main, Settings или Variant
+соответственно. Отсутствующий `ReportFormType` означает Main.
+Для `Constant.DefaultForm` подтверждена общая форма с основным реквизитом
+типа `cfg:ConstantsSet`. Префикс `cfg` здесь обозначает namespace
+`http://v8.1c.ru/8.1/data/enterprise/current-config`.
+
 ### 6.5. CommonCommand — общая команда
 
 Каталог: `CommonCommands/`. Файлы: `<Имя>.xml` + `<Имя>/Ext/CommandModule.bsl`.
@@ -708,6 +718,17 @@ hex-хеш фиксированной длины, его нельзя счита
 | `Location` | ref | Где хранится значение (ссылка на реквизит/ресурс/константу) |
 | `PrivilegedGetMode` | `xs:boolean` | Привилегированный режим получения |
 | `Content` | list | Состав (объекты, зависящие от опции) |
+
+Существующая функциональная опция меняет `Location` и `PrivilegedGetMode`
+операцией `props.set`. `Location` — непустая ссылка на существующую константу,
+реквизит или ресурс в том же наборе исходников. Допускается реквизит табличной
+части, например `Catalog.Options.TabularSection.Lines.Attribute.Enabled`.
+Стандартный реквизит и измерение не являются местом хранения. Тип значения
+не ограничивается булевым. `PrivilegedGetMode` принимает JSON boolean.
+Предпросмотр сохраняет зависимости от опции и объекта хранения; исполнение
+токена проверяет их неизменность. UUID, имя, синоним, комментарий и `Content`
+сохраняются. В XML состава платформы элементы имеют вид
+`<xr:Object>Catalog.Options</xr:Object>`.
 
 ### 6.8. FunctionalOptionsParameter — параметр функциональных опций
 

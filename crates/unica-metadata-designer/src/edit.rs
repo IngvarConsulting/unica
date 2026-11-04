@@ -1369,10 +1369,9 @@ pub fn apply_typed_properties(
     let indent = meta_edit_property_child_indent(&text);
     let mut replacements = Vec::new();
     for (key, value) in changes.entries() {
-        let tag = METADATA_PROPERTY_SPECS
+        let spec = METADATA_PROPERTY_SPECS
             .iter()
             .find(|spec| spec.key == *key && spec.allowed_kinds.contains(&kind))
-            .map(|spec| spec.xml_name)
             .ok_or_else(|| {
                 typed_diagnostic(
                     MetaDiagnosticCode::ProviderUnavailable,
@@ -1380,6 +1379,7 @@ pub fn apply_typed_properties(
                     Some("values"),
                 )
             })?;
+        let tag = spec.xml_name;
         let property = unica_xml_format::read::child_element(properties, tag).ok_or_else(|| {
             typed_diagnostic(
                 MetaDiagnosticCode::InvalidArguments,
@@ -1387,6 +1387,66 @@ pub fn apply_typed_properties(
                 Some("values"),
             )
         })?;
+        if matches!(
+            key,
+            MetaPropertyKey::FullTextSearch
+                | MetaPropertyKey::SearchStringModeOnInputByString
+                | MetaPropertyKey::FullTextSearchOnInputByString
+                | MetaPropertyKey::ChoiceDataGetModeOnInputByString
+                | MetaPropertyKey::CreateOnInput
+                | MetaPropertyKey::ChoiceHistoryOnInput
+        ) {
+            let same_name_count = properties
+                .children()
+                .filter(|node| node.is_element() && node.tag_name().name() == tag)
+                .count();
+            let observed: String = property
+                .children()
+                .filter(|node| node.is_text())
+                .filter_map(|node| node.text())
+                .collect();
+            if same_name_count != 1
+                || property.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+                || property.attributes().len() != 0
+                || property.children().any(|node| node.is_element())
+                || !spec.enum_values.contains(&observed.as_str())
+            {
+                return Err(typed_diagnostic(MetaDiagnosticCode::InvalidArguments, format!("existing {tag} is damaged; restore a confirmed valid source before changing it"), Some(&format!("values.{tag}"))));
+            }
+            if let MetaPropertyValue::String(value) = value {
+                if observed != *value {
+                    // Keep the original qualified element and its namespace
+                    // declarations; only the confirmed scalar content changes.
+                    let raw = &parsed_body[property.range()];
+                    let mut quote = None;
+                    let content_start = raw
+                        .bytes()
+                        .enumerate()
+                        .find_map(|(index, byte)| {
+                            if let Some(delimiter) = quote {
+                                if byte == delimiter {
+                                    quote = None;
+                                }
+                            } else if matches!(byte, b'\'' | b'"') {
+                                quote = Some(byte);
+                            } else if byte == b'>' {
+                                return Some(index + 1);
+                            }
+                            None
+                        })
+                        .expect("parsed opening tag");
+                    let content_end = raw.rfind("</").expect("nonempty enum closing tag");
+                    let replacement =
+                        format!("{}{}{}", &raw[..content_start], value, &raw[content_end..]);
+                    let property_range = property.range();
+                    replacements.push((
+                        property_range.start - range.start..property_range.end - range.start,
+                        replacement,
+                    ));
+                }
+                continue;
+            }
+        }
         let replacement = match (key, value) {
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {
                 if previous_type
