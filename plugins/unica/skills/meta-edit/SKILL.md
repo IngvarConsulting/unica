@@ -66,7 +66,7 @@ allowed-tools:
 допустимым вариантом записи.
 
 ```json
-{"at":"main:SessionParameter.Параметр","ops":[{"op":"props.set","args":{"values":{"Type":{"variants":[{"kind":"number","digits":12,"fraction":2,"sign":"any"}]}}}}]}
+{"at":"main:SessionParameter.SessionValue","ops":[{"op":"props.set","args":{"values":{"Type":{"variants":[{"kind":"number","digits":12,"fraction":2,"sign":"any"}]}}}}]}
 ```
 
 Ссылочный тип называет объект того же набора исходников в `metadataPath`.
