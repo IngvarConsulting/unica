@@ -258,7 +258,7 @@ allowed-tools:
 ### Использование и проверка заполнения табличной части
 
 `tabularSection.set` на адресе самой существующей табличной части, например
-`main:Catalog.Товары.TabularSection.Состав`, принимает `values: {"Use": "ForFolder"}`
+`main:Catalog.Items.TabularSection.Lines`, принимает `values: {"Use": "ForFolder"}`
 для справочника и плана видов характеристик. Допустимы `ForItem`, `ForFolder`
 и `ForFolderAndItem`; иерархия владельца не меняется.
 
