@@ -1,0 +1,204 @@
+{
+  "id": "S-2081-git-literal-search-cursor",
+  "issue": 2081,
+  "area": "Поиск",
+  "workspace": "tests/fixtures/acceptance/workspace-git-search",
+  "task": "В копии source-фикстуры декларативно создать Git и индекс до MCP; буквальный поиск без роли выдаёт все пять совпадений через курсор без потерь и повторов, повтор курсора стабилен, найденный адрес читается, исходники сохраняются. Небольшая фикстура фиксирует страницы по limit, а не новый контракт числа страниц при deadline.",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "CorpusGitNeedle",
+        "scope": "main:CommonModule.SearchProbe",
+        "limit": 2
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches",
+          "eq": [
+            {
+              "scope": "main:CommonModule.SearchProbe",
+              "line": 1,
+              "column": 4,
+              "snippet": "// CorpusGitNeedle 1",
+              "at": "main:CommonModule.SearchProbe.Body#L1"
+            },
+            {
+              "scope": "main:CommonModule.SearchProbe",
+              "line": 2,
+              "column": 4,
+              "snippet": "// CorpusGitNeedle 2",
+              "at": "main:CommonModule.SearchProbe.Body#L2"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        },
+        {
+          "pointer": "/data/totals/matches",
+          "eq": 5
+        }
+      ],
+      "captures": {
+        "cursor1": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "CorpusGitNeedle",
+        "scope": "main:CommonModule.SearchProbe",
+        "limit": 2,
+        "cursor": "$capture.cursor1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches",
+          "eq": [
+            {
+              "scope": "main:CommonModule.SearchProbe",
+              "line": 3,
+              "column": 4,
+              "snippet": "// CorpusGitNeedle 3",
+              "at": "main:CommonModule.SearchProbe.Body#L3"
+            },
+            {
+              "scope": "main:CommonModule.SearchProbe",
+              "line": 4,
+              "column": 4,
+              "snippet": "// CorpusGitNeedle 4",
+              "at": "main:CommonModule.SearchProbe.Body#L4"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "limit"
+        },
+        {
+          "pointer": "/data/totals",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "cursor2": {
+          "pointer": "/cursor"
+        },
+        "secondMatches": {
+          "pointer": "/data/matches"
+        }
+      }
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "CorpusGitNeedle",
+        "scope": "main:CommonModule.SearchProbe",
+        "limit": 2,
+        "cursor": "$capture.cursor2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches",
+          "eq": [
+            {
+              "scope": "main:CommonModule.SearchProbe",
+              "line": 5,
+              "column": 4,
+              "snippet": "// CorpusGitNeedle 5",
+              "at": "main:CommonModule.SearchProbe.Body#L5"
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        },
+        {
+          "pointer": "/data/totals",
+          "absent": true
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        },
+        {
+          "pointer": "/data/fileCoverage/complete",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "CorpusGitNeedle",
+        "scope": "main:CommonModule.SearchProbe",
+        "limit": 2,
+        "cursor": "$capture.cursor1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches",
+          "eq": "$capture.secondMatches"
+        },
+        {
+          "pointer": "/cursor",
+          "eq": "$capture.cursor2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.SearchProbe.Body#L5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "contains": "// CorpusGitNeedle 5"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonModules/SearchProbe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "2277f37008ec3c204fb6125c0f0d6ecb755cebc9b483b30a585850a8d19fa390"
+        },
+        {
+          "path": "src/CommonModules/SearchProbe.xml",
+          "kind": "sha256",
+          "eq": "595f1b1af4c4eef8ed6473405aaffe9cae1068f08dec5c0178210a9fc293229e"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "112e3bf2cdd0b0d3807a7f5a0d0e1d26d8e420b5f433ce4055ac33d0f6c4fd2c"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    }
+  ]
+}

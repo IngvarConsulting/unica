@@ -48,6 +48,7 @@ pub enum PropertiesSite {
     DocumentNumerator,
     FunctionalOption,
     Role,
+    WSReference,
     Subsystem,
     StyleItem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
@@ -95,6 +96,7 @@ macro_rules! descriptor_properties {
                         match self { $(Self::$field => $extension),+ }
                     }
                     PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::StyleItem => false,
+                    PropertiesSite::WSReference => matches!(self, Self::LocationUrl),
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode),
                 }
             }
@@ -109,6 +111,7 @@ macro_rules! descriptor_properties {
 // re-export of 8.3.27 resets a configuration's own
 // `ConfigurationExtensionCompatibilityMode`, so only an extension sets it.
 descriptor_properties!(
+    LocationUrl => ("LocationURL", "locationURL", String, false, false, false, false),
     Location => ("Location", "location", String, false, false, false, false),
     PrivilegedGetMode => ("PrivilegedGetMode", "privilegedGetMode", Boolean, false, false, false, false),
     Synonym => ("Synonym", "synonym", String, true, true, true, true),
@@ -175,7 +178,13 @@ impl PropertiesSite {
         if site.route() == unica_source_contract::route::RouteClass::Configuration {
             return Self::root_of(site.source().kind());
         }
-        Self::from_address(site.at())
+        let profile = Self::from_address(site.at())?;
+        if profile == Self::WSReference
+            && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
+        {
+            return None;
+        }
+        Some(profile)
     }
 
     /// The root profile of a source set; external processors and reports
@@ -214,6 +223,7 @@ impl PropertiesSite {
             NodeKind::StyleItem => Some(Self::StyleItem),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
             NodeKind::Role => Some(Self::Role),
+            NodeKind::WsReference => Some(Self::WSReference),
             NodeKind::Subsystem => Some(Self::Subsystem),
             kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
         }
@@ -238,7 +248,11 @@ impl PropertiesSite {
                     crate::style_color::StyleItemColor::argument_schema(),
                 );
             }
-            Self::FunctionalOption | Self::Role | Self::Subsystem | Self::Configuration { .. } => {
+            Self::FunctionalOption
+            | Self::WSReference
+            | Self::Role
+            | Self::Subsystem
+            | Self::Configuration { .. } => {
                 for field in self.descriptor_fields() {
                     let schema = match field.kind() {
                         DescriptorPropertyKind::String => json!({"type":"string"}),
@@ -281,6 +295,7 @@ impl PropertiesOperation {
             Self::Set => OperationContract {
                 schema: object(&[("values", site.values_schema())], &["values"]),
                 target: match site {
+                    PropertiesSite::WSReference => "An existing registered WSReference in a configuration source set, platform XML 2.20. Only its existing LocationURL property can change.",
                     PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
@@ -288,18 +303,20 @@ impl PropertiesOperation {
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
                 notes: match site {
+                    PropertiesSite::WSReference => "LocationURL is an exact string; an empty string clears the existing field. Missing or damaged fields are refused. Editing preserves identity, registration and the local WSDL; it does not download WSDL/imports or generate a client. Preview writes nothing; publish only its execution token. Changes to the descriptor or configuration registration invalidate the saved plan.",
                     PropertiesSite::StyleItem => "Only values.Value is accepted: #RRGGBB or an enumerated web/builtin style color. Empty, null and arbitrary XML are refused. Type, identity and bytes outside Value stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
                     PropertiesSite::DocumentNumerator => json!({"values":{"NumberLength":12,"CheckUnique":true}}),
+                    PropertiesSite::WSReference => json!({"values":{"LocationURL":"https://example.invalid/service?wsdl"}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
                     PropertiesSite::StyleItem => json!({"values":{"Value":"#F0F0F0"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::FunctionalOption | PropertiesSite::WSReference | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -357,6 +374,25 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ws_reference_location_url_has_a_closed_existing_descriptor_contract() {
+        let address = QualifiedAddress::parse("main:WSReference.Probe").unwrap();
+        let site = PropertiesSite::from_address(&address)
+            .expect("an existing WSReference owns its LocationURL property profile");
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        assert!(oracle
+            .is_valid(&json!({"values":{"LocationURL":"https://example.invalid/?a=1&b=тест"}})));
+        for values in [
+            json!({"LocationURL":false}),
+            json!({"LocationURL":null}),
+            json!({"Name":"Other"}),
+            json!({"LocationURL":"one","locationURL":"two"}),
+        ] {
+            assert!(!oracle.is_valid(&json!({"values":values})), "{values}");
+        }
+    }
 
     #[test]
     fn functional_option_storage_properties_have_an_addressed_contract() {

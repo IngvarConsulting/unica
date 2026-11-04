@@ -92,6 +92,7 @@ pub enum DescriptorPropertyChanges {
     StyleItem(unica_metadata::style_color::StyleItemColor),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
+    WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
     Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
 }
@@ -1076,6 +1077,15 @@ pub fn parse_properties(
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
+    if site == PropertiesSite::WSReference
+        && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "WSReference LocationURL editing requires a configuration source set",
+        )
+        .at_path(format!("ops[{op_index}].args.at")));
+    }
     // ApplyRequest has already resolved the operation address. It is an
     // internal carrier key, not part of the published property arguments.
     let mut payload = args.clone();
@@ -1113,6 +1123,27 @@ pub fn parse_properties(
                 operation: MetaEditOperation::SetProperties { values },
                 addressed: None,
             });
+        }
+        unica_metadata::property_input::PropertiesIntent::WSReference(values) => {
+            crate::ws_reference::validate_location_url(&values.location_url).map_err(
+                |message| {
+                    let spelling = if args
+                        .get("values")
+                        .and_then(|values| values.get("locationURL"))
+                        .is_some()
+                    {
+                        "locationURL"
+                    } else {
+                        "LocationURL"
+                    };
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                        .at_path(format!("ops[{op_index}].args.values.{spelling}"))
+                },
+            )?;
+            (
+                "WSReferences",
+                DescriptorPropertyChanges::WSReference(values),
+            )
         }
         unica_metadata::property_input::PropertiesIntent::StyleItem(value) => {
             ("StyleItems", DescriptorPropertyChanges::StyleItem(value))
