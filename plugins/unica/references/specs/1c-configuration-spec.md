@@ -640,6 +640,16 @@ hex-хеш фиксированной длины, его нельзя счита
 | `ExtendedPresentation` | `LocalString` | Расширенное представление |
 | `Explanation` | `LocalString` | Пояснение |
 
+В назначениях отчёта `DefaultForm`, `DefaultSettingsForm` и
+`DefaultVariantForm` ссылка на общую форму записывается как
+`CommonForm.<Имя>`, без регистрации подчинённой `Form` у отчёта.
+Подтверждённый профиль управляемой общей формы имеет основной реквизит
+типа `cfg:ReportObject` и `ReportFormType` Main, Settings или Variant
+соответственно. Отсутствующий `ReportFormType` означает Main.
+Для `Constant.DefaultForm` подтверждена общая форма с основным реквизитом
+типа `cfg:ConstantsSet`. Префикс `cfg` здесь обозначает namespace
+`http://v8.1c.ru/8.1/data/enterprise/current-config`.
+
 ### 6.5. CommonCommand — общая команда
 
 Каталог: `CommonCommands/`. Файлы: `<Имя>.xml` + `<Имя>/Ext/CommandModule.bsl`.
