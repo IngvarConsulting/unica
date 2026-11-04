@@ -20,6 +20,7 @@ use unica_source_designer::roots::root_version_literal;
 use unica_xml_format::text::*;
 use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
 
+mod command_properties;
 mod conditional_appearance;
 
 pub const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
@@ -1442,25 +1443,9 @@ fn form_info_parameters(params: roxmltree::Node<'_, '_>) -> Vec<FormInfoParamete
 }
 
 fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand> {
-    form_children(commands, "Command")
+    form_children_in_ns(commands, "Command", FORM_LOGFORM_NS)
         .into_iter()
-        .map(|command| FormInfoCommand {
-            name: command.attribute("name").unwrap_or("").to_string(),
-            actions: form_children(command, "Action")
-                .into_iter()
-                .map(|action| FormInfoEvent {
-                    name: "Execute".to_string(),
-                    handler: action.text().unwrap_or("").to_string(),
-                    call_type: action.attribute("callType").map(str::to_string),
-                })
-                .collect(),
-            title: form_child_text(command, "Title"),
-            tooltip: form_child_text(command, "ToolTip"),
-            shortcut: form_child_text(command, "Shortcut"),
-            picture: form_child(command, "Picture")
-                .and_then(|picture| form_child_text(picture, "Ref")),
-            representation: form_child_text(command, "Representation"),
-        })
+        .map(command_properties::read)
         .collect()
 }
 
@@ -4701,6 +4686,16 @@ pub fn form_edit_find_element_nodes<'a, 'input>(
     root: roxmltree::Node<'a, 'input>,
     name: &str,
 ) -> Vec<roxmltree::Node<'a, 'input>> {
+    form_edit_find_named_element_nodes(root, name, |tag| {
+        FormElementKind::from_xml_tag(tag).is_some()
+    })
+}
+
+fn form_edit_find_named_element_nodes<'a, 'input>(
+    root: roxmltree::Node<'a, 'input>,
+    name: &str,
+    accepts_tag: impl Fn(&str) -> bool,
+) -> Vec<roxmltree::Node<'a, 'input>> {
     let auto_command_bar = root.children().find(|child| {
         child.is_element()
             && child.tag_name().namespace() == Some(FORM_LOGFORM_NS)
@@ -4733,7 +4728,7 @@ pub fn form_edit_find_element_nodes<'a, 'input>(
             node.is_element()
                 && node.tag_name().namespace() == Some(FORM_LOGFORM_NS)
                 && node.attribute("name") == Some(name)
-                && FormElementKind::from_xml_tag(node.tag_name().name()).is_some()
+                && accepts_tag(node.tag_name().name())
         }));
     }
     matches
@@ -5702,9 +5697,11 @@ fn form_edit_find_placement_element<'a, 'input>(
     root: roxmltree::Node<'a, 'input>,
     name: &str,
 ) -> Result<Option<roxmltree::Node<'a, 'input>>, String> {
-    // Share the working-tree lookup used for event targets. It includes
-    // root/table AutoCommandBar but never descends into the root BaseForm.
-    let matches = form_edit_find_element_nodes(root, name);
+    // A column group can anchor placement without being an event target.
+    // Keep the same working tree and exclude the root BaseForm.
+    let matches = form_edit_find_named_element_nodes(root, name, |tag| {
+        tag == "ColumnGroup" || FormElementKind::from_xml_tag(tag).is_some()
+    });
     match matches.as_slice() {
         [] => Ok(None),
         [node] => Ok(Some(*node)),
