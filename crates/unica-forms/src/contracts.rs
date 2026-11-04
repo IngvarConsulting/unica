@@ -561,7 +561,13 @@ pub fn form_set(kind: Option<&str>) -> OperationContract {
     let mut values = object(
         &keys
             .iter()
-            .map(|key| (*key, slot.clone()))
+            .map(|key| {
+                let mut field=slot.clone();
+                if kind.is_some_and(|kind| crate::default_forms::common_form_slot(kind, FORM_SLOTS.iter().find(|(name,_)|name == key).map_or("",|(_,property)|*property))) {
+                    field["description"]=json!("A form name or logical address of this owner, or the logical address of a compatible Managed CommonForm in the same source set. An empty string clears the slot. Report CommonForm requires a generic ReportObject main attribute and matching Main/Settings/Variant purpose (an absent ReportFormType means Main); Constant requires ConstantsSet.");
+                }
+                (*key,field)
+            })
             .collect::<Vec<_>>(),
         &[],
     );
@@ -571,7 +577,7 @@ pub fn form_set(kind: Option<&str>) -> OperationContract {
     OperationContract {
         schema: object(&[at(), ("values", values)], &["values"]),
         target: "The form owner: <source-set>:<Kind>.<Name>.",
-        effect: "Point the owner's default and auxiliary form slots at the named forms, or clear a slot with an empty string. Unlisted slots stay. Only the slots of the owner's kind are accepted.",
+        effect: "Point the owner's default and auxiliary form slots at the named forms, or clear a slot with an empty string. Unlisted slots stay. Only the slots of the owner's kind are accepted. Report defaultForm/defaultSettingsForm/defaultVariantForm and Constant defaultForm also accept the logical address of a compatible Managed CommonForm in the same source set.",
         notes: "Properties of a form itself (title, size, behaviour) are written by props.set at the form address.",
         example_args: json!({"values": example}),
         help: FORM_HELP,

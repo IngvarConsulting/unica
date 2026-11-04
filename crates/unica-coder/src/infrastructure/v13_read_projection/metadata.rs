@@ -32,6 +32,7 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "libraryRoots",
     // Поля, которые читатель не смог спроецировать (см. `metadata_payload`).
     "unreadable",
+    "wsdlDefinition",
 ];
 
 /// Скаляры корня объекта метаданных в его `props`.
@@ -86,15 +87,18 @@ pub(super) fn project_metadata_for_source(
 ) -> Result<NodeViewData, ViewError> {
     let profile = source_kind
         .filter(|kind| *kind == unica_source_contract::SourceSetKind::Configuration)
-        .filter(|_| {
-            address
-                .segments()
-                .first()
-                .is_some_and(|part| part.kind() == NodeKind::Catalog)
-        })
-        .filter(|_| payload.get("kind").and_then(Value::as_str) == Some("Catalog"))
         .and_then(|_| payload.get("memberReadProfile"))
-        .and_then(|value| serde_json::from_value(value.clone()).ok());
+        .and_then(|value| {
+            serde_json::from_value::<unica_metadata::MetaMemberReadProfile>(value.clone()).ok()
+        })
+        .filter(|profile| {
+            let owner = profile.owner_kind().as_str();
+            payload.get("kind").and_then(Value::as_str) == Some(owner)
+                && address
+                    .segments()
+                    .first()
+                    .is_some_and(|part| part.kind().as_str() == owner)
+        });
     project_metadata(address, payload, suffix, profile)
 }
 
@@ -196,6 +200,14 @@ fn project_metadata(
             })
             .collect::<Vec<_>>();
         let relations = metadata_relations(address, payload);
+        if payload.get("kind").and_then(Value::as_str) == Some("WSReference") {
+            if let Some(rows) = payload
+                .pointer("/wsdlDefinition/rows")
+                .and_then(Value::as_array)
+            {
+                branches.push(BranchRef::new(format!("{address}.Definition"), rows.len()));
+            }
+        }
         if matches!(address.segments(), [owner] if owner.kind() == NodeKind::ScheduledJob) {
             branches.push(BranchRef::new(format!("{address}.Schedule"), 1));
         }
@@ -302,6 +314,26 @@ fn project_metadata(
             )
             .with_limits(metadata_relation_limits(payload)),
             metadata_relations(address, payload),
+        )));
+    }
+    if first.kind() == NodeKind::Definition
+        && first.name().is_none()
+        && suffix.len() == 1
+        && payload.get("kind").and_then(Value::as_str) == Some("WSReference")
+    {
+        let rows = payload
+            .pointer("/wsdlDefinition/rows")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "local WSDL observation is unavailable",
+                )
+            })?;
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Definition", "Local WSDL", Map::new())
+                .with_limits(wsdl_limits(payload)),
+            rows.clone(),
         )));
     }
     // Непрочитанная коллекция приходит `null`; без этой проверки она читалась
@@ -436,7 +468,19 @@ fn project_metadata(
 fn metadata_limits(payload: &Value) -> Vec<String> {
     let mut limits = unreadable_limits(payload);
     limits.extend(metadata_missing_relation_limits(payload));
+    limits.extend(wsdl_limits(payload));
     limits
+}
+
+fn wsdl_limits(payload: &Value) -> Vec<String> {
+    payload
+        .pointer("/wsdlDefinition/limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
 
 const METADATA_DETAIL_RELATIONS: &[(&str, &str, &str)] = &[

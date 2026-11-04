@@ -1415,3 +1415,37 @@ fn contextual_form_event_does_not_accept_server_no_context() {
         assert_eq!(fs::read_to_string(&path).unwrap(), source);
     }
 }
+
+#[test]
+fn managed_form_without_support_state_keeps_content_when_declaration_is_damaged() {
+    let fixture = RealReaderFixture::new();
+    install_form_metadata_test_sources(&fixture);
+    assert!(!fixture.source.join("Ext/ParentConfigurations.bin").exists());
+    for (at, path) in [
+        ("main:CommonForm.ОбщаяФорма", "CommonForms/ОбщаяФорма.xml"),
+        (
+            "main:DataProcessor.Обработка.Form.Форма",
+            "DataProcessors/Обработка/Forms/Форма.xml",
+        ),
+    ] {
+        let descriptor = fixture.source.join(path);
+        let xml = fs::read_to_string(&descriptor)
+            .unwrap()
+            .replace(" uuid=\"e9455333-3333-4333-8333-333333333333\"", "")
+            .replace(
+                "</Properties>",
+                "<Comment>one</Comment><Comment>two</Comment></Properties>",
+            );
+        fs::write(descriptor, xml).unwrap();
+        let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
+        assert!(
+            result.ok,
+            "content remains readable independently of declaration: {result:?}"
+        );
+        let data = result.data.unwrap();
+        assert_eq!(data["kind"], "Form");
+        assert!(data["limits"].as_array().unwrap().iter().any(|limit| limit
+            .as_str()
+            .is_some_and(|message| message.contains("declaration"))));
+    }
+}
