@@ -11296,11 +11296,67 @@
           },
           {
            "at": "cf:Report.F05Report.Template.NewSkeleton.Setting.Основной.Property",
-           "count": 1
+           "count": 3
           }
          ]
         }
        ]
+      }
+     ]
+    },
+    {
+     "tool": "unica.view",
+     "args": {
+      "at": "cf:Report.F05Report.Template.NewSkeleton.Setting.Основной.Property"
+     },
+     "expect": [
+      "ok"
+     ],
+     "assertions": [
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "scope": "root",
+         "kind": "FilterContainer",
+         "state": "absent"
+        },
+        {
+         "scope": "structure",
+         "kind": "Selection",
+         "structureIndex": 0,
+         "itemType": "SelectedItemAuto",
+         "index": 0
+        },
+        {
+         "scope": "structure",
+         "kind": "FilterContainer",
+         "state": "absent",
+         "structureIndex": 0
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/cf/Reports/F05Report/Templates/NewSkeleton/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item",
+       "eq": [
+        ""
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/NewSkeleton/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}filter",
+       "eq": []
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/NewSkeleton/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}filter",
+       "eq": []
       }
      ]
     },
@@ -26891,24 +26947,162 @@
      ],
      "assertions": [
       {
-       "pointer": "/data/items/1/kind",
+       "pointer": "/data/items/2/kind",
        "eq": "ConditionalAppearance"
       },
       {
-       "pointer": "/data/items/1/index",
+       "pointer": "/data/items/2/index",
        "eq": 0
       },
       {
-       "pointer": "/data/items/1/fields",
+       "pointer": "/data/items/2/fields",
        "eq": "Amount"
       },
       {
-       "pointer": "/data/items/2/index",
+       "pointer": "/data/items/5/index",
        "eq": 1
       },
       {
-       "pointer": "/data/items/2/fields",
+       "pointer": "/data/items/5/fields",
        "eq": "Category"
+      },
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "scope": "root",
+         "kind": "FilterContainer",
+         "state": "absent"
+        },
+        {
+         "scope": "root",
+         "kind": "OutputParameter",
+         "itemType": "SettingsParameterValue",
+         "index": 0,
+         "name": "Title",
+         "value": "Unchanged"
+        },
+        {
+         "scope": "root",
+         "kind": "ConditionalAppearance",
+         "index": 0,
+         "fields": "Amount",
+         "filterState": "absent"
+        },
+        {
+         "scope": "root",
+         "kind": "FilterContainer",
+         "state": "absent",
+         "appearanceIndex": 0
+        },
+        {
+         "scope": "root",
+         "kind": "AppearanceParameter",
+         "appearanceIndex": 0,
+         "index": 0,
+         "unreadable": [
+          "appearance parameter is outside the width profile"
+         ]
+        },
+        {
+         "scope": "root",
+         "kind": "ConditionalAppearance",
+         "index": 1,
+         "fields": "Category",
+         "filterState": "absent"
+        },
+        {
+         "scope": "root",
+         "kind": "FilterContainer",
+         "state": "absent",
+         "appearanceIndex": 1
+        },
+        {
+         "scope": "root",
+         "kind": "AppearanceParameter",
+         "appearanceIndex": 1,
+         "index": 0,
+         "unreadable": [
+          "appearance parameter is outside the width profile"
+         ]
+        },
+        {
+         "scope": "structure",
+         "kind": "Selection",
+         "structureIndex": 0,
+         "itemType": "SelectedItemAuto",
+         "index": 0
+        },
+        {
+         "scope": "structure",
+         "kind": "FilterContainer",
+         "state": "absent",
+         "structureIndex": 0
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+       "eq": [
+        "Amount",
+        "Category"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item/{http://v8.1c.ru/8.1/data-composition-system/core}parameter",
+       "eq": [
+        "Title"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item/{http://v8.1c.ru/8.1/data-composition-system/core}value",
+       "eq": [
+        "Unchanged"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}appearance/{http://v8.1c.ru/8.1/data-composition-system/core}item/{http://v8.1c.ru/8.1/data-composition-system/core}parameter",
+       "eq": [
+        "Format",
+        "Format"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}appearance/{http://v8.1c.ru/8.1/data-composition-system/core}item/{http://v8.1c.ru/8.1/data-composition-system/core}value/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+       "eq": [
+        "ЧДЦ=2",
+        "ЧРГ=0"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}filter",
+       "eq": []
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}filter",
+       "eq": []
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}filter",
+       "eq": []
       }
      ]
     },
@@ -27225,12 +27419,108 @@
        "eq": "SelectedItemAuto"
       },
       {
-       "pointer": "/data/items/2/kind",
+       "pointer": "/data/items/3/kind",
        "eq": "Order"
       },
       {
-       "pointer": "/data/items/2/itemType",
+       "pointer": "/data/items/3/itemType",
        "eq": "OrderItemAuto"
+      },
+      {
+       "pointer": "/data/items",
+       "eq": [
+        {
+         "scope": "root",
+         "kind": "Selection",
+         "itemType": "SelectedItemAuto",
+         "index": 0
+        },
+        {
+         "scope": "root",
+         "kind": "Selection",
+         "itemType": "SelectedItemField",
+         "index": 1,
+         "field": "Amount"
+        },
+        {
+         "scope": "root",
+         "kind": "FilterContainer",
+         "state": "absent"
+        },
+        {
+         "scope": "root",
+         "kind": "Order",
+         "itemType": "OrderItemAuto",
+         "index": 0
+        },
+        {
+         "scope": "root",
+         "kind": "Order",
+         "itemType": "OrderItemField",
+         "index": 1,
+         "field": "Amount",
+         "direction": "Desc"
+        },
+        {
+         "scope": "structure",
+         "kind": "Selection",
+         "structureIndex": 0,
+         "itemType": "SelectedItemAuto",
+         "index": 0
+        },
+        {
+         "scope": "structure",
+         "kind": "FilterContainer",
+         "state": "absent",
+         "structureIndex": 0
+        }
+       ]
+      }
+     ],
+     "fileAssertions": [
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+       "eq": [
+        "Amount"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}order/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+       "eq": [
+        "Amount"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}order/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}orderType",
+       "eq": [
+        "Desc"
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item",
+       "eq": [
+        ""
+       ]
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}filter",
+       "eq": []
+      },
+      {
+       "path": "src/cf/Reports/F05Report/Templates/PrimitiveAuto/Ext/Template.xml",
+       "kind": "xml",
+       "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}filter",
+       "eq": []
       }
      ]
     },

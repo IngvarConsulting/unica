@@ -527,3 +527,76 @@ fn appearance_container_view_mode_is_not_an_extra_rule() {
         read(NESTED_SETTINGS).variants[1].setting_items
     );
 }
+
+fn scalar_setting_fact(type_attributes: &str, value: &str) -> serde_json::Value {
+    let xml = NESTED_SETTINGS.replacen(
+        r#"xsi:type="xs:decimal">0</dcsset:right>"#,
+        &format!("{type_attributes}>{value}</dcsset:right>"),
+        1,
+    );
+    assert_ne!(xml, NESTED_SETTINGS);
+    read(&xml).variants[0]
+        .setting_items
+        .iter()
+        .find(|row| row["kind"] == "Filter")
+        .unwrap()
+        .clone()
+}
+
+#[test]
+fn scalar_setting_qnames_use_local_default_bindings_and_xml_whitespace() {
+    for attrs in [
+        r#"xmlns="http://www.w3.org/2001/XMLSchema" xsi:type="decimal""#,
+        r#"xsi:type=" &#x9;xs:decimal&#xA; ""#,
+        r#"xmlns:t="http://www.w3.org/2001/XMLSchema" xsi:type="t:decimal""#,
+    ] {
+        let row = scalar_setting_fact(attrs, " +000.00 ");
+        assert_eq!(
+            row["typedValue"],
+            json!({
+                "type":{"namespace":"http://www.w3.org/2001/XMLSchema","localName":"decimal"},
+                "value":" +000.00 "
+            }),
+            "{attrs}"
+        );
+        assert!(row.get("unreadable").is_none(), "{row}");
+    }
+}
+
+#[test]
+fn scalar_setting_non_xml_whitespace_is_not_a_valid_number_or_boolean() {
+    for (kind, value) in [("boolean", "false"), ("decimal", "0"), ("integer", "0")] {
+        let row = scalar_setting_fact(
+            &format!(r#"xsi:type="xs:{kind}""#),
+            &format!("&#160;{value}&#160;"),
+        );
+        assert!(row.get("typedValue").is_none(), "{row}");
+        assert!(row.get("unreadable").is_some(), "{row}");
+    }
+    let row = scalar_setting_fact(r#"xsi:type="xs:string""#, "&#160;false&#160;");
+    assert_eq!(row["typedValue"]["value"], "\u{a0}false\u{a0}");
+    assert!(row.get("unreadable").is_none());
+}
+
+#[test]
+fn scalar_setting_int_range_differs_from_unbounded_integer() {
+    for value in [
+        "-2147483648",
+        "2147483647",
+        "+0002147483647",
+        "-0002147483648",
+    ] {
+        let row = scalar_setting_fact(r#"xsi:type="xs:int""#, value);
+        assert_eq!(row["typedValue"]["value"], value, "{row}");
+        assert!(row.get("unreadable").is_none(), "{row}");
+    }
+    for value in ["-2147483649", "2147483648"] {
+        let row = scalar_setting_fact(r#"xsi:type="xs:int""#, value);
+        assert!(row.get("typedValue").is_none(), "{row}");
+        assert!(row.get("unreadable").is_some(), "{row}");
+    }
+    let value = "1234567890123456789012345678901234567890";
+    let row = scalar_setting_fact(r#"xsi:type="xs:integer""#, value);
+    assert_eq!(row["typedValue"]["value"], value);
+    assert!(row.get("unreadable").is_none());
+}

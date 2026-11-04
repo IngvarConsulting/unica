@@ -291,24 +291,29 @@ fn typed_value(node: roxmltree::Node<'_, '_>) -> Result<TypedValue, &'static str
     if node.children().any(|child| child.is_element()) || node.attributes().len() != 1 {
         return Err("value is not a scalar with one declared type");
     }
+    let xml_space = |ch| matches!(ch, ' ' | '\t' | '\r' | '\n');
     let raw = node
         .attribute((XML_SCHEMA_INSTANCE_NS, "type"))
-        .ok_or("value type is absent")?;
-    let (prefix, local) = raw.split_once(':').ok_or("value type is not qualified")?;
+        .ok_or("value type is absent")?
+        .trim_matches(xml_space);
+    let (prefix, local) = raw
+        .split_once(':')
+        .map_or((None, raw), |(prefix, local)| (Some(prefix), local));
     let ns = node
-        .lookup_namespace_uri(Some(prefix))
-        .ok_or("value type prefix is not declared")?;
+        .lookup_namespace_uri(prefix)
+        .ok_or("value type namespace is not declared")?;
     let value = unica_xml_format::read::direct_text(node);
     if ns != "http://www.w3.org/2001/XMLSchema" {
         return Err("value type is outside the scalar settings profile");
     }
-    let trimmed = value.trim();
+    let trimmed = value.trim_matches(xml_space);
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
     let unsigned = trimmed.strip_prefix(['+', '-']).unwrap_or(trimmed);
     let valid = match local {
         "string" => true,
         "boolean" => matches!(trimmed, "true" | "false" | "0" | "1"),
-        "int" | "integer" => digits(unsigned),
+        "int" => trimmed.parse::<i32>().is_ok(),
+        "integer" => digits(unsigned),
         "decimal" => match unsigned.split_once('.') {
             Some((whole, part)) => {
                 (whole.is_empty() || digits(whole))
