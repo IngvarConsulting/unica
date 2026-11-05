@@ -506,7 +506,7 @@ fn reject_absent_runner(absence: RunnerAbsence) -> DomainResult {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::super::v13_infobase_exports::map_runner_code;
     use super::*;
     use std::fs;

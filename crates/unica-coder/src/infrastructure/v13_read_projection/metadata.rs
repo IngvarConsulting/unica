@@ -32,6 +32,7 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "libraryRoots",
     // Поля, которые читатель не смог спроецировать (см. `metadata_payload`).
     "unreadable",
+    "wsdlDefinition",
 ];
 
 /// Скаляры корня объекта метаданных в его `props`.
@@ -54,6 +55,9 @@ const ITEM_SCALAR_KEYS: &[&str] = &[
     "synonym",
     "comment",
     "required",
+    "master",
+    "mainFilter",
+    "denyIncompleteValues",
     "fillValue",
     "addressingDimension",
     "incomplete",
@@ -86,15 +90,18 @@ pub(super) fn project_metadata_for_source(
 ) -> Result<NodeViewData, ViewError> {
     let profile = source_kind
         .filter(|kind| *kind == unica_source_contract::SourceSetKind::Configuration)
-        .filter(|_| {
-            address
-                .segments()
-                .first()
-                .is_some_and(|part| part.kind() == NodeKind::Catalog)
-        })
-        .filter(|_| payload.get("kind").and_then(Value::as_str) == Some("Catalog"))
         .and_then(|_| payload.get("memberReadProfile"))
-        .and_then(|value| serde_json::from_value(value.clone()).ok());
+        .and_then(|value| {
+            serde_json::from_value::<unica_metadata::MetaMemberReadProfile>(value.clone()).ok()
+        })
+        .filter(|profile| {
+            let owner = profile.owner_kind().as_str();
+            payload.get("kind").and_then(Value::as_str) == Some(owner)
+                && address
+                    .segments()
+                    .first()
+                    .is_some_and(|part| part.kind().as_str() == owner)
+        });
     project_metadata(address, payload, suffix, profile)
 }
 
@@ -180,9 +187,20 @@ fn project_metadata(
             .unwrap_or_default(),
             _ => &[],
         };
+        let addressing_issue = task_addressing_applies(address, payload)
+            .then(|| task_addressing_issue(payload))
+            .flatten();
+        if let Some(reason) = &addressing_issue {
+            limits.push(reason.clone());
+        }
         let mut branches = metadata_branch_kinds()
             .iter()
             .filter_map(|kind| {
+                if *kind == NodeKind::AddressingAttribute
+                    && (!task_addressing_applies(address, payload) || addressing_issue.is_some())
+                {
+                    return None;
+                }
                 let value = metadata_collection(payload, *kind);
                 let count = match (kind, predefined_total) {
                     (NodeKind::PredefinedItem, Some(total)) => {
@@ -196,6 +214,14 @@ fn project_metadata(
             })
             .collect::<Vec<_>>();
         let relations = metadata_relations(address, payload);
+        if payload.get("kind").and_then(Value::as_str) == Some("WSReference") {
+            if let Some(rows) = payload
+                .pointer("/wsdlDefinition/rows")
+                .and_then(Value::as_array)
+            {
+                branches.push(BranchRef::new(format!("{address}.Definition"), rows.len()));
+            }
+        }
         if matches!(address.segments(), [owner] if owner.kind() == NodeKind::ScheduledJob) {
             branches.push(BranchRef::new(format!("{address}.Schedule"), 1));
         }
@@ -302,6 +328,37 @@ fn project_metadata(
             )
             .with_limits(metadata_relation_limits(payload)),
             metadata_relations(address, payload),
+        )));
+    }
+    if first.kind() == NodeKind::AddressingAttribute {
+        if !task_addressing_applies(address, payload) {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "AddressingAttribute belongs only to a named Task",
+            ));
+        }
+        if let Some(reason) = task_addressing_issue(payload) {
+            return Err(ViewError::detailed(RefusalDetail::SourceUnreadable, reason));
+        }
+    }
+    if first.kind() == NodeKind::Definition
+        && first.name().is_none()
+        && suffix.len() == 1
+        && payload.get("kind").and_then(Value::as_str) == Some("WSReference")
+    {
+        let rows = payload
+            .pointer("/wsdlDefinition/rows")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "local WSDL observation is unavailable",
+                )
+            })?;
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Definition", "Local WSDL", Map::new())
+                .with_limits(wsdl_limits(payload)),
+            rows.clone(),
         )));
     }
     // Непрочитанная коллекция приходит `null`; без этой проверки она читалась
@@ -436,7 +493,19 @@ fn project_metadata(
 fn metadata_limits(payload: &Value) -> Vec<String> {
     let mut limits = unreadable_limits(payload);
     limits.extend(metadata_missing_relation_limits(payload));
+    limits.extend(wsdl_limits(payload));
     limits
+}
+
+fn wsdl_limits(payload: &Value) -> Vec<String> {
+    payload
+        .pointer("/wsdlDefinition/limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
 
 const METADATA_DETAIL_RELATIONS: &[(&str, &str, &str)] = &[
@@ -531,6 +600,7 @@ fn unreadable_limits(payload: &Value) -> Vec<String> {
 /// «нет такой коллекции», и агент счёл бы сервис пустым.
 fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
     let (prefix, property) = match kind {
+        NodeKind::AddressingAttribute => ("collections.addressingAttributes", None),
         NodeKind::PredefinedItem => ("predefinedItems", None),
         NodeKind::UrlTemplate => ("details.urlTemplates", None),
         NodeKind::Operation => ("details.operations", None),
@@ -561,6 +631,30 @@ fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
     (!reasons.is_empty()).then(|| reasons.join("; "))
 }
 
+fn task_addressing_applies(address: &QualifiedAddress, payload: &Value) -> bool {
+    address
+        .segments()
+        .first()
+        .is_some_and(|owner| owner.kind() == NodeKind::Task && owner.name().is_some())
+        && payload.get("kind").and_then(Value::as_str) == Some("Task")
+}
+
+// The optional native collection distinguishes an unreadable/absent container
+// from a proved empty collection. Never run the generic empty fallback for it.
+fn task_addressing_issue(payload: &Value) -> Option<String> {
+    if let Some(reason) = unreadable_collection(payload, NodeKind::AddressingAttribute) {
+        return Some(format!(
+            "metadata AddressingAttribute collection is unreadable: {reason}"
+        ));
+    }
+    if metadata_collection(payload, NodeKind::AddressingAttribute)
+        .is_none_or(|value| !value.is_array())
+    {
+        return Some("collections.addressingAttributes is unknown: Task ChildObjects is absent or unreadable".into());
+    }
+    None
+}
+
 fn unreadable_entries(payload: &Value) -> impl Iterator<Item = (&str, &str)> {
     payload
         .get("unreadable")
@@ -585,6 +679,7 @@ fn metadata_branch_kinds() -> &'static [NodeKind] {
         NodeKind::Dimension,
         NodeKind::Resource,
         NodeKind::Attribute,
+        NodeKind::AddressingAttribute,
         NodeKind::StandardAttribute,
         NodeKind::TabularSection,
         NodeKind::StandardTabularSection,
@@ -606,6 +701,11 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
     let declarations = payload.get("declarations");
     match kind {
         NodeKind::Attribute => collections.get("attributes"),
+        NodeKind::AddressingAttribute
+            if payload.get("kind").and_then(Value::as_str) == Some("Task") =>
+        {
+            collections.get("addressingAttributes")
+        }
         NodeKind::StandardAttribute => declarations?.get("standardAttributes"),
         NodeKind::Characteristic => declarations?.get("characteristics"),
         NodeKind::StandardTabularSection => declarations?.get("standardTabularSections"),
