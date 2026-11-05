@@ -35,6 +35,7 @@ fn install(f: &RealReaderFixture, name: &str, properties: &str) -> PathBuf {
     );
     path
 }
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn filter_criterion_content_preserves_eight_full_declarations_and_false_true() {
     for (name, refs, flag) in [
@@ -82,6 +83,8 @@ fn filter_criterion_content_preserves_eight_full_declarations_and_false_true() {
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
+/// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
 #[test]
 fn filter_criterion_content_distinguishes_empty_missing_and_partial_declarations() {
     let valid = "Catalog.Items.Attribute.Article";
@@ -108,6 +111,8 @@ fn filter_criterion_boolean_damage_does_not_hide_content_or_invent_false() {
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-QUESTION-COMPLETENESS
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn filter_criterion_declarations_keep_dangling_targets_and_follow_real_nested_targets() {
     let f = RealReaderFixture::new();
@@ -138,6 +143,7 @@ fn filter_criterion_declarations_keep_dangling_targets_and_follow_real_nested_ta
     }
 }
 
+/// rule: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
 #[test]
 fn filter_criterion_reads_current_owner_bytes_and_registration() {
     let f = RealReaderFixture::new();

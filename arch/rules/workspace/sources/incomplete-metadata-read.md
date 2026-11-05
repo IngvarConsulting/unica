@@ -1,25 +1,5 @@
 ---
 id: INV.SOURCE.INCOMPLETE-METADATA-READ
-check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests/filter_criterion_content.rs::filter_criterion_content_distinguishes_empty_missing_and_partial_declarations
-  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_damage_is_local_in_owner_row_and_detail
-  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_tooltip.rs::catalog_attribute_tooltip_empty_set_reads_as_absence_but_an_empty_translation_survives
-  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_damage_limits_only_the_named_fact_in_owner_row_and_detail
-  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_attribute_properties.rs::catalog_attribute_profile_absence_is_not_filled_from_parent_sibling_or_template
-  - crates/unica-metadata/src/member_read_profile/tests.rs::member_profile_owns_only_exact_context_property_diagnostics
-  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_tabular_properties.rs::catalog_tabular_profile_damage_is_local_to_the_observed_fact
-  - crates/unica-coder/src/infrastructure/v13_read/tests/catalog_tabular_properties.rs::catalog_tabular_profile_missing_facts_are_not_filled_from_sibling_or_template
-  - crates/unica-metadata-designer/src/form_metadata.rs::form_use_purposes_preserves_absence_empty_and_malformed_observations
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::specialized_relation_limits_distinguish_absence_empty_and_damage
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_relation_preserves_known_targets_and_reports_incompleteness
-  - crates/unica-coder/src/infrastructure/native_operations/meta/info_tests.rs::missing_write_mode_does_not_claim_complete_registrar_evidence
-  - crates/unica-metadata-designer/tests/platform/info_projection.rs::property_observation_distinguishes_missing_false_empty_nil_and_damage
-  - crates/unica-coder/src/infrastructure/native_operations/meta/info_tests.rs::platform_incomplete_borrowed_metadata_keeps_local_observations
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::missing_or_damaged_code_type_limits_only_dependent_predefined_read
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::platform_borrowed_common_module_preserves_unknown_contexts_and_independent_facts
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::unknown_facts_of_borrowed_objects_are_named_as_node_limits
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/inherited_content_tests.rs::predefined_writes_refuse_an_owner_without_code_type
-  - crates/unica-coder/src/infrastructure/native_operations/meta/predefined.rs::predefined_writer_refuses_an_owner_without_code_type_like_the_reader
 ---
 
 # Неполное описание сохраняет независимые локальные сведения

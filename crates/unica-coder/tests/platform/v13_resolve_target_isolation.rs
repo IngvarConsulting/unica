@@ -2,6 +2,7 @@
 
 use super::*;
 
+/// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
 #[test]
 fn resolve_path_checks_only_target_and_necessary_owner_on_public_mcp() {
     use std::os::unix::fs::symlink;
@@ -122,6 +123,7 @@ fn resolve_path_checks_only_target_and_necessary_owner_on_public_mcp() {
     mcp.finish();
 }
 
+/// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
 #[test]
 fn resolve_relative_source_prefix_skips_foreign_linked_collections_on_public_mcp() {
     use std::os::unix::fs::symlink;
@@ -234,6 +236,7 @@ fn resolve_relative_source_prefix_skips_foreign_linked_collections_on_public_mcp
     mcp.finish();
 }
 
+/// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
 #[test]
 fn resolve_path_does_not_inherit_the_search_source_set_limit() {
     let root = tempfile::tempdir().expect("resolve workspace");
@@ -293,6 +296,7 @@ fn resolve_path_does_not_inherit_the_search_source_set_limit() {
     mcp.finish();
 }
 
+/// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
 #[test]
 fn resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_alias() {
     use std::os::unix::fs::symlink;
@@ -425,6 +429,7 @@ fn resolve_absolute_xml_ignores_a_broken_foreign_target_and_reports_ambiguous_al
     mcp.finish();
 }
 
+/// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
 #[test]
 fn resolve_absolute_path_uses_the_deepest_admitted_source_root() {
     let root = tempfile::tempdir().expect("nested source workspace");
@@ -464,6 +469,7 @@ fn resolve_absolute_path_uses_the_deepest_admitted_source_root() {
     mcp.finish();
 }
 
+/// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
 #[test]
 fn resolve_path_succeeds_above_the_full_directory_byte_budget() {
     let root = tempfile::tempdir().expect("large resolve workspace");

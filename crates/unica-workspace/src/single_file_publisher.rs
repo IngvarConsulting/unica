@@ -1982,6 +1982,7 @@ mod medium_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.ATOMIC-PUBLISH
     #[test]
     fn precommit_failpoints_preserve_target_and_remove_stage() {
         let cases = [
