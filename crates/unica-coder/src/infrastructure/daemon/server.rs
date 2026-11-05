@@ -1741,6 +1741,10 @@ pub(crate) mod actor_capacity_tests {
     use unica_workspace::actor::{IndexWorkIdentity, WorkspaceSourceSetInput};
     use unica_workspace::test_support::retained_read_probe::{RetainedRead, RetainedReadProbe};
 
+    mod apply_read_stability_tests {
+        include!("apply_read_stability_tests.rs");
+    }
+
     thread_local! {
         static LOGICAL_READ_NOW: RefCell<Option<Instant>> = const { RefCell::new(None) };
     }

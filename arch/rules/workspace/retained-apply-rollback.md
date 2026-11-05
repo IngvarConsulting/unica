@@ -1,10 +1,10 @@
 ---
 id: INV.CACHE.RETAINED-APPLY-REVISION-ROLLBACK
 check:
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::retained_rollback_cleans_new_directories_without_deleting_foreign_children
   - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::real_effect_after_all_postimages_cancellation_rolls_back_exact_state
   - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::real_effect_after_all_postimages_deadline_rolls_back_exact_state
   - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::retained_apply_failures_restore_source_cache_and_revision_machine_exactly
-gap: https://github.com/IngvarConsulting/unica/issues/971
 ---
 
 # Неудачное применение правок откатывается целиком
@@ -24,5 +24,7 @@ gap: https://github.com/IngvarConsulting/unica/issues/971
 исходники и кеш тоже восстанавливаются. Восстановление
 после аварийного завершения процесса эти проверки не доказывают.
 
-Откат удаляет пустые каталоги, созданные этой партией. Сценарий с новой
-цепочкой каталогов и чужой подменой ещё требует проверки, указанной в `gap`.
+Откат удаляет пустые каталоги, созданные этой партией, включая новую цепочку
+каталогов. Чужое содержимое в созданном каталоге сохраняется. Если оно мешает
+удалить каталог, невозможность полного отката возвращается типизированной
+ошибкой; успешной квитанции нет.
