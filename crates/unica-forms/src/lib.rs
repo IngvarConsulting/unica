@@ -271,15 +271,19 @@ pub enum FormItemRole {
 pub enum FormObservation {
     Item(FormItemRole),
     ValueTableAttribute,
+    ValueTableColumn,
 }
 impl FormObservation {
     pub fn from_attribute_type(type_name: &str) -> Option<Self> {
         (type_name == "ValueTable").then_some(Self::ValueTableAttribute)
     }
+    pub fn from_column_parent_type(type_name: &str) -> Option<Self> {
+        (type_name == "ValueTable").then_some(Self::ValueTableColumn)
+    }
     pub fn item_role(self) -> Option<FormItemRole> {
         match self {
             Self::Item(role) => Some(role),
-            Self::ValueTableAttribute => None,
+            Self::ValueTableAttribute | Self::ValueTableColumn => None,
         }
     }
 }

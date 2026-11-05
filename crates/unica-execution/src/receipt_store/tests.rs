@@ -28,7 +28,8 @@ use unica_workspace::test_support::{
 };
 
 #[cfg(test)]
-mod crash_process_tests;
+#[path = "tests/crash_process_tests.rs"]
+mod medium_crash_process_tests;
 
 const INVOCATION_A: &str = "11111111-1111-4111-8111-111111111111";
 const INVOCATION_B: &str = "22222222-2222-4222-8222-222222222222";
@@ -6033,7 +6034,7 @@ fn recovery_deadline_is_rechecked_after_generation_healing_publication() {
 }
 
 #[test]
-fn default_recovery_completes_after_former_automatic_timeout() {
+fn medium_default_recovery_completes_after_former_automatic_timeout() {
     for retained_directory in [false, true] {
         let root = tempfile::tempdir().expect("temporary root");
         let receipts = fs::canonicalize(root.path()).unwrap().join("receipts");

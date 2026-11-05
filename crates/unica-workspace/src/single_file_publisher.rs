@@ -1674,7 +1674,7 @@ impl Drop for StageGuard {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         cleanup_publication_artifact, create_stage_with_candidates, publish,
         with_before_bound_cleanup_hook, with_before_commit_hook,

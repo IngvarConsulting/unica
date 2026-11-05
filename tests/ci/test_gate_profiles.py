@@ -24,22 +24,22 @@ GATES = ("pr", "queue", "main", "release")
 # file that declares them: map capacity checks and the real-time daemon run
 # past the former operation deadlines (#1251).
 LARGE_LIBRARY_MODULES = {
-    ("unica_coder", "infrastructure::daemon::receipt_runtime_tests::"): (
+    ("unica_coder", "infrastructure::daemon::medium_receipt_runtime_tests::"): (
         "crates/unica-coder/tests/platform/receipt_runtime.rs",
-        "infrastructure::daemon::receipt_runtime_tests::",
+        "infrastructure::daemon::medium_receipt_runtime_tests::",
     ),
     # Root check and resource inspection past the former corpus caps (#1119).
-    ("unica_coder", "infrastructure::daemon::v13_workspace_bootstrap::tests::"): (
+    ("unica_coder", "infrastructure::daemon::v13_workspace_bootstrap::medium_tests::"): (
         "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs",
         "infrastructure::daemon::v13_workspace_bootstrap::",
     ),
-    ("unica_project_health", "inspection::resources::tests::"): (
+    ("unica_project_health", "inspection::resources::medium_tests::"): (
         "crates/unica-project-health/tests/platform/project_health_resources.rs",
-        "inspection::resources::tests::",
+        "inspection::resources::medium_tests::",
     ),
-    ("unica_project_health", "inspection::git::tests::"): (
+    ("unica_project_health", "inspection::git::medium_tests::"): (
         "crates/unica-project-health/tests/platform/project_health_git.rs",
-        "inspection::git::tests::",
+        "inspection::git::medium_tests::",
     ),
     ("selection", ""): (
         "crates/unica-source-integration-tests/tests/selection.rs",
