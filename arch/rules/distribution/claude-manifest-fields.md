@@ -1,8 +1,5 @@
 ---
 id: INV.PKG.OLDEST-CLIENT-KEYS
-check:
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_claude_contracts_avoid_keys_older_clients_reject
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_claude_manifest_leaves_skill_discovery_to_the_default_scan
 ---
 
 # Манифест и каталог Claude используют ограниченный набор полей

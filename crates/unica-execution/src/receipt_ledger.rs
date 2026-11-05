@@ -4184,6 +4184,7 @@ mod tests {
         .is_err());
     }
 
+    /// rule: INV.APP.DAEMON-RESULT-SIZE
     #[test]
     fn canonical_completed_terminal_rejects_result_over_eight_mib() {
         let oversized = ReceiptTerminalOutcome::Completed {
@@ -4198,6 +4199,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-RESULT-SIZE
     #[test]
     fn oversized_result_becomes_a_size_refusal_that_names_both_sizes() {
         let mut oversized = DomainResult::success("x".repeat(MAX_CANONICAL_RESULT_BYTES));
@@ -4260,6 +4262,7 @@ mod tests {
         assert!(result.summary.contains("delivery"));
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn recovery_that_cannot_be_delivered_is_rejected_before_terminal_admission() {
         let mut result = DomainResult::success("ambiguous target");

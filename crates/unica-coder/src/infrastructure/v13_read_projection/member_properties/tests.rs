@@ -256,6 +256,7 @@ fn catalog_tabular_provider_profile_rejects_duplicates_without_hiding_independen
     }
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn catalog_tabular_provider_profile_does_not_publish_unknown_names_or_raw_item_keys() {
     let mut properties = observed_properties();

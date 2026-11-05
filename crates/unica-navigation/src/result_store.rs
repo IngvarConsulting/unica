@@ -1982,6 +1982,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn live_search_keeps_all_300_independent_chains_and_their_replay() {
         let store = SearchCursorStore::default();
@@ -2008,6 +2009,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn live_search_keeps_the_exact_question_past_eight_mib() {
         let store = SearchCursorStore::default();
@@ -2056,6 +2058,7 @@ mod medium_tests {
         assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_cursor_lifetime_is_the_actual_owner_without_retained_entries() {
         let store = SearchCursorStore::default();
@@ -2097,6 +2100,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_authentication_rejects_every_changed_token_byte_and_noncanonical_encoding() {
         let store = SearchCursorStore::default();
@@ -2163,6 +2167,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn search_next_answer_rebinds_only_the_answer_and_replays_its_token() {
         let store = SearchCursorStore::default();
@@ -2230,6 +2235,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_every_question_field_precedes_answer_fingerprint_validation() {
         let store = SearchCursorStore::default();
@@ -2270,6 +2276,7 @@ mod medium_tests {
         assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_failed_key_entropy_publishes_nothing_and_retry_uses_a_real_key() {
         fn partial_failure(bytes: &mut [u8]) -> Result<(), SearchCursorError> {
@@ -2299,6 +2306,7 @@ mod medium_tests {
         assert_eq!(store.read(&token, &binding).unwrap().offset, 20);
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_failed_chain_entropy_preserves_the_existing_owner_and_tokens() {
         fn failure(_: &mut [u8]) -> Result<(), SearchCursorError> {
@@ -2361,6 +2369,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn search_concurrent_chains_and_successor_replay_share_one_immutable_owner() {
         let store = Arc::new(SearchCursorStore::default());
@@ -2492,6 +2501,7 @@ mod medium_tests {
         assert_eq!(cipher.decrypt([&aad], &expected).unwrap(), plain);
     }
 
+    /// rule: INV.APP.DEFERRED-READ
     #[test]
     fn opaque_view_cursor_retry_is_idempotent_and_bound_to_the_complete_question() {
         let store = ViewCursorStore::default();
@@ -2545,6 +2555,7 @@ mod medium_tests {
         assert_eq!(store.insert_next(&replay, 1, &token).unwrap(), successor);
     }
 
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn new_snapshot_pressure_preserves_every_promised_chain() {
         let store = ViewCursorStore::new(4_096);
@@ -2599,6 +2610,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn snapshot_admission_reserves_room_for_the_next_cursor() {
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
@@ -2660,6 +2672,7 @@ mod medium_tests {
         assert_eq!((samples[1].1, samples[1].2), (true, true));
     }
 
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn many_small_items_are_charged_for_retained_heap_not_only_json() {
         let binding = view_binding("main:Document.Заказ.Module.Object.Body", "rev-1");
@@ -2981,6 +2994,7 @@ mod medium_tests {
         assert_eq!(store.retained_usage_for_test(), usage);
     }
 
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn concurrent_new_admissions_reserve_one_atomic_cumulative_budget() {
         let binding = view_binding("main:CommonModule.Owner.Method", "rev-1");
@@ -3202,6 +3216,8 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.DEFERRED-READ
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn every_promised_page_survives_a_chain_longer_than_128_pages() {
         let store = ViewCursorStore::default();

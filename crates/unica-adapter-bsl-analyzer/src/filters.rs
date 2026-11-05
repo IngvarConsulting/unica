@@ -135,6 +135,7 @@ pub fn mark_cli_filter_limits(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
     #[test]
     fn effective_cli_config_matches_pinned_precedence_and_module_scope() {
         let root = tempfile::tempdir().unwrap();
@@ -189,6 +190,7 @@ mod tests {
         assert!(!invalid[0].message.contains("private"));
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
     #[test]
     fn cli_missing_filter_counts_preserves_findings_baseline_and_failure_states() {
         use unica_diagnostics::model::DiagnosticSuppression;
