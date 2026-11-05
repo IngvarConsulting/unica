@@ -24,7 +24,7 @@
 | Процессы, отмена и общая работа | Порты и тесты фактического владельца | `crates/unica-process/` — процессы и потоки; `crates/unica-work-control/` — сроки, отмена и механизм single-flight; точные ключи и политика — у потребителя |
 | Упаковка или релиз | Контрактные метаданные пакета, `docs/release-runbook.md` | `scripts/ci/package-unica-plugin.py`, `crates/unica-bootstrap/`, `.github/workflows/unica-plugin-release.yml` |
 | Поведение, зависящее от ОС | `scripts/ci/check-rust-platform-boundary.py`, `tests/ci/test_rust_platform_boundary.py` | Приватный `src/platform/` фактического владельца: `unica-bootstrap`, `unica-process`, `unica-workspace`, `unica-artifact-delivery`; вход продукта — `crates/unica-coder/src/infrastructure/platform/`, native-тесты — `crates/*/tests/platform/` |
-| Сборка, отбор и исполнение тестов | [unica-testing](../../unica-testing/SKILL.md), `CONTRIBUTING.md` | `scripts/ci/run-tests.py`, `ci_rust_lanes.py`, `prepared_binary.py`, `ci_shadow_selector.py`; размер — `.config/nextest.toml` и `scripts/ci/size-filters.py` |
+| Сборка, отбор и исполнение тестов | [unica-testing](../../unica-testing/SKILL.md), `CONTRIBUTING.md` | `scripts/ci/run-tests.py`, `ci_rust_lanes.py`, `prepared_binary.py`, `ci_shadow_selector.py`; размер — `.config/nextest.toml` (`medium` — по имени теста) |
 | Архитектурная граница | [unica-rules](../../unica-rules/SKILL.md), применимая запись и тело её `check` | `scripts/ci/check-component-boundaries.py` проверяет направления зависимостей, код и тест меняются у фактического владельца |
 
 Читайте объединение подходящих строк: задача может затрагивать несколько

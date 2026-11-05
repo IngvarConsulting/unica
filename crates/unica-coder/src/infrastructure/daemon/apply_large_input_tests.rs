@@ -83,7 +83,7 @@ fn comment_padding(bytes: usize, line: &str) -> String {
 /// The reference scan of `object.remove` reads every module whole: a module
 /// larger than its former 16 MiB bound does not refuse the removal.
 #[test]
-fn object_remove_scans_a_module_larger_than_the_former_bound() {
+fn medium_object_remove_scans_a_module_larger_than_the_former_bound() {
     let fixture = Fixture::new(&[("Catalog", "Товары"), ("CommonModule", "Большой")]);
     let module = fixture
         .workspace
@@ -105,7 +105,7 @@ fn object_remove_scans_a_module_larger_than_the_former_bound() {
 
 /// apply stages a descriptor larger than its former 32 MiB bound and edits it.
 #[test]
-fn apply_edits_a_descriptor_larger_than_the_former_staging_bound() {
+fn medium_apply_edits_a_descriptor_larger_than_the_former_staging_bound() {
     let fixture = Fixture::new(&[("Catalog", "Товары")]);
     let descriptor = fixture.workspace.join("src/Catalogs/Товары.xml");
     let text = std::fs::read_to_string(&descriptor).unwrap();

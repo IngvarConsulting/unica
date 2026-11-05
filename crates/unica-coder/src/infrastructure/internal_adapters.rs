@@ -3656,7 +3656,7 @@ analyze_timeout_seconds = 900
         );
     }
 
-    mod diagnostics_process_failure;
+    mod medium_diagnostics_process_failure;
 
     const PARTIAL_FINDING_THEN_INVALID: &str = concat!(
         "{\"type\":\"start\",\"total_files\":1,\"version\":\"0.2.62\"}\n",

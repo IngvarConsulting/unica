@@ -190,7 +190,7 @@ fn source_layout_inspects_all_1025_declared_source_roots() {
 }
 
 #[test]
-fn health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity() {
+fn medium_health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity() {
     let mut config = "format: DESIGNER\nsource-set:\n".to_string();
     for _ in 0..400_000 {
         config.push_str("  - {}\n");
