@@ -1413,6 +1413,7 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
                         form_children(columns, "Column")
                             .into_iter()
                             .map(|column| FormInfoColumn {
+                                parent_type: crate::column_type::observed_parent_type(column),
                                 name: column.attribute("name").unwrap_or("").to_string(),
                                 type_name: form_child(column, "Type")
                                     .map(form_format_type)
