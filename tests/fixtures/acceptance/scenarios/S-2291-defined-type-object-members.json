@@ -38,7 +38,7 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/type/variants",
+          "pointer": "/data/props/Type/variants",
           "eq": [
             {
               "kind": "object",
@@ -47,7 +47,7 @@
           ]
         },
         {
-          "pointer": "/data/props/type/mutationCapability",
+          "pointer": "/data/props/Type/mutationCapability",
           "eq": "readOnly"
         }
       ]
@@ -62,7 +62,7 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/type/variants",
+          "pointer": "/data/props/Type/variants",
           "eq": [
             {
               "kind": "reference",
@@ -71,7 +71,7 @@
           ]
         },
         {
-          "pointer": "/data/props/type/mutationCapability",
+          "pointer": "/data/props/Type/mutationCapability",
           "eq": "editable"
         }
       ]
@@ -86,7 +86,7 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/type/variants",
+          "pointer": "/data/props/Type/variants",
           "eq": [
             {
               "kind": "reference",
@@ -99,7 +99,7 @@
           ]
         },
         {
-          "pointer": "/data/props/type/mutationCapability",
+          "pointer": "/data/props/Type/mutationCapability",
           "eq": "readOnly"
         }
       ]
@@ -114,7 +114,7 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/type/variants",
+          "pointer": "/data/props/Type/variants",
           "eq": [
             {
               "kind": "object",
@@ -123,7 +123,7 @@
           ]
         },
         {
-          "pointer": "/data/props/type/mutationCapability",
+          "pointer": "/data/props/Type/mutationCapability",
           "eq": "readOnly"
         }
       ]
@@ -138,7 +138,7 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/type/variants",
+          "pointer": "/data/props/Type/variants",
           "eq": [
             {
               "kind": "recordSet",
@@ -147,7 +147,7 @@
           ]
         },
         {
-          "pointer": "/data/props/type/mutationCapability",
+          "pointer": "/data/props/Type/mutationCapability",
           "eq": "readOnly"
         }
       ]
@@ -162,7 +162,7 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/type",
+          "pointer": "/data/props/Type",
           "eq": null
         },
         {
@@ -243,7 +243,7 @@
           "eq": "Observed object member"
         },
         {
-          "pointer": "/data/props/type/variants",
+          "pointer": "/data/props/Type/variants",
           "eq": [
             {
               "kind": "object",
