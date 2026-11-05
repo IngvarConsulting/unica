@@ -12,6 +12,9 @@ pub struct DocumentNumeratorChanges {
     pub number_allowed_length: Option<String>,
     pub number_periodicity: Option<String>,
     pub check_unique: Option<bool>,
+    /// Descriptor Comment; written by the shared Comment writer, not as a
+    /// numerator scalar.
+    pub comment: Option<String>,
 }
 
 impl DocumentNumeratorChanges {

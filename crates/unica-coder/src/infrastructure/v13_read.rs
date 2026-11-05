@@ -235,10 +235,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// A capability comes from the same retained owner proof as its value,
     /// never from a truncated property projection or a guessed object name.
-    pub(crate) fn style_item_color_observation(
+    pub(crate) fn style_item_properties_observation(
         &self,
         at: &QualifiedAddress,
-    ) -> Result<Option<unica_metadata::style_color::StyleItemColor>, ViewError> {
+    ) -> Result<Option<unica_metadata::style_color::StyleItemPropertiesObservation>, ViewError>
+    {
         let [owner] = at.segments() else {
             return Ok(None);
         };
@@ -265,24 +266,30 @@ impl<'a> LogicalViewReadAuthority<'a> {
         )
         .is_some()
         {
-            return Ok(None);
+            return Ok(Some(
+                unica_metadata::style_color::StyleItemPropertiesObservation {
+                    comment: false,
+                    color: None,
+                },
+            ));
         }
         let raw = self.read.metadata_descriptor(target)?;
         self.read_checkpoint()?;
-        let Ok(text) = std::str::from_utf8(&raw) else {
-            return Ok(None);
-        };
+        let text = std::str::from_utf8(&raw).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
         let relative = unica_source_designer::layout::metadata_descriptor_relative(
             target,
             self.read.source_set_kind(),
         )
         .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
         let observed =
-            unica_metadata_designer::style_color::StyleColorImage::parse(text, name, &relative)
-                .ok()
-                .map(|image| image.color());
+            unica_metadata_designer::style_color::observe_properties(text, name, &relative)
+                .map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?;
         self.read_checkpoint()?;
-        Ok(observed)
+        Ok(Some(observed))
     }
 
     pub(crate) fn object_borrowing(
@@ -1424,10 +1431,20 @@ impl<'a> LogicalViewReadAuthority<'a> {
             let facts = self.read.common_template_facts(target)?;
             let mut payload = self.read.identity_metadata_payload(target)?;
             payload["synonym"] = json!(facts.synonym);
-            payload["properties"] =
-                json!([{"key":"TemplateType", "value":facts.template_type.descriptor_value()}]);
+            let property =
+                json!({"key":"TemplateType", "value":facts.template_type.descriptor_value()});
+            if let Some(properties) = payload["properties"].as_array_mut() {
+                properties.push(property);
+            } else {
+                payload["properties"] = json!([property]);
+            }
             if let Some(message) = facts.unreadable_synonym {
-                payload["unreadable"] = json!([{"field":"properties.Synonym", "message":message}]);
+                let finding = json!({"field":"properties.Synonym", "message":message});
+                if let Some(unreadable) = payload["unreadable"].as_array_mut() {
+                    unreadable.push(finding);
+                } else {
+                    payload["unreadable"] = json!([finding]);
+                }
             }
             return Ok(payload);
         }
