@@ -118,7 +118,7 @@ fn terminal(
 }
 
 #[test]
-fn raw_frame_exact_result_bound_reopens_and_rejects_corruption() {
+fn medium_raw_frame_exact_result_bound_reopens_and_rejects_corruption() {
     let (_temp, root, spec, mut store, mut model) = fixture();
     let key = key();
     let overhead = serde_json::to_vec(&DomainResult::success(""))

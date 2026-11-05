@@ -274,7 +274,11 @@ impl CommandRootFacts {
             .unwrap_or_default();
         relations.extend(self.relations.clone());
         payload["relations"] = json!(relations);
-        let unreadable=self.diagnostics.iter().map(|d|json!({"field":d.field,"message":if d.severity==MetaDiagnosticSeverity::Warning {format!("validation_warning: {}",d.message)}else{d.message.clone()}})).collect::<Vec<_>>();
+        let mut unreadable = payload["unreadable"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        unreadable.extend(self.diagnostics.iter().map(|d|json!({"field":d.field,"message":if d.severity==MetaDiagnosticSeverity::Warning {format!("validation_warning: {}",d.message)}else{d.message.clone()}})));
         if !unreadable.is_empty() {
             payload["unreadable"] = json!(unreadable);
         }
@@ -297,6 +301,25 @@ fn flag(text: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn command_publication_keeps_independent_comment_limits() {
+        let facts = read("CommonCommand", "<Representation>broken</Representation>");
+        let finding = json!({"field":"properties.Comment", "message":"independent damage"});
+        let mut payload = json!({"unreadable":[finding.clone()]});
+        facts.publish(&mut payload);
+        assert!(
+            payload["unreadable"].as_array().unwrap().contains(&finding),
+            "{payload}"
+        );
+        assert!(
+            payload["unreadable"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["field"] == "properties.Representation"),
+            "{payload}"
+        );
+    }
     fn read(kind: &str, properties: &str) -> CommandRootFacts {
         let target = MetadataAddress::parse(
             unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,

@@ -32,7 +32,7 @@ fn command_root_facts_preserve_kind_specific_xml_without_default_values() {
         &f,
         "CommonCommand",
         "Probe",
-        r#"<Representation>PictureAndText</Representation><ToolTip><v:item><v:lang>ru</v:lang><v:content>Подсказка</v:content></v:item><v:item><v:lang>en</v:lang><v:content>Hint</v:content></v:item></ToolTip><Picture><r:Ref>StdPicture.Print</r:Ref><r:LoadTransparent>false</r:LoadTransparent></Picture><CommandParameterType><v:Type>x:boolean</v:Type></CommandParameterType><ParameterUseMode>Multiple</ParameterUseMode><ModifiesData>true</ModifiesData><Comment>not applicable</Comment>"#,
+        r#"<Representation>PictureAndText</Representation><ToolTip><v:item><v:lang>ru</v:lang><v:content>Подсказка</v:content></v:item><v:item><v:lang>en</v:lang><v:content>Hint</v:content></v:item></ToolTip><Picture><r:Ref>StdPicture.Print</r:Ref><r:LoadTransparent>false</r:LoadTransparent></Picture><CommandParameterType><v:Type>x:boolean</v:Type></CommandParameterType><ParameterUseMode>Multiple</ParameterUseMode><ModifiesData>true</ModifiesData><Comment>source comment</Comment>"#,
     );
     let result = f.view_service().view(ViewRequest::new(COMMAND).unwrap());
     assert!(result.ok, "{result:?}");
@@ -52,7 +52,7 @@ fn command_root_facts_preserve_kind_specific_xml_without_default_values() {
         node["props"]["CommandParameterType"]["variants"],
         json!([{"kind":"boolean"}])
     );
-    assert!(node["props"].get("Comment").is_none());
+    assert_eq!(node["props"]["Comment"], "source comment");
     assert!(node["props"].get("Vendor").is_none());
     assert!(node.get("limits").is_none(), "{node}");
 }

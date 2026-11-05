@@ -164,9 +164,44 @@ pub fn external_cache_route_rejects_links_including_components_cancelled_by_pare
     Ok(())
 }
 
-pub fn external_cache_ancestor_replacement_does_not_publish_source_or_foreign_cache(
+pub fn external_cache_unchanged_ancestor_allows_publication(
     policies: crate::policies::WorkspacePolicies,
 ) {
+    let _policy_scope = policies_scope(policies);
+    for existing in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let base = canonical_path(temp.path());
+        let workspace = base.join("workspace");
+        project(&workspace);
+        let outside = base.join("outside");
+        let cache = outside.join("nested/cache");
+        std::fs::create_dir(&outside).unwrap();
+        if existing {
+            std::fs::create_dir_all(&cache).unwrap();
+            std::fs::write(cache.join("keep.bin"), b"original cache").unwrap();
+        }
+        let actor = actor(&workspace, &cache);
+        let prepared = prepare(&actor);
+        let displaced = base.join("displaced");
+        assert!(!displaced.exists());
+        actor.publish_prepared_apply(prepared).unwrap();
+        assert!(cache.join("state.json").is_file());
+        if existing {
+            assert_eq!(
+                std::fs::read(cache.join("keep.bin")).unwrap(),
+                b"original cache"
+            );
+        }
+        assert_eq!(
+            std::fs::read(workspace.join("src/Module.bsl")).unwrap(),
+            b"after"
+        );
+    }
+}
+
+pub fn external_cache_ancestor_replacement_does_not_publish_source_or_foreign_cache(
+    policies: crate::policies::WorkspacePolicies,
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let _policy_scope = policies_scope(policies);
     for existing in [false, true] {
         let temp = tempfile::tempdir().unwrap();
@@ -202,13 +237,17 @@ pub fn external_cache_ancestor_replacement_does_not_publish_source_or_foreign_ca
                 assert_eq!(tree_snapshot(&displaced), before);
             }
             RetainedDirectoryReplacementOutcome::PreventedByRetainedHandle => {
-                eprintln!("[SKIPPED FIXTURE] retained handle prevents ancestor replacement");
                 assert!(!displaced.exists());
                 actor.publish_prepared_apply(prepared).unwrap();
                 assert!(cache.join("state.json").is_file());
+                return Err(crate::test_support::CapabilitySkip {
+                    capability: "rename-under-open-handle",
+                    reason: "cache ancestor attack needs replacement of a retained ancestor",
+                });
             }
         }
     }
+    Ok(())
 }
 
 pub fn external_cache_missing_tail_occupation_keeps_foreign_entry_and_source(
