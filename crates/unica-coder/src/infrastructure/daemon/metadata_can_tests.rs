@@ -1,5 +1,6 @@
-#[path = "metadata_can_tests/property_name_parity.rs"]
-mod property_name_parity;
+// Submodules are the files of `metadata_can_tests/`; build.rs declares
+// them, so a new test file needs no registration here.
+include!(concat!(env!("OUT_DIR"), "/metadata_can_tests_modules.rs"));
 
 use super::actor_capacity_tests::direct_v5;
 use super::*;
@@ -2818,6 +2819,3 @@ fn an_oversized_form_item_title_is_named_by_a_limit() {
         "the title reads whole at its address"
     );
 }
-
-#[path = "metadata_can_tests/exchange_extensions.rs"]
-mod exchange_extensions;
