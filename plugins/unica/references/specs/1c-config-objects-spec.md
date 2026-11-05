@@ -921,7 +921,7 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 <EditType>InDialog</EditType>               <!-- InDialog | InList | Both -->
 <QuickChoice>true</QuickChoice>
 <ChoiceMode>BothWays</ChoiceMode>            <!-- BothWays -->
-<PredefinedDataUpdate>Auto</PredefinedDataUpdate>  <!-- Auto | DontAutoUpdate -->
+<PredefinedDataUpdate>Auto</PredefinedDataUpdate>  <!-- Auto | AutoUpdate | DontAutoUpdate -->
 ```
 
 ### 7.2. Предопределённые элементы (Predefined.xml)

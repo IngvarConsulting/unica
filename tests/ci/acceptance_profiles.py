@@ -34,11 +34,13 @@ EXTERNAL_CHECK_ADDRESSES = {
     "epf:ExternalDataProcessor.Import.Form.Main.Module.Form",
     "erf:ExternalReport.Sales.Module.Object",
 }
-AGENT_EVALUATIONS = {"dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE,
+AGENT_EVALUATIONS = {"event-data-visibility": "tests/fixtures/acceptance/workspace-event-data-visibility",
+                     "dcs-contract": DCS_WORKSPACE, "mxl-contract": MXL_WORKSPACE,
                      "props-contract": "tests/fixtures/acceptance/workspace",
                      "xdto-contract": "tests/fixtures/acceptance/workspace-xdto-contract"}
 ACCEPTANCE_ROOT = REPO / "tests/fixtures/acceptance"
 SOURCE_PROFILE_DIR = "source-profiles"
+HOST_CONTEXT_MISSING_WORKSPACE = "tests/fixtures/acceptance/workspace-host-context-missing"
 
 
 def load_source_workspace_profiles(root: Path = ACCEPTANCE_ROOT) -> dict[str, dict]:
@@ -264,7 +266,18 @@ def isolated_environment(plugin, state):
     return environment
 
 
-def completed_delivery_call(server, tool, arguments, label):
+
+def missing_host_context_environment(environment=None):
+    """Start the controlled refusal case without any captured project alias."""
+    values = dict(os.environ if environment is None else environment)
+    contract = json.loads((REPO / "tests/fixtures/mcp/host-workspace-context.json").read_text())
+    for key in [*contract["projectEnvironment"], "UNICA_RUNTIME_MANIFEST"]:
+        values.pop(key, None)
+    values["UNICA_HOST_CONTEXT_REQUIRED"] = "1"
+    return values
+
+
+def completed_delivery_call(server, tool, arguments, label, *, retry_pending_index=True):
     """Observe Task identity; retry only the provider's typed pending index."""
     deadline = time.monotonic() + 120
     def invoke(next_tool, next_args):
@@ -286,6 +299,8 @@ def completed_delivery_call(server, tool, arguments, label):
             task_id = current
             next_tool, next_args = "unica.task.result", {"taskId": task_id, "waitMs": 7000}
         else:
+            if not retry_pending_index:
+                return response
             sections = (result.get("data") or {}).get("matches") or []
             if not (result.get("ok") is False and len(sections) == 1
                     and sections[0].get("role") == "symbol"

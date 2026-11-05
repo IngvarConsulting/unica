@@ -2157,6 +2157,8 @@ pub struct WorkspaceServicesState<B: BslBackend, R: RlmBackend> {
     #[cfg(any(test, feature = "test-support"))]
     prepared_dispatch_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(any(test, feature = "test-support"))]
+    prepared_start_received_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(any(test, feature = "test-support"))]
     bsl_session_deadline_hook: Mutex<Option<Arc<BslSessionDeadlineHook>>>,
     #[cfg(any(test, feature = "test-support"))]
     operation_retired_hook: Mutex<Option<Arc<OperationRetiredHook>>>,
@@ -2297,6 +2299,8 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             handler_started_hook: Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
             prepared_dispatch_hook: Mutex::new(None),
+            #[cfg(any(test, feature = "test-support"))]
+            prepared_start_received_hook: Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
             bsl_session_deadline_hook: Mutex::new(None),
             #[cfg(any(test, feature = "test-support"))]
@@ -4085,6 +4089,21 @@ fn handle_prepared_bsl_request<B: BslBackend, R: RlmBackend>(
             );
         }
     };
+    // Start is consumed; a stop recorded from here on is observed below.
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        let hook = runtime
+            .actor
+            .runtime_projection()
+            .0
+            .prepared_start_received_hook
+            .lock()
+            .unwrap()
+            .clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
     let remaining = deadline.remaining()?;
     if offered_budget.is_some_and(|offered| remaining.is_none_or(|remaining| remaining > offered)) {
         return write_registered_response(
@@ -4588,6 +4607,15 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             .runtime_projection()
             .0
             .prepared_dispatch_hook
+            .lock()
+            .unwrap() = hook;
+    }
+    pub fn test_set_prepared_start_received_hook(&self, hook: Option<Arc<dyn Fn() + Send + Sync>>) {
+        *self
+            .actor
+            .runtime_projection()
+            .0
+            .prepared_start_received_hook
             .lock()
             .unwrap() = hook;
     }
