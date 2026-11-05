@@ -314,6 +314,7 @@ mod medium_tests {
         (0..size).map(|index| (index % 251) as u8).collect()
     }
 
+    /// rule: INV.PKG.RESUMABLE-DOWNLOAD
     #[test]
     fn a_resumed_download_asks_only_for_the_missing_tail() {
         let bytes = payload(4096);
@@ -333,6 +334,7 @@ mod medium_tests {
         assert_eq!(fs::read(&destination).expect("resumed file"), bytes);
     }
 
+    /// rule: INV.PKG.RESUMABLE-DOWNLOAD
     #[test]
     fn a_server_that_forgets_the_range_still_leaves_the_whole_file() {
         // Зеркала и прокси отвечают `200` на запрос с диапазоном. Дописать
@@ -436,6 +438,7 @@ mod medium_tests {
         assert!(!destination.exists());
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn a_root_the_os_does_not_trust_is_refused_with_the_interception_cure() {
         // Корень стенда не стоит в хранилище ОС: так выглядит подмена
@@ -461,6 +464,7 @@ mod medium_tests {
         assert!(stand.requests().is_empty(), "до HTTP дело не дошло");
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn https_proxy_carries_the_download_to_the_proxy() {
         let root = TestRoot::generate("Unica proxy test root");
@@ -482,6 +486,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn no_proxy_sends_the_download_past_the_proxy() {
         let root = TestRoot::generate("Unica no-proxy test root");
@@ -498,6 +503,7 @@ mod medium_tests {
         assert!(error.to_string().contains("direct connection"), "{error}");
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn an_unsupported_proxy_is_a_configuration_refusal_without_the_password() {
         let error = downloader_with(&[("HTTPS_PROXY", "socks5://alice:s3cret@127.0.0.1:9")])

@@ -60,6 +60,7 @@ mod tests {
         assert!(root.contains_key("operational"));
     }
 
+    /// rule: INV.CONFIG.INVALID-LAYER
     #[test]
     fn rejects_version_as_unknown_root_field() {
         let error = parse_workspace_config_root("version = 1\n")
