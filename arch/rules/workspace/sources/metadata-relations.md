@@ -1,13 +1,5 @@
 ---
 id: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
-check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests/subscription_handler.rs::subscription_relation_preserves_sources_and_adds_one_method_link
-  - crates/unica-coder/src/infrastructure/v13_read/tests/subscription_handler.rs::malformed_handlers_do_not_invent_links_and_missing_methods_refuse_on_follow
-  - crates/unica-coder/src/infrastructure/v13_read/tests/subscription_handler.rs::damaged_handler_xml_keeps_source_and_observation_limits
-  - crates/unica-coder/src/infrastructure/v13_read/tests/metadata.rs::every_reference_of_an_object_answers_in_one_relation_branch
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::a_subsystem_shows_its_content_and_reads_registered_children_at_depth
-  - crates/unica-metadata-integration-tests/tests/subsystem_topology.rs::memberships_name_the_listing_subsystem_its_ancestors_and_standard_library_roots
-  - crates/unica-coder/src/infrastructure/v13_large_configuration.rs::retained_subsystem_topology_is_reused_until_a_descriptor_changes
 ---
 
 # Ссылки объекта собраны в одной ветви Relation

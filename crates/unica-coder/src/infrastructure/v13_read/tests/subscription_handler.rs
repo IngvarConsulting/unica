@@ -10,6 +10,7 @@ fn replace_handler(fixture: &RealReaderFixture, value: &str) {
     write(&path, &xml.replace(HANDLER, value));
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn subscription_relation_preserves_sources_and_adds_one_method_link() {
     let fixture = RealReaderFixture::new();
@@ -67,6 +68,7 @@ fn subscription_relation_preserves_sources_and_adds_one_method_link() {
     assert_eq!(fs::read(module).unwrap(), bsl);
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn malformed_handlers_do_not_invent_links_and_missing_methods_refuse_on_follow() {
     for handler in [
@@ -102,6 +104,7 @@ fn malformed_handlers_do_not_invent_links_and_missing_methods_refuse_on_follow()
     }
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn damaged_handler_xml_keeps_source_and_observation_limits() {
     for replacement in [
