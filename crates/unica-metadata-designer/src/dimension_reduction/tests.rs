@@ -18,6 +18,7 @@ fn operation(name: &str, value: &str) -> MetaEditOperation {
             position: None,
             indexing: None,
             deny_incomplete_values: None,
+            tabular_section_use: None,
             type_reduction_mode: Some(value.into()),
         }],
     }

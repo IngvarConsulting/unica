@@ -84,6 +84,7 @@ pub fn metadata_relation_input_schema() -> &'static Value {
 pub struct MetadataSite {
     pub owner: crate::MetadataKind,
     pub in_section: bool,
+    pub source_kind: unica_source_contract::SourceSetKind,
 }
 
 /// `fillValue` is accepted for `collection` at `site`; without a site, for any
@@ -185,6 +186,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
             fields.remove("templateType");
             fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
             fields.insert("typeReductionMode".into(), json!({"type":"string", "enum":["Deny", "TransformValues"]}));
+            fields.insert("Use".into(), json!({"type":"string","enum":crate::TABULAR_SECTION_USES}));
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
@@ -219,7 +221,15 @@ fn metadata_element_schema(
             "name" => !update,
             "newName" => update,
             "type" => spec.allows_type,
-            "required" => spec.allows_required,
+            "required" => {
+                spec.allows_required
+                    || (update
+                        && collection == MetaCollection::TabularSections
+                        && site.is_some_and(|site| {
+                            site.source_kind == unica_source_contract::SourceSetKind::Configuration
+                                && crate::tabular_section_required_is_allowed(site.owner)
+                        }))
+            }
             "fillValue" => fill_value_allowed(collection, site),
             "position" => spec.allows_position,
             "indexing" => spec.allows_indexing,
@@ -241,6 +251,18 @@ fn metadata_element_schema(
         fields.insert(
             "typeReductionMode".into(),
             json!({"type":"string", "enum":["Deny", "TransformValues"]}),
+        );
+    }
+    if update
+        && collection == MetaCollection::TabularSections
+        && site.is_some_and(|site| {
+            site.source_kind == unica_source_contract::SourceSetKind::Configuration
+                && crate::tabular_section_use_is_allowed(site.owner)
+        })
+    {
+        fields.insert(
+            "Use".into(),
+            json!({"type":"string","enum":crate::TABULAR_SECTION_USES}),
         );
     }
     let selector = if update { "newName" } else { "name" };
@@ -654,3 +676,6 @@ pub fn metadata_template_remove() -> OperationContract {
 }
 
 const REPORTS_HELP: &str = "references/use-cases/reports-printing.md";
+
+#[cfg(test)]
+mod tests;

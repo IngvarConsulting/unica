@@ -26,6 +26,7 @@ fn deny(name: &str, value: bool) -> MetaEditOperation {
             indexing: None,
             deny_incomplete_values: Some(value),
             type_reduction_mode: None,
+            tabular_section_use: None,
         }],
     }
 }

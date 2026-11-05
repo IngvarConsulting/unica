@@ -235,9 +235,11 @@ impl unica_operations::FamilyOperation for MetadataOperation {
             .iter()
             .any(|segment| segment.kind() == unica_address::address::NodeKind::TabularSection);
         Some(
-            self.contract_at(
-                owner.map(|owner| crate::contracts::MetadataSite { owner, in_section }),
-            ),
+            self.contract_at(owner.map(|owner| crate::contracts::MetadataSite {
+                owner,
+                in_section,
+                source_kind: site.source().kind(),
+            })),
         )
     }
 }
@@ -403,6 +405,7 @@ mod tests {
             let contract = MetadataOperation::TabularSectionAdd.contract_at(Some(MetadataSite {
                 owner,
                 in_section: false,
+                source_kind: unica_source_contract::SourceSetKind::Configuration,
             }));
             let fields = &contract.schema["properties"]["items"]["items"]["properties"];
             let attributes = &fields["attributes"]["items"]["properties"];
@@ -435,6 +438,7 @@ mod tests {
             let set = MetadataOperation::TabularSectionSet.contract_at(Some(MetadataSite {
                 owner,
                 in_section: true,
+                source_kind: unica_source_contract::SourceSetKind::Configuration,
             }));
             assert!(set.schema["properties"]["values"]["properties"]
                 .get("attributes")
@@ -479,7 +483,11 @@ mod tests {
             for in_section in [false, true] {
                 assert_eq!(
                     MetadataOperation::CommandSet
-                        .contract_at(Some(MetadataSite { owner, in_section }))
+                        .contract_at(Some(MetadataSite {
+                            owner,
+                            in_section,
+                            source_kind: unica_source_contract::SourceSetKind::Configuration
+                        }))
                         .details(),
                     contract.details(),
                 );
@@ -516,8 +524,11 @@ mod tests {
             (MetadataKind::Report, false, false),
             (MetadataKind::Report, true, true),
         ] {
-            let contract = MetadataOperation::AttributeSet
-                .contract_at(Some(MetadataSite { owner, in_section }));
+            let contract = MetadataOperation::AttributeSet.contract_at(Some(MetadataSite {
+                owner,
+                in_section,
+                source_kind: unica_source_contract::SourceSetKind::Configuration,
+            }));
             let fields = &contract.schema["properties"]["values"]["properties"];
             assert_eq!(
                 fields.get("fillValue").is_some(),
@@ -570,7 +581,11 @@ mod tests {
             for in_section in [false, true] {
                 assert_eq!(
                     MetadataOperation::AttributeRemove
-                        .contract_at(Some(MetadataSite { owner, in_section }))
+                        .contract_at(Some(MetadataSite {
+                            owner,
+                            in_section,
+                            source_kind: unica_source_contract::SourceSetKind::Configuration
+                        }))
                         .details(),
                     contract.details(),
                 );
@@ -586,8 +601,11 @@ mod tests {
             (MetadataKind::Report, false, false),
             (MetadataKind::Report, true, true),
         ] {
-            let contract = MetadataOperation::AttributeAdd
-                .contract_at(Some(MetadataSite { owner, in_section }));
+            let contract = MetadataOperation::AttributeAdd.contract_at(Some(MetadataSite {
+                owner,
+                in_section,
+                source_kind: unica_source_contract::SourceSetKind::Configuration,
+            }));
             let fields = &contract.schema["properties"]["items"]["items"]["properties"];
             assert_eq!(
                 fields.get("fillValue").is_some(),
@@ -620,6 +638,7 @@ mod tests {
                 .contract_at(Some(MetadataSite {
                     owner,
                     in_section: false,
+                    source_kind: unica_source_contract::SourceSetKind::Configuration,
                 }))
                 .schema["properties"]["values"]["properties"]
                 .get("denyIncompleteValues")
@@ -671,6 +690,7 @@ mod tests {
                         indexing: None,
                         deny_incomplete_values: Some(true),
                         type_reduction_mode: None,
+                        tabular_section_use: None,
                     }],
                 },
             )

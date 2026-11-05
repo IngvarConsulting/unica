@@ -9,6 +9,7 @@ use unica_source_contract::SourceSetKind;
 pub enum MetaMemberReadProfile {
     CatalogTabularSection220,
     InformationRegisterDimension220,
+    ChartTabularSection220,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,17 +33,19 @@ pub struct MetaMemberPropertySpec {
     kind: MetaMemberValueKind,
 }
 
+const TABULAR_SECTION_USE: MetaMemberPropertySpec = MetaMemberPropertySpec {
+    name: "Use",
+    context: MetaMemberReadContext::TabularSection,
+    kind: MetaMemberValueKind::Text(crate::TABULAR_SECTION_USES),
+};
+
 const CATALOG_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
     MetaMemberPropertySpec {
         name: "LineNumberLength",
         context: MetaMemberReadContext::TabularSection,
         kind: MetaMemberValueKind::UnsignedInteger,
     },
-    MetaMemberPropertySpec {
-        name: "Use",
-        context: MetaMemberReadContext::TabularSection,
-        kind: MetaMemberValueKind::Text(&["ForItem", "ForFolder", "ForFolderAndItem"]),
-    },
+    TABULAR_SECTION_USE,
     MetaMemberPropertySpec {
         name: "Indexing",
         context: MetaMemberReadContext::TabularAttribute,
@@ -76,6 +79,7 @@ impl MetaMemberReadProfile {
         }
         match owner {
             MetadataKind::Catalog => Some(Self::CatalogTabularSection220),
+            MetadataKind::ChartOfCharacteristicTypes => Some(Self::ChartTabularSection220),
             MetadataKind::InformationRegister => Some(Self::InformationRegisterDimension220),
             _ => None,
         }
@@ -83,6 +87,7 @@ impl MetaMemberReadProfile {
     pub fn owner_kind(self) -> MetadataKind {
         match self {
             Self::CatalogTabularSection220 => MetadataKind::Catalog,
+            Self::ChartTabularSection220 => MetadataKind::ChartOfCharacteristicTypes,
             Self::InformationRegisterDimension220 => MetadataKind::InformationRegister,
         }
     }
@@ -98,6 +103,7 @@ impl MetaMemberReadProfile {
                 context: MetaMemberReadContext::InformationRegisterDimension,
                 kind: MetaMemberValueKind::Text(&["TransformValues", "Deny", "DeleteData"]),
             }],
+            Self::ChartTabularSection220 => &[TABULAR_SECTION_USE],
         };
         properties
             .iter()
@@ -138,9 +144,10 @@ impl MetaMemberReadProfile {
                 _ => None,
             };
         }
+        let owner_kind = self.owner_kind();
         match address.segments() {
             [owner, section]
-                if owner.kind() == NodeKind::Catalog
+                if owner.kind().as_str() == owner_kind.as_str()
                     && owner.name().is_some()
                     && section.kind() == NodeKind::TabularSection
                     && section.name().is_some()
@@ -149,7 +156,8 @@ impl MetaMemberReadProfile {
                 Some(MetaMemberReadContext::TabularSection)
             }
             [owner, section, attribute]
-                if owner.kind() == NodeKind::Catalog
+                if self == Self::CatalogTabularSection220
+                    && owner.kind().as_str() == owner_kind.as_str()
                     && owner.name().is_some()
                     && section.kind() == NodeKind::TabularSection
                     && section.name().is_some()

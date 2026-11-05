@@ -25,6 +25,7 @@ mod tests {
             |owner| {
                 [false, true].map(|in_section| {
                     Some(MetadataSite {
+                        source_kind: unica_source_contract::SourceSetKind::Configuration,
                         owner: *owner,
                         in_section,
                     })

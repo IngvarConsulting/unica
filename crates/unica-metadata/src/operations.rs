@@ -554,6 +554,7 @@ pub struct MetaElementUpdateInput {
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
+    pub tabular_section_use: Option<String>,
     pub fill_value: Option<MetaFillValue>,
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
@@ -570,6 +571,7 @@ pub struct MetaElementUpdate {
     pub comment: Option<String>,
     pub r#type: Option<MetadataType>,
     pub required: Option<bool>,
+    pub tabular_section_use: Option<String>,
     pub fill_value: Option<MetaFillValue>,
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
@@ -643,6 +645,27 @@ pub fn metadata_deny_incomplete_values_is_allowed(owner: MetadataKind) -> bool {
         MetadataKind::AccumulationRegister
             | MetadataKind::AccountingRegister
             | MetadataKind::CalculationRegister
+    )
+}
+
+pub const TABULAR_SECTION_USES: &[&str] = &["ForItem", "ForFolder", "ForFolderAndItem"];
+
+pub fn tabular_section_use_is_allowed(owner: MetadataKind) -> bool {
+    matches!(
+        owner,
+        MetadataKind::Catalog | MetadataKind::ChartOfCharacteristicTypes
+    )
+}
+
+pub fn tabular_section_required_is_allowed(owner: MetadataKind) -> bool {
+    matches!(
+        owner,
+        MetadataKind::Catalog
+            | MetadataKind::Document
+            | MetadataKind::BusinessProcess
+            | MetadataKind::ExchangePlan
+            | MetadataKind::Report
+            | MetadataKind::DataProcessor
     )
 }
 
@@ -856,6 +879,7 @@ impl MetaElementUpdate {
             && input.comment.is_none()
             && input.r#type.is_none()
             && input.required.is_none()
+            && input.tabular_section_use.is_none()
             && input.fill_value.is_none()
             && input.position.is_none()
             && input.indexing.is_none()
@@ -884,11 +908,21 @@ impl MetaElementUpdate {
             }
         }
         let spec = metadata_collection_spec(collection);
+        if let Some(value) = &input.tabular_section_use {
+            if collection != MetaCollection::TabularSections
+                || !TABULAR_SECTION_USES.contains(&value.as_str())
+            {
+                return Err(invalid_operation(
+                    format!("{field}.Use"),
+                    "Use must be ForItem, ForFolder or ForFolderAndItem on a tabular section",
+                ));
+            }
+        }
         validate_element_fields(
             spec,
             field,
             input.r#type.is_some(),
-            input.required.is_some(),
+            input.required.is_some() && collection != MetaCollection::TabularSections,
             input.fill_value.is_some(),
             false,
             input.position.is_some(),
@@ -902,6 +936,7 @@ impl MetaElementUpdate {
             comment: input.comment,
             r#type: input.r#type,
             required: input.required,
+            tabular_section_use: input.tabular_section_use,
             fill_value: input.fill_value,
             position: input.position,
             indexing: input.indexing,
@@ -1718,6 +1753,20 @@ pub fn validate_metadata_operation_capabilities(
                         || scope.is_some())
                 {
                     return Err(invalid_operation(format!("elements[{index}].typeReductionMode"), "typeReductionMode is available only for direct information register dimensions"));
+                }
+                if element.tabular_section_use.is_some()
+                    && !tabular_section_use_is_allowed(owner_kind)
+                {
+                    return Err(invalid_operation(format!("elements[{index}].Use"), "Use is available only for Catalog and ChartOfCharacteristicTypes tabular sections"));
+                }
+                if *collection == MetaCollection::TabularSections
+                    && element.required.is_some()
+                    && !tabular_section_required_is_allowed(owner_kind)
+                {
+                    return Err(invalid_operation(
+                        format!("elements[{index}].required"),
+                        "required is not available for this tabular section owner",
+                    ));
                 }
                 if element.deny_incomplete_values.is_some()
                     && !metadata_deny_incomplete_values_is_allowed(owner_kind)
@@ -3437,6 +3486,7 @@ mod reduction_tests {
         for owner in MetadataKind::ALL {
             for in_section in [false, true] {
                 let site = Some(MetadataSite {
+                    source_kind: unica_source_contract::SourceSetKind::Configuration,
                     owner: *owner,
                     in_section,
                 });

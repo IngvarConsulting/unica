@@ -1246,6 +1246,7 @@ pub fn parse_attribute_set(
     )?;
     let (owner, kind, name, scope) = attribute_owner_and_name(&target, op_index)?;
     let mut values = required_object(args, "values", op_index)?.clone();
+
     if values
         .insert("name".to_string(), Value::String(name))
         .is_some()
@@ -1420,6 +1421,20 @@ pub fn parse_addressed_member_change(
         ));
     }
     let mut values = required_object(args, "values", op_index)?.clone();
+    if collection == MetaCollection::TabularSections
+        && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
+    {
+        if let Some(field) = ["Use", "required"]
+            .into_iter()
+            .find(|field| values.contains_key(*field))
+        {
+            return Err(ApplyPlanError::new(
+                ApplyPlanErrorKind::BadValue,
+                "tabular section Use and required are supported only inside a configuration",
+            )
+            .at_path(format!("ops[{op_index}].args.values.{field}")));
+        }
+    }
     if values.contains_key("name") {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
