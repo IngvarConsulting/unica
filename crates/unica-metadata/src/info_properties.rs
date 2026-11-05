@@ -370,6 +370,8 @@ fn mutation_value_kind(key: MetaPropertyKey) -> MetaInfoPropertyValueKind {
             | MultiLine
             | ExtendedEdit
             | MarkNegatives
+            | UpdateDataHistoryImmediatelyAfterWrite
+            | ExecuteAfterWriteDataHistoryVersionProcessing
             | ExternalConnection
             | FoldersOnTop
             | Global
@@ -433,6 +435,11 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | ServerCall => kind == CommonModule,
         PasswordMode | MultiLine | ExtendedEdit | Mask | MarkNegatives | Format | EditFormat => {
             kind == Constant
+        }
+        DataHistory
+        | UpdateDataHistoryImmediatelyAfterWrite
+        | ExecuteAfterWriteDataHistoryVersionProcessing => {
+            matches!(kind, Catalog | Document | InformationRegister)
         }
         CreateTaskInPrivilegedMode => kind == BusinessProcess,
         FullTextSearch

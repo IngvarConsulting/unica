@@ -1096,6 +1096,13 @@
                     "CreateTaskInPrivilegedMode": {
                       "type": "boolean"
                     },
+                    "DataHistory": {
+                      "enum": [
+                        "Use",
+                        "DontUse"
+                      ],
+                      "type": "string"
+                    },
                     "DataLockControlMode": {
                       "enum": [
                         "Automatic",
@@ -1145,6 +1152,9 @@
                     "Event": {
                       "pattern": "^[A-Z][A-Za-z0-9]*$",
                       "type": "string"
+                    },
+                    "ExecuteAfterWriteDataHistoryVersionProcessing": {
+                      "type": "boolean"
                     },
                     "ExtendedEdit": {
                       "type": "boolean"
@@ -2186,6 +2196,9 @@
                       "type": "object"
                     },
                     "UnpostInPrivilegedMode": {
+                      "type": "boolean"
+                    },
+                    "UpdateDataHistoryImmediatelyAfterWrite": {
                       "type": "boolean"
                     },
                     "Use": {
