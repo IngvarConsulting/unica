@@ -3246,3 +3246,38 @@ fn column_add_default_qname_keeps_read_facts_and_preserves_final_validation() {
     assert_eq!(rows[0]["props"]["type"], "CatalogRef.Existing");
     assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
 }
+
+#[test]
+fn column_add_refuses_a_default_valuetable_qname_outside_the_core_namespace() {
+    for namespace in ["urn:foreign", "http://v8.1c.ru/8.3/xcf/logform"] {
+        let fixture = fixture("workspace-form-column-add");
+        let path = fixture
+            .workspace
+            .join("src/Catalogs/Items/Forms/Main/Ext/Form.xml");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let invalid = original.replace(
+            "<v8:Type>v8:ValueTable</v8:Type>",
+            &format!("<v8:Type xmlns=\"{namespace}\">ValueTable</v8:Type>"),
+        );
+        std::fs::write(&path, invalid).unwrap();
+        let before = tree_digest(&fixture.workspace.join("src"));
+        let at = "main:Catalog.Items.Form.Main.Attribute.FirstRows";
+        let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at":at}));
+        assert!(viewed.ok, "{viewed:?}");
+        assert!(
+            !viewed.data.as_ref().unwrap()["can"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["op"] == "column.add"),
+            "{viewed:?}"
+        );
+        let preview = invoke(
+            &fixture.workspace,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":"column.add","args":{"items":[{"name":"Rejected","type":"Boolean"}]}}]}),
+        );
+        assert!(!preview.ok, "{preview:?}");
+        assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
+    }
+}

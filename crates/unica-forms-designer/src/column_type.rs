@@ -213,6 +213,11 @@ pub(crate) fn observed_parent_type(column: Node<'_, '_>) -> Option<String> {
     {
         return None;
     }
+    // ValueTable is recognised by QName URI, as column.add recognises it:
+    // equivalent spellings of one source publish the same parent fact.
+    if let Some(value_table) = crate::column_add::observed_value_table_type(attribute) {
+        return Some(value_table);
+    }
     let type_node = child(attribute, "Type").ok()?;
     supported_shape(type_node).ok()?;
     let (normalized, _) = canonical_type(type_node).ok()?;
@@ -307,7 +312,12 @@ mod tests {
             ),
         ] {
             let attributes = crate::codec::parse_form_attributes_xml(&xml).unwrap();
-            assert_eq!(attributes[0].columns[0].parent_type, None);
+            // An unproven ValueTable either hides its columns or gives them no
+            // parent evidence; props.set never sees a ValueTable parent.
+            assert!(attributes[0]
+                .columns
+                .iter()
+                .all(|column| column.parent_type.is_none()));
         }
     }
 
