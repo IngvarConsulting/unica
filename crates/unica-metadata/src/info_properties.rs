@@ -423,6 +423,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | ReturnValuesReuse
         | Server
         | ServerCall => kind == CommonModule,
+        CreateTaskInPrivilegedMode => kind == BusinessProcess,
         FullTextSearch
         | SearchStringModeOnInputByString
         | FullTextSearchOnInputByString

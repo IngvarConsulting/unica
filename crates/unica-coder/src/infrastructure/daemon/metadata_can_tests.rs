@@ -1,6 +1,9 @@
 #[path = "metadata_can_tests/number_settings.rs"]
 mod number_settings;
 
+#[path = "metadata_can_tests/business_process_task_mode.rs"]
+mod business_process_task_mode;
+
 #[path = "metadata_can_tests/ws_reference.rs"]
 mod ws_reference;
 
