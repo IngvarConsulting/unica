@@ -133,6 +133,38 @@ pub struct MetadataPropertySpec {
     pub allowed_kinds: &'static [MetadataKind],
     pub enum_values: &'static [&'static str],
     pub string_pattern: Option<&'static str>,
+    /// Owners whose existing enum element `props.set` rewrites in place.
+    pub in_place: InPlace,
+}
+
+/// Owners whose existing element of an enum property is written in place:
+/// the single direct element must hold a confirmed value, and only its text
+/// changes, keeping the qualified element and its namespace declarations.
+/// Other owners use the general property writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InPlace {
+    Never,
+    /// Every owner the property allows.
+    Always,
+    /// Only these owners.
+    Owners(&'static [MetadataKind]),
+}
+
+impl MetadataPropertySpec {
+    /// Whether `props.set` rewrites this property of `kind` in place.
+    pub fn in_place(&self, kind: MetadataKind) -> bool {
+        self.allowed_kinds.contains(&kind)
+            && match self.in_place {
+                InPlace::Never => false,
+                InPlace::Always => true,
+                InPlace::Owners(owners) => owners.contains(&kind),
+            }
+    }
+
+    const fn written_in_place(mut self, in_place: InPlace) -> Self {
+        self.in_place = in_place;
+        self
+    }
 }
 
 const fn property(
@@ -149,6 +181,7 @@ const fn property(
         allowed_kinds,
         enum_values: &[],
         string_pattern: None,
+        in_place: InPlace::Never,
     }
 }
 
@@ -193,6 +226,7 @@ const fn enum_property(
         allowed_kinds,
         enum_values,
         string_pattern: None,
+        in_place: InPlace::Never,
     }
 }
 
@@ -210,6 +244,7 @@ const fn patterned_string_property(
         allowed_kinds,
         enum_values: &[],
         string_pattern: Some(string_pattern),
+        in_place: InPlace::Never,
     }
 }
 
@@ -381,42 +416,48 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::FullTextSearch,
         &[MetadataKind::Catalog, MetadataKind::Document],
         &["Use", "DontUse"],
-    ),
+    )
+    .written_in_place(InPlace::Always),
     enum_property(
         "SearchStringModeOnInputByString",
         "SearchStringModeOnInputByString",
         MetaPropertyKey::SearchStringModeOnInputByString,
         &[MetadataKind::Catalog, MetadataKind::Document],
         &["Begin", "AnyPart"],
-    ),
+    )
+    .written_in_place(InPlace::Always),
     enum_property(
         "FullTextSearchOnInputByString",
         "FullTextSearchOnInputByString",
         MetaPropertyKey::FullTextSearchOnInputByString,
         &[MetadataKind::Catalog, MetadataKind::Document],
         &["Use", "DontUse"],
-    ),
+    )
+    .written_in_place(InPlace::Always),
     enum_property(
         "ChoiceDataGetModeOnInputByString",
         "ChoiceDataGetModeOnInputByString",
         MetaPropertyKey::ChoiceDataGetModeOnInputByString,
         &[MetadataKind::Catalog, MetadataKind::Document],
         &["Directly", "Background"],
-    ),
+    )
+    .written_in_place(InPlace::Always),
     enum_property(
         "CreateOnInput",
         "CreateOnInput",
         MetaPropertyKey::CreateOnInput,
         &[MetadataKind::Catalog, MetadataKind::Document],
         &["Auto", "Use", "DontUse"],
-    ),
+    )
+    .written_in_place(InPlace::Always),
     enum_property(
         "ChoiceHistoryOnInput",
         "ChoiceHistoryOnInput",
         MetaPropertyKey::ChoiceHistoryOnInput,
         &[MetadataKind::Catalog, MetadataKind::Document],
         &["Auto", "DontUse"],
-    ),
+    )
+    .written_in_place(InPlace::Always),
     property(
         "Type",
         MetaPropertyKey::Type,
@@ -484,7 +525,12 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::CodeAllowedLength,
         CODE_ALLOWED_LENGTH_KINDS,
         CODE_ALLOWED_LENGTH_VALUES,
-    ),
+    )
+    .written_in_place(InPlace::Owners(&[
+        MetadataKind::ChartOfCharacteristicTypes,
+        MetadataKind::ChartOfCalculationTypes,
+        MetadataKind::ExchangePlan,
+    ])),
     property(
         "CodeMask",
         MetaPropertyKey::CodeMask,
@@ -609,14 +655,19 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::NumberAllowedLength,
         DOCUMENT_NUMBER_KINDS,
         NUMBER_ALLOWED_LENGTH_VALUES,
-    ),
+    )
+    .written_in_place(InPlace::Owners(&[
+        MetadataKind::BusinessProcess,
+        MetadataKind::Task,
+    ])),
     enum_property(
         "NumberPeriodicity",
         "NumberPeriodicity",
         MetaPropertyKey::NumberPeriodicity,
         NUMBER_PERIODICITY_KINDS,
         NUMBER_PERIODICITY_VALUES,
-    ),
+    )
+    .written_in_place(InPlace::Owners(&[MetadataKind::BusinessProcess])),
     enum_property(
         "NumberType",
         "NumberType",
@@ -675,7 +726,8 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::PredefinedDataUpdate,
         PREDEFINED_DATA_UPDATE_KINDS,
         PREDEFINED_DATA_UPDATE_VALUES,
-    ),
+    )
+    .written_in_place(InPlace::Always),
     property(
         "Predefined",
         MetaPropertyKey::Predefined,
@@ -965,6 +1017,35 @@ impl MetaPropertyChanges {
 mod tests {
     use super::*;
     use crate::{MetaDiagnosticCode, MetadataKind};
+
+    #[test]
+    fn in_place_writes_only_confirmed_enum_elements_of_allowed_owners() {
+        for spec in METADATA_PROPERTY_SPECS {
+            if spec.in_place == InPlace::Never {
+                continue;
+            }
+            assert!(
+                spec.value_kind == MetaPropertyValueKind::String && !spec.enum_values.is_empty(),
+                "{}: only an enum value can be confirmed before an in-place write",
+                spec.public_name
+            );
+            if let InPlace::Owners(owners) = spec.in_place {
+                assert!(
+                    !owners.is_empty(),
+                    "{}: use InPlace::Never",
+                    spec.public_name
+                );
+                for owner in owners {
+                    assert!(
+                        spec.allowed_kinds.contains(owner),
+                        "{}: in-place owner {} is not an allowed owner",
+                        spec.public_name,
+                        owner.as_str()
+                    );
+                }
+            }
+        }
+    }
 
     fn assert_property_kind_matrix(
         property_name: &str,
