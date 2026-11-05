@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/code_allowed_length.rs"]
+mod code_allowed_length;
+
 #[path = "metadata_can_tests/business_process_task_mode.rs"]
 mod business_process_task_mode;
 
@@ -8,6 +11,8 @@ mod ws_reference;
 mod functional_option;
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
+#[path = "metadata_can_tests/root_comments.rs"]
+mod root_comments;
 #[path = "metadata_can_tests/search_input.rs"]
 mod search_input;
 
