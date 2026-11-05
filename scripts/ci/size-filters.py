@@ -167,6 +167,16 @@ def included_file(text: str, file_dir: Path) -> Path | None:
     return None
 
 
+def discovered_modules(text: str) -> bool:
+    """`include!` модулей, которые объявляет build.rs по файлам каталога модуля.
+
+    Так подключены подмодули `metadata_can_tests`: crates/unica-coder/build.rs
+    объявляет `mod <имя>;` для каждого `<каталог модуля>/*.rs`.
+    """
+    compact = re.sub(r"\s+", "", text)
+    return re.fullmatch(r'include!\(concat!\(env!\("OUT_DIR"\),"/[a-z0-9_]+_modules\.rs"\)\);?', compact) is not None
+
+
 def module_files(root_file: Path, logical_root: tuple[str, ...] = (),
                  includes: list[tuple[tuple[str, ...], Path]] | None = None) -> dict[tuple[str, ...], Path]:
     """Файлы модулей одной цели от её корня, включая перенесённые `#[path]`.
@@ -192,7 +202,11 @@ def module_files(root_file: Path, logical_root: tuple[str, ...] = (),
                 attributes.append(source[child.start_byte:child.end_byte].decode())
                 continue
             macro = child.named_children[0] if child.type == "expression_statement" and child.named_children else child
-            if includes is not None and macro.type == "macro_invocation":
+            if macro.type == "macro_invocation" and discovered_modules(
+                    source[macro.start_byte:macro.end_byte].decode()):
+                for target in sorted(default_base.glob("*.rs")):
+                    visit_file(target, (*logical, target.stem))
+            elif includes is not None and macro.type == "macro_invocation":
                 target = included_file(source[macro.start_byte:macro.end_byte].decode(), file_dir)
                 if target is not None:
                     includes.append((logical, target))

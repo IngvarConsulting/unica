@@ -1,25 +1,6 @@
-#[path = "metadata_can_tests/number_settings.rs"]
-mod number_settings;
-
-#[path = "metadata_can_tests/code_allowed_length.rs"]
-mod code_allowed_length;
-
-#[path = "metadata_can_tests/business_process_task_mode.rs"]
-mod business_process_task_mode;
-
-#[path = "metadata_can_tests/ws_reference.rs"]
-mod ws_reference;
-
-#[path = "metadata_can_tests/functional_option.rs"]
-mod functional_option;
-#[path = "metadata_can_tests/property_name_parity.rs"]
-mod property_name_parity;
-#[path = "metadata_can_tests/relation_diagnostic_path.rs"]
-mod relation_diagnostic_path;
-#[path = "metadata_can_tests/root_comments.rs"]
-mod root_comments;
-#[path = "metadata_can_tests/search_input.rs"]
-mod search_input;
+// Submodules are the files of `metadata_can_tests/`; build.rs declares
+// them, so a new test file needs no registration here.
+include!(concat!(env!("OUT_DIR"), "/metadata_can_tests_modules.rs"));
 
 use super::actor_capacity_tests::direct_v5;
 use super::*;
@@ -2838,9 +2819,3 @@ fn an_oversized_form_item_title_is_named_by_a_limit() {
         "the title reads whole at its address"
     );
 }
-
-#[path = "metadata_can_tests/predefined_data_update.rs"]
-mod predefined_data_update;
-
-#[path = "metadata_can_tests/style_color.rs"]
-mod style_color;
