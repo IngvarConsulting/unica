@@ -1080,6 +1080,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.EXACT-VERSION
     #[test]
     fn readable_child_graph_does_not_authorize_materializing_unsupported_descriptors() {
         for kind in ["Template", "Form"] {
@@ -1902,6 +1903,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.HTML-TEMPLATE-VALIDATION
     #[test]
     fn html_template_requires_both_its_descriptor_and_language_page() {
         for (label, resources) in [
@@ -1931,6 +1933,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.HTML-TEMPLATE-VALIDATION
     #[test]
     fn html_template_accepts_every_declared_language_page() {
         let subject = template_subject(
@@ -1959,6 +1962,7 @@ mod tests {
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
+    /// rule: INV.SOURCE.HTML-TEMPLATE-VALIDATION
     #[test]
     fn html_template_page_accepts_registered_utf8_html_without_xml_grammar() {
         let page = concat!(
@@ -1977,6 +1981,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.HTML-TEMPLATE-VALIDATION
     #[test]
     fn html_template_page_rejects_non_utf8_bytes() {
         let error = validate_template_resource(
@@ -1989,6 +1994,7 @@ mod tests {
         assert!(error.contains("not UTF-8"), "{error}");
     }
 
+    /// rule: INV.SOURCE.HTML-TEMPLATE-VALIDATION
     #[test]
     fn html_template_pages_must_match_registered_language_codes() {
         let subject = template_subject(
@@ -2129,6 +2135,7 @@ mod tests {
         assert!(exact.is_empty(), "{exact:?}");
     }
 
+    /// rule: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
     #[test]
     fn legacy_metadata_warnings_use_a_warning_code_and_keep_error_verdicts() {
         let registration = owner(&[("CommonModule", "Service")]);
@@ -2218,6 +2225,7 @@ mod tests {
         assert!(result.diagnostics[0].field.is_some());
     }
 
+    /// rule: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
     #[test]
     fn internal_malformed_xml_is_a_hard_failure_matching_legacy_classification() {
         let registration = owner(&[("CommonModule", "Service")]);

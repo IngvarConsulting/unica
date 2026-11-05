@@ -763,6 +763,7 @@ mod tests {
     use unica_source_contract::SourceSetKind;
     use unica_xdto::operations::XdtoOperation;
 
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn implemented_operations_have_contracts_and_target_skeletons_have_no_empty_address() {
         for descriptor in OPERATION_DESCRIPTORS {
@@ -861,6 +862,7 @@ mod tests {
 
     /// #1381: операции, которые пишут содержимое из сопутствующего файла,
     /// называют его; операции над описанием объекта — нет.
+    /// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
     #[test]
     fn content_writers_name_the_companion_file_they_write() {
         let registry = crate::domain::apply::operation_registry();
@@ -1741,6 +1743,7 @@ mod tests {
     /// Применимость зависит от маршрута, а не от вида последнего сегмента:
     /// одинаковые виды в разных деревьях получают разные операции. Строки —
     /// известные расхождения #1351 и их правильные места.
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn applicability_follows_the_route_not_the_terminal_kind() {
         let cases = [
@@ -2103,6 +2106,7 @@ mod tests {
 
     /// Формат макета — отдельный фильтр с одним владельцем: семейства СКД и
     /// табличного документа применимы только к макету своего формата.
+    /// rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     #[test]
     fn template_format_is_a_separate_filter_for_dcs_and_mxl_families() {
         let at = address("main:Report.Sales.Template.Layout");
@@ -2146,6 +2150,7 @@ mod tests {
 
     /// `next` неприменимой операции ведёт к ближайшему узлу, где она
     /// исполнима; для операции верхнего уровня это корень набора.
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn a_misplaced_operation_names_the_nearest_node_where_it_applies() {
         let registry = crate::domain::apply::operation_registry();
@@ -2334,6 +2339,7 @@ mod tests {
             .is_none());
     }
 
+    /// rule: INV.SOURCE.MULTI-FORMAT-WORKSPACE
     #[test]
     fn classification_fallback_never_grants_writes_or_crosses_source_isolation() {
         use super::source_set_traits_of_source;
@@ -2400,6 +2406,7 @@ mod tests {
     /// пути. Переехавшая операция на владельце больше не исполнима, и прежний
     /// вызов получает отказ с адресом листа; вызов на самом листе отказа по
     /// таблице не получает. Запись ещё не переехавшей операции не срабатывает.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn every_retired_argument_entry_builds_a_routable_member_address() {
         let registry = crate::domain::apply::operation_registry();
@@ -2545,6 +2552,7 @@ mod tests {
     /// элемента ведёт к его пути в форме, а без формы — к элементу верхнего
     /// уровня; русское имя события переводится в имя реестра; аргумент,
     /// повторивший адрес, отказывает тем же адресом.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_form_item_or_event_named_by_an_argument_is_refused_with_its_address() {
         let registry = crate::domain::apply::operation_registry();
@@ -2696,6 +2704,7 @@ mod tests {
 
     /// Роль элемента формы сужает словарь: в поле не добавить вложенный
     /// элемент, автоматическую командную панель не удалить отдельно.
+    /// rule: INV.SOURCE.FORM-OPERATION-TARGETS
     #[test]
     fn a_form_item_role_narrows_element_operations() {
         let registry = crate::domain::apply::operation_registry();
@@ -2751,6 +2760,7 @@ mod tests {
     /// подузла; на самом подузле тот же аргумент лишний и тоже отказывает,
     /// а вызов без него таблицу не трогает. Каждая операция пакета
     /// представлена в таблице, и её запись переключена.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_subnode_named_by_an_argument_is_refused_with_its_address() {
         let registry = crate::domain::apply::operation_registry();
@@ -2945,6 +2955,7 @@ mod tests {
     /// прежний аргумент, называвший источник, вычисляемое поле, итог или
     /// контейнер настроек, отказывает с адресом узла. Без схемы элемент
     /// структуры, названный аргументом, — элемент верхнего уровня варианта.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn dcs_schema_nodes_and_structure_items_take_their_subject_from_the_address() {
         let registry = crate::domain::apply::operation_registry();
@@ -3172,6 +3183,7 @@ mod tests {
     /// Поиск по имени трёхзначен (#1357): найденный узел даёт свой адрес,
     /// повторённое имя — ветвь узлов этого вида и адреса совпавших, а не
     /// выдуманный узел верхнего уровня.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_repeated_schema_name_routes_next_to_the_branch_and_every_match() {
         let registry = crate::domain::apply::operation_registry();
@@ -3270,6 +3282,7 @@ mod tests {
     /// заменившая, с учётом роли элемента (#1465): элемент добавляется
     /// в контейнер над полем, а автоматическую командную панель, которую
     /// отдельно не удалить, не подменяет её таблица.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_renamed_operation_target_respects_the_item_role() {
         let registry = crate::domain::apply::operation_registry();
@@ -3315,6 +3328,7 @@ mod tests {
     /// Узел создаёт операция родителя: снятая `form.create` называет
     /// `form.add` на владельце формы, а `*.set` подузла знает, какая
     /// операция родителя создаёт его узел (#1354).
+    /// rule: INV.WIRE.OPERATION-CREATION-PARENT
     #[test]
     fn a_retired_creation_names_the_parent_operation() {
         let retired =
@@ -3414,6 +3428,7 @@ mod tests {
     /// к узлу, который называло значение, и операция там исполнима. Без
     /// снятого ключа вызов отказа по таблице не получает. Каждая операция
     /// пакета представлена в таблице.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_duplicate_argument_is_refused_with_the_node_its_value_named() {
         let registry = crate::domain::apply::operation_registry();
@@ -3626,6 +3641,9 @@ mod tests {
     /// группа `CommandGroup.X` и свойство XDTO `A.B` — один сегмент. Прежний
     /// `propertyPath` становится цепочкой `Property`, где `\.` остаётся
     /// точкой имени, а путь с удаляемым именем ведёт к коллекции свойств.
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+    /// rule: INV.SOURCE.COMMAND-INTERFACE-TARGET
+    /// rule: INV.SOURCE.XDTO-PROPERTY-PATH
     #[test]
     fn retired_names_with_a_dot_route_to_escaped_addresses() {
         let registry = crate::domain::apply::operation_registry();
@@ -3805,6 +3823,7 @@ mod tests {
     /// Члены метаданных адресуются (#1352): изменение и удаление исполнимы на
     /// самом члене и не исполнимы на владельце; реквизит добавляется и на
     /// владельце, и на его табличной части.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn member_operations_apply_at_the_member_address_not_at_the_owner() {
         for (op, member, owner) in [

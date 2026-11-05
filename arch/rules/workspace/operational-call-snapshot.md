@@ -1,6 +1,5 @@
 ---
 id: INV.CONFIG.OPERATIONAL-CALL-SNAPSHOT
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/969
 ---
 

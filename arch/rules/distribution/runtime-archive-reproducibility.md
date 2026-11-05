@@ -1,7 +1,5 @@
 ---
 id: INV.PKG.RUNTIME-ARCHIVE-REPRODUCIBLE
-check:
-  - tests/ci/test_package_unica_runtime.py::PackageUnicaRuntimeTests.test_runtime_archive_is_deterministic_and_target_only
 ---
 
 # Один и тот же комплект файлов даёт одинаковый архив

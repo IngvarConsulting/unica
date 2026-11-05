@@ -191,6 +191,7 @@ impl Downloader for FakeDownloader {
     }
 }
 
+/// rule: INV.PKG.VERIFIED-ATOMIC-INSTALL
 #[test]
 fn valid_archive_is_published_with_a_ready_marker() {
     let runtime = b"unica-runtime";
@@ -209,6 +210,7 @@ fn valid_archive_is_published_with_a_ready_marker() {
     fs::remove_dir_all(cache).expect("remove temp directory");
 }
 
+/// rule: INV.PKG.VERIFIED-ATOMIC-INSTALL
 #[test]
 fn ready_marker_waits_for_the_complete_runtime_file_closure() {
     let runtime = b"unica-runtime";
@@ -280,6 +282,7 @@ fn ready_marker_waits_for_the_complete_runtime_file_closure() {
     }
 }
 
+/// rule: INV.PKG.CORRUPT-ARCHIVE-NOT-READY
 #[test]
 fn corrupt_archive_never_publishes_a_ready_runtime() {
     let runtime = b"unica-runtime";
@@ -298,6 +301,7 @@ fn corrupt_archive_never_publishes_a_ready_runtime() {
     fs::remove_dir_all(cache).expect("remove temp directory");
 }
 
+/// rule: INV.PKG.VERIFIED-ATOMIC-INSTALL
 #[test]
 fn traversal_archive_is_rejected_before_publication() {
     let runtime = b"unica-runtime";
@@ -325,6 +329,7 @@ fn traversal_archive_is_rejected_before_publication() {
     fs::remove_dir_all(cache).expect("remove temp directory");
 }
 
+/// rule: INV.PKG.VERIFIED-ATOMIC-INSTALL
 #[test]
 fn install_closure_rejects_unsafe_or_drifted_archives_without_ready() {
     let runtime = b"unica-runtime";
@@ -381,6 +386,7 @@ fn install_closure_rejects_unsafe_or_drifted_archives_without_ready() {
     }
 }
 
+/// rule: INV.PKG.CONCURRENT-INSTALL-ONCE
 #[test]
 fn concurrent_installers_download_and_publish_once() {
     let runtime = b"unica-runtime";
@@ -412,6 +418,7 @@ fn concurrent_installers_download_and_publish_once() {
     fs::remove_dir_all(cache).expect("remove temp directory");
 }
 
+/// rule: INV.PKG.CORE-FIRST-ACQUISITION
 #[test]
 fn the_core_installs_without_any_engine_present() {
     // Движок объявлен в манифесте, но установка ядра не должна его загружать.
@@ -449,6 +456,7 @@ fn the_core_installs_without_any_engine_present() {
     );
 }
 
+/// rule: INV.PKG.ARTIFACT-CACHE-IDENTITY
 #[test]
 fn the_install_path_is_keyed_by_version_and_archive_identity() {
     let runtime = b"unica-runtime";
@@ -474,6 +482,7 @@ fn the_install_path_is_keyed_by_version_and_archive_identity() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.ARTIFACT-CACHE-IDENTITY
 #[test]
 fn rebuilt_artifact_with_the_same_version_gets_a_distinct_immutable_root() {
     // Toolchain build tags may advance without changing the upstream semantic
@@ -524,6 +533,7 @@ fn rebuilt_artifact_with_the_same_version_gets_a_distinct_immutable_root() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.ARTIFACT-CACHE-IDENTITY
 #[test]
 fn a_plugin_release_does_not_refetch_an_unchanged_artifact() {
     // Ровно тот случай из #585: обновление плагина объявляло холодным весь кеш.
@@ -559,6 +569,7 @@ fn seed_installation(cache: &Path, artifact: &str, version: &str, host: HostTarg
     root
 }
 
+/// rule: INV.PKG.RUNTIME-CACHE-RETENTION
 #[test]
 fn collecting_keeps_the_newest_versions_of_each_artifact() {
     let cache = temp_dir("collect-keeps");
@@ -603,6 +614,7 @@ fn collecting_keeps_the_newest_versions_of_each_artifact() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.RUNTIME-CACHE-RETENTION
 #[test]
 fn collecting_failure_does_not_fail_a_successful_installation() {
     struct CacheGuard(PathBuf);
@@ -641,6 +653,7 @@ fn collecting_failure_does_not_fail_a_successful_installation() {
         .expect_err("the same collection fault must still be present after installation");
 }
 
+/// rule: INV.PKG.RUNTIME-CACHE-RETENTION
 #[test]
 fn collecting_does_not_remove_a_version_owned_by_an_active_delivery_lock() {
     let cache = temp_dir("collect-active-lock");
@@ -663,6 +676,7 @@ fn collecting_does_not_remove_a_version_owned_by_an_active_delivery_lock() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.RUNTIME-CACHE-RETENTION
 #[test]
 fn collecting_leaves_an_artifact_that_is_within_the_limit() {
     let cache = temp_dir("collect-within");
@@ -674,6 +688,7 @@ fn collecting_leaves_an_artifact_that_is_within_the_limit() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.RUNTIME-CACHE-SERVICE-DATA
 #[test]
 fn collecting_does_not_touch_the_lock_and_transaction_areas() {
     // Служебные каталоги кеша артефактами не являются, и удалять их — потерять
@@ -935,6 +950,7 @@ fn partials(cache: &Path, artifact: &str) -> Vec<String> {
     names
 }
 
+/// rule: INV.PKG.RESUMABLE-DOWNLOAD
 #[test]
 fn an_interrupted_download_resumes_in_the_next_session() {
     let runtime = b"unica-runtime-that-is-long-enough-to-cut-in-half";
@@ -965,6 +981,7 @@ fn an_interrupted_download_resumes_in_the_next_session() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.RESUMABLE-DOWNLOAD
 #[test]
 fn a_partial_that_hashes_wrong_is_dropped_instead_of_resumed_forever() {
     // Докачивать не те байты значит вечно не сходиться по сумме.
@@ -1060,6 +1077,8 @@ fn a_partial_owned_by_another_delivery_lock_is_not_deleted() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.ARTIFACT-CACHE-IDENTITY
+/// rule: INV.PKG.CORE-FIRST-ACQUISITION
 #[test]
 fn an_engine_is_installed_on_demand_under_its_own_version() {
     let core = b"unica-runtime";
@@ -1102,6 +1121,7 @@ fn an_engine_is_installed_on_demand_under_its_own_version() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.CONCURRENT-INSTALL-ONCE
 #[test]
 fn two_sessions_acquire_one_engine_once() {
     let core = b"unica-runtime";
@@ -1296,6 +1316,7 @@ impl Downloader for PeekingDownloader {
     }
 }
 
+/// rule: INV.PKG.INSTALL-ATTEMPT-LOG
 #[test]
 fn an_attempt_is_already_open_while_the_download_runs() {
     // Запись открывается до стадии, а не после неё: у убитого процесса второго
@@ -1322,6 +1343,7 @@ fn an_attempt_is_already_open_while_the_download_runs() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.INSTALL-ATTEMPT-LOG
 #[test]
 fn a_finished_install_leaves_nothing_unfinished() {
     let runtime = b"unica-runtime";
@@ -1344,6 +1366,7 @@ fn a_finished_install_leaves_nothing_unfinished() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.INSTALL-ATTEMPT-LOG
 #[test]
 fn a_failure_the_bootstrap_reported_is_not_repeated_by_the_next_session() {
     // О замеченном отказе сказано кодом выхода и потоком ошибок. Показывать его
@@ -1467,6 +1490,7 @@ fn manifest_with_file_artifact(
     manifest
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn an_artifact_delivered_as_one_file_is_installed_without_unpacking() {
     // Переупаковать голый бинарь в архив ради единой формы значит вернуть ту
@@ -1497,6 +1521,7 @@ fn an_artifact_delivered_as_one_file_is_installed_without_unpacking() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn a_file_artifact_whose_bytes_are_wrong_is_refused_like_any_other() {
     let core = b"unica-runtime";
@@ -1521,6 +1546,7 @@ fn a_file_artifact_whose_bytes_are_wrong_is_refused_like_any_other() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.CACHE-PREFETCH
 #[test]
 fn prefetch_delivers_every_artifact_the_target_needs() {
     // Образ собирают один раз и гоняют без сети. Довезти ядро и оставить движки
@@ -1566,6 +1592,7 @@ fn prefetch_delivers_every_artifact_the_target_needs() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.CACHE-PREFETCH
 #[test]
 fn a_warm_cache_makes_prefetch_download_nothing() {
     // Слой образа пересобирают чаще, чем меняются артефакты. Повторная загрузка
@@ -1595,6 +1622,7 @@ fn a_warm_cache_makes_prefetch_download_nothing() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.CACHE-PREFETCH
 #[test]
 fn an_invalid_ready_marker_makes_prefetch_report_a_download() {
     let runtime = b"unica-runtime";
@@ -1770,6 +1798,7 @@ fn install_zip_artifact(
     (cache, result)
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn a_publisher_zip_installs_every_declared_file() {
     let archive = zip_bytes(&[
@@ -1789,6 +1818,8 @@ fn a_publisher_zip_installs_every_declared_file() {
     fs::remove_dir_all(&cache).ok();
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
+/// rule: INV.PKG.VERIFIED-ATOMIC-INSTALL
 #[test]
 fn a_publisher_zip_is_refused_when_unsafe_or_drifted() {
     let complete = |extra: &[(&str, &[u8])]| {

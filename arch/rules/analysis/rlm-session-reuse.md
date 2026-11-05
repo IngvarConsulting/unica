@@ -1,6 +1,5 @@
 ---
 id: INV.RLM.SESSION-REUSE
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/988
 ---
 
