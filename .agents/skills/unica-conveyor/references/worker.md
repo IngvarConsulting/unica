@@ -88,7 +88,8 @@ PR готов к вливанию, когда выполнено всё:
 Вылет своего PR разбираешь ты. Причину бери из события
 `RemovedFromMergeQueueEvent` и упавших джоб прогона `merge_group`.
 
-- «test result(s) disappeared»: в описании нет `Removes-test`. Полный
+- «test result(s) disappeared»: в описании нет `Removes-test` или, если снята
+  целая тестовая цель, `Removes-test-target`. Полный
   список — в артефакте `ci-rust-inventory-verification`, поле
   `previousInventory.removedCases`. Если записи впереди уже ушли, сверь
   объявления с PR, которые были в той же пачке.
