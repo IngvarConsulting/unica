@@ -330,7 +330,12 @@ fn form_registration_takes_the_platform_slot_of_its_owner_kind() {
             &["Dimension:D", "Command:C"][..],
             &["Dimension:D", "Form:New", "Command:C"][..],
         ),
-        // no settled platform order: forms stay before the first template
+        (
+            "FilterCriterion",
+            &["Command:C"][..],
+            &["Form:New", "Command:C"][..],
+        ),
+        // Native 8.3.27 also orders storage forms before templates.
         (
             "SettingsStorage",
             &["Form:F", "Template:M"][..],

@@ -366,6 +366,10 @@ pub fn platform_child_object_order(owner_kind: &str) -> Option<&'static [&'stati
         ],
         "Enum" => &["EnumValue", "Form", "Template", "Command"],
         "DocumentJournal" => &["Column", "Form", "Template", "Command"],
+        "FilterCriterion" => &["Form", "Command"],
+        "SettingsStorage" => &["Form", "Template"],
+        "HTTPService" => &["URLTemplate"],
+        "WebService" => &["Operation"],
         _ => return None,
     })
 }

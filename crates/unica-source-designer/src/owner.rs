@@ -50,6 +50,7 @@ pub struct PlatformXmlSourceSetOwnerEvidence {
 struct Registrations {
     known: BTreeSet<(String, String)>,
     ordered: Vec<(String, String)>,
+    unreadable: BTreeSet<(String, &'static str)>,
 }
 
 impl Registrations {
@@ -91,6 +92,14 @@ impl PlatformXmlSourceSetOwnerEvidence {
             .ordered
             .iter()
             .map(|(kind, name)| (kind.as_str(), name.as_str()))
+    }
+
+    /// Child kinds whose registrations could not be completely observed.
+    pub fn unreadable_registrations(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.registrations
+            .unreadable
+            .iter()
+            .map(|(kind, reason)| (kind.as_str(), *reason))
     }
 
     pub const fn is_configuration_extension(&self) -> bool {
@@ -150,21 +159,7 @@ pub fn prove_already_read_source_set_owner(
         .children()
         .find(|node| node.is_element())
         .expect("validated source-set owner has one direct artifact");
-    let mut registrations = Registrations::default();
-    for child_objects in artifact.children().filter(|node| {
-        node.is_element()
-            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-            && node.tag_name().name() == "ChildObjects"
-    }) {
-        for registration in child_objects
-            .children()
-            .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
-        {
-            if let Some(name) = registered_child_name(registration) {
-                registrations.insert((registration.tag_name().name().to_string(), name));
-            }
-        }
-    }
+    let registrations = collect_registrations(artifact);
     Ok(PlatformXmlSourceSetOwnerEvidence {
         version: root_version_literal(source, root),
         artifact_kind: artifact.tag_name().name().to_string(),
@@ -191,21 +186,7 @@ pub fn prove_already_read_metadata_owner(
         .children()
         .find(|node| node.is_element())
         .expect("strict standalone metadata owner has one artifact child");
-    let mut registrations = Registrations::default();
-    for child_objects in artifact.children().filter(|node| {
-        node.is_element()
-            && node.tag_name().namespace() == Some(MD_CLASSES_NS)
-            && node.tag_name().name() == "ChildObjects"
-    }) {
-        for registration in child_objects
-            .children()
-            .filter(|node| node.is_element() && node.tag_name().namespace() == Some(MD_CLASSES_NS))
-        {
-            if let Some(name) = registered_child_name(registration) {
-                registrations.insert((registration.tag_name().name().to_string(), name));
-            }
-        }
-    }
+    let registrations = collect_registrations(artifact);
     Ok(PlatformXmlSourceSetOwnerEvidence {
         version: root_version_literal(source, root),
         artifact_kind: artifact.tag_name().name().to_string(),
@@ -214,6 +195,32 @@ pub fn prove_already_read_metadata_owner(
         registrations,
         configuration_extension: false,
     })
+}
+
+fn collect_registrations(artifact: roxmltree::Node<'_, '_>) -> Registrations {
+    let mut registrations = Registrations::default();
+    for container in artifact
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "ChildObjects")
+    {
+        for child in container.children().filter(|node| node.is_element()) {
+            let kind = child.tag_name().name().to_string();
+            if container.tag_name().namespace() != Some(MD_CLASSES_NS)
+                || child.tag_name().namespace() != Some(MD_CLASSES_NS)
+            {
+                registrations
+                    .unreadable
+                    .insert((kind, "registration is outside the metadata namespace"));
+            } else if let Some(name) = registered_child_name(child) {
+                registrations.insert((kind, name));
+            } else {
+                registrations
+                    .unreadable
+                    .insert((kind, "registration name is unavailable"));
+            }
+        }
+    }
+    registrations
 }
 
 pub fn metadata_artifact_property(artifact: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
@@ -497,6 +504,31 @@ mod tests {
             vec![("Form", "Zulu"), ("Template", "Alpha"), ("Form", "Alpha")]
         );
         assert!(evidence.registers("Form", "Zulu"));
+        assert_eq!(evidence.unreadable_registrations().count(), 0);
+    }
+
+    #[test]
+    fn damaged_registrations_preserve_known_names_and_report_incomplete_kinds() {
+        let xml = format!(
+            r#"<MetaDataObject xmlns="{MD_CLASSES_NS}" xmlns:f="urn:foreign" version="2.20"><Catalog><Properties><Name>Items</Name></Properties><ChildObjects><Form>Known</Form><Form/><f:Template>Foreign</f:Template><Form>Known</Form></ChildObjects><f:ChildObjects><Command>ForeignContainer</Command></f:ChildObjects></Catalog></MetaDataObject>"#
+        );
+        let evidence =
+            prove_already_read_metadata_owner(Path::new("Catalogs/Items.xml"), xml.as_bytes())
+                .unwrap();
+        assert_eq!(
+            evidence.registrations().collect::<Vec<_>>(),
+            vec![("Form", "Known")]
+        );
+        assert_eq!(
+            evidence.unreadable_registrations().collect::<Vec<_>>(),
+            vec![
+                ("Command", "registration is outside the metadata namespace"),
+                ("Form", "registration name is unavailable"),
+                ("Template", "registration is outside the metadata namespace"),
+            ]
+        );
+        assert!(!evidence.registers("Template", "Foreign"));
+        assert!(!evidence.registers("Command", "ForeignContainer"));
     }
 
     #[test]

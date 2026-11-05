@@ -209,7 +209,7 @@ fn project_metadata(
                     _ => value.and_then(Value::as_array).map_or(0, Vec::len),
                 };
                 let declared = platform_kinds.contains(&kind.as_str());
-                (count > 0 || declared)
+                (count > 0 || (declared && unreadable_collection(payload, *kind).is_none()))
                     .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             })
             .collect::<Vec<_>>();
@@ -363,7 +363,9 @@ fn project_metadata(
     }
     // Непрочитанная коллекция приходит `null`; без этой проверки она читалась
     // бы как пустая.
-    if metadata_collection(payload, first.kind()).is_none_or(Value::is_null) {
+    if metadata_collection(payload, first.kind())
+        .is_none_or(|value| value.is_null() || value.as_array().is_some_and(Vec::is_empty))
+    {
         if let Some(unread) = unreadable_collection(payload, first.kind()) {
             return Err(ViewError::detailed(
                 RefusalDetail::SourceUnreadable,
@@ -417,6 +419,11 @@ fn project_metadata(
                 first.kind().as_str(),
                 first.kind().as_str(),
                 Map::new(),
+            )
+            .with_limits(
+                unreadable_collection(payload, first.kind())
+                    .into_iter()
+                    .collect(),
             ),
             metadata_items(address, first.kind(), collection, payload, member_profile),
         )));
@@ -597,6 +604,9 @@ fn unreadable_limits(payload: &Value) -> Vec<String> {
 /// «нет такой коллекции», и агент счёл бы сервис пустым.
 fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
     let (prefix, property) = match kind {
+        NodeKind::Form => ("collections.forms", None),
+        NodeKind::Template => ("collections.templates", None),
+        NodeKind::Command => ("collections.commands", None),
         NodeKind::AddressingAttribute => ("collections.addressingAttributes", None),
         NodeKind::PredefinedItem => ("predefinedItems", None),
         NodeKind::UrlTemplate => ("details.urlTemplates", None),

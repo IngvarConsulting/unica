@@ -1,0 +1,641 @@
+{
+  "id": "S-2224-empty-owner-branches",
+  "issue": 2224,
+  "area": "Навигация",
+  "task": "Пройти от коллекций владельцев к выданным пустым ветвям Form/Command/Template/URLTemplate/Operation, отличить повреждённые списки сервисов и сохранить исходники",
+  "workspace": "tests/fixtures/acceptance/workspace-empty-owner-branches",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FilterCriterion"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:FilterCriterion.Empty"
+        }
+      ],
+      "captures": {
+        "filterCriterion": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.filterCriterion"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:FilterCriterion.Empty.Form",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:FilterCriterion.Empty.Command",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "filterCriterion0": {
+          "pointer": "/data/branches/0/at"
+        },
+        "filterCriterion1": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.filterCriterion0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:FilterCriterion.Empty.Form"
+        },
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.filterCriterion1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:FilterCriterion.Empty.Command"
+        },
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SettingsStorage.Empty"
+        }
+      ],
+      "captures": {
+        "settingsStorage": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.settingsStorage"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:SettingsStorage.Empty.Form",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:SettingsStorage.Empty.Template",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "settingsStorage0": {
+          "pointer": "/data/branches/0/at"
+        },
+        "settingsStorage1": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.settingsStorage0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:SettingsStorage.Empty.Form"
+        },
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.settingsStorage1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:SettingsStorage.Empty.Template"
+        },
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:HTTPService.Empty"
+        }
+      ],
+      "captures": {
+        "hTTPService": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.hTTPService"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:HTTPService.Empty.URLTemplate",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "hTTPService0": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.hTTPService0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:HTTPService.Empty.URLTemplate"
+        },
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WebService"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:WebService.Empty"
+        }
+      ],
+      "captures": {
+        "webService": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.webService"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:WebService.Empty.Operation",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "webService0": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.webService0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:WebService.Empty.Operation"
+        },
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.Broken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "HTTPService"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "details.urlTemplates"
+        },
+        {
+          "pointer": "/data/branches",
+          "noneMatches": {
+            "at": "main:HTTPService.Broken.URLTemplate"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.Broken.URLTemplate"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "metadata URLTemplate collection is unreadable: details.urlTemplates[0]: URL template has no Properties"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WebService.Broken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/kind",
+          "eq": "WebService"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "details.operations"
+        },
+        {
+          "pointer": "/data/branches",
+          "noneMatches": {
+            "at": "main:WebService.Broken.Operation"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WebService.Broken.Operation"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixSource"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "metadata Operation collection is unreadable: details.operations[0]: Web service operation has no Properties"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FilterCriterion.Broken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits/0",
+          "contains": "collections.commands"
+        },
+        {
+          "pointer": "/data/branches",
+          "noneMatches": {
+            "at": "main:FilterCriterion.Broken.Command"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FilterCriterion.Broken.Command"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "metadata Command collection is unreadable: collections.commands: registration name is unavailable"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:FilterCriterion.Broken.Form"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Broken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits/0",
+          "contains": "collections.templates"
+        },
+        {
+          "pointer": "/data/branches",
+          "noneMatches": {
+            "at": "main:SettingsStorage.Broken.Template"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Broken.Template"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "metadata Template collection is unreadable: collections.templates: registration name is unavailable"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Broken.Form"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "README.md",
+          "eq": "f55764f119d03755a4fef200d44836d5527db1a3ae28f22caf2f183102772218"
+        },
+        {
+          "kind": "sha256",
+          "path": "native-order/SettingsStorage.xml",
+          "eq": "5c1ad551b69bae18f2dcb355bce600097103429ff45293019bca3911d1e40fbc"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "546fcfa0e07841f6c57856f7591f9b8b85371f9910a32f739efa3d7cb0e1a59d"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/FilterCriteria/Broken.xml",
+          "eq": "418de79dd4b90770fca062b26f42147442346e767635ec5cb8cb887e0ff9ceb9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/FilterCriteria/Empty.xml",
+          "eq": "c60cf3fcb6e01ee9d9713058bf66867c050055877365cbd1289f433a2de8a163"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/HTTPServices/Broken.xml",
+          "eq": "48b6adcd205bc7187e9818e454b34b36524f16e9454a08c9d84b7219585c0275"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/HTTPServices/Empty.xml",
+          "eq": "a0d7214b2e2b4a38266333b195490c6c4bcc9ee1c57e68068475bce6ef7e629e"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Broken.xml",
+          "eq": "8456580e2d204d938901d6332c3fcea731ef5f2cd44fd2ee92e5afa63b7b49a2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Empty.xml",
+          "eq": "6fb6029a04d5059f492501c862834408bff022ea22d4ce00c24f54472a8bf3fa"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/WebServices/Broken.xml",
+          "eq": "623017685faf9ca6d1c88d2d36190a9ae44e960027bd0b99000a4b161a1fe7cd"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/WebServices/Empty.xml",
+          "eq": "ab632a6279ff8cca2475c6ae89919cd5012590bc75ed6fe95a5970a9691ef066"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    }
+  ]
+}

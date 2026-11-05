@@ -170,3 +170,34 @@ fn child_object_insertion_targets_only_the_root_metadata_child_objects() {
     assert_eq!(xml.matches("<Role>Reader</Role>").count(), 1);
     assert!(!xml.replace("\r\n", "").contains('\n'));
 }
+
+#[test]
+fn storage_child_order_matches_the_native_synthetic_export() {
+    let xml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/acceptance/workspace-empty-owner-branches/native-order/SettingsStorage.xml"));
+    let document = roxmltree::Document::parse(xml.trim_start_matches('\u{feff}')).unwrap();
+    let owner = document.root_element().first_element_child().unwrap();
+    let children = owner
+        .children()
+        .find(|node| node.has_tag_name("ChildObjects"))
+        .unwrap();
+    let kinds: Vec<_> = children
+        .children()
+        .filter(|node| node.is_element())
+        .map(|node| node.tag_name().name())
+        .collect();
+    assert_eq!(kinds, ["Form", "Template"]);
+    assert_eq!(
+        crate::registration::platform_child_object_order("SettingsStorage"),
+        Some(kinds.as_slice())
+    );
+    for (kind, later) in [
+        ("FilterCriterion", "Command"),
+        ("SettingsStorage", "Template"),
+    ] {
+        let xml = format!("\u{feff}<MetaDataObject>\r\n\t<{kind}>\r\n\t\t<ChildObjects>\r\n\t\t\t<{later}>Existing</{later}>\r\n\t\t</ChildObjects>\r\n\t</{kind}>\r\n</MetaDataObject>\r\n");
+        assert_eq!(
+            crate::registration::platform_child_object_insertion_offset(&xml, "Form"),
+            xml.find(&format!("\t\t\t<{later}>"))
+        );
+    }
+}

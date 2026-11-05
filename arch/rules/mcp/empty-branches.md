@@ -1,10 +1,13 @@
 ---
 id: CTR.SOURCE.EMPTY-BRANCHES
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/empty_owner_branches.rs::unnamed_form_command_and_template_entries_are_not_reported_as_empty
+  - crates/unica-coder/src/infrastructure/v13_read/tests/empty_owner_branches.rs::incomplete_registrations_keep_known_rows_and_independent_empty_siblings
+  - crates/unica-coder/src/infrastructure/v13_read/tests/empty_owner_branches.rs::modeled_empty_owner_branches_are_advertised_and_readable_in_platform_order
+  - crates/unica-coder/src/infrastructure/v13_read/tests/empty_owner_branches.rs::damaged_service_children_keep_owner_facts_without_claiming_empty_branches
   - tests/ci/test_acceptance_scenarios.py::AcceptanceCorpusRunTests.test_every_wire_answers_its_frozen_classes
 gap:
   - https://github.com/IngvarConsulting/unica/issues/2223
-  - https://github.com/IngvarConsulting/unica/issues/2224
 ---
 
 # Корень и объект перечисляют и пустые ветви
