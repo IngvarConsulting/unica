@@ -188,6 +188,7 @@ fn styleitem_value_type_is_namespace_aware_and_damage_preserves_identity() {
     }
 }
 
+/// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn borrowed_common_module_keeps_missing_privileged_unknown() {
     let borrowed = fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml");
@@ -240,6 +241,7 @@ fn borrowed_common_module_keeps_missing_privileged_unknown() {
     }
 }
 
+/// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn borrowed_common_module_view_serializes_unknown_privileged_without_losing_contexts() {
     let fixture = RealReaderFixture::new();
@@ -289,6 +291,7 @@ const COMMON_MODULE_PROPERTY_KEYS: [&str; 8] = [
 /// из восьми свойств. Отсутствие читается как неизвестное, не как значение
 /// по умолчанию; у обычного модуля и у собственного модуля расширения оно
 /// остаётся ошибкой источника, записанное некорректное значение — тоже.
+/// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn borrowed_common_module_reads_platform_absent_properties_as_unknown() {
     let inherited =
@@ -370,6 +373,7 @@ fn borrowed_common_module_reads_platform_absent_properties_as_unknown() {
 /// Контексты без флагов среды неизвестны и сериализуются `null`, фильтр по
 /// контексту отказывает типизированно; при записанных флагах контексты
 /// вычисляются как прежде, а неизвестные свойства остаются `null`.
+/// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     let fixture = RealReaderFixture::new();
@@ -457,6 +461,7 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
 /// #1304: контексты известны только при всех четырёх флагах среды.
 /// Без любого одного из них контексты метода — `null`, а остальные
 /// записанные флаги читаются как есть.
+/// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contexts() {
     let environment =
@@ -520,6 +525,7 @@ fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contex
     }
 }
 
+/// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn borrowed_common_module_missing_reuse_preserves_methods_and_source() {
     // Synthetic omission reproduces #1304; it is not a platform export.
@@ -561,6 +567,7 @@ fn borrowed_common_module_missing_reuse_preserves_methods_and_source() {
     assert_eq!(fs::read_to_string(module).unwrap(), source);
 }
 
+/// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn common_module_present_damage_is_not_missing() {
     // Synthetic corruptions exercise reader boundaries, not platform validity.
@@ -648,6 +655,7 @@ fn typed_projection_keeps_summary_compact_and_content_address_selected() {
     assert!(view["items"][0].get("at").is_none());
 }
 
+/// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn typed_projection_never_leaks_provider_or_physical_slots() {
     let at = QualifiedAddress::parse("main:Subsystem.Продажи").unwrap();
@@ -709,6 +717,7 @@ fn typed_projection_rejects_unknown_provider_payload_instead_of_dumping_it() {
     }
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 #[test]
 fn actor_owned_reader_never_follows_a_source_set_remap_after_admission() {
     let fixture = RealReaderFixture::new();
@@ -757,6 +766,7 @@ fn actor_owned_reader_never_follows_a_source_set_remap_after_admission() {
     );
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 #[test]
 fn actor_owned_configuration_support_and_home_page_sidecars_are_retained() {
     let fixture = RealReaderFixture::new();
@@ -809,6 +819,7 @@ fn actor_owned_configuration_support_and_home_page_sidecars_are_retained() {
     assert_eq!(after_remap["homePage"], admitted["homePage"]);
 }
 
+/// rule: INV.SOURCE.OPTIONAL-HOME-PAGE
 #[test]
 fn retained_home_page_distinguishes_missing_from_malformed_and_wrong_root() {
     let fixture = RealReaderFixture::new();
@@ -861,6 +872,7 @@ fn actor_supplied_extension_kind_preserves_extension_support_semantics() {
     assert_eq!(payload["support"]["state"], "extension");
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 #[test]
 fn actor_owned_typed_form_reader_never_follows_a_source_set_remap() {
     let fixture = RealReaderFixture::new();
@@ -911,6 +923,8 @@ fn actor_owned_typed_form_reader_never_follows_a_source_set_remap() {
     assert_eq!(retained.rev, admitted.rev);
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
+/// rule: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
 #[test]
 fn actor_owned_module_reader_never_follows_a_source_set_remap() {
     let fixture = RealReaderFixture::new();
@@ -962,6 +976,8 @@ fn actor_owned_module_reader_never_follows_a_source_set_remap() {
         .any(|item| item["at"] == "main:CommonModule.РеактивныйСервер.Method.ReplacementOnly"));
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
+/// rule: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
 #[test]
 fn every_typed_reader_remains_on_the_admitted_root_after_source_set_remap() {
     let fixture = RealReaderFixture::new();
@@ -1065,6 +1081,7 @@ fn configuration_root_carries_the_retired_cf_info_facts() {
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
 #[test]
 fn configuration_root_branch_counts_match_every_reachable_collection() {
     let fixture = RealReaderFixture::new();
@@ -1107,6 +1124,8 @@ fn configuration_root_branch_counts_match_every_reachable_collection() {
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 #[test]
 fn module_capability_parents_expose_canonical_module_collections() {
     let fixture = RealReaderFixture::new();
@@ -1317,6 +1336,7 @@ fn role_right_rls_consumes_the_complete_suffix() {
     assert_eq!(data["title"], "View");
 }
 
+/// rule: INV.SOURCE.ROLE-RIGHT-ADDRESSES
 #[test]
 fn role_merges_access_by_canonical_object_and_keeps_rls_under_that_right() {
     let fixture = RealReaderFixture::new();
@@ -1420,6 +1440,7 @@ fn dcs_dataset_field_and_parameter_consume_the_complete_suffix() {
 /// группа `CommandGroup.X` интерфейса, право на вложенный объект роли и
 /// область с точкой в имени прежде получали адрес, который грамматика
 /// не разбирала, или не получали его вовсе.
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 #[test]
 fn names_with_a_dot_are_published_escaped_and_read_back() {
     let fixture = RealReaderFixture::new();
@@ -1528,6 +1549,7 @@ fn names_with_a_dot_are_published_escaped_and_read_back() {
 /// Свойство XDTO любой вложенности читается по цепочке `Property`: узел
 /// свойства со вложенным анонимным типом объявляет ветвь его свойств, и
 /// каждый опубликованный адрес читается.
+/// rule: INV.SOURCE.XDTO-PROPERTY-PATH
 #[test]
 fn xdto_properties_are_read_at_any_depth() {
     let fixture = RealReaderFixture::new();
@@ -1579,6 +1601,7 @@ fn mxl_area_parameter_consumes_the_complete_suffix() {
 /// конфигурации: 99 блоков видимости из 1050 несут переопределения по ролям,
 /// то есть каждая одиннадцатая команда. Отдать `visible` за всю правду
 /// значило бы читать девять процентов команд неверно.
+/// rule: INV.SOURCE.COMMAND-VISIBILITY-ROLE-SIGNAL
 #[test]
 fn command_visibility_says_when_roles_override_it() {
     let fixture = RealReaderFixture::new();
@@ -1634,6 +1657,7 @@ fn command_visibility_says_when_roles_override_it() {
 /// чего инструмент не показывает, нельзя: предпросмотр правки нечем
 /// подтвердить, а забор ревизии по прочитанному над невидимым фактом
 /// несостоятелен.
+/// rule: INV.SOURCE.COMMAND-INTERFACE-ORDERS
 #[test]
 fn the_command_interface_shows_every_order_it_holds() {
     let fixture = RealReaderFixture::new();
@@ -1763,6 +1787,7 @@ fn install_supported_subsystem_descriptors(fixture: &RealReaderFixture) {
     }
 }
 
+/// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn canonical_subsystem_view_preserves_support_for_own_and_nested_descriptors() {
     let parent_uuid = "11111111-1111-4111-8111-111111111111";
@@ -1836,6 +1861,7 @@ fn canonical_subsystem_view_preserves_support_for_own_and_nested_descriptors() {
     }
 }
 
+/// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_markers() {
     for marker_kind in ["absent", "invalid", "directory"] {
@@ -1943,6 +1969,7 @@ fn view_branch_count(
 /// читают. Состав — ссылки на чужие объекты, поэтому он живёт в ветви
 /// `Relation`; дочерняя подсистема — потомок с собственным адресом, и
 /// читается по нему на любой глубине регистрации.
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn a_subsystem_shows_its_content_and_reads_registered_children_at_depth() {
     let fixture = RealReaderFixture::new();
@@ -2122,6 +2149,7 @@ fn a_nested_subsystem_read_rejects_a_descriptor_that_names_another_subsystem() {
     }
 }
 
+/// rule: INV.SOURCE.TEMPLATE-AREA-BODY
 #[test]
 fn template_area_cell_content_is_a_branch_read_only_when_its_address_is_asked() {
     let fixture = RealReaderFixture::new();
@@ -2155,6 +2183,7 @@ fn template_area_cell_content_is_a_branch_read_only_when_its_address_is_asked() 
     );
 }
 
+/// rule: INV.SOURCE.TEMPLATE-AREA-BODY
 #[test]
 fn a_structural_template_read_never_serves_a_cached_payload_to_a_content_read() {
     let fixture = RealReaderFixture::new();
@@ -2178,6 +2207,7 @@ fn a_structural_template_read_never_serves_a_cached_payload_to_a_content_read() 
 
 /// `Body` отдаёт исходные строки с их номерами: среза по контексту у `view`
 /// нет (#1374), и клиентский код формы остаётся в ответе.
+/// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
 #[test]
 fn module_body_returns_the_source_text_byte_for_byte() {
     let fixture = RealReaderFixture::new();
@@ -2205,6 +2235,7 @@ fn module_body_returns_the_source_text_byte_for_byte() {
     }
 }
 
+/// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
 #[test]
 fn view_never_returns_module_text_above_the_largest_host_budget() {
     let fixture = RealReaderFixture::new();
@@ -2225,6 +2256,8 @@ fn view_never_returns_module_text_above_the_largest_host_budget() {
     assert!(refused.source_text.is_none());
 }
 
+/// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
+/// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
 #[test]
 fn module_body_beyond_the_limit_is_still_checked_as_utf8_in_full() {
     let fixture = RealReaderFixture::new();
@@ -2393,6 +2426,7 @@ fn large_configuration_root_rejects_malformed_tail() {
     assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
 }
 
+/// rule: INV.SOURCE.LOGICAL-QUESTION-COMPLETENESS
 #[test]
 fn every_reader_rejects_an_extra_unconsumed_address_tail() {
     let cases = [
@@ -2438,6 +2472,7 @@ fn every_reader_rejects_an_extra_unconsumed_address_tail() {
     assert_eq!(module.diagnostics[0]["code"], "not_found");
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn role_right_projection_never_serializes_an_unbounded_rights_array_into_props() {
     let at = QualifiedAddress::parse("main:Role.Test.Right.Products").unwrap();
@@ -2769,6 +2804,7 @@ fn real_typed_readers_cover_every_task14_profile_without_skipping() {
     }
 }
 
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 #[test]
 fn websocket_client_source_view_is_an_explicit_provider_gap() {
     let fixture = RealReaderFixture::new();
@@ -2995,6 +3031,7 @@ pub(crate) fn typed_readers_never_publish_their_export_path_in_view_props() {
     }
 }
 
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 #[test]
 fn missing_owner_module_branch_is_not_invented_but_registered_owner_without_bsl_is_kept() {
     let fixture = RealReaderFixture::new();
@@ -3017,6 +3054,7 @@ fn missing_owner_module_branch_is_not_invented_but_registered_owner_without_bsl_
     assert_eq!(items[1]["at"], "main:Catalog.Items.Module.Manager");
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn real_external_sources_are_traversable_without_configuration_xml_and_hide_root_runtime_modules() {
     let fixture = RealExternalReaderFixture::new();
@@ -3087,6 +3125,7 @@ fn real_external_sources_are_traversable_without_configuration_xml_and_hide_root
     // through the reader probe every candidate reads "reader".
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn external_inventory_skips_runtime_sidecar_and_fails_closed_on_malformed_or_ambiguous_owner() {
     let malformed_fixture = RealExternalReaderFixture::new();
@@ -3118,6 +3157,7 @@ fn external_inventory_skips_runtime_sidecar_and_fails_closed_on_malformed_or_amb
         .contains("ambiguous"));
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn retained_external_inventory_is_cancellable() {
     let cancelled_fixture = RealExternalReaderFixture::new();
@@ -3196,6 +3236,7 @@ fn assert_complete_large_external_inventory(payload: &serde_json::Value) {
     assert_eq!(payload["registeredObjects"], json!(expected));
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn retained_external_inventory_crosses_former_aggregate_bytes_without_losing_owners() {
     let fixture = large_external_inventory_fixture();
@@ -3205,6 +3246,7 @@ fn retained_external_inventory_crosses_former_aggregate_bytes_without_losing_own
     assert_complete_large_external_inventory(&payload);
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn retained_external_inventory_reads_malformed_tail_after_former_aggregate_bytes() {
     let fixture = large_external_inventory_fixture();
@@ -3218,6 +3260,7 @@ fn retained_external_inventory_reads_malformed_tail_after_former_aggregate_bytes
     assert!(!error.to_string().contains("read limit"), "{error}");
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn retained_external_inventory_cancels_inside_a_large_descriptor_without_publishing_prefix() {
     // This stays below the former aggregate limit, so its RED cannot be
@@ -3256,6 +3299,7 @@ fn retained_external_inventory_cancels_inside_a_large_descriptor_without_publish
     );
 }
 
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 #[test]
 pub(crate) fn production_authorities_reach_all_profile_module_capabilities_from_real_parent_inventories(
 ) {
@@ -3316,6 +3360,7 @@ struct ModuleCapabilityCase {
     exists: bool,
 }
 
+/// rule: INV.SOURCE.MODULE-CURRENT-SOURCE
 #[test]
 pub(crate) fn one_read_parses_each_module_source_once_per_actor_revision() {
     let fixture = RealReaderFixture::new();
@@ -3450,6 +3495,7 @@ pub(crate) fn typed_reads_parse_the_support_marker_once_per_actor_revision() {
 /// A support marker replaced after an object read of the same operation
 /// must not reach the configuration root, and the retained root must never
 /// pair the new marker's stamp with the state read before it.
+/// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
 #[test]
 fn replaced_support_marker_never_reaches_a_retained_root_with_the_old_state() {
     use crate::infrastructure::v13_large_configuration::RegistrationCache;
@@ -3629,6 +3675,7 @@ fn support_marker_stream_preserves_terminal_errors_and_never_memoizes_interrupti
     }
 }
 
+/// rule: INV.SOURCE.ROLE-RIGHT-ADDRESSES
 #[test]
 fn ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work() {
     let payload = json!({
@@ -3658,6 +3705,7 @@ fn ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work() {
     }
 }
 
+/// rule: INV.APP.DEFERRED-READ
 #[test]
 fn cursor_retry_uses_saved_role_results_without_recanonicalizing() {
     let fixture = RealReaderFixture::new();
@@ -3689,6 +3737,8 @@ fn cursor_retry_uses_saved_role_results_without_recanonicalizing() {
     assert!(replay.ok, "saved cursor must remain usable: {replay:?}");
 }
 
+/// rule: INV.SOURCE.CONFIGURATION-RIGHTS-READING
+/// rule: INV.SOURCE.ROLE-RIGHT-ADDRESSES
 #[test]
 pub(crate) fn configuration_level_rights_are_readable_role_objects() {
     let fixture = RealReaderFixture::new();
@@ -3728,6 +3778,7 @@ pub(crate) fn configuration_level_rights_are_readable_role_objects() {
     );
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
 #[test]
 pub(crate) fn object_commands_are_registered_inline_without_descriptor_files() {
     let fixture = RealReaderFixture::new();
@@ -3828,6 +3879,7 @@ pub(crate) fn template_bodies_are_read_only_when_the_template_node_is_addressed(
     );
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
 #[test]
 pub(crate) fn add_in_templates_stop_addressing_at_the_template_without_reading_the_payload() {
     let fixture = RealReaderFixture::new();
@@ -3877,6 +3929,7 @@ pub(crate) fn add_in_templates_stop_addressing_at_the_template_without_reading_t
     );
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
 #[test]
 fn review_rejects_orphan_nested_module_owners_not_registered_by_parent() {
     let fixture = RealReaderFixture::new();
@@ -3903,6 +3956,7 @@ fn review_rejects_orphan_nested_module_owners_not_registered_by_parent() {
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
 #[test]
 fn review_rejects_direct_typed_owner_absent_from_configuration_inventory() {
     let fixture = RealReaderFixture::new();
@@ -3924,6 +3978,7 @@ fn review_rejects_direct_typed_owner_absent_from_configuration_inventory() {
     assert_eq!(result.diagnostics[0]["code"], "not_found");
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
 #[test]
 fn registered_physical_child_with_wrong_descriptor_fails_direct_and_parent_navigation() {
     let fixture = RealReaderFixture::new();
@@ -3950,6 +4005,7 @@ fn registered_physical_child_with_wrong_descriptor_fails_direct_and_parent_navig
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
 #[test]
 fn registered_top_level_owner_without_descriptor_fails_kind_branch_and_direct_view() {
     let fixture = RealReaderFixture::new();
@@ -3977,6 +4033,7 @@ fn registered_top_level_owner_without_descriptor_fails_kind_branch_and_direct_vi
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
 #[test]
 fn orphan_and_missing_physical_children_fail_closed_across_reader_families() {
     let orphan = RealReaderFixture::new();
@@ -4033,6 +4090,7 @@ fn orphan_and_missing_physical_children_fail_closed_across_reader_families() {
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
 #[test]
 fn unregistered_top_level_descriptors_cannot_enter_any_typed_reader_family() {
     let fixture = RealReaderFixture::new();
@@ -4062,6 +4120,7 @@ fn unregistered_top_level_descriptors_cannot_enter_any_typed_reader_family() {
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
 #[test]
 fn external_parent_childobjects_are_the_only_nested_owner_authority() {
     let fixture = RealExternalReaderFixture::new();
@@ -4135,6 +4194,7 @@ fn review_revision_authority_cannot_be_swapped_after_named_identity_validation()
     );
 }
 
+/// rule: INV.SOURCE.ROLE-RIGHT-ADDRESSES
 #[test]
 fn review_role_canonical_encoding_cannot_collapse_distinct_kind_name_pairs() {
     let fixture = RealReaderFixture::new();
@@ -4157,6 +4217,7 @@ fn review_role_canonical_encoding_cannot_collapse_distinct_kind_name_pairs() {
         .is_some_and(|message| message.contains("Catalog_Orders")));
 }
 
+/// rule: INV.SOURCE.ROLE-RIGHT-ADDRESSES
 #[test]
 fn review_role_rejects_non_platform_metadata_node_kinds() {
     let fixture = RealReaderFixture::new();
@@ -4985,6 +5046,7 @@ fn dcs_validation_input_keeps_the_authority_cancellation_and_deadline() {
     );
 }
 
+/// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
 #[test]
 fn canonical_dcs_validation_keeps_captured_format_evidence_after_replacement() {
     let fixture = RealReaderFixture::new();
@@ -5014,6 +5076,7 @@ fn canonical_dcs_validation_keeps_captured_format_evidence_after_replacement() {
     );
 }
 
+/// rule: INV.SOURCE.WRITABLE-PROFILE
 #[test]
 fn canonical_dcs_validation_keeps_captured_owner_format_warnings() {
     for relative in ["Configuration.xml"] {
@@ -5114,6 +5177,7 @@ fn canonical_dcs_validation_keeps_captured_owner_format_warnings() {
     }
 }
 
+/// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
 #[test]
 fn canonical_dcs_validation_does_not_follow_links_after_input_capture() {
     use unica_workspace::test_support::{
@@ -5163,6 +5227,7 @@ fn canonical_dcs_validation_does_not_follow_links_after_input_capture() {
     );
 }
 
+/// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
 #[test]
 fn canonical_dcs_validation_refuses_linked_format_owners_before_capture() {
     use unica_workspace::test_support::{
@@ -5198,6 +5263,7 @@ fn canonical_dcs_validation_refuses_linked_format_owners_before_capture() {
     }
 }
 
+/// rule: INV.SOURCE.WRITABLE-PROFILE
 #[test]
 fn canonical_dcs_validation_keeps_large_configuration_owner_format_warning() {
     let fixture = RealReaderFixture::new();
@@ -5229,6 +5295,7 @@ fn canonical_dcs_validation_keeps_large_configuration_owner_format_warning() {
     );
 }
 
+/// rule: INV.SOURCE.WRITABLE-PROFILE
 #[test]
 fn canonical_dcs_validation_keeps_exact_versionless_dcs_root_guard() {
     let fixture = RealReaderFixture::new();
@@ -5257,6 +5324,7 @@ fn canonical_dcs_validation_keeps_exact_versionless_dcs_root_guard() {
     );
 }
 
+/// rule: INV.SOURCE.WRITABLE-PROFILE
 #[test]
 fn canonical_dcs_validation_reports_readable_template_owner_versions() {
     for (version, expected) in [
@@ -5296,6 +5364,7 @@ fn canonical_dcs_validation_reports_readable_template_owner_versions() {
     }
 }
 
+/// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
 #[test]
 fn canonical_dcs_format_owner_read_stops_at_typed_midstream_checkpoint() {
     for code in [RefusalCode::Cancelled, RefusalCode::DeadlineExceeded] {
@@ -5375,6 +5444,7 @@ fn external_leaf_read(source: &Path, kind: SourceSetKind) -> ProviderReadAuthori
     )
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn external_inventory_accepts_a_single_owner_descriptor_beyond_eight_mib() {
     for (kind, xml_kind) in [
@@ -5399,6 +5469,7 @@ fn external_inventory_accepts_a_single_owner_descriptor_beyond_eight_mib() {
     }
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn medium_named_external_owner_view_has_no_hidden_eight_mib_descriptor_fallback() {
     for (kind, xml_kind) in [
@@ -5430,6 +5501,7 @@ fn medium_named_external_owner_view_has_no_hidden_eight_mib_descriptor_fallback(
     }
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn external_inventory_retains_all_257_immediate_owners_and_the_last_named_view() {
     for (kind, xml_kind) in [
@@ -5469,6 +5541,7 @@ fn external_inventory_retains_all_257_immediate_owners_and_the_last_named_view()
     }
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn external_inventory_does_not_limit_noise_before_a_valid_owner() {
     let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
@@ -5491,6 +5564,7 @@ fn external_inventory_does_not_limit_noise_before_a_valid_owner() {
     );
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn external_inventory_rejects_malformed_and_non_utf8_late_tails_without_partial_rows() {
     for invalid_utf8 in [false, true] {
@@ -5654,6 +5728,7 @@ fn external_inventory_leaf_preserves_actor_admission_membership_finality() {
     );
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn named_external_descriptor_and_owner_evidence_preserve_chunk_cancellation() {
     for evidence_read in [false, true] {
@@ -5703,6 +5778,7 @@ fn named_external_descriptor_and_owner_evidence_preserve_chunk_cancellation() {
     }
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
     for (evidence_read, has_neighbour) in
@@ -5771,6 +5847,7 @@ fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
     }
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn named_external_missing_descriptor_preserves_explicit_cancellation() {
     for evidence_read in [false, true] {
@@ -5802,6 +5879,7 @@ fn named_external_missing_descriptor_preserves_explicit_cancellation() {
     }
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn external_leaf_reads_a_relative_file_whole_whatever_its_size() {
     let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
@@ -5821,6 +5899,7 @@ fn external_leaf_reads_a_relative_file_whole_whatever_its_size() {
 
 /// #1119: a correct descriptor larger than the former 8 MiB read limit is
 /// read through the public view instead of refused by its size.
+/// rule: INV.SOURCE.LARGE-CONFIGURATION-ROOT-VIEW
 #[test]
 fn a_descriptor_larger_than_eight_mebibytes_is_read_through_public_view() {
     let fixture = RealReaderFixture::new();
@@ -6011,6 +6090,7 @@ fn retained_mxl_check_keeps_unbounded_body_read_and_format_warnings() {
 /// Такой узел читается по описанию: заимствование, `content: "inherited"`,
 /// ни счёта, ни ветвей содержимого. Адрес внутри содержимого отказывает
 /// `not_found`, а не `source_unreadable`.
+/// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
 #[test]
 fn borrowed_objects_without_companion_files_read_their_content_as_inherited() {
     let fixture = RealReaderFixture::new();
@@ -6145,6 +6225,7 @@ fn borrowed_objects_without_companion_files_read_their_content_as_inherited() {
 /// В конфигурации, у собственного объекта расширения и у заимствованного
 /// объекта со своим файлом отсутствие файла остаётся ошибкой источника, а
 /// присутствующий файл читается как прежде.
+/// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
 #[test]
 fn missing_companion_file_stays_a_source_error_outside_borrowing() {
     let fixture = RealReaderFixture::new();
@@ -6249,6 +6330,8 @@ fn missing_companion_file_stays_a_source_error_outside_borrowing() {
     assert_eq!(data["props"]["totalallowed"], 0);
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
+/// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn platform_borrowed_common_module_preserves_unknown_contexts_and_independent_facts() {
     let fixture = RealReaderFixture::new();
@@ -6361,6 +6444,7 @@ fn platform_borrowed_common_module_preserves_unknown_contexts_and_independent_fa
     }
 }
 
+/// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn common_module_absence_policy_keeps_ordinary_properties_required() {
     let ordinary = fixture_text("platform_8_3_27/incomplete_borrowed/parent-common-module.xml");
@@ -6419,6 +6503,7 @@ fn common_module_absence_policy_keeps_ordinary_properties_required() {
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn missing_or_damaged_code_type_limits_only_dependent_predefined_read() {
     // Synthetic combinations exercise the reader; platform acceptance of
@@ -6460,6 +6545,7 @@ fn missing_or_damaged_code_type_limits_only_dependent_predefined_read() {
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn missing_relation_preserves_known_targets_and_reports_incompleteness() {
     // Synthetic relation variants isolate reader behavior; the raw platform
@@ -6513,6 +6599,7 @@ fn missing_relation_preserves_known_targets_and_reports_incompleteness() {
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn specialized_relation_limits_distinguish_absence_empty_and_damage() {
     // Synthetic edits exercise each reader route. Absence of BaseCalculationTypes
@@ -6597,6 +6684,9 @@ fn specialized_relation_limits_distinguish_absence_empty_and_damage() {
 /// `WriteMode` не утверждает список регистраторов, модуль без флагов среды —
 /// контексты; ребёнок заимствованного владельца называет, где разрешается
 /// его родитель.
+/// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
+/// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn unknown_facts_of_borrowed_objects_are_named_as_node_limits() {
     let fixture = RealReaderFixture::new();
@@ -6713,6 +6803,7 @@ fn nested_check_fixture() -> RealReaderFixture {
     fixture
 }
 
+/// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
 #[test]
 fn canonical_subsystem_check_validates_the_child_and_rejects_wrong_identity() {
     let fixture = nested_check_fixture();
@@ -6753,6 +6844,7 @@ fn canonical_subsystem_check_validates_the_child_and_rejects_wrong_identity() {
     );
 }
 
+/// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
 #[test]
 fn canonical_subsystem_check_refuses_linked_dependencies() {
     use unica_workspace::test_support::{
@@ -6805,6 +6897,7 @@ fn canonical_subsystem_check_refuses_linked_dependencies() {
     }
 }
 
+/// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
 #[test]
 fn canonical_subsystem_check_refuses_replaced_root() {
     if !supports_retained_root_replacement_test() {
@@ -6826,6 +6919,7 @@ fn canonical_subsystem_check_refuses_replaced_root() {
     );
 }
 
+/// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
 #[test]
 fn canonical_subsystem_check_preserves_bom_format_warning() {
     for version in ["2.20", "2.21"] {

@@ -24,6 +24,7 @@ fn install(f: &RealReaderFixture, flag: &str, picture: &str) -> PathBuf {
     );
     path
 }
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn commonpicture_descriptor_preserves_explicit_xml_facts_without_payload() {
     for (reference, flag) in [
@@ -77,6 +78,7 @@ fn commonpicture_descriptor_keeps_independent_fields_on_local_damage() {
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn commonpicture_descriptor_retains_identity_and_root_flag_without_companion() {
     for variant in ["missing", "malformed", "foreign", "duplicate", "directory"] {
@@ -153,6 +155,7 @@ fn commonpicture_descriptor_whole_picture_retains_the_compound_reference() {
     );
 }
 
+/// rule: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
 #[test]
 fn commonpicture_descriptor_refreshes_companion_under_the_same_owner_identity() {
     let f = RealReaderFixture::new();
@@ -180,6 +183,7 @@ fn commonpicture_descriptor_refreshes_companion_under_the_same_owner_identity() 
     );
 }
 
+/// rule: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
 #[test]
 fn commonpicture_descriptor_observes_companion_recovery_without_recreating_service() {
     let f = RealReaderFixture::new();

@@ -592,6 +592,7 @@ mod medium_tests {
             Ok(0)
         }
     }
+    /// rule: INV.APP.PROCESS-CLEANUP-ONCE
     #[test]
     fn system_process_drop_uses_no_second_window_after_cleanup_deadline_is_consumed() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {
@@ -646,6 +647,7 @@ mod medium_tests {
         released.store(true, Ordering::Release);
         reap_raw_test_child(id);
     }
+    /// rule: INV.APP.PROCESS-CLEANUP-ONCE
     #[test]
     fn external_cancel_error_binds_system_drop_to_the_same_cleanup_deadline() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {
@@ -678,6 +680,7 @@ mod medium_tests {
         );
         reap_raw_test_child(id);
     }
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn waitid_authority_loss_makes_cancel_and_drop_send_zero_group_signals() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {
@@ -704,6 +707,7 @@ mod medium_tests {
         );
         reap_raw_test_child(id);
     }
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn reap_authority_loss_makes_cancel_and_drop_send_zero_group_signals() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {

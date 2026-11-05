@@ -120,6 +120,7 @@ fn files_with(root: &Path, secret: &str, kept: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// rule: INV.RUNTIME.STORED-TASK-SECRETS
 #[test]
 fn a_connection_secret_from_configuration_and_runner_answer_is_not_stored_or_read_back() {
     let root = tempfile::tempdir().unwrap();

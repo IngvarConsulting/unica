@@ -285,6 +285,7 @@ class AttributionTests(unittest.TestCase):
             )
 
     def test_validation_reports_missing_unknown_and_invalid_repository_links(self) -> None:
+        """rule: INV.PKG.ATTRIBUTION"""
         module = load_attribution_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -316,6 +317,7 @@ class AttributionTests(unittest.TestCase):
         self.assertIn("tool other: license link must point to a packaged file", errors)
 
     def test_repository_attribution_page_is_complete_and_linked(self) -> None:
+        """rule: INV.PKG.ATTRIBUTION"""
         module = load_attribution_module()
         repo_root = self.repo_root()
 
