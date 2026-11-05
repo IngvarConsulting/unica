@@ -1,6 +1,5 @@
 ---
 id: INV.WIRE.SEARCH-IO-DIAGNOSTIC
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/970
 ---
 

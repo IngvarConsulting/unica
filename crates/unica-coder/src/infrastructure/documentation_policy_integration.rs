@@ -30,6 +30,7 @@ fn mixed_unversioned_container_serves_network_and_operational_consumers() {
     );
 }
 
+/// rule: INV.CONFIG.INVALID-LAYER
 #[test]
 fn characterization_operational_loader_ignores_invalid_policy_subtrees() {
     let cases = [
@@ -54,6 +55,7 @@ fn characterization_operational_loader_ignores_invalid_policy_subtrees() {
     }
 }
 
+/// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
 #[test]
 fn dangling_policy_config_links_fail_closed_as_present_files() {
     for file_name in ["unica.toml", "unica.local.toml"] {

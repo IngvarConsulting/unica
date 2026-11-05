@@ -1,12 +1,5 @@
 ---
 id: INV.WIRE.GUARANTEED-VERSIONS
-check:
-  - crates/unica-bootstrap/tests/platform/verification_contract.rs::verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface
-  - crates/unica-bootstrap/tests/platform/verification_contract.rs::verify_requires_each_lifecycle_to_expose_each_public_tool
-  - crates/unica-bootstrap/tests/platform/verification_contract.rs::verify_rejects_legacy_names_mixed_into_the_v13_surface
-  - crates/unica-bootstrap/tests/platform/verification_contract.rs::verify_rejects_duplicate_names_in_the_v13_surface
-  - crates/unica-bootstrap/tests/platform/verification_contract.rs::verify_rejects_discover_without_the_guaranteed_versions
-  - crates/unica-bootstrap/tests/platform/verification_contract.rs::a_runtime_that_never_answers_is_a_timeout_not_a_defect
 ---
 
 # Bootstrap проверяет протокол и состав инструментов перед приёмкой runtime

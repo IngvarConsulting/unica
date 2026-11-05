@@ -303,6 +303,7 @@ mod tests {
             assert_eq!(error.path(), Some(format!("ops[0].args.{path}").as_str()));
         }
     }
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_query_is_addressed_through_its_dataset_and_retired_spellings_refuse() {
         let schema = "main:Report.Versions.Template.Schema";

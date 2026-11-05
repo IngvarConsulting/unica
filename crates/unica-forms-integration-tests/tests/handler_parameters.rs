@@ -108,6 +108,7 @@ mod form_handler_parameter_tests {
 
     const START_CHOICE_LIST: &str = "Элемент, ДанныеВыбора, ВыборДобавлением, СтандартнаяОбработка";
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn legacy_shorter_signatures_give_no_finding() {
         for parameters in [
@@ -127,6 +128,7 @@ mod form_handler_parameter_tests {
         }
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn foreign_event_signature_is_a_warning_naming_both_events() {
         let outcome = validate(
@@ -153,6 +155,7 @@ mod form_handler_parameter_tests {
             .is_some_and(|stdout| stdout.contains("[WARN]  Event 'АвтоПодбор'")));
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn same_count_renames_pass_and_table_foreign_signature_is_found() {
         let renamed = validate(
@@ -179,6 +182,7 @@ mod form_handler_parameter_tests {
         assert!(foreign.warnings[0].contains("event 'Выбор'"));
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn required_parameter_beyond_every_known_list_is_a_warning() {
         let form_event = input_event("URLProcessing", "ОбработкаНавигационнойСсылки");
@@ -210,6 +214,7 @@ mod form_handler_parameter_tests {
         assert!(optional.warnings.is_empty());
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn extension_forms_compare_only_bindings_without_call_type() {
         let method = client_method("ПолеНачалоВыбора", START_CHOICE_LIST);
@@ -245,6 +250,7 @@ mod form_handler_parameter_tests {
         assert_eq!(own.warnings.len(), 1);
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn object_form_events_follow_the_owner_found_by_the_dump_path() {
         // The fixture lives under `Catalogs/Items/Forms/Item`, so the object
@@ -264,6 +270,7 @@ mod form_handler_parameter_tests {
         assert!(outcome.warnings[0].contains("platform passes (Отказ, ПараметрыЗаписи)"));
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn a_table_bound_to_the_dynamic_list_gets_its_extra_events() {
         let event = input_event(
@@ -285,6 +292,7 @@ mod form_handler_parameter_tests {
         assert!(outcome.warnings[0].contains("platform passes (Элемент, СтандартнаяОбработка)"));
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn by_value_names_and_async_handlers_are_compared_by_their_names() {
         // Without stripping `Знач` no name would match StartChoice.
@@ -311,6 +319,7 @@ mod form_handler_parameter_tests {
         assert!(asynchronous.warnings[0].contains("handler 'ПолеНачалоВыбора'"));
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn missing_or_unreadable_module_and_absent_or_ambiguous_method_give_no_finding() {
         let event = input_event("AutoComplete", "ПолеНачалоВыбора");
