@@ -846,8 +846,8 @@ pub fn plan_metadata_batch_with_context<R: MetadataPlanningRead>(
                 | MetaDiagnosticCode::CapabilityUnavailable => ApplyPlanErrorKind::BadValue,
                 MetaDiagnosticCode::TargetNotFound => ApplyPlanErrorKind::NotFound,
                 MetaDiagnosticCode::ValidationFailed => ApplyPlanErrorKind::Postcondition,
-                MetaDiagnosticCode::AlreadyExists
-                | MetaDiagnosticCode::SupportLocked
+                MetaDiagnosticCode::AlreadyExists => ApplyPlanErrorKind::BadValue,
+                MetaDiagnosticCode::SupportLocked
                 | MetaDiagnosticCode::ValidationWarning
                 | MetaDiagnosticCode::RedundantListPresentation
                 | MetaDiagnosticCode::CommandTextRecommendedLimit
