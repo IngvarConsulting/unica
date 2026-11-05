@@ -10,6 +10,7 @@ mod properties;
 mod results;
 mod schema;
 mod types;
+pub mod wsdl;
 
 pub use diagnostics::*;
 pub use event_subscription::*;
@@ -40,6 +41,7 @@ pub mod applicability;
 pub mod apply_operations;
 pub mod contracts;
 pub mod descriptor_operations;
+pub mod document_numerator;
 pub mod event;
 pub mod event_contract;
 pub mod support;
@@ -77,3 +79,5 @@ pub mod configuration;
 pub mod extension;
 
 mod source_contracts;
+
+pub mod style_color;
