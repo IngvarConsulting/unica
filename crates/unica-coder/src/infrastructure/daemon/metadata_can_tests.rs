@@ -1,3 +1,5 @@
+#[path = "metadata_can_tests/integration_channel.rs"]
+mod integration_channel;
 #[path = "metadata_can_tests/ws_reference.rs"]
 mod ws_reference;
 

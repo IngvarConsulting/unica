@@ -1,0 +1,155 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<IntegrationService uuid="723ae80a-f699-58ad-b045-ce38cbd1921b">
+		<InternalInfo>
+			<xr:GeneratedType name="IntegrationServiceManager.Bus" category="Manager">
+				<xr:TypeId>41d2cd55-baba-570e-8790-51bdc2fc343d</xr:TypeId>
+				<xr:ValueId>1c657a93-d1fb-5c16-b6e3-5d65623df86f</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>Bus</Name>
+			<Synonym/>
+			<Comment/>
+			<ExternalIntegrationServiceAddress/>
+		</Properties>
+		<ChildObjects>
+			<IntegrationServiceChannel uuid="fcfa9db5-a279-5cc0-a0a4-808b7d876f5a">
+				<InternalInfo>
+					<xr:GeneratedType name="IntegrationServiceChannelManager.Bus.ReceiveTrue" category="Manager">
+						<xr:TypeId>f00ae506-c70e-5de0-8eeb-172a881baf5f</xr:TypeId>
+						<xr:ValueId>f7c68f7a-ea3d-5fa4-ae27-0b8c3b13b17c</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>ReceiveTrue</Name>
+					<Synonym/>
+					<Comment/>
+					<ExternalIntegrationServiceChannelName>test.ReceiveTrue</ExternalIntegrationServiceChannelName>
+					<MessageDirection>Receive</MessageDirection>
+					<ReceiveMessageProcessing>Handle</ReceiveMessageProcessing>
+					<Transactioned>true</Transactioned>
+				</Properties>
+			</IntegrationServiceChannel>
+			<IntegrationServiceChannel uuid="e33644d2-32a5-5fd1-a9f5-ba458dc7a4c4">
+				<InternalInfo>
+					<xr:GeneratedType name="IntegrationServiceChannelManager.Bus.ReceiveFalse" category="Manager">
+						<xr:TypeId>9ef72718-3c92-5b68-a176-a406ce7ed75c</xr:TypeId>
+						<xr:ValueId>e5ff2a0d-987d-5631-80a5-510cf854a7cc</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>ReceiveFalse</Name>
+					<Synonym/>
+					<Comment/>
+					<ExternalIntegrationServiceChannelName>test.ReceiveFalse</ExternalIntegrationServiceChannelName>
+					<MessageDirection>Receive</MessageDirection>
+					<ReceiveMessageProcessing>Alternate</ReceiveMessageProcessing>
+					<Transactioned>false</Transactioned>
+				</Properties>
+			</IntegrationServiceChannel>
+			<IntegrationServiceChannel uuid="923f4f0d-9c19-5d1f-ab88-36453320e3d3">
+				<InternalInfo>
+					<xr:GeneratedType name="IntegrationServiceChannelManager.Bus.ReceiveEmptyTrue" category="Manager">
+						<xr:TypeId>3d6760b7-a155-5f14-a6cc-afd87de141d7</xr:TypeId>
+						<xr:ValueId>1f8f0806-baed-5efb-9b96-e9e5dc437d32</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>ReceiveEmptyTrue</Name>
+					<Synonym/>
+					<Comment/>
+					<ExternalIntegrationServiceChannelName>test.ReceiveEmptyTrue</ExternalIntegrationServiceChannelName>
+					<MessageDirection>Receive</MessageDirection>
+					<ReceiveMessageProcessing/>
+					<Transactioned>true</Transactioned>
+				</Properties>
+			</IntegrationServiceChannel>
+			<IntegrationServiceChannel uuid="af25bce7-b386-5ab0-b75f-2205788e0e7f">
+				<InternalInfo>
+					<xr:GeneratedType name="IntegrationServiceChannelManager.Bus.ReceiveEmptyFalse" category="Manager">
+						<xr:TypeId>a9bae39f-f80a-56f0-88e3-a2f36c711433</xr:TypeId>
+						<xr:ValueId>f1700525-44a4-5bd0-8474-2922eccfaaf3</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>ReceiveEmptyFalse</Name>
+					<Synonym/>
+					<Comment/>
+					<ExternalIntegrationServiceChannelName>test.ReceiveEmptyFalse</ExternalIntegrationServiceChannelName>
+					<MessageDirection>Receive</MessageDirection>
+					<ReceiveMessageProcessing/>
+					<Transactioned>false</Transactioned>
+				</Properties>
+			</IntegrationServiceChannel>
+			<IntegrationServiceChannel uuid="8b31c840-39c2-5a6e-b432-a57711c7a3f7">
+				<InternalInfo>
+					<xr:GeneratedType name="IntegrationServiceChannelManager.Bus.SendTrueEmpty" category="Manager">
+						<xr:TypeId>0de29389-4cfb-51d0-8f92-8f27d8d52af4</xr:TypeId>
+						<xr:ValueId>12b49e8e-b34b-5839-9d9f-391bbef7ed92</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>SendTrueEmpty</Name>
+					<Synonym/>
+					<Comment/>
+					<ExternalIntegrationServiceChannelName>test.SendTrueEmpty</ExternalIntegrationServiceChannelName>
+					<MessageDirection>Send</MessageDirection>
+					<ReceiveMessageProcessing/>
+					<Transactioned>true</Transactioned>
+				</Properties>
+			</IntegrationServiceChannel>
+			<IntegrationServiceChannel uuid="d27b3928-348b-5705-a503-8ca5ecca46d0">
+				<InternalInfo>
+					<xr:GeneratedType name="IntegrationServiceChannelManager.Bus.SendFalseEmpty" category="Manager">
+						<xr:TypeId>46f284db-9cf4-5d1c-9356-0b0e4d5591d1</xr:TypeId>
+						<xr:ValueId>b0bd57aa-d84f-547e-bd83-7bb52535f9a7</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>SendFalseEmpty</Name>
+					<Synonym/>
+					<Comment/>
+					<ExternalIntegrationServiceChannelName>test.SendFalseEmpty</ExternalIntegrationServiceChannelName>
+					<MessageDirection>Send</MessageDirection>
+					<ReceiveMessageProcessing/>
+					<Transactioned>false</Transactioned>
+				</Properties>
+			</IntegrationServiceChannel>
+			<IntegrationServiceChannel uuid="acfa5ad7-bf55-597e-b343-a9b809774714">
+				<InternalInfo>
+					<xr:GeneratedType name="IntegrationServiceChannelManager.Bus.SendTrueHandler" category="Manager">
+						<xr:TypeId>95a94f3c-2b87-5b6d-9aad-cd925805e45c</xr:TypeId>
+						<xr:ValueId>02b13390-f76d-5f29-80a2-210699dc672d</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>SendTrueHandler</Name>
+					<Synonym/>
+					<Comment/>
+					<ExternalIntegrationServiceChannelName>test.SendTrueHandler</ExternalIntegrationServiceChannelName>
+					<MessageDirection>Send</MessageDirection>
+					<ReceiveMessageProcessing>Handle</ReceiveMessageProcessing>
+					<Transactioned>true</Transactioned>
+				</Properties>
+			</IntegrationServiceChannel>
+			<IntegrationServiceChannel uuid="81144d9a-5f5d-5b3f-8963-067f771d325c">
+				<InternalInfo>
+					<xr:GeneratedType name="IntegrationServiceChannelManager.Bus.SendFalseHandler" category="Manager">
+						<xr:TypeId>a6577a56-753e-5344-9bc0-74dc8be0e82a</xr:TypeId>
+						<xr:ValueId>1cea79cd-1719-5059-8acd-7c2e13040178</xr:ValueId>
+					</xr:GeneratedType>
+				</InternalInfo>
+				<Properties>
+					<Name>SendFalseHandler</Name>
+					<Synonym/>
+					<Comment/>
+					<ExternalIntegrationServiceChannelName>test.SendFalseHandler</ExternalIntegrationServiceChannelName>
+					<MessageDirection>Send</MessageDirection>
+					<ReceiveMessageProcessing>Handle</ReceiveMessageProcessing>
+					<Transactioned>false</Transactioned>
+				</Properties>
+			</IntegrationServiceChannel>
+		</ChildObjects>
+	</IntegrationService>
+</MetaDataObject>

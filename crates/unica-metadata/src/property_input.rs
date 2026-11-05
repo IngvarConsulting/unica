@@ -46,6 +46,7 @@ pub struct WsReferencePropertyChanges {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
     Metadata(MetaPropertyChanges),
+    IntegrationServiceChannel(IntegrationServiceChannelChanges),
     FunctionalOption(FunctionalOptionPropertyChanges),
     Role(RolePropertyChanges),
     WSReference(WsReferencePropertyChanges),
@@ -58,6 +59,14 @@ pub enum PropertiesIntent {
 pub struct FunctionalOptionPropertyChanges {
     pub location: Option<String>,
     pub privileged_get_mode: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntegrationServiceChannelChanges {
+    pub external_name: Option<String>,
+    pub direction: Option<String>,
+    pub handler: Option<String>,
+    pub transactioned: Option<bool>,
 }
 
 type DecodeResult<T> = Result<T, ContractError>;
@@ -297,6 +306,17 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::IntegrationServiceChannel => {
+                    PropertiesIntent::IntegrationServiceChannel(IntegrationServiceChannelChanges {
+                        external_name: values_reader
+                            .string(DescriptorProperty::ExternalIntegrationServiceChannelName)?,
+                        direction: values_reader
+                            .enumerated(DescriptorProperty::MessageDirection)?,
+                        handler: values_reader
+                            .string(DescriptorProperty::ReceiveMessageProcessing)?,
+                        transactioned: values_reader.boolean(DescriptorProperty::Transactioned)?,
+                    })
+                }
                 PropertiesSite::StyleItem => {
                     let value = values_reader
                         .field("Value", false)?
