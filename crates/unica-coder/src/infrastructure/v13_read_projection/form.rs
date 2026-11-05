@@ -1,4 +1,4 @@
-use super::{item_identity, place_prop, select_named, selected_scalar_props};
+use super::{dropped_by_size, item_identity, place_prop, select_named, selected_scalar_props};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_bsl::projection::EventProjection;
 use unica_execution_contract::view_error::ViewError;
@@ -6,6 +6,15 @@ use unica_execution_contract::view_error::ViewError;
 use serde_json::{Map, Value};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_refusal::RefusalCode;
+
+/// Скаляры корня формы в его `props`.
+const FORM_ROOT_SCALAR_KEYS: &[&str] = &[
+    "title",
+    "objectContext",
+    "isExtension",
+    "baseFormVersion",
+    "commandBarLocation",
+];
 
 pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "name",
@@ -78,16 +87,12 @@ pub(super) fn project_form(
         return project_semantic_form_event(address, suffix, events);
     }
     if suffix.is_empty() {
-        let mut props = selected_scalar_props(
-            payload,
-            &[
-                "title",
-                "objectContext",
-                "isExtension",
-                "baseFormVersion",
-                "commandBarLocation",
-            ],
-        );
+        let mut props = selected_scalar_props(payload, FORM_ROOT_SCALAR_KEYS);
+        // Заголовок длиннее предела не пропадает молча: предел называет
+        // адрес, по которому он читается целиком.
+        let limits = dropped_by_size(payload, &props, address, |probe| {
+            selected_scalar_props(probe, FORM_ROOT_SCALAR_KEYS)
+        });
         if let Some(properties) = root_properties(payload) {
             props.insert("properties".to_string(), properties);
         }
@@ -137,7 +142,8 @@ pub(super) fn project_form(
                     .unwrap_or("Form"),
                 props,
             )
-            .with_branches(branches),
+            .with_branches(branches)
+            .with_additional_limits(limits),
         ));
     }
     let first = &suffix[0];
@@ -314,7 +320,7 @@ fn form_node(
     semantic_events: Option<&[EventProjection]>,
 ) -> NodeView {
     let mut props = node_props(kind, item);
-    let mut limits = Vec::new();
+    let mut limits = dropped_by_size(item, &props, address, |probe| node_props(kind, probe));
     if kind == NodeKind::Attribute
         && item.get("type").and_then(Value::as_str) == Some("DynamicList")
     {
@@ -350,6 +356,53 @@ fn form_node(
             }
         }
     }
+    if kind == NodeKind::Item {
+        for (source, property) in [("dataPath", "DataPath"), ("commandName", "CommandName")] {
+            if let Some(value) = item.get(source).filter(|value| value.is_string()) {
+                super::place_prop(
+                    &mut props,
+                    &mut limits,
+                    address,
+                    property,
+                    value,
+                    false,
+                    property,
+                );
+            }
+        }
+        limits.extend(
+            item.get("bindingLimits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
+    }
+    if kind == NodeKind::Command {
+        if let Some(options) = item
+            .get("functionalOptions")
+            .filter(|value| value.is_array())
+        {
+            super::place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                "functionalOptions",
+                options,
+                false,
+                "functionalOptions",
+            );
+        }
+        limits.extend(
+            item.get("propertyLimits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
+    }
     let mut node = NodeView::new(
         address.to_string(),
         kind.as_str(),
@@ -358,14 +411,15 @@ fn form_node(
             .or_else(|| item_identity(item))
             .unwrap_or(kind.as_str()),
         props,
-    );
+    )
+    .with_additional_limits(limits);
     let branch_kinds: &[NodeKind] = match kind {
         NodeKind::Item => &[NodeKind::Item, NodeKind::Event],
         NodeKind::Attribute => &[NodeKind::Column],
         NodeKind::Command => &[NodeKind::Event],
         _ => &[],
     };
-    node = node.with_limits(limits).with_branches(
+    node = node.with_branches(
         branch_kinds
             .iter()
             .filter_map(|child_kind| {
@@ -404,7 +458,17 @@ pub(super) fn node_props(kind: NodeKind, value: &Value) -> Map<String, Value> {
         NodeKind::Event => &["handler", "callType"],
         NodeKind::Attribute | NodeKind::Column => &["type", "isMain", "mainTable"],
         NodeKind::Parameter => &["type", "isKey"],
-        NodeKind::Command => &["title", "tooltip", "shortcut", "picture", "representation"],
+        NodeKind::Command => &[
+            "title",
+            "tooltip",
+            "shortcut",
+            "picture",
+            "representation",
+            "currentRowUse",
+            "modifiesSavedData",
+            "associatedTableElementId",
+            "pictureLoadTransparent",
+        ],
         _ => &[],
     };
     selected_scalar_props(value, keys)

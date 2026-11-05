@@ -1,0 +1,314 @@
+{
+  "id": "S-1628-session-parameter-comment",
+  "name": "session-parameter-comment-read-observations",
+  "issue": 1628,
+  "area": "Навигация по исходникам",
+  "task": "Прочитать SessionParameter.Comment по возвращённым адресам после обхода всех страниц, различить пустоту, отсутствие, повреждение и длинное значение; подтвердить, что чтение не добавляет запись",
+  "workspace": "tests/fixtures/acceptance/workspace-session-parameter-comment",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "A_Short": {
+          "kind": "sha256",
+          "file": "src/SessionParameters/A_Short.xml"
+        },
+        "B_Multiline": {
+          "kind": "sha256",
+          "file": "src/SessionParameters/B_Multiline.xml"
+        },
+        "C_Empty": {
+          "kind": "sha256",
+          "file": "src/SessionParameters/C_Empty.xml"
+        },
+        "D_Absent": {
+          "kind": "sha256",
+          "file": "src/SessionParameters/D_Absent.xml"
+        },
+        "E_Damaged": {
+          "kind": "sha256",
+          "file": "src/SessionParameters/E_Damaged.xml"
+        },
+        "F_Long": {
+          "kind": "sha256",
+          "file": "src/SessionParameters/F_Long.xml"
+        },
+        "workspaceConfig": {
+          "kind": "sha256",
+          "file": "v8project.yaml"
+        },
+        "configurationXml": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter",
+        "limit": 3
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SessionParameter.A_Short"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:SessionParameter.C_Empty"
+        }
+      ],
+      "captures": {
+        "short": {
+          "pointer": "/data/items/0/at"
+        },
+        "multi": {
+          "pointer": "/data/items/1/at"
+        },
+        "empty": {
+          "pointer": "/data/items/2/at"
+        },
+        "cursor": {
+          "pointer": "/cursor"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter",
+        "limit": 3,
+        "cursor": "$capture.cursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SessionParameter.D_Absent"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:SessionParameter.F_Long"
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ],
+      "captures": {
+        "absent": {
+          "pointer": "/data/items/0/at"
+        },
+        "damaged": {
+          "pointer": "/data/items/1/at"
+        },
+        "long": {
+          "pointer": "/data/items/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.short"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "Комментарий параметра."
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.multi"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "  Первая & вторая\nСледующая строка.\n"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.damaged"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/kind",
+          "eq": "SessionParameter"
+        },
+        {
+          "pointer": "/data/limits",
+          "contains": "properties.Comment не прочитано: metadata collection item contains a malformed Comment"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.long"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits",
+          "contains": "metadata property Comment exceeds the compact property limit of 2048 bytes; read it whole at main:SessionParameter.F_Long.Props.Comment"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SessionParameter.F_Long.Props.Comment"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Comment",
+          "eq": "ЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯЯ"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:SessionParameter.A_Short",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Не писать"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/A_Short.xml",
+          "eq": "$capture.A_Short"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/B_Multiline.xml",
+          "eq": "$capture.B_Multiline"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/C_Empty.xml",
+          "eq": "$capture.C_Empty"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/D_Absent.xml",
+          "eq": "$capture.D_Absent"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/E_Damaged.xml",
+          "eq": "$capture.E_Damaged"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SessionParameters/F_Long.xml",
+          "eq": "$capture.F_Long"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "$capture.workspaceConfig"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.configurationXml"
+        }
+      ],
+      "refusal": "bad_value: apply operation `props.set` does not apply to SessionParameter `main:SessionParameter.A_Short`; it applies at `main:Configuration`"
+    }
+  ]
+}

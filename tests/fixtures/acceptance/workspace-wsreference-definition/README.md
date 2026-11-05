@@ -1,0 +1,1 @@
+Синтетическое локальное WSDL для #1623. Два namespace с одноимёнными типами, вложенный anonymous complexType, точные границы и явный false, message/part/portType/binding/service, SOAP-декларации без soapAction. Строки страниц сохраняют родителя и исходный порядок. Корпоративные исходники не включены; адрес example.invalid не вызывается.

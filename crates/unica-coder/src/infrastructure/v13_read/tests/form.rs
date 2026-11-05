@@ -1447,7 +1447,7 @@ FROM Source WHERE Code &gt; 0</QueryText><DynamicDataRead>false</DynamicDataRead
         .find(|v| v["at"] == at)
         .unwrap();
     for node in [&detail, row] {
-        assert_eq!(node["props"]["manualQuery"], true, "{node}");
+        assert_eq!(node["props"]["manualQuery"], true, "manualQuery");
         assert_eq!(
             node["props"]["queryText"],
             "SELECT Code, Part\nFROM Source WHERE Code > 0"
@@ -1477,7 +1477,7 @@ fn dynamic_list_missing_and_inapplicable_settings_remain_explicit() {
         assert_eq!(
             data["props"].get(key),
             Some(&serde_json::Value::Null),
-            "{key}: {data}"
+            "{key}: explicit null"
         );
     }
     let fixture = dynamic_list_fixture(
@@ -1510,8 +1510,8 @@ fn dynamic_list_large_query_and_keys_name_full_addresses_without_hiding_other_fa
     let at = "main:Report.ParityReport.Form.MainForm.Attribute.Rows";
     let read = || fixture.view_service().view(ViewRequest::new(at).unwrap());
     let node = read().data.unwrap();
-    assert!(node["props"].get("queryText").is_none(), "{node}");
-    assert!(node["props"].get("keyFields").is_none(), "{node}");
+    assert!(node["props"].get("queryText").is_none(), "queryText over the limit");
+    assert!(node["props"].get("keyFields").is_none(), "keyFields over the limit");
     assert_eq!(node["props"]["manualQuery"], true);
     assert_eq!(node["props"]["dynamicDataRead"], false);
     for key in ["queryText", "keyFields"] {
@@ -1521,7 +1521,7 @@ fn dynamic_list_large_query_and_keys_name_full_addresses_without_hiding_other_fa
                 .unwrap()
                 .iter()
                 .any(|v| v.as_str().unwrap().contains(&format!("{at}.Props.{key}"))),
-            "{node}"
+            "{key}: limit names the full address"
         );
     }
     let whole = crate::infrastructure::v13_read_projection::with_whole_prop("queryText", read)
@@ -1631,10 +1631,44 @@ fn dynamic_list_type_uses_namespace_identity_instead_of_a_literal_prefix() {
         assert_eq!(
             data["props"].get("manualQuery").is_some(),
             settings_visible,
-            "{xml_type}: {data}"
+            "{xml_type}: unexpected answer"
         );
         if settings_visible {
             assert_eq!(data["props"]["type"], "DynamicList");
         }
+    }
+}
+
+#[test]
+fn managed_form_without_support_state_keeps_content_when_declaration_is_damaged() {
+    let fixture = RealReaderFixture::new();
+    install_form_metadata_test_sources(&fixture);
+    assert!(!fixture.source.join("Ext/ParentConfigurations.bin").exists());
+    for (at, path) in [
+        ("main:CommonForm.ОбщаяФорма", "CommonForms/ОбщаяФорма.xml"),
+        (
+            "main:DataProcessor.Обработка.Form.Форма",
+            "DataProcessors/Обработка/Forms/Форма.xml",
+        ),
+    ] {
+        let descriptor = fixture.source.join(path);
+        let xml = fs::read_to_string(&descriptor)
+            .unwrap()
+            .replace(" uuid=\"e9455333-3333-4333-8333-333333333333\"", "")
+            .replace(
+                "</Properties>",
+                "<Comment>one</Comment><Comment>two</Comment></Properties>",
+            );
+        fs::write(descriptor, xml).unwrap();
+        let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
+        assert!(
+            result.ok,
+            "content remains readable independently of declaration: {result:?}"
+        );
+        let data = result.data.unwrap();
+        assert_eq!(data["kind"], "Form");
+        assert!(data["limits"].as_array().unwrap().iter().any(|limit| limit
+            .as_str()
+            .is_some_and(|message| message.contains("declaration"))));
     }
 }

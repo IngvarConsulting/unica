@@ -4,9 +4,15 @@
 //! record. The Russian and English help hold the same pages under the same
 //! paths: a page path is the key that matches the two languages.
 
+mod applied;
 mod cache;
 mod model;
 mod page;
+
+pub use applied::{
+    AppliedFacet, AppliedMembers, AppliedMethod, AppliedProperty, AppliedType, AppliedTypes,
+    NoAppliedTypes,
+};
 
 pub use cache::{catalog_path, load_or_build, CatalogError, Containers};
 pub use model::{
