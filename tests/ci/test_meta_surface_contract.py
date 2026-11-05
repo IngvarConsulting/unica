@@ -22,9 +22,8 @@ META_DESIGNER = REPO_ROOT / "crates/unica-metadata-designer/src"
 FORMAT_GUARD = REPO_ROOT / "crates/unica-coder/src/infrastructure/format_guard.rs"
 CF_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/cf.rs"
 TOOL_CONTEXT = REPO_ROOT / "crates/unica-coder/src/infrastructure/tool_context.rs"
-META_PROPERTY_REGISTRY = (
-    REPO_ROOT / "crates/unica-metadata/src/properties.rs"
-)
+# One file per property; `build.rs` of unica-metadata assembles the registry.
+META_PROPERTY_REGISTRY = REPO_ROOT / "crates/unica-metadata/src/properties"
 META_OPERATION_REGISTRY = (
     REPO_ROOT / "crates/unica-metadata/src/operations.rs"
 )
@@ -96,7 +95,10 @@ def registered_metadata_properties() -> set[str]:
         re.findall(
             r'(?:public_name:\s*|(?:property|enum_property)\(\s*)'
             r'"([A-Za-z][A-Za-z0-9]*)"',
-            META_PROPERTY_REGISTRY.read_text(encoding="utf-8"),
+            "\n".join(
+                path.read_text(encoding="utf-8")
+                for path in sorted(META_PROPERTY_REGISTRY.glob("*.rs"))
+            ),
         )
     )
 

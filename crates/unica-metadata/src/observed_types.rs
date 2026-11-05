@@ -39,8 +39,22 @@ pub enum ObservedMetadataTypeVariant {
     Reference {
         metadata_path: MetadataAddress,
     },
+    /// Generated object identity, readable but outside the mutation algebra.
+    Object {
+        metadata_path: MetadataAddress,
+    },
+    /// Generated record-set identity, readable but outside the mutation algebra.
+    RecordSet {
+        metadata_path: MetadataAddress,
+    },
     DefinedType {
         metadata_path: MetadataAddress,
+    },
+    /// Expanded QName of a reference family, not a concrete metadata object.
+    /// The XML reader admits only the explicitly supported family names.
+    ReferenceFamily {
+        type_name: String,
+        namespace_uri: String,
     },
     /// The characteristic type set of a chart of characteristic types
     /// (`cfg:Characteristic.X`): readable, but outside the writer algebra.
@@ -70,29 +84,6 @@ impl ObservedMetadataType {
                 "observed type variants must not be empty",
             ));
         }
-        if variants.iter().any(|variant| {
-            matches!(
-                variant,
-                ObservedMetadataTypeVariant::CharacteristicTypes { .. }
-                    | ObservedMetadataTypeVariant::TypeId { .. }
-            )
-        }) {
-            // Read-only observation: the platform type is understood and
-            // shown, but no typed writer expresses it, so mutation is refused
-            // at the writer boundary instead of failing the projection.
-            let mut seen = HashSet::new();
-            for variant in &variants {
-                if !seen.insert(variant.clone()) {
-                    return Err(observed_type_error(
-                        "duplicate observed platform type variant",
-                    ));
-                }
-            }
-            return Ok(Self {
-                variants,
-                mutation_capability: MetadataMutationCapability::ReadOnly,
-            });
-        }
         let mut seen = HashSet::new();
         for variant in &variants {
             if !seen.insert(variant.clone()) {
@@ -101,21 +92,36 @@ impl ObservedMetadataType {
                 ));
             }
         }
+        // Read-only members do not waive scalar constraints or scalar identity.
+        // Validate every writable member with the same algebra used by writes.
         let writable_variants = variants
             .iter()
             .cloned()
-            .map(observed_variant_into_writer)
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| observed_type_error("observed platform type has no writer form"))?;
-        MetadataType::new(writable_variants).map_err(|diagnostic| {
+            .enumerate()
+            .filter_map(|(index, variant)| {
+                observed_variant_into_writer(variant).map(|value| (index, value))
+            })
+            .collect::<Vec<_>>();
+        super::types::validate_type_variants(
+            writable_variants
+                .iter()
+                .map(|(index, variant)| (*index, variant)),
+            variants.len(),
+        )
+        .map_err(|diagnostic| {
             observed_type_error(format!(
                 "observed platform type violates the format profile: {}",
                 diagnostic.message
             ))
         })?;
+        let mutation_capability = if writable_variants.len() == variants.len() {
+            MetadataMutationCapability::Editable
+        } else {
+            MetadataMutationCapability::ReadOnly
+        };
         Ok(Self {
             variants,
-            mutation_capability: MetadataMutationCapability::Editable,
+            mutation_capability,
         })
     }
 }
@@ -232,13 +238,13 @@ fn observed_variant_into_writer(
         ObservedMetadataTypeVariant::DefinedType { metadata_path } => {
             MetadataTypeVariant::DefinedType { metadata_path }
         }
-        // Never reached for an editable observation: a characteristic type
-        // set makes the whole observed type read-only.
-        ObservedMetadataTypeVariant::CharacteristicTypes { metadata_path } => {
-            MetadataTypeVariant::Reference { metadata_path }
-        }
-        // A generated type known only by its UUID has no name to write.
-        ObservedMetadataTypeVariant::TypeId { .. } => return None,
+        // These observations have no writer form even if a caller forges an
+        // Editable capability. In particular a family is never one reference.
+        ObservedMetadataTypeVariant::CharacteristicTypes { .. }
+        | ObservedMetadataTypeVariant::TypeId { .. }
+        | ObservedMetadataTypeVariant::ReferenceFamily { .. }
+        | ObservedMetadataTypeVariant::Object { .. }
+        | ObservedMetadataTypeVariant::RecordSet { .. } => return None,
         ObservedMetadataTypeVariant::Uuid => MetadataTypeVariant::Uuid,
     })
 }
@@ -246,6 +252,80 @@ fn observed_variant_into_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn readonly_members() -> Vec<ObservedMetadataTypeVariant> {
+        let path = |name| {
+            MetadataAddress::parse(
+                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                name,
+            )
+            .unwrap()
+        };
+        vec![
+            ObservedMetadataTypeVariant::TypeId {
+                type_id: "cc442f88-d708-4a83-af58-60c85a5d28a8".into(),
+            },
+            ObservedMetadataTypeVariant::CharacteristicTypes {
+                metadata_path: path("ChartOfCharacteristicTypes.Properties"),
+            },
+            ObservedMetadataTypeVariant::Object {
+                metadata_path: path("Catalog.Items"),
+            },
+            ObservedMetadataTypeVariant::RecordSet {
+                metadata_path: path("InformationRegister.Facts"),
+            },
+        ]
+    }
+
+    #[test]
+    fn readonly_members_do_not_bypass_scalar_validation() {
+        for readonly in readonly_members() {
+            for mut variants in [
+                vec![ObservedMetadataTypeVariant::Number {
+                    digits: 39,
+                    fraction: 40,
+                    sign: NumberSign::Any,
+                }],
+                vec![
+                    ObservedMetadataTypeVariant::String {
+                        length: 10,
+                        allowed_length: StringLengthMode::Variable,
+                    },
+                    ObservedMetadataTypeVariant::String {
+                        length: 20,
+                        allowed_length: StringLengthMode::Variable,
+                    },
+                ],
+                vec![ObservedMetadataTypeVariant::ValueStorage],
+            ] {
+                variants.push(readonly.clone());
+                assert!(
+                    ObservedMetadataType::new(variants.clone()).is_err(),
+                    "{variants:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn valid_readonly_members_remain_visible_and_cannot_be_written() {
+        for readonly in readonly_members() {
+            let variants = vec![ObservedMetadataTypeVariant::Boolean, readonly.clone()];
+            let observed = ObservedMetadataType::new(variants.clone()).unwrap();
+            assert_eq!(observed.variants, variants);
+            assert_eq!(
+                observed.mutation_capability,
+                MetadataMutationCapability::ReadOnly
+            );
+            assert!(MetadataType::try_from(observed).is_err());
+            assert!(MetadataType::try_from(ObservedMetadataType {
+                variants,
+                mutation_capability: MetadataMutationCapability::Editable
+            })
+            .is_err());
+            assert!(ObservedMetadataType::new(vec![readonly.clone(), readonly]).is_err());
+        }
+    }
 
     #[test]
     fn uuid_is_narrowed_only_by_the_explicit_observation_bridge() {
@@ -279,5 +359,119 @@ mod tests {
 
         assert_eq!(diagnostic.code, MetaDiagnosticCode::ValidationFailed);
         assert_eq!(diagnostic.field.as_deref(), Some("type"));
+    }
+    fn reference_family() -> ObservedMetadataTypeVariant {
+        ObservedMetadataTypeVariant::ReferenceFamily {
+            type_name: "ExchangePlanRef".into(),
+            namespace_uri: "http://v8.1c.ru/8.1/data/enterprise/current-config".into(),
+        }
+    }
+
+    #[test]
+    fn reference_family_is_read_only_and_cannot_be_forged_into_writer_input() {
+        let observed = ObservedMetadataType::new(vec![reference_family()]).unwrap();
+        assert_eq!(
+            observed.mutation_capability,
+            MetadataMutationCapability::ReadOnly
+        );
+        assert!(MetadataType::try_from(observed).is_err());
+        let forged = ObservedMetadataType {
+            variants: vec![reference_family()],
+            mutation_capability: MetadataMutationCapability::Editable,
+        };
+        assert!(MetadataType::try_from(forged).is_err());
+        let input = serde_json::json!({"variants":[{
+            "kind":"referenceFamily", "typeName":"ExchangePlanRef",
+            "namespaceUri":"http://v8.1c.ru/8.1/data/enterprise/current-config"
+        }]});
+        assert!(crate::request::parse_metadata_type(&input, "Type").is_err());
+        assert!(crate::request::parse_metadata_type(
+            &serde_json::json!({"variants":[{"kind":"boolean"}]}),
+            "Type"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn read_only_members_do_not_bypass_primitive_and_composition_validation() {
+        let characteristic = ObservedMetadataTypeVariant::CharacteristicTypes {
+            metadata_path: MetadataAddress::parse(
+                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                "ChartOfCharacteristicTypes.Features",
+            )
+            .unwrap(),
+        };
+        let type_id = ObservedMetadataTypeVariant::TypeId {
+            type_id: "41dbb66b-ff77-4b8f-aaf8-0ca2012d3a6f".into(),
+        };
+        for read_only in [reference_family(), characteristic, type_id] {
+            assert_eq!(
+                ObservedMetadataType::new(vec![read_only.clone()])
+                    .unwrap()
+                    .mutation_capability,
+                MetadataMutationCapability::ReadOnly
+            );
+            let valid = ObservedMetadataType::new(vec![
+                read_only.clone(),
+                ObservedMetadataTypeVariant::Boolean,
+            ])
+            .unwrap();
+            assert_eq!(
+                valid.mutation_capability,
+                MetadataMutationCapability::ReadOnly
+            );
+            let forged = ObservedMetadataType {
+                variants: vec![read_only.clone()],
+                mutation_capability: MetadataMutationCapability::Editable,
+            };
+            assert!(MetadataType::try_from(forged).is_err());
+            for bad in [
+                ObservedMetadataTypeVariant::Number {
+                    digits: 39,
+                    fraction: 0,
+                    sign: NumberSign::Any,
+                },
+                ObservedMetadataTypeVariant::Number {
+                    digits: 4,
+                    fraction: 5,
+                    sign: NumberSign::Any,
+                },
+                ObservedMetadataTypeVariant::String {
+                    length: 0,
+                    allowed_length: StringLengthMode::Fixed,
+                },
+                ObservedMetadataTypeVariant::String {
+                    length: 1025,
+                    allowed_length: StringLengthMode::Variable,
+                },
+                ObservedMetadataTypeVariant::BinaryData {
+                    length: 0,
+                    allowed_length: StringLengthMode::Fixed,
+                },
+                ObservedMetadataTypeVariant::ValueStorage,
+            ] {
+                assert!(
+                    ObservedMetadataType::new(vec![read_only.clone(), bad.clone()]).is_err(),
+                    "{read_only:?} must not admit {bad:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn reference_family_does_not_hide_duplicate_primitive_identity_with_different_qualifiers() {
+        let error = ObservedMetadataType::new(vec![
+            reference_family(),
+            ObservedMetadataTypeVariant::String {
+                length: 10,
+                allowed_length: StringLengthMode::Variable,
+            },
+            ObservedMetadataTypeVariant::String {
+                length: 20,
+                allowed_length: StringLengthMode::Variable,
+            },
+        ])
+        .unwrap_err();
+        assert!(error.message.contains("duplicate platform type variant"));
     }
 }

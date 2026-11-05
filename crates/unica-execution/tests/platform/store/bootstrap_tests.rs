@@ -25,7 +25,7 @@ use unica_workspace::state_fs::test_support::{install_publication_hook, Publicat
 const CHILD_CONFIG: &str = "UNICA_EXECUTION_STORE_BOOTSTRAP_TEST";
 const BARRIER_PREFIX: &str = "EXECUTION_STORE_REGISTRATION_DURABLE ";
 const CHILD_TEST: &str =
-    "store::bootstrap_tests::interrupted_registration_refuses_fresh_after_actual_process_death";
+    "store::medium_bootstrap_tests::interrupted_registration_refuses_fresh_after_actual_process_death";
 const WATCHDOG: Duration = Duration::from_secs(30);
 
 fn identity() -> [u8; 32] {

@@ -1742,7 +1742,7 @@ mod registration_cache_tests {
     }
 
     #[test]
-    fn logical_read_retains_root_artifacts_across_calls_and_isolates_sources() {
+    fn medium_logical_read_retains_root_artifacts_across_calls_and_isolates_sources() {
         let workspace = tempfile::tempdir().unwrap();
         let xml = |name: &str| {
             format!(
@@ -2178,6 +2178,11 @@ mod body_range_refusal_tests {
                     Err(super::ExecutionBoundaryError::BindingChanged(_))
                 ),
                 "a retained-source advisory must not publish after its named root was replaced"
+            );
+        } else {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps a retained source root from being replaced",
             );
         }
     }

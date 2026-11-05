@@ -182,6 +182,7 @@ pub(crate) fn properties(reader: LogicalReader, kind: NodeKind) -> &'static [Pro
         (LogicalReader::Xdto, NodeKind::XdtoPackage) => {
             const {
                 &[
+                    special(write("Comment", "props.set")),
                     observed(
                         "targetNamespace",
                         "Namespace identity of the package; no namespace writer",

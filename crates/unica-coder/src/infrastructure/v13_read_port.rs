@@ -105,6 +105,9 @@ pub(crate) struct MetadataLocalRead {
     pub(crate) info: unica_metadata::validation_subject::MetaLocalInfo,
     /// `None` — набор не вида `extension`: заимствования там не бывает.
     pub(crate) borrowing: Option<unica_metadata_designer::xml_model::MetaBorrowing>,
+    /// Точное состояние поддержки объекта: его отдаёт `view` (#2158), а
+    /// `info.support` остаётся грубым статусом для проверок.
+    pub(crate) support_state: ObjectSupportState,
     /// Идентификатор объекта из того же описания: состав подсистемы может
     /// назвать объект им, а не именем.
     pub(crate) uuid: Option<uuid::Uuid>,
@@ -449,6 +452,26 @@ impl ProviderReadAuthority {
         Ok(Value::Object(payload))
     }
 
+    /// Lexical parent version without materializing a large Configuration DOM.
+    pub(crate) fn configuration_root_version_literal(
+        &self,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<Option<String>, ViewError> {
+        let relative = Path::new("Configuration.xml");
+        if let Some(buffer) = self.open_buffer(relative) {
+            return crate::infrastructure::v13_large_configuration::read_configuration_root_version_literal(std::io::Cursor::new(buffer.text.as_bytes()),checkpoint);
+        }
+        let file = self
+            .root
+            .open_relative_regular_nofollow(relative)
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        crate::infrastructure::v13_large_configuration::read_configuration_root_version_literal(
+            file, checkpoint,
+        )
+    }
+
     pub(crate) fn streamed_configuration_root(
         &self,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
@@ -661,6 +684,14 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<FormInfoData, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
+        if form_content_profile(&descriptor)
+            .is_ok_and(|profile| profile == MetadataChildProfile::OrdinaryForm)
+        {
+            return Err(ViewError::new(RefusalCode::UnsupportedSource, format!(
+                "ordinary Form.bin content is not supported; read `{}:{}.Metadata` for the form declaration",
+                self.source_set(), target.as_str(),
+            )));
+        }
         let relative = self.attached_resource_relative(target, "Form.xml")?;
         let bytes = self.read_relative_whole(&relative)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
@@ -974,11 +1005,10 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<MetadataLocalRead, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
-        let support = metadata_support_status(self.object_support_with_descriptor(
-            target,
-            Some(&descriptor),
-            checkpoint,
-        )?);
+        let support_data =
+            self.object_support_with_descriptor(target, Some(&descriptor), checkpoint)?;
+        let support_state = support_data.state;
+        let support = metadata_support_status(support_data);
         // Заимствование отвечает только в наборе вида `extension`: в
         // конфигурации его не бывает, и разбирать дескриптор ради `own` у
         // каждого объекта незачем.
@@ -1050,6 +1080,7 @@ impl ProviderReadAuthority {
         Ok(MetadataLocalRead {
             info,
             borrowing,
+            support_state,
             uuid: descriptor_uuid(&descriptor),
         })
     }
@@ -1170,6 +1201,22 @@ impl ProviderReadAuthority {
         let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
+        if evidence.artifact_kind() == "Language" {
+            match unica_metadata_designer::language_code::read_code(&descriptor) {
+                Ok(code) => {
+                    payload["properties"] = json!([{
+                        "key": "LanguageCode",
+                        "value": unica_metadata::MetaObservedPropertyValue::Text { value: code },
+                    }]);
+                }
+                Err(message) => {
+                    payload["unreadable"] = json!([{
+                        "field": "properties.LanguageCode",
+                        "message": message,
+                    }]);
+                }
+            }
+        }
         if evidence.artifact_kind() == "DocumentNumerator" {
             match unica_metadata_designer::numerator_read::read(&descriptor) {
                 Ok(facts) => {
@@ -1203,8 +1250,51 @@ impl ProviderReadAuthority {
                 }
             }
         }
-        if evidence.artifact_kind() == "SessionParameter" {
-            match unica_metadata_designer::session_parameter_comment::read_comment(&descriptor) {
+        if evidence.artifact_kind() == "WSReference" {
+            match unica_metadata_designer::ws_reference::read_location_url(&descriptor) {
+                Ok(Some(value)) => {
+                    payload["properties"] = json!([{
+                        "key": "LocationURL",
+                        "value": unica_metadata::MetaObservedPropertyValue::Text { value },
+                    }])
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    payload["unreadable"] =
+                        json!([{"field":"properties.LocationURL","message":message}])
+                }
+            }
+        }
+        if evidence.artifact_kind() == "FunctionalOption" {
+            let name = target.as_str().split('.').nth(1).unwrap_or_default();
+            match std::str::from_utf8(&descriptor)
+                .map_err(|error| error.to_string())
+                .and_then(|source| unica_metadata_designer::functional_option::read(source, name))
+            {
+                Ok((location, flag)) => {
+                    if !payload["properties"].is_array() {
+                        payload["properties"] = json!([]);
+                    }
+                    let properties = payload["properties"]
+                        .as_array_mut()
+                        .expect("identity property array");
+                    properties.push(json!({"key":"Location", "value":unica_metadata::MetaObservedPropertyValue::Text { value: location }}));
+                    properties.push(json!({"key":"PrivilegedGetMode", "value":unica_metadata::MetaObservedPropertyValue::Boolean { value: flag }}));
+                }
+                Err(message) => {
+                    payload["unreadable"] = json!([{"field":"properties", "message":message}])
+                }
+            }
+        }
+        if evidence.artifact_kind() == "StyleItem" {
+            unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        }
+        {
+            match unica_metadata_designer::descriptor_comment::read_comment(
+                &descriptor,
+                evidence.artifact_kind(),
+            ) {
                 Ok(Some(comment)) => {
                     let property = json!({
                         "key": "Comment",
@@ -1218,18 +1308,84 @@ impl ProviderReadAuthority {
                 }
                 Ok(None) => {}
                 Err(message) => {
-                    payload["unreadable"] = json!([{
+                    let finding = json!({
                         "field": "properties.Comment",
                         "message": message,
-                    }]);
+                    });
+                    if let Some(unreadable) = payload["unreadable"].as_array_mut() {
+                        unreadable.push(finding);
+                    } else {
+                        payload["unreadable"] = json!([finding]);
+                    }
                 }
             }
         }
-        if evidence.artifact_kind() == "StyleItem" {
-            unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
-                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
-        }
         Ok(payload)
+    }
+
+    pub(crate) fn wsreference_payload(
+        &self,
+        target: &MetadataAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Value, ViewError> {
+        // Prove the admitted descriptor's identity before opening its companion.
+        let mut payload = self.identity_metadata_payload(target)?;
+        let relative = self.attached_resource_relative(target, "WSDefinition.xml")?;
+        let definition = if self.open_buffer(&relative).is_none()
+            && self.wsreference_companion_is_directory(&relative, checkpoint)?
+        {
+            unica_metadata::wsdl::Definition::unavailable(
+                "local WSDL companion WSDefinition.xml is a directory; its declarations are unknown",
+            )
+        } else {
+            match self.read_optional_relative_with_checkpoint(&relative, checkpoint)? {
+                Some(bytes) => unica_metadata_designer::wsdl_read::read(&bytes, checkpoint)?,
+                None => unica_metadata::wsdl::Definition::unavailable(
+                    "local WSDL companion WSDefinition.xml is absent; its declarations are unknown",
+                ),
+            }
+        };
+        payload["wsdlDefinition"] = serde_json::to_value(definition).map_err(|error| {
+            ViewError::new(
+                RefusalCode::InvalidResult,
+                format!("cannot serialize local WSDL observation: {error}"),
+            )
+        })?;
+        Ok(payload)
+    }
+
+    fn wsreference_companion_is_directory(
+        &self,
+        relative: &Path,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<bool, ViewError> {
+        use unica_source_contract::read::SourceEntry;
+
+        let mut directory = self.root.as_ref().clone();
+        let mut components = relative.components().peekable();
+        while let Some(component) = components.next() {
+            checkpoint()?;
+            let entry = match directory.retain_immediate_child_nofollow(component.as_os_str()) {
+                Ok(entry) => entry,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => {
+                    return Err(ViewError::detailed(
+                        RefusalDetail::SourceUnreadable,
+                        error.to_string(),
+                    ))
+                }
+            };
+            checkpoint()?;
+            if components.peek().is_none() {
+                return Ok(matches!(entry, SourceEntry::Directory(_)));
+            }
+            match entry {
+                SourceEntry::Directory(child) => directory = child,
+                // Let the existing no-follow reader retain its precise refusal.
+                _ => return Ok(false),
+            }
+        }
+        Ok(false)
     }
 
     pub(crate) fn metadata_owner_evidence(
@@ -1316,8 +1472,19 @@ impl ProviderReadAuthority {
                         }
                     }
                 })?;
-        serde_json::to_value(data)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+        let mut payload = serde_json::to_value(data)
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        if type_name.is_none() {
+            match unica_metadata_designer::descriptor_comment::read_comment(
+                &descriptor,
+                "XDTOPackage",
+            ) {
+                Ok(Some(comment)) => payload["Comment"] = json!(comment),
+                Ok(None) => {}
+                Err(message) => payload["commentError"] = json!(message),
+            }
+        }
+        Ok(payload)
     }
 
     pub(crate) fn subsystem_payload(
@@ -1920,6 +2087,14 @@ impl ProviderReadAuthority {
         self.object_support_with_descriptor(target, None, checkpoint)
     }
 
+    /// The parsed support marker of the source set; `None` when it is absent.
+    pub(crate) fn support_marker(
+        &self,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Option<Arc<SupportState>>, ViewError> {
+        self.support_state(checkpoint)
+    }
+
     /// A caller that already holds the descriptor bytes passes them in so the
     /// support lookup does not read the same file a second time.
     fn object_support_with_descriptor(
@@ -2353,6 +2528,22 @@ fn encode_export_path_components<'a>(
     Ok(encoded)
 }
 
+/// Only a proven Ordinary discriminator changes the content reader. A damaged
+/// declaration keeps the existing Form.xml path and its independent diagnostics;
+/// neither unrelated properties nor a support UUID decide the content format.
+fn form_content_profile(descriptor: &[u8]) -> Result<MetadataChildProfile, String> {
+    use unica_metadata_designer::validation::{
+        exact_mdclasses_children, exact_metadata_artifact, form_profile, MetadataAdmission,
+    };
+    let (_, document) = unica_xml_format::read::parse_metadata_image(descriptor)?;
+    let artifact = exact_metadata_artifact(&document, MetadataAdmission::Read)?;
+    let properties = exact_mdclasses_children(artifact, "Properties", "Form descriptor")?;
+    let [properties] = properties.as_slice() else {
+        return Err("Form descriptor must contain one Properties element".to_string());
+    };
+    form_profile(*properties)
+}
+
 /// Missing marker is proven absence; with a marker the descriptor UUID is
 /// required even when a global restriction would hide the own rule.
 fn form_support_rule(
@@ -2367,6 +2558,24 @@ fn form_support_rule(
         )
     })?;
     Ok(object_support_rule(state.object_rule(&uuid)))
+}
+
+/// Support state of an object whose descriptor `uuid` the caller already
+/// holds: a collection lists its members without reading them again.
+pub(crate) fn object_support_by_uuid(
+    state: &SupportState,
+    uuid: Option<&str>,
+) -> Result<ObjectSupportState, ViewError> {
+    if state.removed() || !state.global_editing_enabled() {
+        return Ok(object_support_from_state(Some(state), None).state);
+    }
+    let uuid = uuid.ok_or_else(|| {
+        ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            "metadata descriptor has no support-state UUID evidence",
+        )
+    })?;
+    Ok(object_support_from_state(Some(state), object_support_rule(state.object_rule(uuid))).state)
 }
 
 fn object_support_rule(rule: Option<u8>) -> Option<ObjectSupportState> {

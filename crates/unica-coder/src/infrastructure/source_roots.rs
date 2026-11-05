@@ -131,7 +131,7 @@ fn invalid_source_root(error: String) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{normalize_path_identity, resolve_named_source_set, resolve_source_root};
     use crate::infrastructure::workspace::discover_workspace;
     #[cfg(test)]
