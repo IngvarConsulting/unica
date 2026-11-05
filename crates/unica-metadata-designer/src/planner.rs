@@ -1395,6 +1395,15 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::CommonAttribute(values) => {
+            let text =
+                crate::common_attribute::patch_for_source(&source, name, values, source_kind)
+                    .map_err(|message| {
+                        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                            .at_path(at_path.clone())
+                    })?;
+            (NodeKind::CommonAttribute, text)
+        }
         DescriptorPropertyChanges::WSReference(values) => {
             let invalid = |message: String| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)

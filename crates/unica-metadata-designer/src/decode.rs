@@ -88,6 +88,7 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
+    CommonAttribute(unica_metadata::property_input::CommonAttributePropertyChanges),
     StyleItem(unica_metadata::style_color::StyleItemColor),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
@@ -141,6 +142,16 @@ pub struct MetadataPlanOperation {
 }
 
 impl MetadataPlanOperation {
+    pub fn common_attribute_owner(&self) -> Option<(&str, &std::path::Path)> {
+        match &self.kind {
+            MetadataPlanKind::DescriptorProperties {
+                name,
+                relative,
+                changes: DescriptorPropertyChanges::CommonAttribute(_),
+            } => Some((name, relative)),
+            _ => None,
+        }
+    }
     pub fn exchange_content_owner(&self) -> Option<&MetadataAddress> {
         match &self.kind {
             MetadataPlanKind::ExchangeContent { owner, .. } => Some(owner),
@@ -1067,7 +1078,7 @@ pub fn parse_properties(
     ) {
         PropertiesSite::root_of(binding.source_kind)
     } else {
-        PropertiesSite::from_address(&target)
+        PropertiesSite::from_address(&target).map(|site| site.for_source_kind(binding.source_kind))
     }
     .ok_or_else(|| {
         ApplyPlanError::new(
@@ -1107,6 +1118,10 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::CommonAttribute(values) => (
+            "CommonAttributes",
+            DescriptorPropertyChanges::CommonAttribute(values),
+        ),
         unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
             "FunctionalOptions",
             DescriptorPropertyChanges::FunctionalOption(values),
