@@ -296,7 +296,7 @@ impl SupportStateReader for WorkspaceSupportStateReader<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use std::fs;
     use std::path::PathBuf;

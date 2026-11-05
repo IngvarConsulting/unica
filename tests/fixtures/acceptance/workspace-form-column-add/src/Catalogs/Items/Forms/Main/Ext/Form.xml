@@ -1,0 +1,110 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core" xmlns:dcssch="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">
+	<AutoCommandBar name="FormCommandBar" id="-1"/>
+	<ChildItems>
+		<Table name="FirstRowsTable" id="20">
+			<DataPath>FirstRows</DataPath>
+			<RowFilter xsi:nil="true"/>
+			<ContextMenu name="FirstRowsMenu" id="21"/>
+			<AutoCommandBar name="FirstRowsBar" id="22"/>
+			<ExtendedTooltip name="FirstRowsTableРасширеннаяПодсказка" id="46"/>
+			<SearchStringAddition name="FirstRowsTableСтрокаПоиска" id="47">
+				<AdditionSource>
+					<Item>FirstRowsTable</Item>
+					<Type>SearchStringRepresentation</Type>
+				</AdditionSource>
+				<ContextMenu name="FirstRowsTableСтрокаПоискаКонтекстноеМеню" id="48"/>
+				<ExtendedTooltip name="FirstRowsTableСтрокаПоискаРасширеннаяПодсказка" id="49"/>
+			</SearchStringAddition>
+			<ViewStatusAddition name="FirstRowsTableСостояниеПросмотра" id="50">
+				<AdditionSource>
+					<Item>FirstRowsTable</Item>
+					<Type>ViewStatusRepresentation</Type>
+				</AdditionSource>
+				<ContextMenu name="FirstRowsTableСостояниеПросмотраКонтекстноеМеню" id="51"/>
+				<ExtendedTooltip name="FirstRowsTableСостояниеПросмотраРасширеннаяПодсказка" id="52"/>
+			</ViewStatusAddition>
+			<SearchControlAddition name="FirstRowsTableУправлениеПоиском" id="53">
+				<AdditionSource>
+					<Item>FirstRowsTable</Item>
+					<Type>SearchControl</Type>
+				</AdditionSource>
+				<ContextMenu name="FirstRowsTableУправлениеПоискомКонтекстноеМеню" id="54"/>
+				<ExtendedTooltip name="FirstRowsTableУправлениеПоискомРасширеннаяПодсказка" id="55"/>
+			</SearchControlAddition>
+			<ChildItems>
+				<InputField name="FirstRowsOriginal" id="23">
+					<DataPath>FirstRows.Original</DataPath>
+					<ContextMenu name="FirstRowsOriginalMenu" id="24"/>
+					<ExtendedTooltip name="FirstRowsOriginalTooltip" id="25"/>
+				</InputField>
+			</ChildItems>
+		</Table>
+		<Table name="SecondRowsTable" id="40">
+			<DataPath>SecondRows</DataPath>
+			<RowFilter xsi:nil="true"/>
+			<ContextMenu name="SecondRowsMenu" id="41"/>
+			<AutoCommandBar name="SecondRowsBar" id="42"/>
+			<ExtendedTooltip name="SecondRowsTableРасширеннаяПодсказка" id="56"/>
+			<SearchStringAddition name="SecondRowsTableСтрокаПоиска" id="57">
+				<AdditionSource>
+					<Item>SecondRowsTable</Item>
+					<Type>SearchStringRepresentation</Type>
+				</AdditionSource>
+				<ContextMenu name="SecondRowsTableСтрокаПоискаКонтекстноеМеню" id="58"/>
+				<ExtendedTooltip name="SecondRowsTableСтрокаПоискаРасширеннаяПодсказка" id="59"/>
+			</SearchStringAddition>
+			<ViewStatusAddition name="SecondRowsTableСостояниеПросмотра" id="60">
+				<AdditionSource>
+					<Item>SecondRowsTable</Item>
+					<Type>ViewStatusRepresentation</Type>
+				</AdditionSource>
+				<ContextMenu name="SecondRowsTableСостояниеПросмотраКонтекстноеМеню" id="61"/>
+				<ExtendedTooltip name="SecondRowsTableСостояниеПросмотраРасширеннаяПодсказка" id="62"/>
+			</ViewStatusAddition>
+			<SearchControlAddition name="SecondRowsTableУправлениеПоиском" id="63">
+				<AdditionSource>
+					<Item>SecondRowsTable</Item>
+					<Type>SearchControl</Type>
+				</AdditionSource>
+				<ContextMenu name="SecondRowsTableУправлениеПоискомКонтекстноеМеню" id="64"/>
+				<ExtendedTooltip name="SecondRowsTableУправлениеПоискомРасширеннаяПодсказка" id="65"/>
+			</SearchControlAddition>
+			<ChildItems>
+				<InputField name="SecondRowsOriginal" id="43">
+					<DataPath>SecondRows.Original</DataPath>
+					<ContextMenu name="SecondRowsOriginalMenu" id="44"/>
+					<ExtendedTooltip name="SecondRowsOriginalTooltip" id="45"/>
+				</InputField>
+			</ChildItems>
+		</Table>
+	</ChildItems>
+	<Attributes>
+		<Attribute name="FirstRows" id="3">
+			<Type>
+				<v8:Type>v8:ValueTable</v8:Type>
+			</Type>
+			<Columns>
+				<Column name="Original" id="2">
+					<Type>
+						<v8:Type>cfg:CatalogRef.Existing</v8:Type>
+					</Type>
+				</Column>
+			</Columns>
+		</Attribute>
+		<Attribute name="SecondRows" id="11">
+			<Type>
+				<v8:Type>v8:ValueTable</v8:Type>
+			</Type>
+			<Columns>
+				<Column name="Original" id="9">
+					<Type>
+						<v8:Type>cfg:CatalogRef.Existing</v8:Type>
+					</Type>
+				</Column>
+			</Columns>
+		</Attribute>
+		<Attribute name="Scalar" id="20"><Type><v8:Type>xs:boolean</v8:Type></Type></Attribute>
+		<Attribute name="Tree" id="21"><Type><v8:Type>v8:ValueTree</v8:Type></Type></Attribute>
+	</Attributes>
+</Form>
