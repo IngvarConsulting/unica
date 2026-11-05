@@ -4498,6 +4498,9 @@ fn rename_open_child(
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
     let information_length = offset_of!(RenameInformation, file_name)
         .checked_add(name_bytes)
+        // NT requires the complete fixed struct even when one UTF-16 code
+        // unit ends before its trailing alignment padding.
+        .map(|length| length.max(size_of::<RenameInformation>()))
         .and_then(|length| u32::try_from(length).ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
     let word_count = (information_length as usize).div_ceil(size_of::<usize>());

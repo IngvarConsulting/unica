@@ -1607,6 +1607,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn retained_file_creation_preserves_one_character_implicit_directory_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::create_dir(root.join("Existing")).unwrap();
+        let authority = crate::actor::apply_writer_authority_for_test();
+        let mut state = staged_with_authority(root, authority.clone());
+        // This is the pre-existing file-only path: no directory-creation API.
+        state
+            .create("Existing/Target/A/input.bin", b"payload".to_vec())
+            .unwrap();
+        let transaction = state.finalize().unwrap();
+        transaction
+            .commit_retained_apply_with(authority, || Ok(()), || Ok(()))
+            .unwrap();
+        assert_eq!(
+            std::fs::read(root.join("Existing/Target/A/input.bin")).unwrap(),
+            b"payload"
+        );
+    }
+
+    #[test]
     pub(crate) fn retained_transaction_roles_require_explicit_roots_and_cache_authority() {
         let root = temp_root("closed-participant-roots");
         let source = root.join("source");
