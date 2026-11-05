@@ -1,7 +1,5 @@
 ---
 id: INV.CI.RUNTIME-METADATA-HASHES
-check:
-  - tests/ci/test_package_unica_runtime.py::PackageUnicaRuntimeTests.test_metadata_hashes_archive_and_each_runtime_file
 ---
 
 # Описание ядра соответствует сформированному архиву

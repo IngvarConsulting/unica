@@ -245,6 +245,7 @@ mod tests {
         tempfile::tempdir().expect("временный каталог")
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn machine_policy_applies_to_multiple_workspaces_and_project_overlays_win_per_key() {
         let common = workspace();
@@ -290,6 +291,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn explicit_machine_policy_failure_cannot_be_masked_by_project_allow() {
         let dir = workspace();
@@ -320,6 +322,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn machine_policy_requires_an_absolute_nonempty_path() {
         let dir = workspace();
@@ -331,6 +334,7 @@ mod tests {
     /// Строка удалённого поставщика из прежней версии не ломает документацию:
     /// в любом слое — с любым телом, даже неверным, — она принимается,
     /// называется предупреждением с именем файла и ничего не настраивает.
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn a_retired_provider_is_accepted_with_a_warning_and_ignored_in_every_layer() {
         for layer in 0..3 {
@@ -397,6 +401,7 @@ mod tests {
     /// Characterizes consumer locality: the policy reader owns `network` and
     /// `providers`, while a syntactically present operational sibling is not
     /// part of its subtree contract.
+    /// rule: INV.CONFIG.INVALID-LAYER
     #[test]
     fn characterization_policy_ignores_invalid_operational_subtree() {
         let dir = workspace();
@@ -427,6 +432,7 @@ mod tests {
         assert!(error.contains("transport"), "unexpected error: {error}");
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn unparseable_file_is_a_hard_refusal() {
         let dir = workspace();
@@ -445,6 +451,7 @@ mod tests {
     /// Нечитаемость моделируется каталогом по имени файла: `read_to_string`
     /// на нём отказывает не-NotFound ошибкой на любой ОС, без платформенных
     /// прав и `cfg`-веток вне фасада (INV-платформенной границы).
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn an_unreadable_file_is_a_refusal_not_a_silent_default() {
         let dir = workspace();
@@ -457,6 +464,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn an_unknown_provider_id_is_a_refusal_not_a_silent_skip() {
         let dir = workspace();
@@ -475,6 +483,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn an_unknown_network_value_is_a_refusal() {
         let dir = workspace();
@@ -491,6 +500,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn an_unknown_key_is_a_refusal() {
         let dir = workspace();
@@ -515,6 +525,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn the_local_overlay_wins_per_key() {
         let dir = workspace();
@@ -541,6 +552,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn default_deny_denies_only_providers_without_their_own_allow() {
         let dir = workspace();

@@ -589,6 +589,7 @@ mod tests {
             .unwrap()
             .contains("https://github.com/IngvarConsulting/unica/issues/1246"));
     }
+    /// rule: INV.WIRE.RUN-NAMES-ARE-LAYER-AND-DIRECTION
     #[test]
     fn runner_one_vocabulary_replaces_the_previous_public_dictionary() {
         let catalog =
@@ -752,6 +753,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.SEARCH-PROVIDER-ROLES
     #[test]
     fn search_publishes_two_provider_roles_and_stays_literal_without_one() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog");
@@ -767,6 +769,7 @@ mod tests {
     /// Свод объявлен закрытым набором и по умолчанию текстовый: третий свод
     /// нельзя добавить молча, а существующий вызов без `corpus` обязан
     /// остаться текстовым поиском, каким он был.
+    /// rule: INV.WIRE.SEARCH-CORPUS
     #[test]
     fn search_publishes_exactly_two_corpora_and_defaults_to_text() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog");
@@ -776,6 +779,10 @@ mod tests {
         assert_eq!(corpus["default"], "text");
     }
 
+    /// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
+    /// rule: INV.WIRE.RESOLVE-EXACT-BRIDGE
+    /// rule: INV.WIRE.SURFACE-RELEASE-ROUTING
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn v13_catalog_locks_the_eight_domain_contracts_without_publishing_them() {
         let catalog =
@@ -1120,6 +1127,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SURFACE.ARGUMENTS-DESCRIBED
     #[test]
     fn canonical_arguments_are_described_within_wire_budget() {
         fn assert_described(location: &str, schema: &Value) {
@@ -1360,6 +1368,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.RUN-NAMES-ARE-LAYER-AND-DIRECTION
     #[test]
     fn v13_run_dictionary_names_no_operation_that_needs_edt() {
         // Unica читает и пишет выгрузку Designer; операция, которой нужен EDT
@@ -1386,6 +1395,7 @@ mod tests {
             .all(|operation| operation.name() != "source.convert"));
     }
 
+    /// rule: INV.WIRE.RUN-NAMES-ARE-LAYER-AND-DIRECTION
     #[test]
     fn run_schema_accepts_direct_execution_and_rejects_revision_arguments() {
         let catalog =
@@ -1405,6 +1415,7 @@ mod tests {
         assert!(!validator.is_valid(&json!({"op":"infobase.create", "args":{}, "dryRun":"false"})));
     }
 
+    /// rule: INV.WIRE.RUN-NAMES-ARE-LAYER-AND-DIRECTION
     #[test]
     fn v13_run_dictionary_has_twelve_operations_without_query_execution() {
         // The no-query guarantee remains independently active while the
@@ -1412,6 +1423,7 @@ mod tests {
         v13_run_dictionary_has_twelve_directional_runtime_intents();
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn v13_client_run_is_implemented_as_a_terminal_operation_with_closed_arguments() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("canonical catalog exists");
@@ -1473,6 +1485,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.V13-INFOBASE-EXPORTS
     #[test]
     fn v13_infobase_exports_are_implemented_with_closed_agent_facing_arguments() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("v0.13 catalog");

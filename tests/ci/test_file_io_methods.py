@@ -32,6 +32,7 @@ def message(file: str, line: int, method: str, code: str = methods.LINT) -> str:
 
 class FileIoMethodsTests(unittest.TestCase):
     def test_probe_marks_every_disallowed_method_once(self):
+        """rule: INV.APP.DOMAIN-INPUTS"""
         configured = methods.disallowed(REPO_ROOT)
         marked = list(methods.probe_markers(REPO_ROOT).values())
         self.assertEqual(sorted(marked), sorted(configured))
@@ -56,6 +57,7 @@ class FileIoMethodsTests(unittest.TestCase):
         return problems
 
     def test_probe_must_have_every_marked_call_refused(self):
+        """rule: INV.APP.DOMAIN-INPUTS"""
         markers = methods.probe_markers(REPO_ROOT)
         refused = "\n".join(message(file, line, method) for (file, line), method in markers.items())
         self.assertEqual(self.run_probe(refused), [])
@@ -67,6 +69,7 @@ class FileIoMethodsTests(unittest.TestCase):
         self.assertIn("probe Clippy failed with exit code 101", self.run_probe(refused, 101))
 
     def test_packages_report_only_their_own_src_once(self):
+        """rule: INV.APP.DOMAIN-INPUTS"""
         packages = {"unica-address": "crates/unica-address", "unica-forms-designer": "crates/unica-forms-designer"}
         stdout = "\n".join([
             message("crates/unica-address/src/lib.rs", 9, "std::path::Path::exists"),

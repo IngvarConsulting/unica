@@ -555,6 +555,7 @@ fn known_unsafe_source_set_without_git_still_has_a_complete_repository_matrix() 
     }
 }
 
+/// rule: INV.SOURCE.AMBIGUOUS-NAME-HEALTH
 #[test]
 fn duplicate_source_set_names_do_not_invent_an_addressable_repository_row() {
     let temp = TempDir::new().unwrap();

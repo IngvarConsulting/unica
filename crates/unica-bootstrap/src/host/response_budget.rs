@@ -172,6 +172,7 @@ mod tests {
         move |name: &str| entries.get(name).cloned()
     }
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn known_hosts_get_their_measured_budgets_and_others_the_default() {
         let none = environment(&[]);
@@ -203,6 +204,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn zcode_measured_budget_preserves_client_and_environment_precedence() {
         let inherited = environment(&[
@@ -249,6 +251,7 @@ mod tests {
         assert_eq!(MAX_RESPONSE_BUDGET, 73_728);
     }
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn explicit_setting_then_client_name_then_launch_environment_then_default() {
         let explicit = environment(&[
