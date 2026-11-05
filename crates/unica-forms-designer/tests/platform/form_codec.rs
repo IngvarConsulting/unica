@@ -377,6 +377,57 @@ fn form_edit_rejects_malformed_or_unsupported_attribute_columns() {
 }
 
 #[test]
+fn placement_after_column_group_preserves_the_whole_subtree() {
+    let group = "<ColumnGroup name=\"Group\" id=\"2\"><ChildItems><InputField name=\"Nested\" id=\"3\"/></ChildItems></ColumnGroup>";
+    let mut xml = format!(
+        "<Form xmlns=\"{FORM_LOGFORM_NS}\"><ChildItems><Table name=\"Rows\" id=\"1\"><ChildItems>{group}<InputField name=\"Last\" id=\"4\"/></ChildItems></Table></ChildItems></Form>"
+    );
+    let target = form_edit_target_child_items_range(&xml, None, Some("Group")).unwrap();
+    form_edit_insert_lines_into_target(
+        &mut xml,
+        target,
+        &["<InputField name=\"Added\" id=\"5\"/>".to_string()],
+    )
+    .unwrap();
+    assert!(
+        xml.contains(group),
+        "the existing group must remain byte-for-byte intact"
+    );
+    let doc = Document::parse(&xml).unwrap();
+    let rows = doc
+        .descendants()
+        .find(|n| n.attribute("name") == Some("Rows"))
+        .unwrap();
+    let names = form_child(rows, "ChildItems")
+        .unwrap()
+        .children()
+        .filter_map(|n| n.attribute("name"))
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Group", "Added", "Last"]);
+    assert!(form_edit_target_child_items_range(&xml, None, Some("Missing")).is_err());
+}
+
+#[test]
+fn column_group_placement_keeps_namespace_base_form_and_event_boundaries() {
+    let own = "<ColumnGroup name=\"Group\" id=\"1\"/>";
+    let foreign = "<ColumnGroup xmlns=\"urn:foreign\" name=\"Group\"/>";
+    let base = "<BaseForm><ChildItems><ColumnGroup name=\"Group\"/></ChildItems></BaseForm>";
+    let xml = format!(
+        "<Form xmlns=\"{FORM_LOGFORM_NS}\"><ChildItems>{own}{foreign}</ChildItems>{base}</Form>"
+    );
+    let doc = Document::parse(&xml).unwrap();
+    let target = form_edit_find_placement_element(doc.root_element(), "Group")
+        .unwrap()
+        .unwrap();
+    assert_eq!(target.attribute("id"), Some("1"));
+    assert!(form_edit_find_element_nodes(doc.root_element(), "Group").is_empty());
+
+    let xml = xml.replace(foreign, &format!("{foreign}{own}"));
+    let doc = Document::parse(&xml).unwrap();
+    assert!(form_edit_find_placement_element(doc.root_element(), "Group").is_err());
+}
+
+#[test]
 fn auto_command_bar_placement_covers_root_and_table_panels() {
     for self_closing in [true, false] {
         for populated in [true, false] {
@@ -728,7 +779,10 @@ fn form_compile_writes_the_same_command_block_as_form_command_add() {
         "action": "СписокОбновить",
         "representation": "Picture"
     }]);
-    let mut ids = FormIdAllocator { next: 4 };
+    let mut ids = FormEmissionContext {
+        next: 4,
+        ..Default::default()
+    };
     let mut lines = Vec::new();
     emit_form_commands(&mut lines, Some(&commands), "\t", &mut ids, Some("ru")).unwrap();
     assert_eq!(
@@ -2064,7 +2118,7 @@ fn form_compile_accepts_every_8_3_27_element_enum_value() {
 #[test]
 fn form_element_emitters_escape_enum_text_when_preflight_is_bypassed() {
     let mut lines = vec!["<Form>".to_string()];
-    let mut ids = FormIdAllocator::new();
+    let mut ids = FormEmissionContext::new();
     let check = json!({
         "checkBoxType": "</CheckBoxType><Injected/>",
         "titleLocation": "</TitleLocation><Injected/>"
@@ -3194,4 +3248,198 @@ fn form_edit_inserts_lines_with_the_form_line_ending() {
         has_bare_lf(&edited) && edited.contains("\r\n"),
         "{edited:?}"
     );
+}
+
+#[test]
+fn column_group_add_rejects_nonfields_for_direct_and_sibling_placement() {
+    for placement in [json!({"into":"Columns"}), json!({"after":"Existing"})] {
+        for element in [
+            json!({"button":"Added","command":"Run"}),
+            json!({"group":"Added"}),
+            json!({"label":"Added"}),
+        ] {
+            let before = format!(
+                r#"<Form xmlns="{FORM_LOGFORM_NS}"><ChildItems><Table name="Rows" id="1"><ChildItems><ColumnGroup name="Columns" id="2"><ChildItems><InputField name="Existing" id="3"/></ChildItems></ColumnGroup></ChildItems></Table></ChildItems></Form>"#
+            );
+            let mut xml = before.clone();
+            let mut definition = placement.clone();
+            definition["elements"] = json!([element]);
+            let result = form_edit_apply_definition(
+                &mut xml,
+                &definition,
+                std::path::Path::new("Main/Form.xml"),
+                0,
+                Some("ru"),
+            );
+            let error = match result {
+                Err(error) => error,
+                Ok(_) => panic!("accepted {definition}"),
+            };
+            assert!(error.contains("column group holds only fields"), "{error}");
+            assert_eq!(xml, before);
+        }
+    }
+}
+
+#[test]
+fn column_group_add_accepts_supported_fields_and_preserves_their_container() {
+    for (element, tag) in [
+        (json!({"input":"Added"}), "InputField"),
+        (json!({"labelField":"Added"}), "LabelField"),
+        (json!({"check":"Added"}), "CheckBoxField"),
+        (json!({"html":"Added"}), "HTMLDocumentField"),
+        (
+            json!({"textDoc":"Added","path":"Text"}),
+            "TextDocumentField",
+        ),
+    ] {
+        let mut xml = format!(
+            r#"<Form xmlns="{FORM_LOGFORM_NS}" xmlns:v8="http://v8.1c.ru/8.1/data/core"><ChildItems><Table name="Rows" id="1"><ChildItems><ColumnGroup name="Columns" id="2"/></ChildItems></Table></ChildItems><Attributes><Attribute name="Text" id="1"><Type><v8:Type xmlns:txt="http://v8.1c.ru/8.1/data/txtedt">txt:TextDocument</v8:Type></Type></Attribute></Attributes></Form>"#
+        );
+        form_edit_apply_definition(
+            &mut xml,
+            &json!({"into":"Columns","elements":[element]}),
+            std::path::Path::new("Main/Form.xml"),
+            0,
+            Some("ru"),
+        )
+        .unwrap();
+        let doc = Document::parse(&xml).unwrap();
+        let added = doc
+            .descendants()
+            .find(|node| node.attribute("name") == Some("Added"))
+            .unwrap();
+        assert_eq!(added.tag_name().name(), tag);
+        assert_eq!(
+            added
+                .parent_element()
+                .unwrap()
+                .parent_element()
+                .unwrap()
+                .attribute("name"),
+            Some("Columns")
+        );
+    }
+}
+
+#[test]
+fn generated_form_main_attributes_follow_the_script_variant() {
+    for (kind, purpose, russian, english) in [
+        ("Catalog", "Object", "Объект", "Object"),
+        ("Catalog", "List", "Список", "List"),
+        ("Catalog", "Choice", "Список", "List"),
+        ("InformationRegister", "Record", "Запись", "Record"),
+    ] {
+        for (variant, attribute, bar) in [
+            (ScriptVariant::Russian, russian, "ФормаКоманднаяПанель"),
+            (ScriptVariant::English, english, "FormCommandBar"),
+        ] {
+            let xml = form_add_content_xml_with_variant(kind, "Sample", purpose, "2.20", variant)
+                .unwrap();
+            let doc = roxmltree::Document::parse(&xml).unwrap();
+            let root = doc.root_element();
+            assert_eq!(
+                root.children()
+                    .find(|n| n.has_tag_name("AutoCommandBar"))
+                    .unwrap()
+                    .attribute("name"),
+                Some(bar)
+            );
+            assert_eq!(
+                root.descendants()
+                    .find(|n| n.has_tag_name("Attribute"))
+                    .unwrap()
+                    .attribute("name"),
+                Some(attribute)
+            );
+            assert_platform_text_uses_crlf_without_bare_lf(&xml);
+        }
+    }
+    assert_platform_text_uses_crlf_without_bare_lf(form_add_module_bsl_with_variant(
+        ScriptVariant::English,
+    ));
+}
+
+#[test]
+fn english_companions_preserve_existing_names_and_repeat_without_changes() {
+    let mut xml = form_add_content_xml("Catalog", "Sample", "Object", "2.20").unwrap();
+    let before = xml.clone();
+    let root_start = xml.find("<Form ").unwrap();
+    let definition = json!({"elements": [{"button": "Обновить", "name": "Обновить"}]});
+    form_edit_apply_definition_with_variant(
+        &mut xml,
+        &definition,
+        Path::new("Form.xml"),
+        root_start,
+        None,
+        ScriptVariant::English,
+    )
+    .unwrap();
+    let doc = roxmltree::Document::parse(&xml).unwrap();
+    let root = doc.root_element();
+    assert_eq!(
+        root.children()
+            .find(|n| n.has_tag_name("AutoCommandBar"))
+            .unwrap()
+            .attribute("name"),
+        Some("ФормаКоманднаяПанель")
+    );
+    assert!(root
+        .descendants()
+        .any(|n| n.has_tag_name("Attribute") && n.attribute("name") == Some("Объект")));
+    assert!(root.descendants().any(|n| n.has_tag_name("ExtendedTooltip")
+        && n.attribute("name") == Some("ОбновитьExtendedTooltip")));
+    // Attribute subtree is byte-for-byte unchanged by adding the button.
+    let attributes = |text: &str| {
+        text[text.find("\t<Attributes>").unwrap()
+            ..text.find("\t</Attributes>").unwrap() + "\t</Attributes>".len()]
+            .to_string()
+    };
+    assert_eq!(attributes(&xml), attributes(&before));
+    let first = xml.clone();
+    form_edit_apply_definition_with_variant(
+        &mut xml,
+        &definition,
+        Path::new("Form.xml"),
+        root_start,
+        None,
+        ScriptVariant::English,
+    )
+    .unwrap();
+    assert_eq!(xml, first);
+}
+
+#[test]
+fn english_table_companions_match_the_platform_dump_in_both_command_bar_modes() {
+    // Names are independently present in platform_8_3_27/external_artifacts/
+    // epf/SyntheticProcessor/Forms/Main/Ext/Form.xml (LinesSearchString etc.).
+    for autofill in [None, Some(true), Some(false)] {
+        let mut table = json!({"table": "Lines", "path": "Object.Lines"});
+        if let Some(value) = autofill {
+            table["tableAutofill"] = json!(value);
+        }
+        let mut lines = Vec::new();
+        let mut context = FormEmissionContext::with_script_variant(ScriptVariant::English);
+        emit_form_element(&mut lines, &table, "", &mut context, None).unwrap();
+        let fragment = format!("<Form {FORM_ROOT_NAMESPACES}>{}</Form>", lines.join("\n"));
+        let doc = roxmltree::Document::parse(&fragment).unwrap();
+        let names = doc
+            .descendants()
+            .filter_map(|node| node.attribute("name"))
+            .collect::<Vec<_>>();
+        for expected in [
+            "LinesCommandBar",
+            "LinesSearchString",
+            "LinesViewStatus",
+            "LinesSearchControl",
+            "LinesSearchStringContextMenu",
+            "LinesViewStatusExtendedTooltip",
+            "LinesSearchControlExtendedTooltip",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "{autofill:?}: missing {expected}: {names:?}"
+            );
+        }
+    }
 }
