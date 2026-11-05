@@ -59,6 +59,9 @@ class MeasuredMediumCase(NamedTuple):
 # 400 000 исходных наборов: 34.447 с отдельно, 41.729 с совместно, macOS.
 # Это размер конкретной проверки; соседние layout-проверки остаются small.
 MEASURED_MEDIUM_CASES = (
+    # Object lock-mode preservation matrices: macOS, 04.11.2026, 4.419 / 5.730 s.
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::object_data_lock::object_data_lock_preserves_charts_processes_and_exchange"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::object_data_lock::object_data_lock_preserves_constants_documents_and_registers"),
     # XML boolean matrix, macOS arm64: 3.376 s / 4.105 s, 04.11.2026.
     MeasuredMediumCase("unica-metadata-designer", "unica_metadata_designer", "edit::dimension_deny_tests::information_boolean_edits_preserve_split_text_markup_and_reader_values"),
     MeasuredMediumCase(

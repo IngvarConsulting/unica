@@ -23,8 +23,10 @@ pub enum MetaPropertyKey {
     ClientOrdinaryApplication,
     CodeAllowedLength,
     CodeMask,
+    CodeSeries,
     CodeType,
     Correspondence,
+    DataLockControlMode,
     CreateTaskInPrivilegedMode,
     DefaultPresentation,
     DependenceOnCalculationTypes,
@@ -248,6 +250,14 @@ const fn patterned_string_property(
     }
 }
 
+const CHOICE_MODE_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Enum,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ExchangePlan,
+];
 const CODE_ALLOWED_LENGTH_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
     MetadataKind::ChartOfCharacteristicTypes,
@@ -364,6 +374,11 @@ const INCLUDE_HELP_KINDS: &[MetadataKind] = &[
 
 const CHOICE_MODE_VALUES: &[&str] = &["BothWays", "FromForm", "QuickChoice"];
 const CODE_ALLOWED_LENGTH_VALUES: &[&str] = &["Variable", "Fixed"];
+const CATALOG_CODE_SERIES_VALUES: &[&str] = &[
+    "WholeCatalog",
+    "WithinOwnerSubordination",
+    "WithinSubordination",
+];
 const CODE_TYPE_VALUES: &[&str] = &["String", "Number"];
 const DEFAULT_PRESENTATION_VALUES: &[&str] = &["AsDescription", "AsCode"];
 const DEPENDENCE_VALUES: &[&str] = &["DontUse", "OnActionPeriod"];
@@ -393,6 +408,22 @@ const REUSE_SESSIONS_VALUES: &[&str] = &["DontUse", "AutoUse"];
 const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "ToItems"];
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
+const DATA_LOCK_CONTROL_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::Constant,
+    MetadataKind::InformationRegister,
+    MetadataKind::AccumulationRegister,
+    MetadataKind::AccountingRegister,
+    MetadataKind::CalculationRegister,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::BusinessProcess,
+    MetadataKind::Task,
+    MetadataKind::ExchangePlan,
+];
+const OBJECT_DATA_LOCK_CONTROL_VALUES: &[&str] = &["Automatic", "Managed"];
 const PREDEFINED_DATA_UPDATE_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
     MetadataKind::ChartOfAccounts,
@@ -402,6 +433,14 @@ const PREDEFINED_DATA_UPDATE_KINDS: &[MetadataKind] = &[
 const PREDEFINED_DATA_UPDATE_VALUES: &[&str] = &["Auto", "AutoUpdate", "DontAutoUpdate"];
 
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
+    enum_property(
+        "CodeSeries",
+        "CodeSeries",
+        MetaPropertyKey::CodeSeries,
+        CATALOG_KINDS,
+        CATALOG_CODE_SERIES_VALUES,
+    )
+    .written_in_place(InPlace::Always),
     enum_property(
         "FullTextSearch",
         "FullTextSearch",
@@ -496,9 +535,16 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "ChoiceMode",
         "ChoiceMode",
         MetaPropertyKey::ChoiceMode,
-        CATALOG_KINDS,
+        CHOICE_MODE_KINDS,
         CHOICE_MODE_VALUES,
-    ),
+    )
+    .written_in_place(InPlace::Owners(&[
+        MetadataKind::Enum,
+        MetadataKind::ChartOfCharacteristicTypes,
+        MetadataKind::ChartOfCalculationTypes,
+        MetadataKind::ChartOfAccounts,
+        MetadataKind::ExchangePlan,
+    ])),
     property(
         "ClientManagedApplication",
         MetaPropertyKey::ClientManagedApplication,
@@ -542,6 +588,14 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyValueKind::Boolean,
         ACCOUNTING_REGISTER_KINDS,
     ),
+    enum_property(
+        "DataLockControlMode",
+        "DataLockControlMode",
+        MetaPropertyKey::DataLockControlMode,
+        DATA_LOCK_CONTROL_KINDS,
+        OBJECT_DATA_LOCK_CONTROL_VALUES,
+    )
+    .written_in_place(InPlace::Always),
     enum_property(
         "DefaultPresentation",
         "DefaultPresentation",
@@ -1059,6 +1113,42 @@ mod tests {
     }
 
     #[test]
+    fn catalog_code_series_has_a_closed_value_and_owner_matrix() {
+        for value in [
+            "WholeCatalog",
+            "WithinOwnerSubordination",
+            "WithinSubordination",
+        ] {
+            assert_property_kind_matrix(
+                "CodeSeries",
+                MetaPropertyValue::String(value.into()),
+                &[MetadataKind::Catalog],
+            );
+        }
+        for value in ["WholeChartOfAccounts", "WithinOwner", "", "wholeCatalog"] {
+            assert!(
+                MetaPropertyChanges::convert(
+                    MetadataKind::Catalog,
+                    vec![MetaPropertyInput::new(
+                        "CodeSeries",
+                        MetaPropertyValue::String(value.into())
+                    )],
+                )
+                .is_err(),
+                "{value}"
+            );
+        }
+        assert!(MetaPropertyChanges::convert(
+            MetadataKind::Catalog,
+            vec![MetaPropertyInput::new(
+                "CodeSeries",
+                MetaPropertyValue::Boolean(true)
+            )],
+        )
+        .is_err());
+    }
+
+    #[test]
     fn create_task_privileged_mode_is_boolean_and_business_process_only() {
         for value in [false, true] {
             assert_property_kind_matrix(
@@ -1359,7 +1449,14 @@ mod tests {
             (
                 "ChoiceMode",
                 MetaPropertyValue::String("FromForm".into()),
-                &[Catalog],
+                &[
+                    Catalog,
+                    Enum,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ChartOfAccounts,
+                    ExchangePlan,
+                ],
             ),
             (
                 "ClientManagedApplication",
@@ -1436,6 +1533,25 @@ mod tests {
                 "ChoiceHistoryOnInput",
                 MetaPropertyValue::String("Auto".into()),
                 &[Catalog, Document],
+            ),
+            (
+                "DataLockControlMode",
+                MetaPropertyValue::String("Managed".into()),
+                &[
+                    Catalog,
+                    Document,
+                    Constant,
+                    InformationRegister,
+                    AccumulationRegister,
+                    AccountingRegister,
+                    CalculationRegister,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    BusinessProcess,
+                    Task,
+                    ExchangePlan,
+                ],
             ),
             (
                 "DefaultPresentation",
