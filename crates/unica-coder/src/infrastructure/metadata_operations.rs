@@ -975,6 +975,7 @@ pub(crate) mod medium_tests {
     /// заимствованной обработки без `Form.xml` и `Template.xml`. Валидатор
     /// описания принимает такой след, только когда заимствование доказывают
     /// оба описания — владельца и ребёнка, и рядом нет лишних каталогов.
+    /// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
     #[test]
     fn borrowed_children_of_a_borrowed_owner_validate_without_payload() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))

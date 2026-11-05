@@ -1,7 +1,5 @@
 ---
 id: INV.PKG.SHARED-BUILD-ARCHIVE-DOWNLOAD
-check:
-  - tests/ci/test_build_unica_tools.py::BuildUnicaToolsTests.test_bundle_builder_downloads_shared_archive_once_and_declares_runtime_closure
 ---
 
 # Сборщик загружает общий архив один раз

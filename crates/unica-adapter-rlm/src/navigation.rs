@@ -849,6 +849,7 @@ mod medium_tests {
         assert!(warnings[0].contains("missing file"), "{:?}", warnings);
     }
 
+    /// rule: INV.RLM.READ-CANCELLATION
     #[test]
     fn adapter_normalizes_client_cancellation_from_readiness_and_call() {
         let request = CodeIntelligenceReadRequest::Definition {
@@ -888,6 +889,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_navigation_refuses_before_readiness_or_legacy_service_dispatch() {
         let client = DeadlineRecordingClient {
@@ -906,6 +908,7 @@ mod medium_tests {
         assert!(client.timeouts.lock().unwrap().is_empty());
     }
 
+    /// rule: INV.RLM.READ-DEADLINE
     #[test]
     fn definition_readiness_and_call_share_one_remaining_deadline() {
         let client = DeadlineRecordingClient {
@@ -934,6 +937,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.RLM.READ-CANCELLATION
     #[test]
     fn cancellation_after_readiness_wins_when_the_deadline_expires_at_the_same_time() {
         let started_at = Instant::now();
@@ -964,6 +968,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.RLM.READ-CANCELLATION
     #[test]
     fn cancellation_after_readiness_wins_before_any_readiness_state_is_interpreted() {
         let started_at = Instant::now();
@@ -1098,6 +1103,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RLM.MAINTENANCE-STATUS
     #[test]
     fn cancelled_or_unknown_maintenance_is_not_a_cancelled_read_or_a_wait_promise() {
         use unica_code_intelligence::model::IndexMaintenanceEvidence;
@@ -1116,6 +1122,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.CODE-DEFINITION-READINESS
     #[test]
     fn definition_readiness_matrix_never_reports_false_typed_success() {
         let request = definition_request();

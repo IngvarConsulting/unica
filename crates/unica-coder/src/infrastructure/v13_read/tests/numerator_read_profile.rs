@@ -120,6 +120,7 @@ fn numerator_read_profile_preserves_identity_when_the_new_frame_observation_fail
         .any(|v| v.as_str().is_some_and(|s| s.contains("Properties"))));
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn document_numerator_relation_reaches_the_registered_target_without_writes() {
     let fixture = RealReaderFixture::new();
@@ -179,6 +180,7 @@ fn document_numerator_relation_reaches_the_registered_target_without_writes() {
     );
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn document_numerator_relation_preserves_unknown_empty_and_damaged_observations() {
     for (raw, limited) in [
@@ -241,6 +243,7 @@ fn document_numerator_relation_preserves_unknown_empty_and_damaged_observations(
     }
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn document_numerator_relation_requires_local_registration_and_descriptor_identity() {
     for variant in ["unregistered", "missing", "foreign-name", "foreign-kind"] {

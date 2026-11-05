@@ -509,6 +509,7 @@ mod tests {
         )
     }
 
+    /// rule: INV.WIRE.DIFF-REVISION-BOUND-PAGES
     #[test]
     fn diff_rejects_incomparable_logical_kinds() {
         let handler = DiffHandler::default();
@@ -523,6 +524,7 @@ mod tests {
         assert_eq!(error.code().as_str(), "incomparable_nodes");
     }
 
+    /// rule: INV.WIRE.DIFF-REVISION-BOUND-PAGES
     #[test]
     fn diff_limit_bounds_materialized_changes_and_issues_a_cursor() {
         let handler = DiffHandler::default();
@@ -541,6 +543,7 @@ mod tests {
         assert!(page.cursor().is_some());
     }
 
+    /// rule: INV.WIRE.DIFF-REVISION-BOUND-PAGES
     #[test]
     fn diff_cursor_replays_the_saved_comparison_after_sources_change() {
         let handler = DiffHandler::default();
@@ -562,6 +565,7 @@ mod tests {
         assert!(replayed.cursor().is_some());
     }
 
+    /// rule: INV.WIRE.DIFF-REVISION-BOUND-PAGES
     #[test]
     fn diff_cursor_cannot_be_replayed_for_another_question() {
         let handler = DiffHandler::default();
@@ -579,6 +583,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.WIRE.DIFF-REVISION-BOUND-PAGES
     #[test]
     fn diff_cursor_continues_from_the_bounded_change_offset() {
         let handler = DiffHandler::default();
@@ -627,6 +632,7 @@ mod tests {
     /// A page ends by count, by encoded size or at the end, and says which;
     /// pages walk every difference once, and a difference larger than the
     /// page target still travels whole.
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
     fn diff_page_names_why_it_stopped_and_never_cuts_a_difference() {
         let handler = DiffHandler::default();
@@ -678,6 +684,7 @@ mod tests {
     /// A difference over the transport limit cannot travel at all: the
     /// comparison refuses before it promises a continuation, wherever that
     /// difference stands.
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
     fn a_difference_over_the_transport_limit_refuses_before_a_cursor() {
         let handler = DiffHandler::default();
@@ -702,6 +709,7 @@ mod tests {
 
     /// `can` и `limits` вычисляются для `view`, а не читаются из исходников:
     /// у узлов с одинаковыми данными словари не дают ложного различия.
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn diff_ignores_computed_view_sections() {
         let handler = DiffHandler::default();

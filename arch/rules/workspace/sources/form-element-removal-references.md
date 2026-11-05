@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.FORM-ELEMENT-REMOVAL-REFERENCES
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/1937
 ---
 
