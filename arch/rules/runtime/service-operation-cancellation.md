@@ -1,6 +1,9 @@
 ---
 id: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
 check:
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::workspace_service_cancel_before_admission_never_dispatches_late_data
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::workspace_service_cancel_before_prepared_admission_preserves_framing
+  - crates/unica-coder/tests/platform/workspace_services_integration.rs::workspace_service_pending_cancel_without_data_does_not_hold_shutdown
   - crates/unica-coder/tests/platform/workspace_services_integration.rs::manager_generates_unique_uuid_operation_ids_for_bsl_and_rlm
   - crates/unica-coder/tests/platform/workspace_services_integration.rs::cancellable_connector_sends_cancel_on_a_separate_connection
   - crates/unica-coder/tests/platform/workspace_services_integration.rs::workspace_service_detached_caller_keeps_work_and_exact_cancel_ownership
@@ -17,6 +20,11 @@ check:
 не отменяет уже принятую операцию. Её идентификатор и владелец сохраняются
 до фактического завершения; явная отмена по прежнему UUID по-прежнему
 адресует только эту операцию.
+
+Подтверждённая явная отмена сохраняется и тогда, когда опередила регистрацию
+рабочего запроса. Поздние данные той же попытки не запускают неотменённую
+работу. Намерение без данных не считается выполняющейся операцией и не
+удерживает сервис от остановки; произвольный срок ожидания его не снимает.
 
 Закрытие отправки клиентом не доказывает невозможность чтения ответа:
 helper пытается передать фактически полученный результат. Ошибка наблюдения
