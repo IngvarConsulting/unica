@@ -67,6 +67,8 @@ class MeasuredMediumCase(NamedTuple):
 # 400 000 исходных наборов: 34.447 с отдельно, 41.729 с совместно, macOS.
 # Это размер конкретной проверки; соседние layout-проверки остаются small.
 MEASURED_MEDIUM_CASES = (
+    # XML boolean matrix, macOS arm64: 3.376 s / 4.105 s, 04.11.2026.
+    MeasuredMediumCase("unica-metadata-designer", "unica_metadata_designer", "edit::dimension_deny_tests::information_boolean_edits_preserve_split_text_markup_and_reader_values"),
     MeasuredMediumCase(
         "unica-project-health",
         "unica_project_health",

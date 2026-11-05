@@ -2172,8 +2172,17 @@
                       "comment": {
                         "type": "string"
                       },
+                      "denyIncompleteValues": {
+                        "type": "boolean"
+                      },
                       "fillValue": {
                         "$ref": "#/$defs/fillValue"
+                      },
+                      "mainFilter": {
+                        "type": "boolean"
+                      },
+                      "master": {
+                        "type": "boolean"
                       },
                       "name": {
                         "minLength": 1,
@@ -2264,8 +2273,17 @@
                       "comment": {
                         "type": "string"
                       },
+                      "denyIncompleteValues": {
+                        "type": "boolean"
+                      },
                       "fillValue": {
                         "$ref": "#/$defs/fillValue"
+                      },
+                      "mainFilter": {
+                        "type": "boolean"
+                      },
+                      "master": {
+                        "type": "boolean"
                       },
                       "name": {
                         "minLength": 1,
