@@ -9,6 +9,7 @@ fn call(mcp: &mut McpProcess, id: u64, args: Value) -> Value {
     result
 }
 
+/// rule: INV.SOURCE.CODE-BORROWED-MODULE-STATE
 #[test]
 fn canonical_stdio_code_insert_publishes_borrowed_module_and_state() {
     let root = tempfile::tempdir().unwrap();

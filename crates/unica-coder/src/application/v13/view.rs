@@ -814,6 +814,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DEFERRED-MANIFEST
     #[test]
     fn view_keeps_content_behind_explicit_branches_and_paginates_collections() {
         let service = ViewService::new(FixtureAuthority::new(), ViewCursorStore::default());
@@ -891,6 +892,8 @@ mod tests {
         assert!(second.cursor.is_none());
     }
 
+    /// rule: INV.SOURCE.CALL-GRAPH-STATE-IS-NAMED
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
     fn supplied_graph_collection_uses_stable_pages_bound_to_its_owner() {
         let service = ViewService::new(FixtureAuthority::new(), ViewCursorStore::default());
@@ -941,6 +944,7 @@ mod tests {
         assert_eq!(stale, second);
     }
 
+    /// rule: INV.APP.DEFERRED-READ
     #[test]
     fn cursor_replay_keeps_the_issued_snapshot_after_source_change() {
         let authority = FixtureAuthority::new();
@@ -973,6 +977,7 @@ mod tests {
         assert_eq!(invalid.diagnostics[0]["code"], "invalid_cursor");
     }
 
+    /// rule: INV.APP.DEFERRED-READ
     #[test]
     fn retrying_the_same_cursor_returns_the_same_page_and_successor() {
         let service = ViewService::new(FixtureAuthority::new(), ViewCursorStore::default());
@@ -996,6 +1001,8 @@ mod tests {
         assert!(page.cursor.is_some());
     }
 
+    /// rule: INV.APP.DEFERRED-MANIFEST
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn a_collection_longer_than_the_cursor_entry_limit_still_has_a_first_page() {
         let at = "main:Document.Заказ.Module.Object.Body";
@@ -1031,6 +1038,7 @@ mod tests {
         assert_eq!(page.page.as_ref().unwrap()["stoppedBy"], "complete");
     }
 
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
     fn addressed_collection_prefers_64_kib_pages_and_replays() {
         let at = "main:Document.Заказ.Module.Object.Body";
@@ -1128,6 +1136,8 @@ mod tests {
         assert!(result.page.is_none());
     }
 
+    /// rule: INV.APP.DEFERRED-MANIFEST
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
     #[test]
     fn module_text_is_returned_whole_beside_the_projected_node_without_pages() {
         let at = "main:Document.Заказ.Module.Object.Body";
@@ -1151,6 +1161,7 @@ mod tests {
         assert!(result.page.is_none());
     }
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn oversized_module_text_does_not_refuse_a_projection_that_returns_no_text() {
         let at = "main:Document.Заказ.Module.Object.Body";
@@ -1186,6 +1197,7 @@ mod tests {
         assert!(result.cursor.is_none());
     }
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn module_text_over_the_limit_is_refused_whole_with_structural_next() {
         let at = "main:Document.Заказ.Module.Object.Body";
@@ -1216,6 +1228,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
     fn one_item_over_the_page_target_is_returned_whole() {
         let at = "main:Document.Заказ.Module.Object.Body";
@@ -1428,6 +1441,8 @@ mod tests {
         assert_eq!(seen, (0..100).collect::<Vec<_>>());
     }
 
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
     fn snapshot_over_byte_quota_refuses_before_promising_a_continuation() {
         let at = "main:Document.Заказ.Module.Object.Body";
@@ -1447,6 +1462,7 @@ mod tests {
         assert!(result.cursor.is_none());
     }
 
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
     fn a_late_oversized_item_refuses_before_the_first_page() {
         let at = "main:Document.Заказ.Module.Object.Body";

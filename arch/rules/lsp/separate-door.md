@@ -1,6 +1,5 @@
 ---
 id: CTR.LSP.SEPARATE-DOOR
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/2173
 ---
 

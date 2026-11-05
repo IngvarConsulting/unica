@@ -297,6 +297,7 @@ mod tests {
         assert_eq!(error.failure(), NetworkFailure::UntrustedCertificate);
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn an_expired_certificate_points_at_the_clock_not_the_antivirus() {
         let error = classify(CertificateError::Expired);
@@ -312,6 +313,7 @@ mod tests {
         )))
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn macos_codes_for_expiry_and_purpose_are_not_read_as_interception() {
         // Так верификатор macOS отдаёт коды, которые не сводит к своим вариантам.
@@ -324,6 +326,7 @@ mod tests {
         assert_eq!(untrusted.failure(), NetworkFailure::UntrustedCertificate);
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn with_bundled_roots_an_unknown_issuer_names_the_empty_os_store() {
         let error = certificate_refusal(

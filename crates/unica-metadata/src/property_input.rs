@@ -54,6 +54,10 @@ pub enum PropertiesIntent {
     DocumentNumerator(crate::document_numerator::DocumentNumeratorChanges),
     Metadata(MetaPropertyChanges),
     IntegrationService(IntegrationServicePropertyChanges),
+    LanguageCode {
+        code: String,
+        comment: Option<String>,
+    },
     CommentOnly {
         kind: unica_address::address::NodeKind,
         comment: String,
@@ -307,6 +311,14 @@ fn decode_with_contract(
             let values = reader
                 .field("values", false)?
                 .ok_or_else(|| invalid(&values_path, "values must be an object"))?;
+            if site == PropertiesSite::CommentOnly(unica_address::address::NodeKind::Language)
+                && values.get("LanguageCode").is_some()
+            {
+                return Err(invalid(
+                    format!("{values_path}.LanguageCode"),
+                    "an extension adopts its language: LanguageCode is set in the main configuration; only Comment changes here",
+                ));
+            }
             let shape = reader
                 .shape
                 .property("values")
@@ -410,6 +422,32 @@ fn decode_with_contract(
                     _ => return Err(invalid(&values_path, "supply either ExternalIntegrationServiceAddress or Comment, one property per operation")),
                     }
                 }
+                PropertiesSite::Language => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    match values_reader.field("LanguageCode", false)? {
+                        Some(value) => {
+                            let code = value.as_str().ok_or_else(|| {
+                                invalid(
+                                    format!("{values_path}.LanguageCode"),
+                                    "LanguageCode must be a string",
+                                )
+                            })?;
+                            crate::language_code::validate_language_code(code).map_err(
+                                |message| invalid(format!("{values_path}.LanguageCode"), message),
+                            )?;
+                            PropertiesIntent::LanguageCode {
+                                code: code.to_string(),
+                                comment,
+                            }
+                        }
+                        None => PropertiesIntent::CommentOnly {
+                            kind: unica_address::address::NodeKind::Language,
+                            comment: comment.ok_or_else(|| {
+                                invalid(&values_path, "Comment or LanguageCode is required")
+                            })?,
+                        },
+                    }
+                }
                 PropertiesSite::WSReference => {
                     let comment = values_reader.string(DescriptorProperty::Comment)?;
                     let location_url = values_reader.string(DescriptorProperty::LocationUrl)?;
@@ -497,6 +535,73 @@ mod tests {
 
     fn decode(site: PropertiesSite, args: Value) -> DecodeResult<PropertiesIntent> {
         decode_properties(PropertiesOperation::Set, site, &args, "ops[7].args")
+    }
+
+    #[test]
+    fn language_code_has_a_closed_descriptor_profile() {
+        let at = unica_address::address::QualifiedAddress::parse("main:Language.English").unwrap();
+        let site =
+            PropertiesSite::from_address(&at, unica_source_contract::SourceSetKind::Configuration)
+                .expect("Language must have a property profile");
+        let schema = PropertiesOperation::Set.contract(site).schema;
+        let properties = schema["properties"]["values"]["properties"]
+            .as_object()
+            .unwrap();
+        let mut names = properties.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, ["Comment", "LanguageCode", "comment"]);
+        assert_eq!(properties["LanguageCode"]["type"], "string");
+        for code in ["de", "zz", "en-US"] {
+            assert!(matches!(
+                decode(site, serde_json::json!({"values":{"LanguageCode":code}})),
+                Ok(PropertiesIntent::LanguageCode { comment: None, .. })
+            ));
+        }
+        for value in [
+            serde_json::json!(""),
+            serde_json::json!("bad?code"),
+            serde_json::json!(true),
+        ] {
+            assert!(decode(site, serde_json::json!({"values":{"LanguageCode":value}})).is_err());
+        }
+        assert!(matches!(
+            decode(site, serde_json::json!({"values":{"comment":"Назначение"}})),
+            Ok(PropertiesIntent::CommentOnly { kind: unica_address::address::NodeKind::Language, comment })
+                if comment == "Назначение"
+        ));
+        assert!(matches!(
+            decode(site, serde_json::json!({"values":{"Comment":"","LanguageCode":"de"}})),
+            Ok(PropertiesIntent::LanguageCode { code, comment: Some(comment) })
+                if code == "de" && comment.is_empty()
+        ));
+        for values in [
+            serde_json::json!({"Comment":"A","comment":"A"}),
+            serde_json::json!({"Comment":null}),
+            serde_json::json!({"Synonym":"Label"}),
+            serde_json::json!({}),
+        ] {
+            assert!(
+                decode(site, serde_json::json!({"values":values})).is_err(),
+                "{values}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_extension_language_refuses_language_code_with_the_main_configuration_reason() {
+        let site = PropertiesSite::CommentOnly(unica_address::address::NodeKind::Language);
+        let error = decode(site, serde_json::json!({"values":{"LanguageCode":"de"}}))
+            .expect_err("an adopted language has no LanguageCode write");
+        assert_eq!(error.path, "ops[7].args.values.LanguageCode");
+        assert!(
+            error.message.contains("set in the main configuration"),
+            "{}",
+            error.message
+        );
+        assert!(matches!(
+            decode(site, serde_json::json!({"values":{"Comment":"x"}})),
+            Ok(PropertiesIntent::CommentOnly { .. })
+        ));
     }
 
     #[test]

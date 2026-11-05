@@ -53,6 +53,7 @@ pub fn validate_final_object_integrity(
     source_set_name: &str,
     source_kind: SourceSetKind,
 ) -> Result<(), ApplyPlanError> {
+    crate::language_code::validate_final(staged, source_kind)?;
     for change in staged.planned_changes() {
         let StagedFileState::Bytes(bytes) = &change.current else {
             continue;
@@ -507,8 +508,8 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 | MetaDiagnosticCode::CapabilityUnavailable => ApplyPlanErrorKind::BadValue,
                 MetaDiagnosticCode::TargetNotFound => ApplyPlanErrorKind::NotFound,
                 MetaDiagnosticCode::ValidationFailed => ApplyPlanErrorKind::Postcondition,
-                MetaDiagnosticCode::AlreadyExists
-                | MetaDiagnosticCode::SupportLocked
+                MetaDiagnosticCode::AlreadyExists => ApplyPlanErrorKind::BadValue,
+                MetaDiagnosticCode::SupportLocked
                 | MetaDiagnosticCode::ValidationWarning
                 | MetaDiagnosticCode::RedundantListPresentation
                 | MetaDiagnosticCode::CommandTextRecommendedLimit
@@ -1474,6 +1475,55 @@ fn stage_descriptor_properties(
             (NodeKind::IntegrationService, text)
         }
 
+        DescriptorPropertyChanges::LanguageCode { code, comment } => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            // The target is a registered language whether or not the code
+            // changes; the final code guard runs only for a changed code.
+            let root_path = Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::NotFound,
+                        "configuration descriptor was not found",
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if !root.registers("Language", name) {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "metadata owner is not registered",
+                )
+                .at_path(at_path.clone()));
+            }
+            // Comment goes through the shared descriptor Comment writer; the
+            // code is then replaced on that image.
+            let commented = comment
+                .as_deref()
+                .map(|comment| {
+                    crate::descriptor_comment::set_comment(
+                        &source,
+                        NodeKind::Language,
+                        name,
+                        comment,
+                    )
+                })
+                .transpose()
+                .map_err(invalid)?;
+            let base = commented.as_deref().unwrap_or(&source);
+            let text = crate::language_code::replace(base, name, code).map_err(invalid)?;
+            (NodeKind::Language, text)
+        }
         DescriptorPropertyChanges::CommentOnly { kind, comment } => {
             let root_path = std::path::Path::new("Configuration.xml");
             let root = staged

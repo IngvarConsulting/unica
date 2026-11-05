@@ -216,9 +216,10 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
                 .len(),
             if kind == "FunctionalOption" {
                 6
-            } else if kind == "WSReference" {
+            } else if kind == "WSReference" || kind == "IntegrationService" {
                 4
-            } else if kind == "StyleItem" {
+            } else if kind == "StyleItem" || kind == "Language" {
+                // Comment, its alias and Value or LanguageCode.
                 3
             } else if kind == "DocumentNumerator" {
                 // Five numerator scalars plus Comment and its alias.
@@ -228,6 +229,10 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
             },
             "{at}"
         );
+        if kind == "IntegrationService" {
+            let fields = &can["argsSchema"]["properties"]["values"]["properties"];
+            for key in ["ExternalIntegrationServiceAddress", "externalIntegrationServiceAddress", "Comment", "comment"] { assert!(fields.get(key).is_some(), "{at}: missing {key}"); }
+        }
         let relative = PathBuf::from(directory).join(format!("{name}.xml"));
         let path = fixture.source.join(&relative);
         let source = std::fs::read_to_string(&path).unwrap();

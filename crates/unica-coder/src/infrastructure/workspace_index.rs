@@ -1,6 +1,7 @@
 //! Cross-component integration of the RLM owner and trusted source policies.
 #[cfg(test)]
 mod tests {
+    /// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
     #[test]
     fn rlm_coordination_paths_separate_source_roots_under_the_pair_root() {
         unica_adapter_rlm::index::rlm_coordination_contract(|identity, context, name, root| {

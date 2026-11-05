@@ -1,9 +1,5 @@
 ---
 id: INV.APP.WORKSPACE-SERVICE-STARTUP-DIAGNOSTIC
-check:
-  - crates/unica-coder/tests/platform/workspace_services_integration.rs::startup_failure_reports_exit_status_and_bounded_stderr_tail
-  - crates/unica-coder/tests/platform/workspace_services_integration.rs::startup_stderr_tail_stays_bounded_after_lossy_utf8_decoding
-  - crates/unica-coder/tests/platform/workspace_services_integration.rs::startup_failure_reports_live_child_without_assuming_deadline_expired
 ---
 
 # Ошибка запуска сервиса различает завершение процесса и отсутствие готовности
