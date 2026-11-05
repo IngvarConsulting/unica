@@ -418,6 +418,17 @@ fn element_item_schema(kinds: &[&str]) -> Value {
     json!({"type":"object","x-unica-discriminator":"type","anyOf":variants})
 }
 
+fn column_item_schema() -> Value {
+    object(
+        &[
+            ("name", text(true)),
+            ("title", json!({"type":"string"})),
+            ("type", text(true)),
+        ],
+        &["name", "type"],
+    )
+}
+
 fn attribute_item_schema() -> Value {
     object(
         &[
@@ -444,11 +455,7 @@ fn attribute_item_schema() -> Value {
             ),
             (
                 "columns",
-                json!({"type":"array","minItems":1,"items":object(&[
-                    ("name",text(true)),
-                    ("title",json!({"type":"string"})),
-                    ("type",text(true)),
-                ], &["name","type"]),
+                json!({"type":"array","minItems":1,"items":column_item_schema(),
                 "description":"Columns of a ValueTable or ValueTree attribute."}),
             ),
         ],
@@ -561,7 +568,13 @@ pub fn form_set(kind: Option<&str>) -> OperationContract {
     let mut values = object(
         &keys
             .iter()
-            .map(|key| (*key, slot.clone()))
+            .map(|key| {
+                let mut field=slot.clone();
+                if kind.is_some_and(|kind| crate::default_forms::common_form_slot(kind, FORM_SLOTS.iter().find(|(name,_)|name == key).map_or("",|(_,property)|*property))) {
+                    field["description"]=json!("A form name or logical address of this owner, or the logical address of a compatible Managed CommonForm in the same source set. An empty string clears the slot. Report CommonForm requires a generic ReportObject main attribute and matching Main/Settings/Variant purpose (an absent ReportFormType means Main); Constant requires ConstantsSet.");
+                }
+                (*key,field)
+            })
             .collect::<Vec<_>>(),
         &[],
     );
@@ -571,7 +584,7 @@ pub fn form_set(kind: Option<&str>) -> OperationContract {
     OperationContract {
         schema: object(&[at(), ("values", values)], &["values"]),
         target: "The form owner: <source-set>:<Kind>.<Name>.",
-        effect: "Point the owner's default and auxiliary form slots at the named forms, or clear a slot with an empty string. Unlisted slots stay. Only the slots of the owner's kind are accepted.",
+        effect: "Point the owner's default and auxiliary form slots at the named forms, or clear a slot with an empty string. Unlisted slots stay. Only the slots of the owner's kind are accepted. Report defaultForm/defaultSettingsForm/defaultVariantForm and Constant defaultForm also accept the logical address of a compatible Managed CommonForm in the same source set.",
         notes: "Properties of a form itself (title, size, behaviour) are written by props.set at the form address.",
         example_args: json!({"values": example}),
         help: FORM_HELP,
@@ -629,6 +642,7 @@ pub fn form(operation: FormOperation) -> OperationContract {
         FormOperation::PropsSet => return form_props_set(),
         FormOperation::ItemMove => return form_move(),
         FormOperation::AttributeAdd => return form_attribute_add(),
+        FormOperation::ColumnAdd => return form_column_add(),
         FormOperation::CommandAdd => return form_command_add(),
     };
     OperationContract {
@@ -683,6 +697,18 @@ pub fn form_props_set() -> OperationContract {
         effect: "Set the supplied root properties of the form, in the order 1C writes them. A value equal to the platform default is not written, as 1C does not export it. Other properties and the form content stay.",
         notes: "Names are the ones view shows for the form. AutoTitle is not changed with Title: set AutoTitle false to show only the title. AutoTime, UsePostingMode and RepostOnWrite belong to a document form, UseForFoldersAndItems to a catalog form, report properties to a report form; on another form they are refused. ReportResult, DetailsData, VariantAppearance, CustomSettingsFolder, SettingsStorage and GroupList are not written by this operation.",
         example_args: json!({"values":{"Title":"Products","AutoTitle":false,"Width":60}}),
+        help: FORM_HELP,
+        format_validators: &[],
+    }
+}
+
+pub fn form_column_add() -> OperationContract {
+    OperationContract {
+        schema: object(&[("at", text(true)), ("items", json!({"type":"array","minItems":1,"items":column_item_schema()}))], &["items"]),
+        target: "The existing ValueTable attribute: <set>:<Kind>.<Name>.Form.<Form>.Attribute.<Attribute>. Read its Column branch before choosing new names.",
+        effect: "Append the listed data columns, preserving existing columns, attribute identity and form bindings. The operation assigns new column IDs.",
+        notes: "Each name must be unused in the addressed attribute. type uses the form type DSL; title is optional text in the source set's default language. The attribute must be a ValueTable. Visual elements are added separately with item.add. Preview writes nothing; execute the saved token and read the new columns.",
+        example_args: json!({"items":[{"name":"Additional","type":"String"}]}),
         help: FORM_HELP,
         format_validators: &[],
     }

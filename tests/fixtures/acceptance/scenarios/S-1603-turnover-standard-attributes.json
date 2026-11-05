@@ -1,0 +1,133 @@
+{
+  "id": "S-1603-turnover-standard-attributes",
+  "issue": 1603,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-turnover-attributes",
+  "task": "Проверить нативный оборотный регистр без RecordType через публичный check: meta/passed без ложного предупреждения RecordType, с сохранением входных XML. Контрпримеры Balance и повреждения вида проверяет регрессия валидатора.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "noneMatches": {
+            "code": "validation_warning",
+            "field": "standardAttributes",
+            "message": "5. Missing StandardAttributes: RecordType"
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "4a81c7703b84a1efed80abd29f4d39b9f571a7a5bed4d8b0e7038526f145d270"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "40ff836c2e80520cb8845428b83c197e844c4f097b27407f8ee2eaec09060870"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    }
+  ]
+}

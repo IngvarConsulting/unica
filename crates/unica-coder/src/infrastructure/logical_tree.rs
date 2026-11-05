@@ -66,6 +66,15 @@ pub(crate) fn route_logical_address(
     let segments = address.segments();
     if segments
         .iter()
+        .any(|part| part.kind() == NodeKind::Definition)
+        && !matches!(segments, [owner, definition]
+            if owner.kind() == NodeKind::WsReference && owner.name().is_some()
+                && definition.kind() == NodeKind::Definition && definition.name().is_none())
+    {
+        return Err(not_found(address));
+    }
+    if segments
+        .iter()
         .any(|part| part.kind() == NodeKind::Schedule)
         && !matches!(segments, [owner, schedule]
             if owner.kind() == NodeKind::ScheduledJob && owner.name().is_some()
@@ -123,6 +132,14 @@ pub(crate) fn route_logical_address(
             Ok(route(address, class, Some(target), None))
         }
         LogicalReader::Metadata => {
+            if matches!(segments, [owner, definition]
+                if owner.kind() == NodeKind::WsReference && owner.name().is_some()
+                    && definition.kind() == NodeKind::Definition && definition.name().is_none())
+            {
+                let target = typed_reader_metadata_target(address, &["WSReference"])
+                    .ok_or_else(|| not_found(address))?;
+                return Ok(route(address, class, Some(target), None));
+            }
             if let Some(owner) = address.form_metadata_owner() {
                 let target = typed_form_reader_target(&owner).ok_or_else(|| not_found(address))?;
                 return Ok(route(address, class, Some(target), None));

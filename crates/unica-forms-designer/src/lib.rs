@@ -16,4 +16,6 @@ pub mod event_patch;
 #[path = "../tests/support/text.rs"]
 pub mod test_support;
 
+mod column_add;
 mod column_type;
+pub mod default_forms;

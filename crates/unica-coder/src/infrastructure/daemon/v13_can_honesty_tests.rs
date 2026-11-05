@@ -1056,7 +1056,11 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
     let item_role = (terminal == NodeKind::Item.as_str())
         .then(|| data["props"]["tag"].as_str().map(FormItemRole::from_tag))
         .flatten();
-    let form_observation = if unica_forms::applicability::is_form_column(address.segments()) {
+    let form_observation = if unica_forms::applicability::is_form_attribute(address.segments()) {
+        data["props"]["type"]
+            .as_str()
+            .and_then(FormObservation::from_attribute_type)
+    } else if unica_forms::applicability::is_form_column(address.segments()) {
         data["props"]["parentType"]
             .as_str()
             .and_then(FormObservation::from_column_parent_type)
@@ -1079,6 +1083,7 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
             &request, checked.traits, &|_| None,
             &|at| (at == &address).then_some(form_observation).flatten(),
             &unica_operations::recovery::no_member_lookup,
+            &|_| None,
         );
         if !checked.traits.writes(descriptor.family()) {
             // Набор без записи: словарь пуст, предварительная проверка
@@ -1973,6 +1978,7 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
                 unica_operations::recovery::NamedLookup::Missing
             }
         },
+        &|_| None,
     )
     .expect_err("the dataSet argument is retired");
     let actual = refusal
@@ -2366,6 +2372,7 @@ fn retired_dcs_container_arguments_route_next_to_the_structure_item() {
             &|_| None,
             &|_| None,
             &lookup,
+            &|_| None,
         )
         .expect_err("a retired DCS argument refuses before planning");
         let case = format!("{op} at {at}");
@@ -3001,6 +3008,7 @@ fn column_type_uses_the_same_parent_fact_for_dictionary_and_preflight() {
             &|_| None,
             &|_| observed,
             &unica_operations::recovery::no_member_lookup,
+            &|_| None,
         );
         assert_eq!(admitted.is_ok(), allowed, "{parent_type}: {admitted:?}");
         assert_eq!(
@@ -3022,7 +3030,219 @@ fn column_type_uses_the_same_parent_fact_for_dictionary_and_preflight() {
         traits,
         &|_| None,
         &|_| None,
-        &unica_operations::recovery::no_member_lookup
+        &unica_operations::recovery::no_member_lookup,
+        &|_| None,
     )
     .is_ok());
+}
+
+#[test]
+fn column_add_uses_the_same_attribute_fact_for_dictionary_and_preflight() {
+    let at = "main:Catalog.Items.Form.Main.Attribute.Rows";
+    let traits = crate::domain::apply::source_set_traits_for_read(
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+    );
+    for (type_name, allowed) in [
+        ("ValueTable", true),
+        ("ValueTree", false),
+        ("boolean", false),
+        ("", false),
+    ] {
+        let mut data = json!({"at":at,"kind":"Attribute","props":{"type":type_name}});
+        super::v13_read_modes::attach_can(&mut data, traits);
+        let request = apply_request(
+            at,
+            "column.add",
+            json!({"items":[{"name":"New","type":"Boolean"}]}),
+        );
+        let observed = FormObservation::from_attribute_type(type_name);
+        let admitted = super::v13_service::preflight_apply_operations_observed(
+            &request,
+            traits,
+            &|_| None,
+            &|_| observed,
+            &unica_operations::recovery::no_member_lookup,
+            &|_| None,
+        );
+        assert_eq!(admitted.is_ok(), allowed, "{type_name}: {admitted:?}");
+        assert_eq!(
+            data["can"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["op"] == "column.add"),
+            allowed
+        );
+    }
+}
+
+#[test]
+fn column_add_accepts_a_valuetable_qname_alias_through_view_and_preflight() {
+    let fixture = fixture("workspace-form-column-add");
+    let path = fixture
+        .workspace
+        .join("src/Catalogs/Items/Forms/Main/Ext/Form.xml");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let aliased = original
+        .replace("xmlns:v8=", "xmlns:core=")
+        .replace("v8:", "core:");
+    std::fs::write(&path, aliased).unwrap();
+    let before = tree_digest(&fixture.workspace.join("src"));
+    let at = "main:Catalog.Items.Form.Main.Attribute.FirstRows";
+    let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at":at}));
+    assert!(viewed.ok, "{viewed:?}");
+    let listed = viewed.data.as_ref().unwrap()["can"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["op"] == "column.add");
+    let preview = invoke(
+        &fixture.workspace,
+        ToolIdentity::Apply,
+        json!({"at":at,"ops":[{"op":"column.add","args":{"items":[{"name":"Aliased","type":"Boolean"}]}}]}),
+    );
+    assert!(
+        listed && preview.ok,
+        "listed={listed}, preview={preview:?}, view={viewed:?}"
+    );
+    assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
+}
+
+#[test]
+fn column_add_does_not_admit_an_alias_with_a_foreign_uri_or_another_parent_type() {
+    for foreign_uri in [true, false] {
+        let fixture = fixture("workspace-form-column-add");
+        let path = fixture
+            .workspace
+            .join("src/Catalogs/Items/Forms/Main/Ext/Form.xml");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let alias = original
+            .replace("xmlns:v8=", "xmlns:core=")
+            .replace("v8:", "core:");
+        let invalid = if foreign_uri {
+            alias.replace("http://v8.1c.ru/8.1/data/core", "urn:foreign")
+        } else {
+            alias.replace("core:ValueTable", "core:ValueTree")
+        };
+        std::fs::write(&path, invalid).unwrap();
+        let before = tree_digest(&fixture.workspace.join("src"));
+        let at = "main:Catalog.Items.Form.Main.Attribute.FirstRows";
+        let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at":at}));
+        assert!(viewed.ok, "{viewed:?}");
+        assert!(
+            !viewed.data.as_ref().unwrap()["can"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["op"] == "column.add"),
+            "{viewed:?}"
+        );
+        let preview = invoke(
+            &fixture.workspace,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":"column.add","args":{"items":[{"name":"Rejected","type":"Boolean"}]}}]}),
+        );
+        assert!(!preview.ok, "{preview:?}");
+        assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
+    }
+}
+
+#[test]
+fn column_add_does_not_advertise_an_unproven_literal_valuetable() {
+    for damage in ["foreign_uri", "extra_member", "nested_member"] {
+        let fixture = fixture("workspace-form-column-add");
+        let path = fixture
+            .workspace
+            .join("src/Catalogs/Items/Forms/Main/Ext/Form.xml");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let invalid = match damage {
+            "foreign_uri" => original.replace("http://v8.1c.ru/8.1/data/core", "urn:foreign"),
+            "extra_member" => original.replace(
+                "<v8:Type>v8:ValueTable</v8:Type>",
+                "<v8:Type>v8:ValueTable</v8:Type><v8:Unknown/>",
+            ),
+            _ => original.replace(
+                "<v8:Type>v8:ValueTable</v8:Type>",
+                "<v8:Type>v8:ValueTable<v8:Nested/></v8:Type>",
+            ),
+        };
+        std::fs::write(&path, invalid).unwrap();
+        let before = tree_digest(&fixture.workspace.join("src"));
+        let at = "main:Catalog.Items.Form.Main.Attribute.FirstRows";
+        let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at":at}));
+        assert!(viewed.ok, "{viewed:?}");
+        let listed = viewed.data.as_ref().unwrap()["can"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["op"] == "column.add");
+        let preview = invoke(
+            &fixture.workspace,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":"column.add","args":{"items":[{"name":"Rejected","type":"Boolean"}]}}]}),
+        );
+        assert!(
+            !listed && !preview.ok,
+            "{damage}: listed={listed}, view={viewed:?}, preview={preview:?}"
+        );
+        assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
+    }
+}
+
+#[test]
+fn column_add_default_qname_keeps_read_facts_and_preserves_final_validation() {
+    let fixture = fixture("workspace-form-column-add");
+    let path = fixture
+        .workspace
+        .join("src/Catalogs/Items/Forms/Main/Ext/Form.xml");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let equivalent = original.replace(
+        "<v8:Type>v8:ValueTable</v8:Type>",
+        "<Type xmlns=\"http://v8.1c.ru/8.1/data/core\">ValueTable</Type>",
+    );
+    std::fs::write(&path, equivalent).unwrap();
+    let before = tree_digest(&fixture.workspace.join("src"));
+    let at = "main:Catalog.Items.Form.Main.Attribute.FirstRows";
+    let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at":at}));
+    assert!(viewed.ok, "{viewed:?}");
+    let listed = viewed.data.as_ref().unwrap()["can"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["op"] == "column.add");
+    let columns = invoke(
+        &fixture.workspace,
+        ToolIdentity::View,
+        json!({"at":format!("{at}.Column")}),
+    );
+    let preview = invoke(
+        &fixture.workspace,
+        ToolIdentity::Apply,
+        json!({"at":at,"ops":[{"op":"column.add","args":{"items":[{"name":"Additional","type":"Boolean"}]}}]}),
+    );
+    assert!(
+        listed && columns.ok,
+        "listed={listed}, columns={columns:?}, view={viewed:?}"
+    );
+    // QName identity admits the operation; the existing whole-form validator
+    // still rejects this source spelling before issuing a publication token.
+    assert!(!preview.ok, "{preview:?}");
+    assert_eq!(preview.diagnostics[0]["code"], "postcondition_failed");
+    assert!(
+        preview
+            .summary
+            .contains("bare type without namespace prefix"),
+        "{preview:?}"
+    );
+    assert!(
+        preview.data.is_none(),
+        "no execution token on refusal: {preview:?}"
+    );
+    assert_eq!(viewed.data.as_ref().unwrap()["props"]["type"], "ValueTable");
+    let rows = &columns.data.as_ref().unwrap()["items"];
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["at"], format!("{at}.Column.Original"));
+    assert_eq!(rows[0]["props"]["type"], "CatalogRef.Existing");
+    assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
 }

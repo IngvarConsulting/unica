@@ -8,6 +8,7 @@ use unica_source_contract::route::RouteClass;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationApplicability {
     Form,
+    FormAttribute,
     FormProperties,
     FormEvent,
     FormItem,
@@ -19,6 +20,7 @@ impl OperationApplicability {
         match self {
             Self::MetadataForms => "`Kind.Name` of a kind with forms",
             Self::Form => "`Kind.Name.Form.F`",
+            Self::FormAttribute => "`Kind.Name.Form.F.Attribute.A` of an existing ValueTable",
             Self::FormProperties => {
                 "`Kind.Name.Form.F` or `Kind.Name.Form.F.Attribute.A.Column.C` of a ValueTable"
             }
@@ -31,6 +33,7 @@ impl OperationApplicability {
         let segments = site.segments();
         match self {
             Self::MetadataForms => site.metadata_owner_with(MetaCollection::Forms),
+            Self::FormAttribute => site.route() == RouteClass::Form && is_form_attribute(segments),
             Self::FormProperties => {
                 site.route() == RouteClass::Form && (site.owned_form() || is_form_column(segments))
             }
@@ -83,4 +86,53 @@ pub fn is_form_column(segments: &[AddressSegment]) -> bool {
         && form.kind() == NodeKind::Form && form.name().is_some()
         && attribute.kind() == NodeKind::Attribute && attribute.name().is_some()
         && column.kind() == NodeKind::Column && column.name().is_some())
+}
+
+/// A data attribute of an owned form; an Item is a visual element.
+pub fn is_form_attribute(segments: &[AddressSegment]) -> bool {
+    matches!(segments, [owner, form, attribute]
+        if owner.name().is_some() && metadata_collection_matches(owner.kind(), MetaCollection::Forms)
+        && form.kind() == NodeKind::Form && form.name().is_some()
+        && attribute.kind() == NodeKind::Attribute && attribute.name().is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use unica_address::address::QualifiedAddress;
+    use unica_source_contract::context::SourceSetTraits;
+    use unica_source_contract::{SourceProfile, SourceSetKind};
+
+    #[test]
+    fn column_creation_requires_the_named_form_attribute_parent() {
+        let source = SourceSetTraits::from_profiles(
+            SourceSetKind::Configuration,
+            Some(SourceProfile::PlatformXml8_3_27Format2_20),
+            SourceProfile::PlatformXml8_3_27Format2_20,
+        );
+        for (address, expected) in [
+            ("main:Catalog.Items.Form.Main.Attribute.Rows", true),
+            ("main:Document.Order.Form.Main.Attribute.Rows", true),
+            ("main:Catalog.Items.Form.Main", false),
+            ("main:Catalog.Items.Form.Main.Attribute", false),
+            ("main:Catalog.Items.Form.Main.Attribute.Rows.Column", false),
+            (
+                "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value",
+                false,
+            ),
+            ("main:Catalog.Items.Form.Main.Item.Rows", false),
+            ("main:Catalog.Items.Attribute.Rows", false),
+            ("main:DefinedType.Items.Form.Main.Attribute.Rows", false),
+        ] {
+            let at = QualifiedAddress::parse(address).unwrap();
+            let site = OperationSite::from_route(&at, source, RouteClass::Form);
+            assert_eq!(
+                OperationApplicability::FormAttribute.matches(&site),
+                expected,
+                "{address}"
+            );
+            let other_route = OperationSite::from_route(&at, source, RouteClass::Metadata);
+            assert!(!OperationApplicability::FormAttribute.matches(&other_route));
+        }
+    }
 }

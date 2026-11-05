@@ -1,0 +1,719 @@
+{
+  "id": "S-1681-style-color-write",
+  "issue": 1681,
+  "area": "Элементы стиля",
+  "task": "Обнаружить Color writer, изменить RGB/web/style через preview и token, сохранить Type/соседей/BOM/EOL, не публиковать Value для Font/opaque/повреждённого цвета; сохранять их независимый Comment-only контракт.",
+  "workspace": "tests/fixtures/acceptance/workspace-style-color-write",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:StyleItem.AccentRgb"
+        }
+      ],
+      "captures": {
+        "owner": {
+          "pointer": "/data/items/0/at"
+        },
+        "configBefore": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "fontBefore": {
+          "file": "src/StyleItems/Font.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem.AccentRgb.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before0": {
+          "file": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Value": "web:Gray"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        }
+      ],
+      "captures": {
+        "token0": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Value",
+          "eq": [
+            "web:Gray"
+          ]
+        },
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Type",
+          "eq": [
+            "Color"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/StyleItems/Font.xml",
+          "kind": "sha256",
+          "eq": "$capture.fontBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Value",
+          "eq": "web:Gray"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before1": {
+          "file": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Value": "style:SpecialTextColor"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        }
+      ],
+      "captures": {
+        "token1": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Value",
+          "eq": [
+            "style:SpecialTextColor"
+          ]
+        },
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Type",
+          "eq": [
+            "Color"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/StyleItems/Font.xml",
+          "kind": "sha256",
+          "eq": "$capture.fontBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Value",
+          "eq": "style:SpecialTextColor"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before2": {
+          "file": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Value": "#F0F0F0"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        }
+      ],
+      "captures": {
+        "token2": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Value",
+          "eq": [
+            "#F0F0F0"
+          ]
+        },
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Type",
+          "eq": [
+            "Color"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/StyleItems/Font.xml",
+          "kind": "sha256",
+          "eq": "$capture.fontBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Value",
+          "eq": "#F0F0F0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "noopBefore": {
+          "file": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Value": "#f0f0f0"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        }
+      ],
+      "captures": {
+        "noopToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.noopToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem.Font.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties",
+          "eq": {
+            "Comment": {
+              "type": "string"
+            },
+            "comment": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem.Opaque.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties",
+          "eq": {
+            "Comment": {
+              "type": "string"
+            },
+            "comment": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:StyleItem.Malformed.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties",
+          "eq": {
+            "Comment": {
+              "type": "string"
+            },
+            "comment": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:StyleItem.Font",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Value": "#FFFFFF"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: only StyleItem Type=Color has a color writer",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        },
+        {
+          "path": "src/StyleItems/Font.xml",
+          "kind": "sha256",
+          "eq": "$capture.fontBefore"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:StyleItem.Opaque",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Value": "#FFFFFF"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: Color namespace is outside the writable profile",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        },
+        {
+          "path": "src/StyleItems/Font.xml",
+          "kind": "sha256",
+          "eq": "$capture.fontBefore"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:StyleItem.Malformed",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Value": "#FFFFFF"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: Color RGB must contain six hexadecimal digits",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        },
+        {
+          "path": "src/StyleItems/Font.xml",
+          "kind": "sha256",
+          "eq": "$capture.fontBefore"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:StyleItem.AccentRgb",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Value": "web:NotAColor"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: one of the supported argument alternatives must match",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        },
+        {
+          "path": "src/StyleItems/Font.xml",
+          "kind": "sha256",
+          "eq": "$capture.fontBefore"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:StyleItem.Font",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Value": null
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: one of the supported argument alternatives must match",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/StyleItems/AccentRgb.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        },
+        {
+          "path": "src/StyleItems/Font.xml",
+          "kind": "sha256",
+          "eq": "$capture.fontBefore"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        }
+      ]
+    }
+  ]
+}
