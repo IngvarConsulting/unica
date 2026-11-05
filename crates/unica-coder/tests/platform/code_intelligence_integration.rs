@@ -50,7 +50,7 @@ fn location_path(location: &SourceLocation) -> &str {
     }
 }
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         git_grep_bsl_pathspecs, location_path, parse_call_graph_answer, rlm_search_unready_error,
         BslAnalyzerProvider, BslToolClient, GitGrepProvider, RlmProvider, RlmSearchAttempt,
@@ -492,7 +492,7 @@ mod tests {
 
     #[test]
     fn git_grep_scoped_preflight_refuses_invalid_routes_without_dispatch() {
-        for case in [
+        assert_git_grep_invalid_routes(&[
             "deleted-root",
             "root-file",
             "different-root",
@@ -501,8 +501,16 @@ mod tests {
             "parent",
             "empty",
             "parent-file",
-            "dangling-link",
-        ] {
+        ]);
+    }
+
+    #[test]
+    fn git_grep_scoped_preflight_refuses_dangling_links_without_dispatch() {
+        assert_git_grep_invalid_routes(&["dangling-link"]);
+    }
+
+    fn assert_git_grep_invalid_routes(cases: &[&str]) {
+        for &case in cases {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("src");
             std::fs::create_dir(&root).unwrap();
@@ -548,8 +556,11 @@ mod tests {
                                     | std::io::ErrorKind::Unsupported
                             ) =>
                         {
-                            eprintln!("directory-link fixture unavailable: {error}");
-                            continue;
+                            unica_process::test_support::skip_without_host_capability(
+                                unica_process::test_support::HostCapability::Symlink,
+                                &format!("directory-link fixture unavailable: {error}"),
+                            );
+                            return;
                         }
                         Err(error) => panic!("directory-link fixture failed: {error}"),
                     }
@@ -1762,6 +1773,18 @@ mod tests {
         ) -> Result<McpToolOutput, String> {
             Err(self.error.clone())
         }
+
+        fn call_before(
+            &self,
+            _tool: &'static str,
+            _context: &CodeIntelligenceContext,
+            _arguments: Value,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+            _yields: bool,
+        ) -> Result<McpToolOutput, String> {
+            Err(self.error.clone())
+        }
     }
 
     #[test]
@@ -1802,6 +1825,18 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((context.source_root.path.clone(), arguments, timeout));
+            Ok(self.output.clone())
+        }
+
+        fn call_before(
+            &self,
+            _tool: &'static str,
+            _context: &CodeIntelligenceContext,
+            _arguments: Value,
+            _deadline: ProviderDeadline,
+            _cancellation: &CancellationToken,
+            _yields: bool,
+        ) -> Result<McpToolOutput, String> {
             Ok(self.output.clone())
         }
     }

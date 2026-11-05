@@ -158,7 +158,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         invoke_mutation, native_mutation_file_input_contract, typed_mutation_handler,
         NativeMutationFileInputContract, TopLevelJsonInput,

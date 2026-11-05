@@ -316,7 +316,7 @@ pub(crate) fn invoke_read(
 
 #[cfg(test)]
 #[path = "../../../tests/platform/template_read_selector_bridge.rs"]
-pub(super) mod mxl_read_selector_bridge_tests;
+pub(super) mod medium_mxl_read_selector_bridge_tests;
 #[cfg(test)]
 #[path = "../../../tests/platform/mxl_composition.rs"]
 pub(crate) mod tests;
