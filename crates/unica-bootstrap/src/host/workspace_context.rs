@@ -534,6 +534,7 @@ mod tests {
 
     /// Окружение запуска фиксируется один раз, а roots клиент строит заново
     /// на каждый запрос: сессия, сменившая каталог, видна только через них.
+    /// rule: INV.WORKSPACE.HOST-CONTEXT
     #[test]
     fn first_client_root_outranks_stale_launch_environment_but_not_request_metadata() {
         let fixture = Fixture::new();
@@ -604,6 +605,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.WORKSPACE.HOST-CONTEXT
     #[test]
     fn a_supplied_root_satisfies_required_context_and_a_malformed_one_never_falls_back() {
         let fixture = Fixture::new();

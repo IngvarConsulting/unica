@@ -75,7 +75,12 @@ class AllureResult(unittest.TextTestResult):
         test_id = test.id()
         if method_name is not None:
             full_name = f"{cls.__module__}.{cls.__qualname__}.{method_name}"
-            doc = (getattr(test, "_testMethodDoc", None) or "").strip().splitlines()
+            # Пометка `rule: <ID>` в docstring называет правило, а не тест.
+            doc = [
+                line.strip()
+                for line in (getattr(test, "_testMethodDoc", None) or "").strip().splitlines()
+                if line.strip() and not line.strip().startswith("rule:")
+            ]
             name = doc[0] if doc else method_name
             sub_suite = cls.__qualname__
             size_id = test_id

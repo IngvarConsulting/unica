@@ -1268,6 +1268,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.ARTIFACT-BUILD-PUBLISHES-INSIDE-THE-WORKSPACE
     #[test]
     fn external_build_publishes_one_verified_file_and_preserves_neighbors() {
         for (kind, replacing) in [
@@ -1333,6 +1334,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.ARTIFACT-BUILD-PUBLISHES-INSIDE-THE-WORKSPACE
     #[test]
     fn external_preview_names_owner_and_configuration_without_creating_output() {
         let root = external_workspace(ArtifactKind::Epf);
@@ -1367,6 +1369,7 @@ mod tests {
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
     }
 
+    /// rule: INV.WIRE.ARTIFACT-BUILD-PUBLISHES-INSIDE-THE-WORKSPACE
     #[test]
     fn external_invalid_builds_and_cancellation_preserve_previous_output() {
         for behavior in [
@@ -1468,6 +1471,7 @@ mod tests {
         assert_eq!(fs::read_dir(root.path().join("dist")).unwrap().count(), 2);
     }
 
+    /// rule: INV.WIRE.ARTIFACT-BUILD-PUBLISHES-INSIDE-THE-WORKSPACE
     #[test]
     fn external_cancellation_after_publication_lock_never_commits() {
         use std::sync::{
@@ -1546,6 +1550,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.ARTIFACT-BUILD-PUBLISHES-INSIDE-THE-WORKSPACE
     #[test]
     fn external_prerequisites_and_ambiguity_are_refused_before_dispatch() {
         for case in ["missing-config", "multiple", "wrong-kind", "overlap"] {
@@ -1619,6 +1624,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.ARTIFACT-BUILD-PUBLISHES-INSIDE-THE-WORKSPACE
     #[test]
     fn arguments_are_closed_and_each_refusal_names_the_fix() {
         let root = workspace();
@@ -1860,6 +1866,7 @@ mod tests {
         assert!(!prepared.arguments.output.exists());
     }
 
+    /// rule: INV.WIRE.ARTIFACT-BUILD-PUBLISHES-INSIDE-THE-WORKSPACE
     #[test]
     fn preview_refuses_another_output_kind_or_set_and_a_published_preview() {
         let root = workspace();
@@ -1959,6 +1966,7 @@ mod tests {
             .contains("nothing was published"));
     }
 
+    /// rule: INV.WIRE.ARTIFACT-BUILD-PUBLISHES-INSIDE-THE-WORKSPACE
     #[test]
     fn apply_without_prior_preview_returns_an_independent_file_receipt() {
         let root = workspace();
@@ -2014,6 +2022,7 @@ mod tests {
         assert!(!encoded.contains("--config"));
     }
 
+    /// rule: INV.WIRE.ARTIFACT-BUILD-PUBLISHES-INSIDE-THE-WORKSPACE
     #[test]
     fn apply_refuses_a_missing_or_empty_artifact() {
         for published in [None, Some(&b""[..])] {
