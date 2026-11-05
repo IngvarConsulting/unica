@@ -55,14 +55,26 @@ form_operations!(
     ItemRemove => ("item.remove", FormItem, Target),
     ItemMove => ("item.move", FormItem, Values),
     AttributeAdd => ("attribute.add", Form, Items),
+    ColumnAdd => ("column.add", FormAttribute, Items),
     CommandAdd => ("command.add", Form, Items),
     EventBind => ("event.bind", FormEvent, Values),
-    PropsSet => ("props.set", Form, Values),
+    PropsSet => ("props.set", FormProperties, Values),
 );
 
 impl FormOperation {
     pub fn contract(self) -> OperationContract {
         crate::contracts::form(self)
+    }
+
+    pub fn contract_for_address(
+        self,
+        at: &unica_address::address::QualifiedAddress,
+    ) -> OperationContract {
+        if self == Self::PropsSet && crate::applicability::is_form_column(at.segments()) {
+            crate::contracts::form_column_type_set()
+        } else {
+            self.contract()
+        }
     }
 
     pub const fn content_resource(self) -> Option<&'static str> {
@@ -72,6 +84,7 @@ impl FormOperation {
             | Self::ItemRemove
             | Self::ItemMove
             | Self::AttributeAdd
+            | Self::ColumnAdd
             | Self::CommandAdd
             | Self::EventBind
             | Self::PropsSet => Some("Form.xml"),
@@ -86,6 +99,7 @@ impl FormOperation {
             | Self::Set
             | Self::Remove
             | Self::AttributeAdd
+            | Self::ColumnAdd
             | Self::CommandAdd
             | Self::EventBind
             | Self::PropsSet => true,
@@ -125,7 +139,7 @@ impl unica_operations::FamilyOperation for FormOperation {
     ) -> Option<unica_operations::recovery::PreparedRedirect> {
         crate::recovery::prepare(template, at, args, value, members)
     }
-    type Observation = crate::FormItemRole;
+    type Observation = crate::FormObservation;
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Form
     }
@@ -157,7 +171,7 @@ impl unica_operations::FamilyOperation for FormOperation {
                     .first()
                     .map(|segment| segment.kind().as_str()),
             ),
-            _ => self.contract(),
+            _ => self.contract_for_address(site.at()),
         })
     }
 
@@ -165,10 +179,30 @@ impl unica_operations::FamilyOperation for FormOperation {
         self,
         site: Option<&unica_source_contract::context::OperationSite<'_>>,
     ) -> bool {
-        site.is_none_or(|site| site.terminal().kind() == unica_address::address::NodeKind::Item)
+        match self {
+            Self::ColumnAdd => true,
+            // Only a data column needs the observed ValueTable parent; without
+            // a site props.set keeps its role-independent context admission.
+            Self::PropsSet => {
+                site.is_some_and(|site| crate::applicability::is_form_column(site.segments()))
+            }
+            _ => site.is_none_or(|site| {
+                site.terminal().kind() == unica_address::address::NodeKind::Item
+            }),
+        }
     }
     fn admits_observation(self, observation: Option<&Self::Observation>) -> bool {
-        self.admits_form_item(observation.copied())
+        if self == Self::ColumnAdd {
+            observation == Some(&crate::FormObservation::ValueTableAttribute)
+        } else if self == Self::PropsSet {
+            observation == Some(&crate::FormObservation::ValueTableColumn)
+        } else {
+            self.admits_form_item(
+                observation
+                    .copied()
+                    .and_then(crate::FormObservation::item_role),
+            )
+        }
     }
 }
 
@@ -176,6 +210,11 @@ impl unica_operations::FamilyOperation for FormOperation {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn existing_form_attribute_exposes_a_column_creation_operation() {
+        assert!(FormOperation::is_named("column.add"));
+    }
 
     #[test]
     fn registration_metadata_preserves_every_form_operation() {
@@ -223,6 +262,12 @@ mod tests {
                 OperationSkeleton::Items,
             ),
             (
+                FormOperation::ColumnAdd,
+                "column.add",
+                OperationApplicability::FormAttribute,
+                OperationSkeleton::Items,
+            ),
+            (
                 FormOperation::CommandAdd,
                 "command.add",
                 OperationApplicability::Form,
@@ -237,7 +282,7 @@ mod tests {
             (
                 FormOperation::PropsSet,
                 "props.set",
-                OperationApplicability::Form,
+                OperationApplicability::FormProperties,
                 OperationSkeleton::Values,
             ),
         ] {
@@ -287,5 +332,84 @@ mod tests {
                 .path,
             "args.items[0].type"
         );
+    }
+    #[test]
+    fn column_creation_contract_reuses_the_attribute_column_shape() {
+        let contract = FormOperation::ColumnAdd.contract();
+        let nested = FormOperation::AttributeAdd.contract();
+        assert_eq!(
+            contract.schema["properties"]["items"]["items"],
+            nested.schema["properties"]["items"]["items"]["properties"]["columns"]["items"]
+        );
+        for input in [
+            json!({"items":[{"name":"Value","type":"CatalogRef.Items"}]}),
+            json!({"items":[{"name":"Value","type":"string(40)","title":"Value"}]}),
+        ] {
+            assert!(contract.normalize(&input, "args").is_ok());
+        }
+        for input in [
+            json!({"items":[]}),
+            json!({"items":[{"name":"Value"}]}),
+            json!({"items":[{"name":"Value","type":true}]}),
+            json!({"items":[{"name":"Value","type":"Boolean","id":3}]}),
+            json!({"items":[{"name":"Value","type":"Boolean","dataPath":"Rows.Value"}]}),
+            json!({"items":[{"name":"Value","type":"Boolean"}],"attribute":"Rows"}),
+        ] {
+            assert!(contract.normalize(&input, "args").is_err(), "{input}");
+        }
+    }
+    #[test]
+    fn column_creation_requires_observed_valuetable_facts() {
+        use crate::FormObservation;
+        use unica_operations::FamilyOperation;
+        assert!(FormOperation::ColumnAdd.needs_observation(None));
+        assert!(FormOperation::ColumnAdd
+            .admits_observation(Some(&FormObservation::ValueTableAttribute)));
+        for observed in [
+            None,
+            Some(FormObservation::Item(FormItemRole::Container)),
+            FormObservation::from_attribute_type("ValueTree"),
+            FormObservation::from_attribute_type("boolean"),
+        ] {
+            assert!(!FormOperation::ColumnAdd.admits_observation(observed.as_ref()));
+        }
+        assert!(FormOperation::ItemAdd
+            .admits_observation(Some(&FormObservation::Item(FormItemRole::Container))));
+        assert!(!FormOperation::ItemAdd
+            .admits_observation(Some(&FormObservation::Item(FormItemRole::Leaf))));
+    }
+
+    #[test]
+    fn context_admission_without_a_site_keeps_props_set_and_item_role_filters() {
+        use crate::FormObservation;
+        let item = |role| {
+            move |_: unica_operations::ObservationType| {
+                Some(Box::new(FormObservation::Item(role)) as Box<dyn std::any::Any>)
+            }
+        };
+        for role in [
+            FormItemRole::Container,
+            FormItemRole::Leaf,
+            FormItemRole::AutoCommandBar,
+        ] {
+            assert!(
+                FormOperation::PropsSet
+                    .descriptor()
+                    .admits_context(&item(role)),
+                "{role:?}"
+            );
+        }
+        assert!(FormOperation::PropsSet
+            .descriptor()
+            .admits_context(&|_| None));
+        assert!(!FormOperation::ItemAdd
+            .descriptor()
+            .admits_context(&item(FormItemRole::Leaf)));
+        assert!(!FormOperation::ItemRemove
+            .descriptor()
+            .admits_context(&item(FormItemRole::AutoCommandBar)));
+        assert!(!FormOperation::ColumnAdd
+            .descriptor()
+            .admits_context(&|_| None));
     }
 }

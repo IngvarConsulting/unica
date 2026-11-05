@@ -592,7 +592,7 @@ fn ensure_no_link_components(
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use serde_json::{Map, Value};
     use std::fs;

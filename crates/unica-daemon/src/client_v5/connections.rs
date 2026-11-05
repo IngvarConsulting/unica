@@ -144,4 +144,5 @@ impl From<V5DaemonProcessOwner> for V5DaemonClient {
 }
 
 #[cfg(test)]
-mod tests;
+#[path = "connections/tests.rs"]
+mod medium_tests;

@@ -8,7 +8,10 @@ use unica_source_contract::SourceSetKind;
 #[serde(rename_all = "camelCase")]
 pub enum MetaMemberReadProfile {
     CatalogTabularSection220,
-    InformationRegisterFields220,
+    DocumentCommand220,
+    InformationRegisterDimension220,
+    AccumulationRegisterDimension220,
+    DocumentJournalColumn220,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,13 +19,18 @@ pub enum MetaMemberReadContext {
     TabularSection,
     TabularAttribute,
     Attribute,
-    Dimension,
     Resource,
+    DocumentCommand,
+    InformationRegisterDimension,
+    AccumulationRegisterDimension,
+    DocumentJournalColumn,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum MetaMemberValueKind {
     UnsignedInteger,
+    Boolean,
+    CommandGroup,
     Text(&'static [&'static str]),
     LocalizedString,
 }
@@ -30,71 +38,149 @@ pub enum MetaMemberValueKind {
 #[derive(Debug, Clone, Copy)]
 pub struct MetaMemberPropertySpec {
     pub name: &'static str,
+    pub public_name: &'static str,
     context: MetaMemberReadContext,
     kind: MetaMemberValueKind,
 }
 
 const CATALOG_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
     MetaMemberPropertySpec {
-        name: "FullTextSearch",
-        context: MetaMemberReadContext::Attribute,
-        kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
-    },
-    MetaMemberPropertySpec {
-        name: "DataHistory",
-        context: MetaMemberReadContext::Attribute,
-        kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
-    },
-    MetaMemberPropertySpec {
         name: "LineNumberLength",
+        public_name: "LineNumberLength",
         context: MetaMemberReadContext::TabularSection,
         kind: MetaMemberValueKind::UnsignedInteger,
     },
     MetaMemberPropertySpec {
         name: "Use",
+        public_name: "Use",
         context: MetaMemberReadContext::TabularSection,
         kind: MetaMemberValueKind::Text(&["ForItem", "ForFolder", "ForFolderAndItem"]),
     },
     MetaMemberPropertySpec {
         name: "Indexing",
+        public_name: "Indexing",
         context: MetaMemberReadContext::TabularAttribute,
         kind: MetaMemberValueKind::Text(&["DontIndex", "Index", "IndexWithAdditionalOrder"]),
     },
     MetaMemberPropertySpec {
         name: "FullTextSearch",
+        public_name: "FullTextSearch",
         context: MetaMemberReadContext::TabularAttribute,
         kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
     },
     MetaMemberPropertySpec {
         name: "DataHistory",
+        public_name: "DataHistory",
         context: MetaMemberReadContext::TabularAttribute,
         kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
     },
     MetaMemberPropertySpec {
         name: "ToolTip",
+        public_name: "ToolTip",
         context: MetaMemberReadContext::TabularAttribute,
         kind: MetaMemberValueKind::LocalizedString,
     },
 ];
 
-const REGISTER_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
+const DOCUMENT_COMMAND_PROPERTIES: &[MetaMemberPropertySpec] = &[
+    MetaMemberPropertySpec {
+        name: "Group",
+        public_name: "Group",
+        context: MetaMemberReadContext::DocumentCommand,
+        kind: MetaMemberValueKind::CommandGroup,
+    },
+    MetaMemberPropertySpec {
+        name: "ParameterUseMode",
+        public_name: "ParameterUseMode",
+        context: MetaMemberReadContext::DocumentCommand,
+        kind: MetaMemberValueKind::Text(&["Single", "Multiple"]),
+    },
+    MetaMemberPropertySpec {
+        name: "ModifiesData",
+        public_name: "ModifiesData",
+        context: MetaMemberReadContext::DocumentCommand,
+        kind: MetaMemberValueKind::Boolean,
+    },
+];
+
+const INFORMATION_DIMENSION_PROPERTIES: &[MetaMemberPropertySpec] = &[
+    MetaMemberPropertySpec {
+        name: "Master",
+        public_name: "master",
+        context: MetaMemberReadContext::InformationRegisterDimension,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "MainFilter",
+        public_name: "mainFilter",
+        context: MetaMemberReadContext::InformationRegisterDimension,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "DenyIncompleteValues",
+        public_name: "denyIncompleteValues",
+        context: MetaMemberReadContext::InformationRegisterDimension,
+        kind: MetaMemberValueKind::Boolean,
+    },
+    MetaMemberPropertySpec {
+        name: "TypeReductionMode",
+        public_name: "TypeReductionMode",
+        context: MetaMemberReadContext::InformationRegisterDimension,
+        kind: MetaMemberValueKind::Text(&["TransformValues", "Deny", "DeleteData"]),
+    },
+];
+
+const ACCUMULATION_DIMENSION_PROPERTIES: &[MetaMemberPropertySpec] = &[MetaMemberPropertySpec {
+    name: "UseInTotals",
+    public_name: "UseInTotals",
+    context: MetaMemberReadContext::AccumulationRegisterDimension,
+    kind: MetaMemberValueKind::Boolean,
+}];
+
+const JOURNAL_COLUMN_PROPERTIES: &[MetaMemberPropertySpec] = &[MetaMemberPropertySpec {
+    name: "Indexing",
+    public_name: "Indexing",
+    context: MetaMemberReadContext::DocumentJournalColumn,
+    kind: MetaMemberValueKind::Text(&["DontIndex", "Index", "IndexWithAdditionalOrder"]),
+}];
+
+const CATALOG_HEADER_SEARCH_PROPERTIES: &[MetaMemberPropertySpec] = &[
     MetaMemberPropertySpec {
         name: "FullTextSearch",
-        context: MetaMemberReadContext::Dimension,
+        public_name: "FullTextSearch",
+        context: MetaMemberReadContext::Attribute,
         kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
     },
     MetaMemberPropertySpec {
         name: "DataHistory",
-        context: MetaMemberReadContext::Dimension,
+        public_name: "DataHistory",
+        context: MetaMemberReadContext::Attribute,
+        kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
+    },
+];
+
+const REGISTER_SEARCH_PROPERTIES: &[MetaMemberPropertySpec] = &[
+    MetaMemberPropertySpec {
+        name: "FullTextSearch",
+        public_name: "FullTextSearch",
+        context: MetaMemberReadContext::InformationRegisterDimension,
+        kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
+    },
+    MetaMemberPropertySpec {
+        name: "DataHistory",
+        public_name: "DataHistory",
+        context: MetaMemberReadContext::InformationRegisterDimension,
         kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
     },
     MetaMemberPropertySpec {
         name: "FullTextSearch",
+        public_name: "FullTextSearch",
         context: MetaMemberReadContext::Resource,
         kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
     },
     MetaMemberPropertySpec {
         name: "DataHistory",
+        public_name: "DataHistory",
         context: MetaMemberReadContext::Resource,
         kind: MetaMemberValueKind::Text(&["Use", "DontUse"]),
     },
@@ -111,8 +197,21 @@ impl MetaMemberReadProfile {
         }
         match owner {
             MetadataKind::Catalog => Some(Self::CatalogTabularSection220),
-            MetadataKind::InformationRegister => Some(Self::InformationRegisterFields220),
+            MetadataKind::Document => Some(Self::DocumentCommand220),
+            MetadataKind::InformationRegister => Some(Self::InformationRegisterDimension220),
+            MetadataKind::AccumulationRegister => Some(Self::AccumulationRegisterDimension220),
+            MetadataKind::DocumentJournal => Some(Self::DocumentJournalColumn220),
             _ => None,
+        }
+    }
+
+    pub fn owner_kind(self) -> MetadataKind {
+        match self {
+            Self::CatalogTabularSection220 => MetadataKind::Catalog,
+            Self::DocumentCommand220 => MetadataKind::Document,
+            Self::InformationRegisterDimension220 => MetadataKind::InformationRegister,
+            Self::AccumulationRegisterDimension220 => MetadataKind::AccumulationRegister,
+            Self::DocumentJournalColumn220 => MetadataKind::DocumentJournal,
         }
     }
 
@@ -120,37 +219,65 @@ impl MetaMemberReadProfile {
         self,
         context: MetaMemberReadContext,
     ) -> impl Iterator<Item = &'static MetaMemberPropertySpec> {
-        let properties = match self {
-            Self::CatalogTabularSection220 => CATALOG_MEMBER_PROPERTIES,
-            Self::InformationRegisterFields220 => REGISTER_MEMBER_PROPERTIES,
+        let owner = self.owner_kind();
+        let primary = match owner {
+            MetadataKind::Catalog => CATALOG_MEMBER_PROPERTIES,
+            MetadataKind::Document => DOCUMENT_COMMAND_PROPERTIES,
+            MetadataKind::InformationRegister => INFORMATION_DIMENSION_PROPERTIES,
+            MetadataKind::AccumulationRegister => ACCUMULATION_DIMENSION_PROPERTIES,
+            MetadataKind::DocumentJournal => JOURNAL_COLUMN_PROPERTIES,
+            _ => &[],
         };
-        properties
+        let extra = match owner {
+            MetadataKind::Catalog => CATALOG_HEADER_SEARCH_PROPERTIES,
+            MetadataKind::InformationRegister => REGISTER_SEARCH_PROPERTIES,
+            _ => &[],
+        };
+        primary
             .iter()
-            .filter(move |spec| spec.context == context)
+            .chain(extra)
+            .filter(move |property| property.context == context)
     }
 
     pub fn context_for_field(self, field: &str) -> Option<MetaMemberReadContext> {
-        if self == Self::InformationRegisterFields220 {
-            for (prefix, context) in [
-                ("collections.dimensions[", MetaMemberReadContext::Dimension),
-                ("collections.resources[", MetaMemberReadContext::Resource),
-            ] {
-                if indexed_field_suffix(field, prefix).is_some_and(str::is_empty) {
-                    return Some(context);
-                }
+        let direct = [
+            ("collections.attributes[", MetaMemberReadContext::Attribute),
+            (
+                "collections.commands[",
+                MetaMemberReadContext::DocumentCommand,
+            ),
+            ("collections.resources[", MetaMemberReadContext::Resource),
+            (
+                "collections.columns[",
+                MetaMemberReadContext::DocumentJournalColumn,
+            ),
+        ];
+        for (prefix, context) in direct {
+            if indexed_field_suffix(field, prefix).is_some_and(str::is_empty) {
+                return self.properties(context).next().map(|_| context);
             }
-            return None;
         }
-        if indexed_field_suffix(field, "collections.attributes[").is_some_and(str::is_empty) {
-            return Some(MetaMemberReadContext::Attribute);
+        if indexed_field_suffix(field, "collections.dimensions[").is_some_and(str::is_empty) {
+            let context = match self.owner_kind() {
+                MetadataKind::InformationRegister => {
+                    MetaMemberReadContext::InformationRegisterDimension
+                }
+                MetadataKind::AccumulationRegister => {
+                    MetaMemberReadContext::AccumulationRegisterDimension
+                }
+                _ => return None,
+            };
+            return self.properties(context).next().map(|_| context);
         }
         let rest = indexed_field_suffix(field, "collections.tabularSections[")?;
-        if rest.is_empty() {
-            return Some(MetaMemberReadContext::TabularSection);
-        }
-        indexed_field_suffix(rest, ".attributes[")?
-            .is_empty()
-            .then_some(MetaMemberReadContext::TabularAttribute)
+        let context = if rest.is_empty() {
+            MetaMemberReadContext::TabularSection
+        } else if indexed_field_suffix(rest, ".attributes[").is_some_and(str::is_empty) {
+            MetaMemberReadContext::TabularAttribute
+        } else {
+            return None;
+        };
+        self.properties(context).next().map(|_| context)
     }
 
     pub fn context_for_address(
@@ -158,50 +285,40 @@ impl MetaMemberReadProfile {
         address: &QualifiedAddress,
         kind: NodeKind,
     ) -> Option<MetaMemberReadContext> {
-        let owner_kind = match self {
-            Self::CatalogTabularSection220 => NodeKind::Catalog,
-            Self::InformationRegisterFields220 => NodeKind::InformationRegister,
-        };
-        if address
-            .segments()
-            .first()
-            .is_none_or(|owner| owner.kind() != owner_kind)
-        {
+        let owner = address.segments().first()?;
+        if owner.kind().as_str() != self.owner_kind().as_str() || owner.name().is_none() {
             return None;
         }
-        match address.segments() {
-            [owner, member]
-                if owner.name().is_some() && member.name().is_some() && member.kind() == kind =>
-            {
-                match (self, kind) {
-                    (Self::CatalogTabularSection220, NodeKind::Attribute) => {
-                        Some(MetaMemberReadContext::Attribute)
+        let context = match address.segments() {
+            [_, member] if member.name().is_some() && member.kind() == kind => match kind {
+                NodeKind::Attribute => MetaMemberReadContext::Attribute,
+                NodeKind::Resource => MetaMemberReadContext::Resource,
+                NodeKind::Command => MetaMemberReadContext::DocumentCommand,
+                NodeKind::Column => MetaMemberReadContext::DocumentJournalColumn,
+                NodeKind::Dimension => match self.owner_kind() {
+                    MetadataKind::InformationRegister => {
+                        MetaMemberReadContext::InformationRegisterDimension
                     }
-                    (Self::CatalogTabularSection220, NodeKind::TabularSection) => {
-                        Some(MetaMemberReadContext::TabularSection)
+                    MetadataKind::AccumulationRegister => {
+                        MetaMemberReadContext::AccumulationRegisterDimension
                     }
-                    (Self::InformationRegisterFields220, NodeKind::Dimension) => {
-                        Some(MetaMemberReadContext::Dimension)
-                    }
-                    (Self::InformationRegisterFields220, NodeKind::Resource) => {
-                        Some(MetaMemberReadContext::Resource)
-                    }
-                    _ => None,
-                }
-            }
-            [owner, section, attribute]
-                if owner.kind() == NodeKind::Catalog
-                    && owner.name().is_some()
-                    && section.kind() == NodeKind::TabularSection
+                    _ => return None,
+                },
+                NodeKind::TabularSection => MetaMemberReadContext::TabularSection,
+                _ => return None,
+            },
+            [_, section, member]
+                if section.kind() == NodeKind::TabularSection
                     && section.name().is_some()
-                    && attribute.kind() == NodeKind::Attribute
-                    && attribute.name().is_some()
+                    && member.kind() == NodeKind::Attribute
+                    && member.name().is_some()
                     && kind == NodeKind::Attribute =>
             {
-                Some(MetaMemberReadContext::TabularAttribute)
+                MetaMemberReadContext::TabularAttribute
             }
-            _ => None,
-        }
+            _ => return None,
+        };
+        self.properties(context).next().map(|_| context)
     }
 
     pub fn owns_diagnostic(self, field: &str) -> bool {
@@ -222,9 +339,12 @@ impl MetaMemberReadContext {
     pub fn xml_tag(self) -> &'static str {
         match self {
             Self::TabularSection => "TabularSection",
-            Self::TabularAttribute | Self::Attribute => "Attribute",
-            Self::Dimension => "Dimension",
+            Self::TabularAttribute => "Attribute",
+            Self::Attribute => "Attribute",
             Self::Resource => "Resource",
+            Self::DocumentCommand => "Command",
+            Self::InformationRegisterDimension | Self::AccumulationRegisterDimension => "Dimension",
+            Self::DocumentJournalColumn => "Column",
         }
     }
 }
@@ -236,6 +356,16 @@ impl MetaMemberPropertySpec {
 
     pub fn parse_text(self, value: &str) -> Option<MetaObservedPropertyValue> {
         match self.kind {
+            MetaMemberValueKind::Boolean => match value {
+                "true" => Some(MetaObservedPropertyValue::Boolean { value: true }),
+                "false" => Some(MetaObservedPropertyValue::Boolean { value: false }),
+                _ => None,
+            },
+            MetaMemberValueKind::CommandGroup => {
+                command_group(value).then(|| MetaObservedPropertyValue::Text {
+                    value: value.into(),
+                })
+            }
             MetaMemberValueKind::UnsignedInteger => value
                 .parse::<u32>()
                 .ok()
@@ -253,6 +383,10 @@ impl MetaMemberPropertySpec {
 
     pub fn accepts(self, value: &MetaObservedPropertyValue) -> bool {
         match (self.kind, value) {
+            (MetaMemberValueKind::Boolean, MetaObservedPropertyValue::Boolean { .. }) => true,
+            (MetaMemberValueKind::CommandGroup, MetaObservedPropertyValue::Text { value }) => {
+                command_group(value)
+            }
             (
                 MetaMemberValueKind::UnsignedInteger,
                 MetaObservedPropertyValue::UnsignedInteger { .. },
@@ -270,6 +404,37 @@ impl MetaMemberPropertySpec {
             _ => false,
         }
     }
+}
+
+// The eleven StandardCommandsGroup values of the platform (since 8.2) and
+// named CommandGroup references. This read vocabulary does not depend on
+// mutation contracts.
+fn command_group(value: &str) -> bool {
+    if [
+        "NavigationPanelImportant",
+        "NavigationPanelOrdinary",
+        "NavigationPanelSeeAlso",
+        "FormNavigationPanelGoTo",
+        "FormNavigationPanelImportant",
+        "FormNavigationPanelSeeAlso",
+        "FormCommandBarImportant",
+        "FormCommandBarCreateBasedOn",
+        "ActionsPanelCreate",
+        "ActionsPanelReports",
+        "ActionsPanelTools",
+    ]
+    .contains(&value)
+    {
+        return true;
+    }
+    let Ok(address) = unica_address::source_target::MetadataAddress::parse(
+        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+        value,
+    ) else {
+        return false;
+    };
+    let parts = address.segments().collect::<Vec<_>>();
+    matches!(parts.as_slice(), ["CommandGroup", _]) && address.as_str() == value
 }
 
 #[cfg(test)]

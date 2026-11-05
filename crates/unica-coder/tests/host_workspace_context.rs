@@ -378,7 +378,25 @@ fn required_or_malformed_context_never_falls_back_to_process_cwd() {
     let state = workspace(root.path(), "state");
     let _daemon = spawn_owned_daemon(&state);
     let mut frontend = Frontend::start(&plugin, &state, &[("UNICA_HOST_CONTEXT_REQUIRED", "1")]);
-    assert_refusal(&frontend.view(2, None));
+    let missing = frontend.view(2, None);
+    assert_refusal(&missing);
+    let result = &missing["result"]["structuredContent"];
+    assert!(
+        result.get("data").is_none(),
+        "a frontend context refusal must not create a Task: {result}"
+    );
+    let message = result["summary"].as_str().unwrap();
+    let fixture = contract();
+    for variable in fixture["projectEnvironment"].as_array().unwrap() {
+        assert!(message.contains(variable.as_str().unwrap()), "{message}");
+    }
+    for key in ["metadataKey", "metadataPath"] {
+        assert!(
+            message.contains(fixture[key].as_str().unwrap()),
+            "{message}"
+        );
+    }
+    assert!(message.contains("reconnect"), "{message}");
     let ordinary_file = project.join("not-a-directory.txt");
     std::fs::write(&ordinary_file, "ordinary file").unwrap();
     for (index, location) in [
@@ -422,7 +440,40 @@ fn conflicting_startup_project_environments_refuse_workspace_selection() {
             (names[1].as_str().unwrap(), project_b.to_str().unwrap()),
         ],
     );
-    assert_refusal(&frontend.view(2, None));
+    let captured = frontend.view(2, None);
+    assert_refusal(&captured);
+    let message = captured["result"]["structuredContent"]["summary"]
+        .as_str()
+        .unwrap();
+    assert!(
+        message.contains("startup workspace context")
+            && message.contains("conflicting directories"),
+        "{message}"
+    );
+    for variable in names {
+        assert!(message.contains(variable.as_str().unwrap()), "{message}");
+    }
+    assert_workspace(
+        &frontend.view(3, Some(json!(project_a.to_str().unwrap()))),
+        &project_a,
+    );
+    assert_refusal(&frontend.view(4, None));
+    let mut roots_frontend = Frontend::start_with_roots(
+        &plugin,
+        &state,
+        &[
+            (names[0].as_str().unwrap(), project_a.to_str().unwrap()),
+            (names[1].as_str().unwrap(), project_b.to_str().unwrap()),
+        ],
+        Some(RootsAnswer::Roots(vec![url::Url::from_directory_path(
+            &project_a,
+        )
+        .unwrap()
+        .to_string()])),
+    );
+    assert_workspace(&roots_frontend.view(2, None), &project_a);
+    roots_frontend.roots = Some(RootsAnswer::Roots(Vec::new()));
+    assert_refusal(&roots_frontend.view(3, None));
 }
 
 /// A packaged core's build: the runtime manifest names its core archive.
