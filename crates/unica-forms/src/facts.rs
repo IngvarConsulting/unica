@@ -176,6 +176,8 @@ pub struct FormInfoDynamicList {
 #[serde(rename_all = "camelCase")]
 pub struct FormInfoColumn {
     pub name: String,
+    /// Strictly decoded type of the containing form attribute.
+    pub parent_type: Option<String>,
     #[serde(rename = "type")]
     pub type_name: Option<String>,
 }

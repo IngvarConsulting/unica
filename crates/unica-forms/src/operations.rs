@@ -58,12 +58,23 @@ form_operations!(
     ColumnAdd => ("column.add", FormAttribute, Items),
     CommandAdd => ("command.add", Form, Items),
     EventBind => ("event.bind", FormEvent, Values),
-    PropsSet => ("props.set", Form, Values),
+    PropsSet => ("props.set", FormProperties, Values),
 );
 
 impl FormOperation {
     pub fn contract(self) -> OperationContract {
         crate::contracts::form(self)
+    }
+
+    pub fn contract_for_address(
+        self,
+        at: &unica_address::address::QualifiedAddress,
+    ) -> OperationContract {
+        if self == Self::PropsSet && crate::applicability::is_form_column(at.segments()) {
+            crate::contracts::form_column_type_set()
+        } else {
+            self.contract()
+        }
     }
 
     pub const fn content_resource(self) -> Option<&'static str> {
@@ -160,7 +171,7 @@ impl unica_operations::FamilyOperation for FormOperation {
                     .first()
                     .map(|segment| segment.kind().as_str()),
             ),
-            _ => self.contract(),
+            _ => self.contract_for_address(site.at()),
         })
     }
 
@@ -168,13 +179,23 @@ impl unica_operations::FamilyOperation for FormOperation {
         self,
         site: Option<&unica_source_contract::context::OperationSite<'_>>,
     ) -> bool {
-        self == Self::ColumnAdd
-            || site
-                .is_none_or(|site| site.terminal().kind() == unica_address::address::NodeKind::Item)
+        match self {
+            Self::ColumnAdd => true,
+            // Only a data column needs the observed ValueTable parent; without
+            // a site props.set keeps its role-independent context admission.
+            Self::PropsSet => {
+                site.is_some_and(|site| crate::applicability::is_form_column(site.segments()))
+            }
+            _ => site.is_none_or(|site| {
+                site.terminal().kind() == unica_address::address::NodeKind::Item
+            }),
+        }
     }
     fn admits_observation(self, observation: Option<&Self::Observation>) -> bool {
         if self == Self::ColumnAdd {
             observation == Some(&crate::FormObservation::ValueTableAttribute)
+        } else if self == Self::PropsSet {
+            observation == Some(&crate::FormObservation::ValueTableColumn)
         } else {
             self.admits_form_item(
                 observation
@@ -261,7 +282,7 @@ mod tests {
             (
                 FormOperation::PropsSet,
                 "props.set",
-                OperationApplicability::Form,
+                OperationApplicability::FormProperties,
                 OperationSkeleton::Values,
             ),
         ] {
@@ -356,5 +377,39 @@ mod tests {
             .admits_observation(Some(&FormObservation::Item(FormItemRole::Container))));
         assert!(!FormOperation::ItemAdd
             .admits_observation(Some(&FormObservation::Item(FormItemRole::Leaf))));
+    }
+
+    #[test]
+    fn context_admission_without_a_site_keeps_props_set_and_item_role_filters() {
+        use crate::FormObservation;
+        let item = |role| {
+            move |_: unica_operations::ObservationType| {
+                Some(Box::new(FormObservation::Item(role)) as Box<dyn std::any::Any>)
+            }
+        };
+        for role in [
+            FormItemRole::Container,
+            FormItemRole::Leaf,
+            FormItemRole::AutoCommandBar,
+        ] {
+            assert!(
+                FormOperation::PropsSet
+                    .descriptor()
+                    .admits_context(&item(role)),
+                "{role:?}"
+            );
+        }
+        assert!(FormOperation::PropsSet
+            .descriptor()
+            .admits_context(&|_| None));
+        assert!(!FormOperation::ItemAdd
+            .descriptor()
+            .admits_context(&item(FormItemRole::Leaf)));
+        assert!(!FormOperation::ItemRemove
+            .descriptor()
+            .admits_context(&item(FormItemRole::AutoCommandBar)));
+        assert!(!FormOperation::ColumnAdd
+            .descriptor()
+            .admits_context(&|_| None));
     }
 }

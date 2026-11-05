@@ -14,6 +14,8 @@ mod ws_reference;
 mod functional_option;
 #[path = "metadata_can_tests/property_name_parity.rs"]
 mod property_name_parity;
+#[path = "metadata_can_tests/relation_diagnostic_path.rs"]
+mod relation_diagnostic_path;
 #[path = "metadata_can_tests/root_comments.rs"]
 mod root_comments;
 #[path = "metadata_can_tests/search_input.rs"]
