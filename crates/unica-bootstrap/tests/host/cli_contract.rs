@@ -41,6 +41,7 @@ fn removed_migration_command_fails_before_any_codex_state_change() {
     fs::remove_dir_all(codex_home).expect("isolated CODEX_HOME must be removable");
 }
 
+/// rule: INV.PKG.STARTUP-FAILURE-DIAGNOSIS
 #[test]
 fn a_broken_installation_names_its_reason_its_place_and_its_cure() {
     // Каталог плагина без манифеста: ставить нечего. Сказать об этом надо так,
@@ -125,6 +126,7 @@ fn prefetch_names_its_reason_when_there_is_nothing_to_prefetch() {
     fs::remove_dir_all(scratch).ok();
 }
 
+/// rule: INV.PKG.PREFETCH-DEVELOPMENT-REFUSAL
 #[test]
 fn a_development_checkout_has_nothing_to_prefetch_and_says_so() {
     // В дереве разработки инструменты собираются на месте, и манифест это

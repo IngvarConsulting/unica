@@ -1631,6 +1631,7 @@ mod tests {
         )
     }
 
+    /// rule: INV.SOURCE.EVENT-SUBSCRIPTION-SOURCE-LOCAL-CHANGE
     #[test]
     fn event_source_removal_range_includes_whitespace_before_self_closing_last_element() {
         let xml = "<Source>\r\n\t<Keep/>\r\n\t<Remove/>\r\n</Source>";

@@ -2092,6 +2092,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.SUPPORT-STATE
     #[test]
     fn meta_info_passes_its_resolved_target_to_support_reader() {
         use crate::application::ports::ApplicationPorts;
@@ -2126,6 +2127,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.SUPPORT-STATE
     #[test]
     fn meta_info_maps_support_provider_failure_to_logical_diagnostic() {
         use crate::application::ports::ApplicationPorts;
@@ -2545,6 +2547,7 @@ mod medium_tests {
     /// Секция удалённого поставщика `kb-1ci` в `unica.toml` не отключает
     /// документацию: поиск и открытие страницы доходят до ответа, а в его
     /// `warnings` пользователь видит, что ключ можно убрать.
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
     #[test]
     fn a_retired_provider_in_the_policy_reaches_the_docs_answer_as_a_warning() {
         let _serial = documentation_registry_serial();
@@ -2652,6 +2655,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.DOCUMENTATION-VERSION-SELECTION
     #[test]
     fn select_platform_version_requires_an_exact_directory_name_match() {
         // A three-component prefix of a real directory must not resolve: a
@@ -2667,6 +2671,7 @@ mod medium_tests {
         assert_eq!(select_platform_version(&versions, Some("9.9.9.9999")), None);
     }
 
+    /// rule: INV.APP.DOCUMENTATION-VERSION-SELECTION
     #[test]
     fn select_platform_version_without_a_request_picks_the_numerically_newest_entry() {
         // Byte/lexicographic order breaks the moment a dot-separated
@@ -2722,6 +2727,7 @@ mod medium_tests {
     /// then the version the project pins itself to, then the numerically
     /// newest installation. The middle level did not exist, so a project
     /// pinned to 8.3.27 was answered from 8.5.4 without a diagnostic.
+    /// rule: INV.APP.DOCUMENTATION-VERSION-SELECTION
     #[test]
     fn project_platform_line_sits_between_the_call_argument_and_the_newest_install() {
         let dir = tempfile::tempdir().expect("каталог");
@@ -3019,6 +3025,7 @@ mod medium_tests {
         assert_eq!(gets[0].0, locator);
     }
 
+    /// rule: INV.SURFACE.DOCS-SOURCE-SELECTION
     #[test]
     fn canonical_v13_docs_search_passes_the_scalar_source_kind_to_the_shared_registry() {
         let recorder = std::sync::Arc::new(RecordingProvider::default());
@@ -3100,6 +3107,7 @@ mod medium_tests {
         assert_eq!(combined.diagnostics[0]["code"], "bad_value");
     }
 
+    /// rule: INV.SURFACE.DOCS-SOURCE-SELECTION
     #[test]
     fn canonical_v13_docs_search_rejects_unknown_source_as_typed_unsupported_source() {
         let dir = tempfile::tempdir().expect("workspace");
@@ -3122,6 +3130,7 @@ mod medium_tests {
         assert_eq!(result.diagnostics[0]["code"], "unsupported_source");
     }
 
+    /// rule: INV.SURFACE.DOCS-SOURCE-SELECTION
     #[test]
     fn canonical_v13_docs_search_rejects_configuration_help_until_it_is_actor_safe() {
         let recorder = std::sync::Arc::new(RecordingProvider::default());
@@ -3191,6 +3200,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.SURFACE.DOCS-SOURCE-SELECTION
     #[test]
     fn canonical_v13_docs_search_omits_unsafe_configuration_help_by_default() {
         let recorder = std::sync::Arc::new(RecordingProvider::default());
@@ -3228,6 +3238,7 @@ mod medium_tests {
     /// проверяется на ПУСТОМ списке корней: разрешение не вправе зависеть от
     /// них. Путь из документации указывает на `<версия>/bin` — он обязан
     /// сводиться к каталогу версии, потому что имя версии несёт именно он.
+    /// rule: INV.APP.DOCUMENTATION-VERSION-SELECTION
     #[test]
     fn the_projects_platform_path_pin_names_the_installation_directly() {
         let machine = tempfile::tempdir().expect("каталог установок");
@@ -3282,6 +3293,7 @@ mod medium_tests {
     /// а не тихий переход к стандартным корням: пин заменяет перебор, как и
     /// у раннера, и подстановка соседней установки здесь была бы тем же
     /// нарушением выбора версии.
+    /// rule: INV.APP.DOCUMENTATION-VERSION-SELECTION
     #[test]
     fn version_constraints_still_apply_to_a_path_pinned_installation() {
         let machine = tempfile::tempdir().expect("каталог установок");

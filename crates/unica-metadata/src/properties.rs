@@ -205,6 +205,12 @@ const DOCUMENT_NUMBER_KINDS: &[MetadataKind] = &[
 ];
 const CODE_TYPE_KINDS: &[MetadataKind] =
     &[MetadataKind::Catalog, MetadataKind::ChartOfCalculationTypes];
+/// Owners of the three data-history properties.
+const DATA_HISTORY_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::InformationRegister,
+];
 const POSTING_VALUES: &[&str] = &["Allow", "Deny"];
 const REGISTER_RECORDS_DELETION_VALUES: &[&str] =
     &["AutoDelete", "AutoDeleteOnUnpost", "AutoDeleteOff"];
@@ -521,6 +527,21 @@ mod tests {
                 "Correspondence",
                 MetaPropertyValue::Boolean(true),
                 &[AccountingRegister],
+            ),
+            (
+                "DataHistory",
+                MetaPropertyValue::String("Use".into()),
+                &[Catalog, Document, InformationRegister],
+            ),
+            (
+                "UpdateDataHistoryImmediatelyAfterWrite",
+                MetaPropertyValue::Boolean(true),
+                &[Catalog, Document, InformationRegister],
+            ),
+            (
+                "ExecuteAfterWriteDataHistoryVersionProcessing",
+                MetaPropertyValue::Boolean(true),
+                &[Catalog, Document, InformationRegister],
             ),
             (
                 "FullTextSearch",

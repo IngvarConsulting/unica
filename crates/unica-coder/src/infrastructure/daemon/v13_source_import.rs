@@ -1365,6 +1365,8 @@ pub(super) mod tests {
     /// Без `force` push идёт под защитой раннера: память и поколение базы
     /// сверяются, ключа `--force` в командной строке нет. `force:true` — и
     /// только он — передаёт раннеру `--force`, а ответ называет перезапись.
+    /// rule: INV.RUNTIME.COMPATIBLE-DEVELOPMENT-CYCLE
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn force_is_optional_and_only_force_overwrites_the_infobase() {
         let root = workspace();
@@ -1497,6 +1499,7 @@ pub(super) mod tests {
         assert_eq!(runner.call_count(), 0);
     }
 
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn preview_plans_every_declared_source_set_with_its_mode_without_dispatching_designer() {
         let root = workspace();
@@ -1536,6 +1539,7 @@ pub(super) mod tests {
             .ends_with("--json-message push --dry-run"));
     }
 
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn preview_of_one_source_set_with_full_rebuild_asks_the_runner_for_exactly_that() {
         let root = workspace();
@@ -1636,6 +1640,7 @@ pub(super) mod tests {
         assert!(result.changed.is_empty());
     }
 
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn preview_refuses_other_sets_a_dispatched_designer_and_edt_sources() {
         let root = workspace();
@@ -1687,6 +1692,7 @@ pub(super) mod tests {
             .contains("Designer sources only"));
     }
 
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn direct_apply_checks_its_plan_and_attributes_the_infobase_state_to_the_provider() {
         let root = workspace();
@@ -1750,6 +1756,7 @@ pub(super) mod tests {
         envelope
     }
 
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn apply_where_the_runner_skipped_every_set_names_the_infobase_state_unverified() {
         let root = workspace();
@@ -1841,6 +1848,7 @@ pub(super) mod tests {
             .starts_with("only if"));
     }
 
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn apply_that_skips_a_previewed_load_is_a_concurrent_change() {
         let root = workspace();
@@ -1871,6 +1879,7 @@ pub(super) mod tests {
     /// Обратная гонка (#1265): превью пропустило все наборы, а исполнение
     /// загрузило. База уже изменена — отказ говорит это и называет наборы,
     /// чтобы следующий шаг не исходил из прежнего состояния базы.
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn apply_that_loads_a_previewed_skip_names_the_changed_infobase() {
         let root = workspace();
@@ -1904,6 +1913,7 @@ pub(super) mod tests {
         assert_eq!(result.changed[0]["mode"], "partial");
     }
 
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn apply_names_only_loaded_sets_as_changed_and_the_skipped_ones_as_unverified() {
         let root = workspace();
@@ -1956,6 +1966,7 @@ pub(super) mod tests {
     /// Конверты раннера 0.14.0, снятые вживую на сценарии #1240: базу
     /// перезаписала другая рабочая копия, а раннер этой копии пропустил набор
     /// по своей памяти и поколение базы не сверял.
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn captured_runner_skip_is_answered_as_an_unverified_infobase_state() {
         let root = workspace();
@@ -2011,6 +2022,7 @@ pub(super) mod tests {
     /// правок ничего не грузит и честно называет состояние базы непроверенным,
     /// а `push` после правки грузит набор без отказа `no_memory`. Записи
     /// поколения до этой загрузки нет, и ответ не выдаёт её за сверенную.
+    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
     fn captured_first_pushes_after_create_skip_the_assembled_set_and_load_an_edit() {
         let root = workspace();
@@ -2059,6 +2071,7 @@ pub(super) mod tests {
         );
     }
 
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn apply_refuses_a_dispatch_flag_that_contradicts_the_steps() {
         let root = workspace();
@@ -2085,6 +2098,7 @@ pub(super) mod tests {
             .contains("without dispatching the platform"));
     }
 
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn apply_refuses_a_plan_that_changed_during_execution() {
         let root = workspace();
@@ -2113,6 +2127,7 @@ pub(super) mod tests {
             .contains("sources changed between preview and apply"));
     }
 
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
     #[test]
     fn runner_refusals_keep_their_outcome() {
         let root = workspace();
@@ -2157,6 +2172,8 @@ pub(super) mod tests {
     /// вперёд записи и памяти о базе нет. Unica ничего не перезаписывает сама:
     /// отказ несёт оба поколения и два выхода превью — выгрузку набора и
     /// перезапись базы через `force:true`.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn captured_exchange_refusals_name_both_ways_out_and_the_generations() {
         let root = workspace();
@@ -2234,6 +2251,7 @@ pub(super) mod tests {
     /// Живой отказ занятой базы (раннер 0.14.0): другая команда держит базу —
     /// повтор. База другой рабочей копии отказом больше не бывает: раннер 0.14
     /// пишет в неё с предупреждением, а `force:true` называет перезапись.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
     #[test]
     fn captured_base_contention_refusals_keep_their_outcomes() {
         let root = workspace();
@@ -2359,6 +2377,7 @@ pub(super) mod tests {
             .contains("unknown field `shared`"));
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[test]
     fn push_detaches_only_its_executing_runner_call() {
         let root = workspace();
@@ -2395,6 +2414,7 @@ pub(super) mod tests {
     /// модуль восстановлен из сохранённой копии с прежним временем изменения
     /// после временной загрузки. Превью планирует загрузку, исполнение грузит
     /// набор и называет его изменённым, а не отвечает «ничего не загружено».
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn captured_runner_015_loads_a_module_restored_with_its_old_mtime() {
         let root = workspace();
@@ -2454,6 +2474,7 @@ pub(super) mod tests {
     /// прежняя отправка оставила непринятой: шаг `skipped`, `applied: true`,
     /// платформа запущена. База изменилась — ответ называет это, а не
     /// «ничего не загружено» и не отвергает конверт как противоречивый.
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn apply_names_an_earlier_unapplied_load_the_runner_applied() {
         let root = workspace();
@@ -2579,6 +2600,7 @@ pub(super) mod tests {
     /// рабочей копии), и `push` без изменений читает поколение, запуская
     /// платформу, но ничего не применяет. Это не противоречивый конверт:
     /// ответ — пропуск, а заметка раннера доходит предупреждением.
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn captured_unapplied_loads_are_applied_or_named_when_the_infobase_moved() {
         let root = workspace();
@@ -2649,6 +2671,7 @@ pub(super) mod tests {
     /// Загрузка удалась, применение нет (раннер 0.15: выход `next` — `apply`).
     /// Основная конфигурация базы уже изменена: ответ называет набор
     /// в `changed` и выход через повторный `push`, отдельного `apply` у Unica нет.
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn a_push_whose_apply_failed_names_the_load_left_unapplied() {
         let root = workspace();
@@ -2693,6 +2716,7 @@ pub(super) mod tests {
     /// Два набора: первый загружен и применён, у второго не удалось применение.
     /// Ответ называет изменёнными оба, с признаком применения у каждого. Набор
     /// выхода `next`, которого нет среди шагов этого конверта, не называется.
+    /// rule: INV.WIRE.SOURCE-IMPORT-APPLIES-THE-PREVIEWED-MODES
     #[test]
     fn a_failed_apply_after_an_applied_set_names_both_sets() {
         let root = workspace();

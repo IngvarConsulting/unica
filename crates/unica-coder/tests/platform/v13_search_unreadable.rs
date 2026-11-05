@@ -2,6 +2,7 @@
 
 use super::*;
 
+/// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
 #[test]
 fn unreadable_name_descriptor_is_reported_without_losing_proven_matches() {
     use std::os::unix::fs::PermissionsExt;
