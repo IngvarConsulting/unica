@@ -2874,9 +2874,33 @@
       "review": null
     },
     {
+      "id": "daemon.initial-startup-timeout",
+      "class": "deadline",
+      "resource": "Первичное подключение frontend к демону v5, включая ожидание владельца запуска, готовность нового процесса и очистку при отказе.",
+      "unit": "ms",
+      "scope": "connection",
+      "source": {
+        "file": "crates/unica-daemon/src/client_v5.rs",
+        "symbol": "INITIAL_STARTUP_TIMEOUT"
+      },
+      "expr": "Duration::from_secs(20)",
+      "value": 20000,
+      "applied": [
+        "crates/unica-daemon/src/client_v5.rs"
+      ],
+      "status": "unproven",
+      "origin": "Исправление #2256; временное, без подтверждённого основания.",
+      "problem": "Общий пятисекундный срок оставлял около 3,3 секунды на готовность демона и срывал запуск под нагрузкой. Значение 20 секунд не подтверждено замерами на целевых хостах.",
+      "onReach": "ошибка срока запуска; только собственный незавершённый дочерний процесс завершается в пределах исходного срока",
+      "issue": "#2256",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
       "id": "daemon.client-connect-timeout",
       "class": "deadline",
-      "resource": "Срок подключения frontend к демону v5 с запуском при необходимости, ping и ожидания ответа на прочие запросы.",
+      "resource": "Срок подключения frontend к опубликованному демону v5, ping и ожидания ответа на прочие запросы.",
       "unit": "ms",
       "scope": "connection",
       "source": {
@@ -2968,30 +2992,6 @@
       "origin": null,
       "problem": "Прерываемое наблюдение должно замечать остановку, не дожидаясь срока всего чтения.",
       "onReach": "чтение продолжается следующим окном после проверки флага остановки",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
-      "id": "daemon.spawn-lock-timeout",
-      "class": "deadline",
-      "resource": "Ожидание блокировки запуска демона в каталоге состояния.",
-      "unit": "ms",
-      "scope": "daemon",
-      "source": {
-        "file": "crates/unica-daemon/src/client_v5.rs",
-        "symbol": "SPAWN_LOCK_TIMEOUT"
-      },
-      "expr": "Duration::from_secs(5)",
-      "value": 5000,
-      "applied": [
-        "crates/unica-daemon/src/client_v5.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 38512f013 (feat(daemon): add one versioned user executor)",
-      "problem": null,
-      "onReach": "ошибка «timed out waiting for daemon spawn ownership»",
       "issue": null,
       "evidence": [],
       "decision": null,
