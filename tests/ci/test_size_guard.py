@@ -129,6 +129,24 @@ class ComponentSourceOwnershipTests(unittest.TestCase):
                 "actor::tests", "store::fork_tests",
             })
 
+    def test_build_rs_discovered_modules_are_the_files_of_the_module_directory(self):
+        # crates/unica-coder/build.rs declares a module for each `*.rs` of the
+        # including module's directory; sizes must follow those files.
+        module = load_size_filters()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            src = root / "crates" / "unica-coder" / "src"
+            (src / "suite").mkdir(parents=True)
+            (src / "lib.rs").write_text('#[cfg(test)] mod suite;')
+            (src / "suite.rs").write_text('include!(concat!(env!("OUT_DIR"), "/suite_modules.rs"));')
+            (src / "suite" / "plain.rs").write_text('#[test] fn plain() {}')
+            (src / "suite" / "spawns.rs").write_text('use std::process; #[test] fn spawns() {}')
+            (src / "suite" / "notes.txt").write_text('std::process')
+            sources = module.source_modules(root)["unica-coder"]
+            self.assertEqual(sources[("suite", "spawns")][1], src / "suite" / "spawns.rs")
+            self.assertEqual(sources[("suite", "plain")], (False, src / "suite" / "plain.rs"))
+            self.assertEqual({path for _, path, _ in module.flagged_modules(root)}, {"suite::spawns"})
+
     def test_root_test_modules_are_qualified_by_their_component_binary(self):
         module = load_size_filters()
         module.MEASURED_MEDIUM_CASES = ()

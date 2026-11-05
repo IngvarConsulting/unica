@@ -183,6 +183,21 @@ class RemovedTestsTests(unittest.TestCase):
             ("crates/demo/src/a/plain/mod.rs", "demo", "a::plain", True),
         ])
 
+    def test_resolves_the_modules_build_rs_declares_from_the_module_directory(self):
+        # crates/unica-coder/build.rs declares `mod <stem>;` for each `*.rs` of
+        # the module's own directory; the include must reach exactly those files.
+        source = 'include!(concat!(env!("OUT_DIR"), "/a_modules.rs"));\n#[test]\nfn own() {}\n'
+        files = ["crates/demo/src/a/one.rs", "crates/demo/src/a/two.rs", "crates/demo/src/a/deep/three.rs",
+                 "crates/demo/src/b/other.rs", "crates/demo/src/a.rs"]
+        children = list(removed_tests.Packages.children("crates/demo/src/a.rs", source, "demo", "a", False, files))
+        self.assertEqual(children, [
+            ("crates/demo/src/a/one.rs", "demo", "a::one", True),
+            ("crates/demo/src/a/two.rs", "demo", "a::two", True),
+        ])
+        literal = list(removed_tests.Packages.children(
+            "crates/demo/src/a.rs", 'include!(concat!(env!("OUT_DIR"), "/other.rs"));\n', "demo", "a", False, files))
+        self.assertEqual(literal, [])
+
     def run_script(self, *args: str, utf8_mode: bool) -> subprocess.CompletedProcess:
         """The script as a pull request check runs it, under UTF-8 mode or a cp1251 locale."""
         environment = {**os.environ, "PYTHONUTF8": "1" if utf8_mode else "0",
