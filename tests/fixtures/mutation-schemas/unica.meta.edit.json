@@ -1060,6 +1060,13 @@
                     "CreateTaskInPrivilegedMode": {
                       "type": "boolean"
                     },
+                    "DataLockControlMode": {
+                      "enum": [
+                        "Automatic",
+                        "Managed"
+                      ],
+                      "type": "string"
+                    },
                     "DefaultPresentation": {
                       "enum": [
                         "AsDescription",

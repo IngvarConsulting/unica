@@ -430,6 +430,22 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | ChoiceDataGetModeOnInputByString
         | CreateOnInput
         | ChoiceHistoryOnInput => matches!(kind, Catalog | Document),
+        DataLockControlMode => matches!(
+            kind,
+            Catalog
+                | Document
+                | Constant
+                | InformationRegister
+                | AccumulationRegister
+                | AccountingRegister
+                | CalculationRegister
+                | ChartOfAccounts
+                | ChartOfCharacteristicTypes
+                | ChartOfCalculationTypes
+                | BusinessProcess
+                | Task
+                | ExchangePlan
+        ),
         Correspondence | PeriodAdjustmentLength => kind == AccountingRegister,
         Description | Predefined | RestartCountOnFailure | RestartIntervalOnFailure | Use => {
             kind == ScheduledJob
