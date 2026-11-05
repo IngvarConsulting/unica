@@ -984,26 +984,31 @@ fn check_fixture_coverage(name: &str) {
     }
 }
 
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn medium_honest_can_on_the_main_corpus_workspace() {
     check_fixture_coverage("workspace");
 }
 
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn medium_honest_can_on_the_dcs_workspace() {
     check_fixture_coverage("workspace-dcs");
 }
 
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn medium_honest_can_on_the_mxl_workspace() {
     check_fixture_coverage("workspace-mxl");
 }
 
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn medium_honest_can_on_the_code_and_extension_workspace() {
     check_fixture_coverage("workspace-code");
 }
 
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn medium_honest_can_on_the_predefined_workspace() {
     check_fixture_coverage("workspace-predefined");
@@ -1014,6 +1019,7 @@ fn medium_honest_can_on_the_resolve_workspace() {
     check_fixture_coverage("workspace-resolve");
 }
 
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn medium_honest_can_on_external_sources() {
     check_fixture_coverage("workspace-external");
@@ -1051,6 +1057,7 @@ fn form_collection_check_reports_readability_without_a_content_validator() {
 
 /// Вместе фикстуры доходят до каждого маршрута, кроме названных пробелов, и
 /// до видов, совпадающих по имени в разных деревьях.
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn fixture_coverage_reaches_every_route_class() {
     let reached = FIXTURE_COVERAGE
@@ -1412,6 +1419,7 @@ fn check_written_paths(
 
 /// Неприменимая операция направляет к `can` узла, где она исполнима, а
 /// подробный контракт просит только там, где он вычисляется.
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
     for (at, op, args, target, contract) in [
@@ -1482,6 +1490,7 @@ fn a_misplaced_operation_routes_next_to_the_node_where_it_applies() {
 
 /// Без узла, где операция исполнима, отказ называет форму нужного адреса, а
 /// `next` ведёт к словарю того же узла, если он читается, иначе к корню.
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn without_an_executable_ancestor_the_refusal_names_the_address_shape() {
     let traits = crate::domain::apply::source_set_traits_for_read(
@@ -1535,6 +1544,7 @@ fn without_an_executable_ancestor_the_refusal_names_the_address_shape() {
 
 /// Узел, которого нет, создаёт операция родителя: `next` отказа «не найден»
 /// по адресу операции ведёт к словарю родителя.
+/// rule: INV.WIRE.OPERATION-CREATION-PARENT
 #[test]
 fn a_missing_target_routes_next_to_the_parent_dictionary() {
     use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
@@ -1593,6 +1603,8 @@ fn a_missing_member_answers_not_found_with_the_owner_dictionary_next() {
 /// на поле, на автоматической командной панели и на событиях формы и
 /// элемента `can` называет ровно те операции формы, которые `apply`
 /// исполняет на этом адресе, и каждая из них строит предпросмотр.
+/// rule: INV.SOURCE.FORM-OPERATION-TARGETS
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn honest_can_on_form_items_and_events() {
     let fixture = fixture("workspace");
@@ -1740,6 +1752,7 @@ fn honest_can_on_form_items_and_events() {
 /// в форме (вложенная командная панель таблицы — через таблицу), второй —
 /// к ветви его вида; исправленный вызов по первому `next` строит
 /// предпросмотр.
+/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
 #[test]
 fn retired_form_arguments_route_next_to_the_item_or_event_address() {
     let fixture = fixture("workspace");
@@ -1891,6 +1904,7 @@ fn tree_digest(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 /// публикация кладёт реквизит в часть, а не в шапку, и сохраняет соседей.
 /// Отказ, чтение и предпросмотр исходников не меняют. Набор исходников —
 /// непервичный.
+/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
 #[test]
 fn a_retired_scope_call_recovers_through_next_to_a_published_tabular_attribute() {
     let (_root, workspace) = two_set_workspace();
@@ -2030,6 +2044,7 @@ fn header_and_catalog_attributes_still_add_at_the_owner() {
 /// планирования, первый `next` ведёт к узлу, который называло значение (к его
 /// контракту, где он вычисляется), второй — к ветви узлов этого вида. Когда
 /// значение повторяло сам адрес вызова, отказ говорит снять аргумент.
+/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
 #[test]
 fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
     let traits = crate::domain::apply::source_set_traits_for_read(
@@ -2193,6 +2208,7 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
 /// владельце, задаёт адрес. Прежний вызов получает `bad_value` до
 /// планирования: первый `next` — к `can` подузла, второй — к ветви узлов
 /// этого вида. `*.set`, чей узел создаёт операция родителя, называет её.
+/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
 #[test]
 fn retired_subnode_arguments_route_next_to_the_subnode_address() {
     let traits = crate::domain::apply::source_set_traits_for_read(
@@ -2409,6 +2425,7 @@ fn retired_subnode_arguments_route_next_to_the_subnode_address() {
 /// `next` к `can` элемента структуры и к ветви `Setting.V.Item`, а снятое
 /// имя источника, вычисляемого поля и итога — к их адресу. Повторённое имя
 /// ведёт к ветви и к `can` каждого совпавшего элемента.
+/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
 #[test]
 fn retired_dcs_container_arguments_route_next_to_the_structure_item() {
     let traits = crate::domain::apply::source_set_traits_for_read(
@@ -2508,6 +2525,7 @@ fn retired_dcs_container_arguments_route_next_to_the_structure_item() {
 /// Снятые аргументы членов метаданных: прежний вызов на владельце получает
 /// `bad_value` с адресом члена; предопределённый элемент, прежде названный
 /// идентификатором, ведёт к коллекции, где видно его имя.
+/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
 #[test]
 fn retired_member_arguments_route_next_to_the_member_address() {
     let traits = crate::domain::apply::source_set_traits_for_read(
@@ -2564,6 +2582,7 @@ fn retired_member_arguments_route_next_to_the_member_address() {
 /// Срезы `Interface` модуля — элементы без адреса: `…Interface.Public`
 /// грамматика отвергает, и `view` его больше не выдаёт. Каждый `at` ответа
 /// открывается, а методы среза — адреса, которые `view` читает (#1467).
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 #[test]
 fn interface_slices_publish_only_addresses_view_opens() {
     let fixture = fixture("workspace");
@@ -2610,6 +2629,7 @@ fn interface_slices_publish_only_addresses_view_opens() {
 
 /// Role creation and rights use the same contracts that the productive
 /// planner checks. Preview keeps both source sets unchanged.
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn every_role_family_contract_builds_a_preview_without_source_writes() {
     let (_root, workspace) = two_set_workspace();
@@ -2705,6 +2725,7 @@ fn every_role_family_contract_builds_a_preview_without_source_writes() {
 
 /// The advertised Support operations publish a copyable contract and its
 /// example builds a preview on the addressed node without source writes.
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn support_can_contract_examples_preview_without_source_changes() {
     let fixture = fixture("workspace-support-form");
@@ -2777,6 +2798,7 @@ fn support_can_contract_examples_preview_without_source_changes() {
     }
 }
 
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn code_contract_context_matrix_matches_staged_parser_and_previews_without_writes() {
     use unica_bsl::input::parse_code_plan_operation;
@@ -2941,6 +2963,7 @@ fn code_contract_context_matrix_matches_staged_parser_and_previews_without_write
     assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
 }
 
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn subsystem_interface_contracts_preview_all_operations_without_source_writes() {
     let fixture = fixture("workspace");

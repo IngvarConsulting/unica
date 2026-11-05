@@ -1,7 +1,5 @@
 ---
 id: INV.APP.DOCUMENTATION-DENIED-CACHE
-check:
-  - crates/unica-documentation-sources/src/standards_documentation.rs::policy_deny_does_not_answer_from_the_search_cache
 ---
 
 # Запрещённый поставщик стандартов не отвечает из кеша

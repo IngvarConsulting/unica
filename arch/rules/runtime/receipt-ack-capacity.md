@@ -1,11 +1,5 @@
 ---
 id: INV.APP.RECEIPT-ACK-CAPACITY
-check:
-  - crates/unica-coder/tests/daemon_receipt_ledger.rs::acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay
-  - crates/unica-coder/tests/daemon_receipt_ledger.rs::acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly
-  - crates/unica-coder/tests/daemon_receipt_ledger.rs::deterministic_horizon_load_does_not_saturate
-  - crates/unica-execution/src/receipt_store/tests.rs::tombstone_pool_does_not_consume_the_sixty_four_live_receipt_slots
-  - crates/unica-execution/src/receipt_store/tests.rs::compact_tombstone_fits_512_bytes_at_the_maximum_valid_epoch_and_longest_tool_name
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 
