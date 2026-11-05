@@ -1,14 +1,5 @@
 ---
 id: INV.ANALYSIS.APPLIED-TYPE-FACTS
-check:
-  - crates/unica-bsl-applied/src/tests.rs::managers_objects_and_references_carry_typed_members_and_their_templates
-  - crates/unica-bsl-applied/src/tests.rs::registers_split_dimensions_from_resources_and_partial_facts_mark_members
-  - crates/unica-bsl-applied/src/tests.rs::comment_names_resolve_to_declared_objects_only
-  - crates/unica-bsl-applied/src/tests.rs::a_model_of_one_object_resolves_comment_names_through_the_declared_objects
-  - crates/unica-bsl-applied/src/tests.rs::nested_array_alternatives_preserve_parameter_and_return_types
-  - crates/unica-bsl-applied/src/tests.rs::ordinary_arrays_unknown_names_and_prose_keep_their_boundaries
-  - crates/unica-bsl-applied/src/tests.rs::method_addresses_and_areas_are_preserved
-  - crates/unica-bsl-applied/src/tests.rs::collection_partial_is_the_union_of_each_distinct_object
 ---
 
 # Прикладная модель сохраняет подтверждённые факты

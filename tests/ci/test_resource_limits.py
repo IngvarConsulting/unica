@@ -81,6 +81,7 @@ class ResourceLimitRegistryTests(unittest.TestCase):
         (self.root / limits.REGISTRY).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     def test_repository_registry_matches_product_code(self) -> None:
+        """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
         self.assertEqual(limits.check(ROOT), [])
 
     def test_accepts_a_complete_registry_and_ignores_test_constants(self) -> None:
@@ -88,12 +89,14 @@ class ResourceLimitRegistryTests(unittest.TestCase):
         self.assertEqual(limits.check(self.root), [])
 
     def test_rejects_a_value_that_drifts_from_the_code(self) -> None:
+        """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
         self.registry([entry(expr="16 * 1024 * 1024", value=16 * 1024 * 1024), self.timeout, self.literal])
         self.assertTrue(any("code has `8 * 1024 * 1024`" in error for error in limits.check(self.root)))
         self.registry([entry(value=1), self.timeout, self.literal])
         self.assertTrue(any("evaluates to 8388608" in error for error in limits.check(self.root)))
 
     def test_rejects_an_unregistered_limit_constant(self) -> None:
+        """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
         self.registry([entry(), self.literal])
         errors = limits.check(self.root)
         self.assertEqual(len(errors), 1)
@@ -124,6 +127,7 @@ class ResourceLimitRegistryTests(unittest.TestCase):
         self.assertEqual(limits.check(self.root), [])
 
     def test_justified_status_requires_evidence_and_decision(self) -> None:
+        """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
         self.registry([entry(status="justified"), self.timeout, self.literal])
         errors = limits.check(self.root)
         self.assertTrue(any("limits/0/evidence" in error for error in errors), errors)
@@ -136,6 +140,7 @@ class ResourceLimitRegistryTests(unittest.TestCase):
         self.assertTrue(any("class" in error for error in limits.check(self.root)))
 
     def test_scanner_reads_past_an_early_test_module_declaration(self) -> None:
+        """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
         self.write(
             "crates/demo/src/lib.rs",
             "#[cfg(test)]\nmod helpers;\nmod read;\n\npub const MAX_FILE_BYTES: usize =\n    8 * 1024 * 1024;\n"

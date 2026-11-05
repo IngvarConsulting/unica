@@ -1,19 +1,5 @@
 ---
 id: INV.APP.DOMAIN-INPUTS
-check:
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_rejects_domain_std_io_in_direct_grouped_and_common_alias_forms
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_rejects_explicit_path_ufcs_and_common_import_aliases
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_allows_business_instance_methods_and_pure_path_operations
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_masks_domain_io_text_in_comments_and_literals
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_moved_semantic_packages_keep_domain_io_and_dependency_guards
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_codecs_and_engines_reach_files_only_through_workspace
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_repository_currently_complies_with_platform_boundary
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_file_io_free_sources_refuse_third_party_file_crates
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_file_io_free_manifests_refuse_file_crate_dependencies
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_file_io_free_package_list_follows_the_source_boundary
-  - tests/ci/test_file_io_methods.py::FileIoMethodsTests.test_probe_marks_every_disallowed_method_once
-  - tests/ci/test_file_io_methods.py::FileIoMethodsTests.test_probe_must_have_every_marked_call_refused
-  - tests/ci/test_file_io_methods.py::FileIoMethodsTests.test_packages_report_only_their_own_src_once
 ---
 
 # Домен не импортирует файловые API, окружение и управление процессами

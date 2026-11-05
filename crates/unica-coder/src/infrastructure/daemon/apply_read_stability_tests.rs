@@ -27,6 +27,7 @@ fn current_view(
     (read, observed)
 }
 
+/// rule: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
 #[test]
 fn canonical_logical_read_stays_current_and_addressed_after_apply_preview() {
     for changed in [false, true] {

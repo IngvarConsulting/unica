@@ -8212,6 +8212,7 @@ mod medium_tests {
 
     /// #1119: a whole-file read takes chunks and stops at the checkpoint
     /// between them instead of finishing a large file past its deadline.
+    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
     fn checked_read_stops_between_chunks_and_keeps_a_planner_limit() {
         let root = unique_temp_root("checked-read");
@@ -8274,6 +8275,7 @@ mod medium_tests {
 
     /// #1119: the preimage comparison reads in chunks against the retained
     /// image and tells equal, changed, shorter and longer files apart.
+    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
     fn checked_comparison_matches_only_the_exact_image() {
         let root = unique_temp_root("checked-compare");
@@ -9077,6 +9079,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.SOURCE.WRITE-CONTAINMENT
     #[cfg(unix)]
     #[test]
     fn workspace_policy_rejects_lexically_external_symlink_into_workspace() {
@@ -9107,6 +9110,7 @@ mod medium_tests {
         fs::remove_dir_all(temp).unwrap();
     }
 
+    /// rule: INV.SOURCE.WRITE-CONTAINMENT
     #[cfg(unix)]
     #[test]
     fn workspace_policy_rejects_lexically_internal_symlink_outside_workspace() {
