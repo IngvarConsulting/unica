@@ -1460,6 +1460,38 @@ FROM Source WHERE Code &gt; 0</QueryText><DynamicDataRead>false</DynamicDataRead
 }
 
 #[test]
+fn dynamic_list_main_table_keeps_the_trimmed_text_reading_of_form_child_text() {
+    for (main_table, expected) in [
+        (
+            "<MainTable> Catalog.Items </MainTable>",
+            json!("Catalog.Items"),
+        ),
+        (
+            "<MainTable>\n\tCatalog.Items\n</MainTable>",
+            json!("Catalog.Items"),
+        ),
+        ("<MainTable>   </MainTable>", serde_json::Value::Null),
+        (
+            "<MainTable>Catalog.A&amp;B</MainTable>",
+            json!("Catalog.A&B"),
+        ),
+    ] {
+        let fixture = dynamic_list_fixture(&format!(
+            r#"<Settings xsi:type="DynamicList">{main_table}<KeyType>Auto</KeyType></Settings>"#
+        ));
+        let view = fixture.view_service().view(
+            ViewRequest::new("main:Report.ParityReport.Form.MainForm.Attribute.Rows").unwrap(),
+        );
+        assert!(view.ok);
+        assert_eq!(
+            view.data.unwrap()["props"].get("mainTable"),
+            Some(&expected),
+            "{main_table}"
+        );
+    }
+}
+
+#[test]
 fn dynamic_list_empty_main_table_stays_null_in_collection_and_detail() {
     let fixture = dynamic_list_fixture(
         r#"<Settings xsi:type="DynamicList"><MainTable/><KeyType>Auto</KeyType></Settings>"#,

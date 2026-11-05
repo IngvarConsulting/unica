@@ -1411,12 +1411,11 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
             } else {
                 type_name
             };
-            // An empty <MainTable/> names no table; the settings keep the
-            // observed empty text for KeyFields applicability.
-            let main_table = dynamic_list
-                .as_ref()
-                .and_then(|list| list.main_table.clone())
-                .filter(|table| !table.is_empty());
+            // The attribute's mainTable keeps the form_child_text reading:
+            // trimmed text, empty is null. The settings keep the raw text.
+            let main_table = (type_name.as_deref() == Some("DynamicList"))
+                .then(|| form_child(attr, "Settings").and_then(|s| form_child_text(s, "MainTable")))
+                .flatten();
             let columns = if matches!(type_name.as_deref(), Some("ValueTable") | Some("ValueTree"))
             {
                 form_child(attr, "Columns")
