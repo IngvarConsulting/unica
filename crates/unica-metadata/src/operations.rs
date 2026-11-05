@@ -560,6 +560,7 @@ pub struct MetaElementUpdateInput {
     /// `DenyIncompleteValues` of a register dimension.
     pub deny_incomplete_values: Option<bool>,
     pub type_reduction_mode: Option<String>,
+    pub attribute_use: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -575,6 +576,16 @@ pub struct MetaElementUpdate {
     pub indexing: Option<String>,
     pub deny_incomplete_values: Option<bool>,
     pub type_reduction_mode: Option<String>,
+    pub attribute_use: Option<String>,
+}
+
+/// Platform AttributeUse applies to header attributes of these owners only.
+pub const ATTRIBUTE_USE_VALUES: &[&str] = &["ForItem", "ForFolder", "ForFolderAndItem"];
+pub fn metadata_attribute_use_is_allowed(owner: MetadataKind) -> bool {
+    matches!(
+        owner,
+        MetadataKind::Catalog | MetadataKind::ChartOfCharacteristicTypes
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -861,6 +872,7 @@ impl MetaElementUpdate {
             && input.indexing.is_none()
             && input.deny_incomplete_values.is_none()
             && input.type_reduction_mode.is_none()
+            && input.attribute_use.is_none()
         {
             return Err(invalid_operation(
                 field,
@@ -880,6 +892,16 @@ impl MetaElementUpdate {
                 return Err(invalid_operation(
                     format!("{field}.typeReductionMode"),
                     "typeReductionMode requires a dimension and Deny or TransformValues",
+                ));
+            }
+        }
+        if let Some(value) = &input.attribute_use {
+            if collection != MetaCollection::Attributes
+                || !ATTRIBUTE_USE_VALUES.contains(&value.as_str())
+            {
+                return Err(invalid_operation(
+                    format!("{field}.use"),
+                    "use requires an attribute and ForItem, ForFolder or ForFolderAndItem",
                 ));
             }
         }
@@ -907,6 +929,7 @@ impl MetaElementUpdate {
             indexing: input.indexing,
             deny_incomplete_values: input.deny_incomplete_values,
             type_reduction_mode: input.type_reduction_mode,
+            attribute_use: input.attribute_use,
         })
     }
 }
@@ -1712,6 +1735,16 @@ pub fn validate_metadata_operation_capabilities(
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
             for (index, element) in elements.iter().enumerate() {
+                if element.attribute_use.is_some()
+                    && (*collection != MetaCollection::Attributes
+                        || scope.is_some()
+                        || !metadata_attribute_use_is_allowed(owner_kind))
+                {
+                    return Err(invalid_operation(
+                        format!("elements[{index}].use"),
+                        "use requires a header attribute of Catalog or ChartOfCharacteristicTypes",
+                    ));
+                }
                 if element.type_reduction_mode.is_some()
                     && (owner_kind != MetadataKind::InformationRegister
                         || *collection != MetaCollection::Dimensions

@@ -741,7 +741,7 @@ writer он не передаётся. Правка других свойств 
         <Indexing>DontIndex</Indexing>
         <FullTextSearch>Use</FullTextSearch>
         <DataHistory>Use</DataHistory>
-        <Use>ForItem</Use>               <!-- Только для справочников с иерархией -->
+        <Use>ForItem</Use>               <!-- Реквизит шапки Catalog или ChartOfCharacteristicTypes -->
     </Properties>
 </Attribute>
 ```
@@ -752,10 +752,10 @@ writer он не передаётся. Правка других свойств 
 |---|---|---|
 | `Indexing` | enum | `DontIndex` \| `Index` \| `IndexWithAdditionalOrder` |
 | `ChoiceFoldersAndItems` | enum | `Items` \| `Folders` \| `FoldersAndItems` |
-| `Use` | enum | `ForItem` \| `ForFolder` \| `ForFolderAndItem` (только для справочников) |
+| `Use` | enum | `ForItem` \| `ForFolder` \| `ForFolderAndItem` (реквизит шапки Catalog или ChartOfCharacteristicTypes) |
 | `FillFromFillingValue` | boolean | Заполнять из значения по умолчанию |
 
-> **Различие хранимых и нехранимых объектов**: Свойства `Indexing`, `FullTextSearch`, `DataHistory`, `FillFromFillingValue`, `FillValue` присутствуют только у **хранимых** объектов (Catalog, Document, ExchangePlan, ChartOf*, BusinessProcess, Task). У объектов DataProcessor и Report (как в конфигурации, так и внешних EPF/ERF) эти свойства **отсутствуют**. Свойство `Use` есть только у справочников (Catalog).
+> **Различие хранимых и нехранимых объектов**: Свойства `Indexing`, `FullTextSearch`, `DataHistory`, `FillFromFillingValue`, `FillValue` присутствуют только у **хранимых** объектов (Catalog, Document, ExchangePlan, ChartOf*, BusinessProcess, Task). У объектов DataProcessor и Report (как в конфигурации, так и внешних EPF/ERF) эти свойства **отсутствуют**. Свойство `Use` применимо к реквизитам шапки справочника (Catalog) и плана видов характеристик (ChartOfCharacteristicTypes), включая неиерархического владельца. Оно не применяется к реквизитам табличной части. Отсутствие свойства не задаёт значение по умолчанию.
 
 ### 6.2. Табличная часть (TabularSection)
 

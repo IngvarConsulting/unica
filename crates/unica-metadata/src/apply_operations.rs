@@ -234,11 +234,17 @@ impl unica_operations::FamilyOperation for MetadataOperation {
             .segments()
             .iter()
             .any(|segment| segment.kind() == unica_address::address::NodeKind::TabularSection);
-        Some(
-            self.contract_at(
-                owner.map(|owner| crate::contracts::MetadataSite { owner, in_section }),
-            ),
-        )
+        let mut contract = self
+            .contract_at(owner.map(|owner| crate::contracts::MetadataSite { owner, in_section }));
+        if self == Self::AttributeSet
+            && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
+        {
+            contract.schema["properties"]["values"]["properties"]
+                .as_object_mut()
+                .expect("member values properties")
+                .remove("use");
+        }
+        Some(contract)
     }
 }
 
@@ -671,6 +677,7 @@ mod tests {
                         indexing: None,
                         deny_incomplete_values: Some(true),
                         type_reduction_mode: None,
+                        attribute_use: None,
                     }],
                 },
             )

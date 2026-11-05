@@ -183,6 +183,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
             }
         } else {
             fields.remove("templateType");
+            fields.insert("use".into(), json!({"type":"string", "enum":crate::ATTRIBUTE_USE_VALUES}));
             fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
             fields.insert("typeReductionMode".into(), json!({"type":"string", "enum":["Deny", "TransformValues"]}));
         }
@@ -229,6 +230,17 @@ fn metadata_element_schema(
         })
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
+    if update
+        && collection == MetaCollection::Attributes
+        && site.is_some_and(|site| {
+            !site.in_section && crate::metadata_attribute_use_is_allowed(site.owner)
+        })
+    {
+        fields.insert(
+            "use".into(),
+            json!({"type":"string", "enum":crate::ATTRIBUTE_USE_VALUES}),
+        );
+    }
     if update && deny_incomplete_values_allowed(collection, site) {
         fields.insert("denyIncompleteValues".into(), json!({"type":"boolean"}));
     }

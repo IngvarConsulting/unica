@@ -834,6 +834,7 @@ pub fn parse_element_update(
         indexing: reader.read("indexing", optional_string_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
         type_reduction_mode: reader.read("typeReductionMode", optional_string_at)?,
+        attribute_use: reader.read("use", optional_string_at)?,
         name: reader.read("name", required_string_at)?,
         new_name: reader.read("newName", optional_string_at)?,
         synonym: reader.read("synonym", optional_string_at)?,

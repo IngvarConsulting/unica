@@ -8,6 +8,143 @@ use unica_metadata::contracts::metadata_predefined_element_input_schema;
 use unica_metadata::request::*;
 use unica_metadata::*;
 
+#[test]
+fn header_attribute_use_roundtrips_through_productive_input_and_owner_validation() {
+    for value in ["ForItem", "ForFolder", "ForFolderAndItem"] {
+        let input = parse_element_update(&json!({"name":"Flag", "use":value}), "values")
+            .expect("header attribute Use must be accepted");
+        let operation =
+            MetaEditOperation::update(MetaCollection::Attributes, None, vec![input]).unwrap();
+        for owner in [
+            MetadataKind::Catalog,
+            MetadataKind::ChartOfCharacteristicTypes,
+        ] {
+            let address = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("{}.Items", owner.as_str()),
+            )
+            .unwrap();
+            validate_metadata_operation_capabilities(owner, &address, &operation).unwrap();
+        }
+    }
+}
+
+#[test]
+fn header_attribute_use_contract_and_domain_have_the_same_closed_owner_matrix() {
+    use unica_metadata::contracts::{metadata_member_set, MetadataSite};
+    for owner in MetadataKind::ALL {
+        for in_section in [false, true] {
+            for collection in [
+                MetaCollection::Attributes,
+                MetaCollection::Dimensions,
+                MetaCollection::Resources,
+                MetaCollection::TabularSections,
+            ] {
+                let allowed = metadata_attribute_use_is_allowed(*owner)
+                    && !in_section
+                    && collection == MetaCollection::Attributes;
+                let contract = metadata_member_set(
+                    collection,
+                    Some(MetadataSite {
+                        owner: *owner,
+                        in_section,
+                    }),
+                );
+                assert_eq!(
+                    contract
+                        .normalize(&json!({"values":{"use":"ForFolder"}}), "args")
+                        .is_ok(),
+                    allowed,
+                    "{owner:?} {collection:?} {in_section}"
+                );
+                let input =
+                    parse_element_update(&json!({"name":"Flag", "use":"ForFolder"}), "values")
+                        .unwrap();
+                let op = MetaEditOperation::update(
+                    collection,
+                    in_section.then(|| MetaScope {
+                        tabular_section: "Lines".into(),
+                    }),
+                    vec![input],
+                );
+                let address = MetadataAddress::parse(
+                    PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("{}.Items", owner.as_str()),
+                )
+                .unwrap();
+                let accepted = op
+                    .and_then(|op| validate_metadata_operation_capabilities(*owner, &address, &op));
+                assert_eq!(
+                    accepted.is_ok(),
+                    allowed,
+                    "{owner:?} {collection:?} {in_section}"
+                );
+            }
+        }
+    }
+    for value in [
+        json!("Future"),
+        json!("forItem"),
+        json!(""),
+        json!(true),
+        Value::Null,
+    ] {
+        let accepted = parse_element_update(&json!({"name":"Flag", "use":value}), "values")
+            .and_then(|input| {
+                MetaEditOperation::update(MetaCollection::Attributes, None, vec![input])
+            });
+        assert!(accepted.is_err(), "{value}");
+    }
+}
+
+#[test]
+fn header_attribute_use_can_and_read_profile_require_configuration_context() {
+    use unica_operations::FamilyOperation;
+    use unica_source_contract::{
+        context::{OperationSite, SourceSetTraits},
+        route::RouteClass,
+        SourceProfile, SourceSetKind,
+    };
+    let at = unica_address::address::QualifiedAddress::parse("main:Catalog.Items.Attribute.Flag")
+        .unwrap();
+    let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+    for kind in [
+        SourceSetKind::Configuration,
+        SourceSetKind::Extension,
+        SourceSetKind::ExternalProcessor,
+        SourceSetKind::ExternalReport,
+    ] {
+        let site = OperationSite::from_route(
+            &at,
+            SourceSetTraits::from_profiles(kind, Some(profile), profile),
+            RouteClass::Metadata,
+        );
+        let contract = FamilyOperation::contract_at(
+            unica_metadata::apply_operations::MetadataOperation::AttributeSet,
+            &site,
+        )
+        .unwrap();
+        assert_eq!(
+            contract.schema["properties"]["values"]["properties"]
+                .get("use")
+                .is_some(),
+            kind == SourceSetKind::Configuration
+        );
+        assert_eq!(
+            MetaMemberReadProfile::for_source(kind, MetadataKind::Catalog, Some("2.20")).is_some(),
+            kind == SourceSetKind::Configuration
+        );
+    }
+    for version in [None, Some("2.21"), Some("2.020"), Some("")] {
+        assert!(MetaMemberReadProfile::for_source(
+            SourceSetKind::Configuration,
+            MetadataKind::ChartOfCharacteristicTypes,
+            version
+        )
+        .is_none());
+    }
+}
+
 fn object(value: Value) -> Map<String, Value> {
     value
         .as_object()
