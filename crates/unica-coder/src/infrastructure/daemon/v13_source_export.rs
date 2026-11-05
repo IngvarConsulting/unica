@@ -937,6 +937,7 @@ mod medium_tests {
     /// предупреждения, а не форма данных: конверт 0.14 без обязательного
     /// в 0.15 `requested_mode` отвергается, поэтому поле добавлено в тесте
     /// (`tests/fixtures/v8_runner_014/README.md`).
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
     #[test]
     fn captured_pull_into_the_infobase_of_another_copy_names_it() {
         let root = workspace();
@@ -983,6 +984,7 @@ mod medium_tests {
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
     }
 
+    /// rule: INV.RUNTIME.COMPATIBLE-DEVELOPMENT-CYCLE
     #[test]
     fn compatibility_cycle_accepts_explicit_force_and_rejects_silent_overwrite() {
         let root = workspace();
@@ -1000,6 +1002,7 @@ mod medium_tests {
         assert!(PreparedSourceExport::parse(&request(json!({"force":false}))).is_err());
     }
 
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn arguments_are_closed_and_each_refusal_names_the_fix() {
         for (args, expected) in [
@@ -1065,6 +1068,7 @@ mod medium_tests {
         assert_eq!(runner.call_count(), 0);
     }
 
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn preview_names_the_target_inside_the_workspace_without_writing() {
         let root = workspace();
@@ -1106,6 +1110,7 @@ mod medium_tests {
         assert!(runner.joined_args(0).ends_with("--dry-run"));
     }
 
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn preview_of_an_extension_set_passes_the_extension_and_the_set() {
         let root = workspace();
@@ -1223,6 +1228,7 @@ mod medium_tests {
         lock_project(root.path(), &CancellationToken::new()).unwrap();
     }
 
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn preview_refuses_a_target_outside_the_workspace_an_undeclared_set_or_a_write() {
         let root = workspace();
@@ -1314,6 +1320,7 @@ mod medium_tests {
         assert!(!root.path().join("main").exists());
     }
 
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn apply_without_prior_preview_counts_the_exported_files_itself() {
         let root = workspace();
@@ -1348,6 +1355,8 @@ mod medium_tests {
         assert!(!encoded.contains("--config"));
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-PRIVATE-STAGING
+    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[test]
     fn full_export_publishes_configuration_and_extension_from_a_private_stage() {
         for (set, extension) in [("main", None), ("Sales", Some("Sales"))] {
@@ -1431,6 +1440,9 @@ mod medium_tests {
         }
     }
 
+    /// rule: CTR.RUNTIME.FULL-EXPORT-DIAGNOSTICS
+    /// rule: INV.RUNTIME.FULL-EXPORT-PLATFORM-TRUST
+    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[test]
     fn full_export_rejects_invalid_results_before_replacing_sources() {
         for defect in [
@@ -1613,6 +1625,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-PLATFORM-TRUST
     #[test]
     fn adapter_preparation_projects_the_effective_local_provider_without_selecting_it() {
         for local_provider in ["ibcmd", "designer"] {
@@ -1917,11 +1930,13 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn an_unconfirmed_run_retains_the_named_stage_of_a_live_writer() {
         assert_unconfirmed_finish_retains_live_writer(false);
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn an_unwind_retains_the_named_stage_of_a_live_writer() {
         assert_unconfirmed_finish_retains_live_writer(true);
@@ -2068,6 +2083,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: CTR.RUNTIME.FULL-EXPORT-DIAGNOSTICS
     #[test]
     fn full_export_reports_unconfirmed_private_location_without_changing_publication_facts() {
         use unica_workspace::paths::is_file_sharing_violation;
@@ -2404,6 +2420,8 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn a_verified_publication_with_no_terminal_retains_its_recovery() {
         use std::time::Duration;
@@ -2655,6 +2673,8 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn published_sources_survive_missing_terminal_ack_failure_and_late_cancel() {
         for (name, fault, unconfirmed) in [
@@ -2821,6 +2841,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn invalid_terminal_after_publication_keeps_changed_and_reports_invalid_result() {
         for defect in [
@@ -2956,6 +2977,7 @@ mod medium_tests {
     /// Общий декодер различает запрошенный и случившийся режимы. Публичный
     /// guarded pull принимает только force/full; историческая incremental
     /// ветка проверяется здесь на своей границе декодирования конверта.
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn apply_names_the_export_mode_that_happened_when_it_differs() {
         let root = workspace();
@@ -2987,6 +3009,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn apply_refuses_another_target_and_an_empty_target() {
         let root = workspace();
@@ -3276,11 +3299,13 @@ mod medium_tests {
             .contains("ready-retention-secret"));
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn invalid_owned_xml_ready_rejects_and_retains_the_unknown_writer_stage() {
         verify_rejected_ready_retains_the_stage_without_a_process_tree_witness(true);
     }
 
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
     #[test]
     fn authenticated_ready_capture_precedes_concurrent_input_refusal() {
         verify_rejected_ready_retains_the_stage_without_a_process_tree_witness(false);
