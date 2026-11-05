@@ -121,3 +121,91 @@ fn choice_mode_preserves_other_choices_and_refuses_damaged_values() {
         std::fs::write(&path, initial).unwrap();
     }
 }
+
+#[test]
+fn choice_mode_preserves_prefixed_namespaces_on_the_new_owners() {
+    use unica_metadata::MetadataKind;
+    for (kind, file) in [
+        (MetadataKind::Enum, "Enums/Codes.xml"),
+        (
+            MetadataKind::ChartOfCharacteristicTypes,
+            "ChartsOfCharacteristicTypes/Codes.xml",
+        ),
+        (
+            MetadataKind::ChartOfCalculationTypes,
+            "ChartsOfCalculationTypes/Codes.xml",
+        ),
+        (MetadataKind::ChartOfAccounts, "ChartsOfAccounts/Codes.xml"),
+        (MetadataKind::ExchangePlan, "ExchangePlans/Codes.xml"),
+    ] {
+        let at = format!("main:{}.Codes", kind.as_str());
+        let fixture = Fixture::new("workspace-choice-mode");
+        let path = fixture.source.join(file);
+        let initial = std::fs::read_to_string(&path).unwrap();
+        // The owner's MDClasses elements move to the `md:` prefix without a
+        // default namespace; ChoiceMode also carries its own declaration.
+        let doc = roxmltree::Document::parse(&initial).unwrap();
+        let mut inserts = Vec::new();
+        for node in doc.descendants().filter(|node| {
+            node.is_element()
+                && node.tag_name().namespace() == Some("http://v8.1c.ru/8.3/MDClasses")
+        }) {
+            let range = node.range();
+            inserts.push(range.start + 1);
+            if let Some(close) = initial[range.clone()].rfind("</") {
+                inserts.push(range.start + close + 2);
+            }
+        }
+        inserts.sort_unstable_by(|a, b| b.cmp(a));
+        let mut prefixed = initial.clone();
+        for offset in inserts {
+            prefixed.insert_str(offset, "md:");
+        }
+        prefixed = prefixed.replacen(
+            "xmlns=\"http://v8.1c.ru/8.3/MDClasses\"",
+            "xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\"",
+            1,
+        );
+        let old = "<md:ChoiceMode>BothWays</md:ChoiceMode>";
+        assert_eq!(prefixed.matches(old).count(), 1, "{file}");
+        let prefixed = prefixed.replace(
+            old,
+            "<md:ChoiceMode xmlns:note=\"urn:a>b\">BothWays</md:ChoiceMode>",
+        );
+        std::fs::write(&path, &prefixed).unwrap();
+        let runtime = runtime();
+        let mut expected = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        let changed = prefixed.replace(
+            "<md:ChoiceMode xmlns:note=\"urn:a>b\">BothWays</md:ChoiceMode>",
+            "<md:ChoiceMode xmlns:note=\"urn:a>b\">QuickChoice</md:ChoiceMode>",
+        );
+        expected.insert(PathBuf::from(file), changed.clone().into_bytes());
+        let changes = unica_metadata::MetaPropertyChanges::convert(
+            kind,
+            vec![unica_metadata::MetaPropertyInput::new(
+                "ChoiceMode",
+                unica_metadata::MetaPropertyValue::String("QuickChoice".into()),
+            )],
+        )
+        .unwrap();
+        let mut edited = prefixed.clone();
+        for _ in 0..2 {
+            unica_metadata_designer::edit::apply_typed_properties(&mut edited, &changes, "")
+                .unwrap();
+            assert_eq!(edited, changed, "{file}");
+        }
+        for _ in 0..2 {
+            publish(
+                &runtime,
+                &fixture,
+                json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"ChoiceMode":"QuickChoice"}}}]}),
+            );
+            assert_eq!(
+                unica_workspace::test_support::tree_snapshot(&fixture.source),
+                expected,
+                "{file}"
+            );
+            assert_eq!(view(&runtime, &fixture, &at)["props"]["ChoiceMode"], "QuickChoice");
+        }
+    }
+}

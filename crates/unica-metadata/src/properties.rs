@@ -506,7 +506,14 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::ChoiceMode,
         CHOICE_MODE_KINDS,
         CHOICE_MODE_VALUES,
-    ),
+    )
+    .written_in_place(InPlace::Owners(&[
+        MetadataKind::Enum,
+        MetadataKind::ChartOfCharacteristicTypes,
+        MetadataKind::ChartOfCalculationTypes,
+        MetadataKind::ChartOfAccounts,
+        MetadataKind::ExchangePlan,
+    ])),
     property(
         "ClientManagedApplication",
         MetaPropertyKey::ClientManagedApplication,
