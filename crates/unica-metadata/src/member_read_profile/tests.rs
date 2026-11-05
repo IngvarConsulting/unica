@@ -216,6 +216,9 @@ fn nested_profile_scalar_domains_preserve_false_and_accept_native_group_forms() 
         "FormCommandBarCreateBasedOn",
         "ActionsPanelCreate",
         "ActionsPanelTools",
+        // StandardCommandsGroup has eleven values; these two complete it.
+        "ActionsPanelReports",
+        "FormNavigationPanelSeeAlso",
         "CommandGroup.Custom",
     ] {
         let parsed = group.parse_text(value).unwrap();

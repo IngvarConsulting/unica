@@ -358,8 +358,9 @@ impl MetaMemberPropertySpec {
     }
 }
 
-// Native 8.3.27 exports retain these predefined groups and named CommandGroup
-// references. This read vocabulary does not depend on mutation contracts.
+// The eleven StandardCommandsGroup values of the platform (since 8.2) and
+// named CommandGroup references. This read vocabulary does not depend on
+// mutation contracts.
 fn command_group(value: &str) -> bool {
     if [
         "NavigationPanelImportant",
@@ -367,9 +368,11 @@ fn command_group(value: &str) -> bool {
         "NavigationPanelSeeAlso",
         "FormNavigationPanelGoTo",
         "FormNavigationPanelImportant",
+        "FormNavigationPanelSeeAlso",
         "FormCommandBarImportant",
         "FormCommandBarCreateBasedOn",
         "ActionsPanelCreate",
+        "ActionsPanelReports",
         "ActionsPanelTools",
     ]
     .contains(&value)
