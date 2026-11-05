@@ -1,7 +1,7 @@
 ---
 id: INV.PERF.SERVICE-READINESS-WITHOUT-SOURCE-SCAN
-check: []
-gap: https://github.com/IngvarConsulting/unica/issues/968
+check:
+  - crates/unica-coder/tests/workspace_service_support/readiness_before_preparation.rs::production_service_readiness_does_not_wait_for_provider_source_preparation
 ---
 
 # Сервис отвечает на проверку готовности до обхода исходников
