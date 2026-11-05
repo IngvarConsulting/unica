@@ -54,6 +54,7 @@ fn batch_sizes(count: usize) -> (usize, DomainResult, DomainResult) {
     )
 }
 
+/// rule: INV.APP.APPLY-ANSWER-SIZE
 #[test]
 fn apply_answer_does_not_grow_with_the_number_of_operations() {
     let (single_request, single_preview, single_published) = batch_sizes(1);
@@ -85,6 +86,7 @@ fn apply_answer_does_not_grow_with_the_number_of_operations() {
     }
 }
 
+/// rule: INV.APP.APPLY-ANSWER-SIZE
 #[test]
 fn apply_answer_names_only_the_operation_that_warns() {
     let workspace = tempfile::tempdir().unwrap();

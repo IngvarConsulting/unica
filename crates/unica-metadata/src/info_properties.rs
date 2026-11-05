@@ -948,6 +948,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.COMMON-MODULE-ORDINARY-CLIENT
     #[test]
     fn ordinary_client_read_property_stays_independent_from_the_writer_registry() {
         assert!(mutation_compatible_read_key("ClientOrdinaryApplication").is_none());

@@ -883,6 +883,7 @@ mod tests {
         ])
     }
 
+    /// rule: INV.WIRE.SEARCH-CORPUS
     #[test]
     fn find_returns_address_facts_and_not_content_hits() {
         for query in ["Валюты", "Catalog", "Currencies", "Catalogs/Валюты.xml"] {
@@ -898,6 +899,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.SEARCH-CORPUS
     #[test]
     fn exact_kind_alias_filter_limit_and_nearest_are_deterministic() {
         let catalog = index().find(
