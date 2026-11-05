@@ -725,6 +725,14 @@ pub(super) fn project_configuration_with_counts(
     ))
 }
 
+/// Состояние поддержки членов коллекции: значение `props.support` члена,
+/// который не «не на поддержке», и причины, по которым состояние неизвестно.
+#[derive(Debug, Default)]
+pub(super) struct MemberSupport {
+    pub(super) states: std::collections::BTreeMap<String, Value>,
+    pub(super) limits: Vec<String>,
+}
+
 /// Порядок групп дерева Конфигуратора 8.3.27: «Общие» (от подсистем до
 /// языков), затем константы, справочники, документы с нумераторами и
 /// последовательностями, журналы и далее до задач. Выгрузка пишет виды
@@ -844,6 +852,7 @@ fn is_root_branch_kind(branch: &QualifiedAddress) -> bool {
 pub(super) fn project_registered_metadata_branch(
     address: &QualifiedAddress,
     payload: &Value,
+    support: MemberSupport,
 ) -> Result<NodeViewData, ViewError> {
     validate_reader_payload(LogicalReader::Configuration, payload)?;
     let kind = address
@@ -858,33 +867,47 @@ pub(super) fn project_registered_metadata_branch(
         .flatten()
         .filter(|item| item.get("kind").and_then(Value::as_str) == Some(kind.as_str()))
         .filter_map(|item| item.get("name").and_then(Value::as_str));
-    project_registered_metadata_branch_names_inner(address, kind, names)
+    project_registered_metadata_branch_names_inner(address, kind, names, support)
 }
 
 pub(super) fn project_registered_metadata_branch_names(
     address: &QualifiedAddress,
     names: &[String],
+    support: MemberSupport,
 ) -> Result<NodeViewData, ViewError> {
     let kind = address
         .segments()
         .last()
         .map(AddressSegment::kind)
         .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "metadata branch kind is missing"))?;
-    project_registered_metadata_branch_names_inner(address, kind, names.iter().map(String::as_str))
+    project_registered_metadata_branch_names_inner(
+        address,
+        kind,
+        names.iter().map(String::as_str),
+        support,
+    )
 }
 
+/// Член коллекции несёт `props.support` только в состоянии, отличном от «не на
+/// поддержке»: замок в дереве виден без чтения каждого объекта (#2158).
 fn project_registered_metadata_branch_names_inner<'a>(
     address: &QualifiedAddress,
     kind: NodeKind,
     names: impl Iterator<Item = &'a str>,
+    mut support: MemberSupport,
 ) -> Result<NodeViewData, ViewError> {
     let items = names
         .map(|name| {
+            let props = support
+                .states
+                .remove(name)
+                .map(|state| Map::from_iter([("support".to_string(), state)]))
+                .unwrap_or_default();
             serde_json::to_value(NodeView::new(
                 member_address(address, name),
                 kind.as_str(),
                 name,
-                Map::new(),
+                props,
             ))
             .expect("NodeView always serializes")
         })
@@ -895,7 +918,8 @@ fn project_registered_metadata_branch_names_inner<'a>(
             kind.as_str(),
             kind.as_str(),
             Map::new(),
-        ),
+        )
+        .with_limits(support.limits),
         items,
     )))
 }
@@ -977,6 +1001,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "drawingCount",
         ],
         LogicalReader::Xdto => &[
+            "Comment",
+            "commentError",
             "sourceSet",
             "metadataPath",
             "location",
@@ -1586,6 +1612,21 @@ fn project_xdto(
             NodeKind::XdtoPackage,
             payload,
         );
+        let mut limits = Vec::new();
+        if let Some(comment) = payload.get("Comment") {
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                "Comment",
+                comment,
+                false,
+                "metadata comment",
+            );
+        }
+        if let Some(message) = payload.get("commentError").and_then(Value::as_str) {
+            limits.push(format!("Comment: {message}"));
+        }
         if let Some(counts) = payload.get("counts") {
             props.extend(selected_scalar_props(
                 counts,
@@ -1628,7 +1669,8 @@ fn project_xdto(
                     .unwrap_or("XDTO"),
                 props,
             )
-            .with_branches(branches),
+            .with_branches(branches)
+            .with_limits(limits),
         ));
     }
     let segment = &suffix[0];
@@ -2630,6 +2672,31 @@ mod interface_command_tests {
 #[cfg(test)]
 mod composite_prop_tests {
     use super::*;
+
+    #[test]
+    fn xdto_root_comment_keeps_empty_damage_and_whole_value_reading() {
+        let address = QualifiedAddress::parse("main:XDTOPackage.Contracts").unwrap();
+        let node = |payload: &Value| {
+            validate_reader_payload(LogicalReader::Xdto, payload).unwrap();
+            let NodeViewData::Node(node) = project_xdto(&address, payload, &[]).unwrap() else {
+                panic!("package root must be a node");
+            };
+            serde_json::to_value(node).unwrap()
+        };
+        assert_eq!(node(&json!({"Comment":""}))["props"]["Comment"], "");
+        let damaged = node(&json!({"commentError":"duplicate canonical Comment"}));
+        assert!(damaged["props"].get("Comment").is_none());
+        assert!(damaged["limits"][0].as_str().unwrap().contains("Comment"));
+        let payload = json!({"Comment":"Я".repeat(MAX_COMPACT_PROP_BYTES)});
+        let compact = node(&payload);
+        assert!(compact["props"].get("Comment").is_none());
+        assert!(compact["limits"][0]
+            .as_str()
+            .unwrap()
+            .contains(".Props.Comment"));
+        let whole = with_whole_prop("Comment", || node(&payload));
+        assert_eq!(whole["props"]["Comment"], payload["Comment"]);
+    }
 
     /// #2159: a form declaration whose properties fit one by one but not
     /// together is named by its whole address and read there in full.

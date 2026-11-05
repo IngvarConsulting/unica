@@ -520,6 +520,9 @@ pub struct MetaElementInput {
     pub position: Option<MetaPosition>,
     pub template_type: Option<MetaTemplateKind>,
     pub indexing: Option<String>,
+    pub master: Option<bool>,
+    pub main_filter: Option<bool>,
+    pub deny_incomplete_values: Option<bool>,
 }
 
 impl MetaElementInput {
@@ -532,7 +535,7 @@ impl MetaElementInput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct MetaElementDefinition {
     pub name: String,
     pub synonym: Option<String>,
@@ -544,6 +547,38 @@ pub struct MetaElementDefinition {
     pub position: Option<MetaPosition>,
     pub template_type: Option<MetaTemplateKind>,
     pub indexing: Option<String>,
+    pub master: Option<bool>,
+    pub main_filter: Option<bool>,
+    pub deny_incomplete_values: Option<bool>,
+}
+
+impl std::fmt::Debug for MetaElementDefinition {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The planner's UUID seed includes this representation. Keep the
+        // established form when the added dimension flags are absent.
+        let mut value = formatter.debug_struct("MetaElementDefinition");
+        value
+            .field("name", &self.name)
+            .field("synonym", &self.synonym)
+            .field("comment", &self.comment)
+            .field("type", &self.r#type)
+            .field("required", &self.required)
+            .field("fill_value", &self.fill_value)
+            .field("attributes", &self.attributes)
+            .field("position", &self.position)
+            .field("template_type", &self.template_type)
+            .field("indexing", &self.indexing);
+        if self.master.is_some() {
+            value.field("master", &self.master);
+        }
+        if self.main_filter.is_some() {
+            value.field("main_filter", &self.main_filter);
+        }
+        if self.deny_incomplete_values.is_some() {
+            value.field("deny_incomplete_values", &self.deny_incomplete_values);
+        }
+        value.finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -559,6 +594,8 @@ pub struct MetaElementUpdateInput {
     pub indexing: Option<String>,
     /// `DenyIncompleteValues` of a register dimension.
     pub deny_incomplete_values: Option<bool>,
+    pub master: Option<bool>,
+    pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
     pub attribute_use: Option<String>,
 }
@@ -575,6 +612,8 @@ pub struct MetaElementUpdate {
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
     pub deny_incomplete_values: Option<bool>,
+    pub master: Option<bool>,
+    pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
     pub attribute_use: Option<String>,
 }
@@ -651,7 +690,8 @@ const fn collection_spec(
 pub fn metadata_deny_incomplete_values_is_allowed(owner: MetadataKind) -> bool {
     matches!(
         owner,
-        MetadataKind::AccumulationRegister
+        MetadataKind::InformationRegister
+            | MetadataKind::AccumulationRegister
             | MetadataKind::AccountingRegister
             | MetadataKind::CalculationRegister
     )
@@ -788,6 +828,57 @@ pub fn validate_collection_scope(
     Ok(())
 }
 
+fn validate_dimension_flag_collection(
+    collection: MetaCollection,
+    field: &str,
+    master: Option<bool>,
+    main_filter: Option<bool>,
+    deny: Option<bool>,
+) -> Result<(), MetaDiagnostic> {
+    for (key, value) in [
+        ("master", master),
+        ("mainFilter", main_filter),
+        ("denyIncompleteValues", deny),
+    ] {
+        if value.is_some() && collection != MetaCollection::Dimensions {
+            return Err(invalid_operation(
+                format!("{field}.{key}"),
+                format!("{key} is a property of register dimensions"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_dimension_flag_owner(
+    owner: MetadataKind,
+    collection: MetaCollection,
+    field: &str,
+    master: Option<bool>,
+    main_filter: Option<bool>,
+    deny: Option<bool>,
+    update: bool,
+) -> Result<(), MetaDiagnostic> {
+    validate_dimension_flag_collection(collection, field, master, main_filter, deny)?;
+    for (key, value) in [
+        ("master", master),
+        ("mainFilter", main_filter),
+        ("denyIncompleteValues", deny),
+    ] {
+        let allowed = owner == MetadataKind::InformationRegister
+            || (update
+                && key == "denyIncompleteValues"
+                && metadata_deny_incomplete_values_is_allowed(owner));
+        if value.is_some() && !allowed {
+            return Err(invalid_operation(
+                format!("{field}.{key}"),
+                format!("{key} is not available for this metadata field context"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl MetaElementDefinition {
     #[cfg(any(test, feature = "test-support"))]
     pub fn convert(
@@ -803,6 +894,13 @@ impl MetaElementDefinition {
         field: &str,
     ) -> Result<Self, MetaDiagnostic> {
         validate_name(&input.name, &format!("{field}.name"))?;
+        validate_dimension_flag_collection(
+            collection,
+            field,
+            input.master,
+            input.main_filter,
+            input.deny_incomplete_values,
+        )?;
         let spec = metadata_collection_spec(collection);
         validate_element_fields(
             spec,
@@ -843,7 +941,10 @@ impl MetaElementDefinition {
             attributes,
             position: input.position,
             template_type: input.template_type,
+            deny_incomplete_values: input.deny_incomplete_values,
             indexing: input.indexing,
+            master: input.master,
+            main_filter: input.main_filter,
         })
     }
 }
@@ -870,6 +971,8 @@ impl MetaElementUpdate {
             && input.fill_value.is_none()
             && input.position.is_none()
             && input.indexing.is_none()
+            && input.master.is_none()
+            && input.main_filter.is_none()
             && input.deny_incomplete_values.is_none()
             && input.type_reduction_mode.is_none()
             && input.attribute_use.is_none()
@@ -879,12 +982,13 @@ impl MetaElementUpdate {
                 "update must change at least one field",
             ));
         }
-        if input.deny_incomplete_values.is_some() && collection != MetaCollection::Dimensions {
-            return Err(invalid_operation(
-                format!("{field}.denyIncompleteValues"),
-                "denyIncompleteValues is a property of register dimensions",
-            ));
-        }
+        validate_dimension_flag_collection(
+            collection,
+            field,
+            input.master,
+            input.main_filter,
+            input.deny_incomplete_values,
+        )?;
         if let Some(value) = &input.type_reduction_mode {
             if collection != MetaCollection::Dimensions
                 || !matches!(value.as_str(), "Deny" | "TransformValues")
@@ -927,6 +1031,8 @@ impl MetaElementUpdate {
             fill_value: input.fill_value,
             position: input.position,
             indexing: input.indexing,
+            master: input.master,
+            main_filter: input.main_filter,
             deny_incomplete_values: input.deny_incomplete_values,
             type_reduction_mode: input.type_reduction_mode,
             attribute_use: input.attribute_use,
@@ -1714,6 +1820,15 @@ pub fn validate_metadata_operation_capabilities(
                 }
             }
             for (index, element) in elements.iter().enumerate() {
+                validate_dimension_flag_owner(
+                    owner_kind,
+                    *collection,
+                    &format!("elements[{index}]"),
+                    element.master,
+                    element.main_filter,
+                    element.deny_incomplete_values,
+                    false,
+                )?;
                 validate_element_fill_value_capability(
                     owner_kind,
                     *collection,
@@ -1745,20 +1860,21 @@ pub fn validate_metadata_operation_capabilities(
                         "use requires a header attribute of Catalog or ChartOfCharacteristicTypes",
                     ));
                 }
+                validate_dimension_flag_owner(
+                    owner_kind,
+                    *collection,
+                    &format!("elements[{index}]"),
+                    element.master,
+                    element.main_filter,
+                    element.deny_incomplete_values,
+                    true,
+                )?;
                 if element.type_reduction_mode.is_some()
                     && (owner_kind != MetadataKind::InformationRegister
                         || *collection != MetaCollection::Dimensions
                         || scope.is_some())
                 {
                     return Err(invalid_operation(format!("elements[{index}].typeReductionMode"), "typeReductionMode is available only for direct information register dimensions"));
-                }
-                if element.deny_incomplete_values.is_some()
-                    && !metadata_deny_incomplete_values_is_allowed(owner_kind)
-                {
-                    return Err(invalid_operation(
-                        format!("elements[{index}].denyIncompleteValues"),
-                        "denyIncompleteValues is available for dimensions of accumulation, accounting and calculation registers",
-                    ));
                 }
             }
             let context = if scope.is_some() {
@@ -3458,6 +3574,85 @@ mod tests {
         .unwrap();
 
         assert!(update.validate_targets(&existing).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod dimension_flag_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn dimension_flags_conversion_false_and_owner_matrix() {
+        let owner_address = MetadataAddress::parse(
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "InformationRegister.Prices",
+        )
+        .unwrap();
+        for key in ["master", "mainFilter", "denyIncompleteValues"] {
+            let mut value = json!({"name":"Item"});
+            value[key] = json!(false);
+            let input = crate::request::parse_element_input(&value, "elements[0]", false).unwrap();
+            let update_input = crate::request::parse_element_update(&value, "elements[0]").unwrap();
+            let added =
+                MetaElementDefinition::convert(MetaCollection::Dimensions, input.clone()).unwrap();
+            let updated = MetaElementUpdate::convert_at(
+                MetaCollection::Dimensions,
+                update_input.clone(),
+                "elements[0]",
+            )
+            .unwrap();
+            match key {
+                "master" => {
+                    assert_eq!(added.master, Some(false));
+                    assert_eq!(updated.master, Some(false));
+                }
+                "mainFilter" => {
+                    assert_eq!(added.main_filter, Some(false));
+                    assert_eq!(updated.main_filter, Some(false));
+                }
+                _ => {
+                    assert_eq!(added.deny_incomplete_values, Some(false));
+                    assert_eq!(updated.deny_incomplete_values, Some(false));
+                }
+            }
+            for collection in [MetaCollection::Attributes, MetaCollection::Resources] {
+                assert!(MetaElementDefinition::convert(collection, input.clone()).is_err());
+                assert!(MetaElementUpdate::convert_at(
+                    collection,
+                    update_input.clone(),
+                    "elements[0]"
+                )
+                .is_err());
+            }
+            for owner in [
+                MetadataKind::InformationRegister,
+                MetadataKind::AccumulationRegister,
+                MetadataKind::AccountingRegister,
+                MetadataKind::CalculationRegister,
+            ] {
+                let add = MetaEditOperation::Add {
+                    collection: MetaCollection::Dimensions,
+                    scope: None,
+                    elements: vec![added.clone()],
+                };
+                let set = MetaEditOperation::Update {
+                    collection: MetaCollection::Dimensions,
+                    scope: None,
+                    elements: vec![updated.clone()],
+                };
+                assert_eq!(
+                    validate_metadata_operation_capabilities(owner, &owner_address, &add).is_ok(),
+                    owner == MetadataKind::InformationRegister,
+                    "add {owner:?} {key}"
+                );
+                assert_eq!(
+                    validate_metadata_operation_capabilities(owner, &owner_address, &set).is_ok(),
+                    owner == MetadataKind::InformationRegister || key == "denyIncompleteValues",
+                    "set {owner:?} {key}"
+                );
+            }
+        }
     }
 }
 

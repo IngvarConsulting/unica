@@ -27,18 +27,13 @@ spec.loader.exec_module(runner)
 LANES = ("ordinary", "receipt", "vendor")
 LINUX = "ubuntu-latest"
 HOSTS = (LINUX, "macos-15", "windows-latest")
-# The queue runs the complete suite on Linux and only the platform facades on
-# macOS: OS-specific code lives in the platform directories of
-# INV.PLATFORM.OS-BEHIND-FACADE, and `size-filters.py` derives the
-# `queue-platform` nextest profile from them. Nightly `large` and release keep
-# the complete macOS matrix; pull requests do not run macOS by default.
-PLATFORM_ONLY = {("queue", "macos-15"), ("queue", "macos-14")}
+# The queue runs on Linux only: a merge group never waits for a macOS runner.
+# macOS runs the complete suite nightly, in `main` and release runs and in
+# pull requests labelled `ci:full`.
 # macos-14 is comparison-only history; it is not a current HOSTS entry.
-PLATFORM_NEXTEST_PROFILE = "queue-platform"
-
-
-def platform_only(profile: str, host: str | None) -> bool:
-    return (profile, host) in PLATFORM_ONLY
+# Earlier queue inventories ran only the platform facades on macOS (profile
+# `queue-platform`); a baseline of that shape stays a narrowed selection.
+HISTORICAL_PLATFORM_ONLY = {("queue", "macos-15"), ("queue", "macos-14")}
 
 
 def lanes(profile: str, host: str | None = None) -> tuple[str, ...]:
@@ -47,7 +42,7 @@ def lanes(profile: str, host: str | None = None) -> tuple[str, ...]:
     Vendor's ureq fault cases run with the complete suites only (nightly,
     release): the queue keeps ordinary and Receipt (owner's decision, #1813).
     """
-    if platform_only(profile, host) or not set(ADMITTED[profile]) & {"medium", "large"}:
+    if not set(ADMITTED[profile]) & {"medium", "large"}:
         return ("ordinary",)
     return LANES if "large" in ADMITTED[profile] else ("ordinary", "receipt")
 
@@ -56,7 +51,7 @@ def profile_hosts(profile: str, *, full_matrix: bool = True) -> list[str]:
     """Runners of a gate profile; a pull request adds macOS only with `ci:full`."""
     if profile == "large":
         return list(HOSTS)
-    if profile == "pr" and not full_matrix:
+    if profile == "queue" or (profile == "pr" and not full_matrix):
         return [LINUX]
     return [LINUX, "macos-15"]
 
@@ -73,7 +68,14 @@ def shards(profile: str, lane: str, host: str | None = None) -> int:
 
 
 def nextest_profile(profile: str, lane: str, host: str | None) -> str:
-    return PLATFORM_NEXTEST_PROFILE if platform_only(profile, host) else runner.nextest_profile(profile, selection(lane))
+    return runner.nextest_profile(profile, selection(lane))
+
+
+def historical_nextest_profile(profile: str, lane: str, host: str | None) -> str:
+    """The nextest profile a recorded plan of this shape used."""
+    if (profile, host) in HISTORICAL_PLATFORM_ONLY:
+        return "queue-platform"
+    return nextest_profile(profile, lane, host)
 
 
 def filters(lane: str) -> list[str]:
@@ -122,8 +124,7 @@ def run_doctests(root: Path, target: str | None) -> dict:
 
 
 def doctest_problem(manifest: dict) -> str | None:
-    # Doctests are not platform facade tests; a platform-only host skips them.
-    if manifest.get("lane") != "ordinary" or platform_only(manifest.get("profile"), manifest.get("runner")):
+    if manifest.get("lane") != "ordinary":
         return None
     outcome = manifest.get("doctests")
     if not isinstance(outcome, dict) or type(outcome.get("exitCode")) is not int:
@@ -467,7 +468,7 @@ def build(root: Path, destination: Path, lane: str, profile: str, host: str, lin
     completed.check_returncode()
     if prepared_binary.identity(root) != before:
         raise ValueError("source inputs changed while building the test archive")
-    doctests = run_doctests(root, before["target"]) if lane == "ordinary" and not platform_only(profile, host) else None
+    doctests = run_doctests(root, before["target"]) if lane == "ordinary" else None
     full_command = reuse_command("list", root, archive, lane, profile, host=host)
     completed, list_seconds = timed(full_command, root, capture=True)
     completed.check_returncode()
@@ -588,7 +589,7 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
     destination.mkdir(parents=True, exist_ok=False)
     allure_results.write_plan(destination, plan)
     signature(destination, profile=profile, host=host, lane=lane, line=line, sha=current["sha"])
-    if lane == "ordinary" and index == 1 and not platform_only(profile, host):
+    if lane == "ordinary" and index == 1:
         # Written before nextest runs, so a later failure in this shard does
         # not take the doctest outcome out of the report.
         allure_results.write(destination, doctest_record(document, profile, host))
@@ -804,8 +805,9 @@ def same_selection(first: str, second: str, host: str | None = None) -> bool:
     if first not in ADMITTED or second not in ADMITTED:
         return False
     def shape(profile):
-        return (ADMITTED[profile], lanes(profile, host),
-                tuple((shards(profile, lane, host), platform_only(profile, host)) for lane in lanes(profile, host)))
+        narrowed = (profile, host) in HISTORICAL_PLATFORM_ONLY
+        return (ADMITTED[profile], ("ordinary",) if narrowed else lanes(profile, host),
+                tuple((shards(profile, lane, host), narrowed) for lane in lanes(profile, host)))
     return shape(first) == shape(second)
 
 
@@ -851,7 +853,7 @@ def macos_runner_transition(baseline: dict, old: dict, new: dict, profile: str) 
     if projected["identity"] != identity or new.get("identity") != identity:
         raise ValueError("macos-14 to macos-15 must preserve the Darwin ARM64 target")
     if (plan.get("selection") != list(selection(old["lane"]))
-        or plan.get("nextestProfile") != nextest_profile(previous["profile"], old["lane"], "macos-14")
+        or plan.get("nextestProfile") != historical_nextest_profile(previous["profile"], old["lane"], "macos-14")
         or new.get("selection") != list(selection(new["lane"]))):
         raise ValueError("macos-14 transition has an unexpected feature or test selection")
     if same_selection(previous["profile"], profile, "macos-14"):

@@ -88,7 +88,9 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
-    StyleItem(unica_metadata::style_color::StyleItemColor),
+    CommentOnly { kind: NodeKind, comment: String },
+    DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
+    StyleItem(unica_metadata::property_input::StyleItemPropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
     WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
@@ -103,6 +105,8 @@ pub enum AddressedFields {
     Items,
     /// Changed fields of the member in `values`.
     Values,
+    /// Relation operands live directly under values, not elements[0].
+    RelationValues,
     /// No arguments beyond the address.
     None,
 }
@@ -120,6 +124,7 @@ impl AddressedFields {
         Some(match self {
             Self::Items => field.replacen("elements", "items", 1),
             Self::Values => field.replacen("elements[0]", "values", 1),
+            Self::RelationValues => format!("values.{field}"),
             Self::None => field.to_string(),
         })
     }
@@ -1076,15 +1081,13 @@ pub fn parse_properties(
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
-    if site == PropertiesSite::WSReference
+    let site = if site == PropertiesSite::WSReference
         && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
     {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            "WSReference LocationURL editing requires a configuration source set",
-        )
-        .at_path(format!("ops[{op_index}].args.at")));
-    }
+        PropertiesSite::CommentOnly(NodeKind::WsReference)
+    } else {
+        site
+    };
     // ApplyRequest has already resolved the operation address. It is an
     // internal carrier key, not part of the published property arguments.
     let mut payload = args.clone();
@@ -1107,6 +1110,19 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::CommentOnly { kind, comment } => {
+            let directory = unica_source_designer::layout::metadata_kind(kind.as_str())
+                .expect("comment owner has a Designer layout")
+                .directory;
+            (
+                directory,
+                DescriptorPropertyChanges::CommentOnly { kind, comment },
+            )
+        }
+        unica_metadata::property_input::PropertiesIntent::DocumentNumerator(values) => (
+            "DocumentNumerators",
+            DescriptorPropertyChanges::DocumentNumerator(values),
+        ),
         unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
             "FunctionalOptions",
             DescriptorPropertyChanges::FunctionalOption(values),
@@ -1461,7 +1477,7 @@ pub fn parse_addressed_member_change(
         AddressedFields::Values,
     ))
 }
-/// Marks a typed edit whose member is named by the operation address.
+/// Maps writer diagnostics of a typed edit to its public argument layout.
 pub fn addressed_edit(kind: MetadataPlanKind, fields: AddressedFields) -> MetadataPlanKind {
     match kind {
         MetadataPlanKind::Edit {
@@ -1870,14 +1886,17 @@ pub fn parse_relation(
         )
         .at_path(format!("ops[{op_index}].args.values")));
     }
-    parse_legacy_edit(
-        binding.source_set_name(),
-        owner,
-        kind,
-        json!({"op": "editRelations", "relation": relation, "mode": mode.as_str(), "targets": targets}),
-        |field| format!("ops[{op_index}].args.values.{field}"),
-        op_index,
-    )
+    Ok(addressed_edit(
+        parse_legacy_edit(
+            binding.source_set_name(),
+            owner,
+            kind,
+            json!({"op": "editRelations", "relation": relation, "mode": mode.as_str(), "targets": targets}),
+            |field| format!("ops[{op_index}].args.values.{field}"),
+            op_index,
+        )?,
+        AddressedFields::RelationValues,
+    ))
 }
 
 const PREDEFINED_PLACEHOLDER_ID: &str = "00000000-0000-4000-8000-000000000000";

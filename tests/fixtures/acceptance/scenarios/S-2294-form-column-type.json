@@ -1,0 +1,445 @@
+{
+  "id": "S-2294-form-column-type",
+  "issue": 2294,
+  "area": "Формы",
+  "task": "Расширить тип существующей колонки ValueTable ссылкой на справочник, сохранить DefinedType, настройки и привязки формы",
+  "workspace": "tests/fixtures/acceptance/workspace-form-column-type",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Tree.Column.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/parentType",
+          "eq": "ValueTree"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        }
+      ],
+      "captures": {
+        "beforeNegative": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Tree.Column.Value.Can.props.set"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: operation `props.set` does not apply to Column"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Tree.Column.Value",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "type": "DefinedType.Existing | CatalogRef.Additional"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `props.set` does not apply to Column `main:Catalog.Items.Form.Main.Attribute.Tree.Column.Value`; it applies at `main:Catalog.Items.Form.Main`",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeNegative"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "DefinedType.Existing"
+        }
+      ],
+      "captures": {
+        "initial": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "defined": {
+          "file": "src/DefinedTypes/Existing.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/required",
+          "eq": [
+            "type"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "type": "DefinedType.Existing | CatalogRef.Additional"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DefinedTypes/Existing.xml",
+          "kind": "sha256",
+          "eq": "$capture.defined"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"Rows\"]/{http://v8.1c.ru/8.3/xcf/logform}Columns/{http://v8.1c.ru/8.3/xcf/logform}Column[@name=\"Value\"]/{http://v8.1c.ru/8.3/xcf/logform}Type/{http://v8.1c.ru/8.1/data/core}TypeSet",
+          "eq": [
+            "cfg:DefinedType.Existing"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Table/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}InputField/{http://v8.1c.ru/8.3/xcf/logform}DataPath",
+          "eq": [
+            "Rows.Value"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"Rows\"]/{http://v8.1c.ru/8.3/xcf/logform}Columns/{http://v8.1c.ru/8.3/xcf/logform}Column[@name=\"Value\"]/{http://v8.1c.ru/8.3/xcf/logform}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "cfg:CatalogRef.Additional"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "CatalogRef.Additional | DefinedType.Existing"
+        }
+      ],
+      "captures": {
+        "changed": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/DefinedTypes/Existing.xml",
+          "kind": "sha256",
+          "eq": "$capture.defined"
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name=\"Rows\"]/{http://v8.1c.ru/8.3/xcf/logform}Columns/{http://v8.1c.ru/8.3/xcf/logform}Column[@name=\"Value\"]/{http://v8.1c.ru/8.3/xcf/logform}Type/{http://v8.1c.ru/8.1/data/core}TypeSet",
+          "eq": [
+            "cfg:DefinedType.Existing"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}Table/{http://v8.1c.ru/8.3/xcf/logform}ChildItems/{http://v8.1c.ru/8.3/xcf/logform}InputField/{http://v8.1c.ru/8.3/xcf/logform}DataPath",
+          "eq": [
+            "Rows.Value"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "type": "CatalogRef.Additional | DefinedType.Existing"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "type": "DefinedType.Existing"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "DefinedType.Existing"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DefinedTypes/Existing.xml",
+          "kind": "sha256",
+          "eq": "$capture.defined"
+        }
+      ],
+      "captures": {
+        "restored": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "type": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[0].args.values.type: expected \"string\"; `props.set` writes only the arguments listed at `main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value.Can.props.",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.restored"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "type": "DefinedType.Existing | CatalogRef.Additional"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.restored"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Width": 60
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "concurrent": {
+          "file": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Catalogs/Items/Forms/Main/Ext/Form.xml; input `Catalogs/Items/Forms/Main/Ext/Form.xml`: source write target; the plan retains i",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.concurrent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": "DefinedType.Existing"
+        }
+      ]
+    }
+  ]
+}
