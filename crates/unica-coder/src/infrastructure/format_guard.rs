@@ -958,7 +958,7 @@ fn absolutize(raw: &str, cwd: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         classify_staged_platform_xml_root, effective_format_paths, evaluate_format_guard,
         evaluate_mutation_format_guard, evaluate_read_format_guard,
@@ -2682,7 +2682,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod staged_root_tests {
+mod medium_staged_root_tests {
     use super::{classify_staged_platform_xml_root, evaluate_read_format_guard};
     use crate::application::ports::FormatGuardCheck;
     use serde_json::{Map, Value};

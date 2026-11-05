@@ -1237,8 +1237,24 @@ pub fn meta_mltext_with_language_value(
     text: &str,
 ) -> Result<String, String> {
     const WRAPPER_OPEN: &str =
-        "<w xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\">";
-    let wrapped = format!("{WRAPPER_OPEN}{existing}</w>");
+        "<w xmlns=\"http://v8.1c.ru/8.3/MDClasses\" xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"";
+    // A property of a prefixed descriptor, such as `<md:Synonym>`, keeps its
+    // prefix bound to MDClasses inside the wrapper.
+    let name = existing
+        .trim_start()
+        .strip_prefix('<')
+        .and_then(|rest| {
+            rest.split(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>')
+                .next()
+        })
+        .unwrap_or("");
+    let binding = match name.split_once(':') {
+        Some((prefix, _)) if !prefix.is_empty() && prefix != "v8" => {
+            format!(" xmlns:{prefix}=\"http://v8.1c.ru/8.3/MDClasses\"")
+        }
+        _ => String::new(),
+    };
+    let wrapped = format!("{WRAPPER_OPEN}{binding}>{existing}</w>");
     let document = roxmltree::Document::parse(&wrapped)
         .map_err(|error| format!("multilingual property is not valid XML: {error}"))?;
     let property = document

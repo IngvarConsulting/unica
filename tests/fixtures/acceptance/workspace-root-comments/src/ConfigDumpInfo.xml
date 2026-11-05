@@ -1,0 +1,33 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Catalog.Support" id="cdba4b86-8537-440f-b0a1-fdb156b17502" configVersion="686d2dafd1302248815324fe7f7c2bda00000000"/>
+		<Metadata name="CommandGroup.Probe" id="e4842271-4fc0-4e15-afef-876f05af78c0" configVersion="f17caafe0ae1c54cb95cc2dddc6545c200000000"/>
+		<Metadata name="CommonAttribute.Probe" id="8f4d5fc1-5c2c-4202-bb79-a180b03b3267" configVersion="257248158bd5e54ba81712401550006400000000"/>
+		<Metadata name="CommonCommand.Probe" id="75ffd0b9-79be-4600-a310-591fddb6d63e" configVersion="4fe1acf731a3a14a85668048300f59d700000000"/>
+		<Metadata name="CommonForm.Probe" id="42087d49-dae6-4e3f-a1d9-1f93a87ff95f" configVersion="22f9bbd3fdce504d9c6de6692ae025ca00000000"/>
+		<Metadata name="CommonPicture.Probe" id="7add6266-6413-4dbf-9084-d2b768be0964" configVersion="44d24b99dc94824ba29710fe66fc7f7700000000"/>
+		<Metadata name="CommonPicture.Probe.Picture" id="7add6266-6413-4dbf-9084-d2b768be0964.0" configVersion="4567f2fa755c8b44b90b133ac712e46500000000"/>
+		<Metadata name="CommonTemplate.Probe" id="dfee8189-c97f-4140-a9c2-ede06970ca7c" configVersion="8be41743fbbbd44e9379cc46af3fdb7800000000"/>
+		<Metadata name="CommonTemplate.Probe.Template" id="dfee8189-c97f-4140-a9c2-ede06970ca7c.0" configVersion="d8dc25fc9dad5b47a4383534822fe46c00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="f1fc6ac86f20944990e7204dc13084a000000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="aad05c3ff1a17548af6a2c254ef1d86f00000000"/>
+		<Metadata name="Constant.Support" id="b60acc67-defd-4cc6-b739-c55d7d69f1fd" configVersion="10a3d5aceec62c468abd2cdda1f4f34b00000000"/>
+		<Metadata name="Document.Support" id="782e3802-5664-4c60-80db-b5af2529b0d2" configVersion="7e7585da41466e4c9795f921b1bc55d200000000"/>
+		<Metadata name="DocumentNumerator.Probe" id="6d7d5a78-f413-4dd0-80b6-4fdeb0020215" configVersion="f58db1cd0e86bf4fa83a7ff845b8942600000000"/>
+		<Metadata name="FilterCriterion.Probe" id="e635c17c-79b2-42db-ae20-ca58b2b6b1dd" configVersion="fb9c57597c07034eb5d234f3a93280c400000000"/>
+		<Metadata name="FunctionalOption.Probe" id="720f89c8-7ae3-432f-999b-9929e39622a2" configVersion="34e38d534c593d47a4bc0557cfc5ea7f00000000"/>
+		<Metadata name="FunctionalOptionsParameter.Probe" id="c849fb09-7833-49c8-9461-98426dc6c0af" configVersion="d3b903edf92d9a4fbfca8b12143cfa5700000000"/>
+		<Metadata name="IntegrationService.Probe" id="c512a1cd-1240-4e46-8bad-8b7b27c5c25a" configVersion="536e28912a18a04a8ae7607a43a3167400000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="bbe3934e237f9044997cf14e8bf441d800000000"/>
+		<Metadata name="Sequence.Probe" id="d2a91097-6ca4-47db-9172-21e0f0238187" configVersion="bb899594339aa74b81675d05ceff3a5400000000"/>
+		<Metadata name="SessionParameter.SessionProbe" id="87b0c1d7-eebe-406b-b0f9-5292cdb3c7b3" configVersion="1f065b2267effe4a9d52b4d0d99c698100000000"/>
+		<Metadata name="SettingsStorage.Probe" id="03743cb6-7933-4d28-9680-465f824cfe55" configVersion="385811d4c9399046a9e6f987affb8e6700000000"/>
+		<Metadata name="Style.Probe" id="d94c6d0d-3439-46a1-b325-2232220dccfe" configVersion="82e80935cfb04e44a854331a9b0d606400000000"/>
+		<Metadata name="StyleItem.Probe" id="a89e6a6c-1804-4066-8497-38b2f7c61f0b" configVersion="947d7878759fc64ab2734d65badbcd8100000000"/>
+		<Metadata name="WSReference.Probe" id="b409116f-3ba2-4303-9bdc-f14961c879d6" configVersion="54c02a9abf660a47960041c273db34b300000000"/>
+		<Metadata name="WSReference.Probe.WSDefinition" id="b409116f-3ba2-4303-9bdc-f14961c879d6.0" configVersion="0f83058c9a377d4890dccdc1db6597ef00000000"/>
+		<Metadata name="XDTOPackage.Probe" id="d3e0dd8f-886a-4441-8f05-fd629da80f07" configVersion="0301c2ee9479b54fbea16a8424f25bf000000000"/>
+		<Metadata name="XDTOPackage.Probe.Package" id="d3e0dd8f-886a-4441-8f05-fd629da80f07.0" configVersion="19620b4a636f3e4f8e399bb6b685724900000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

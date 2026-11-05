@@ -12,11 +12,14 @@ mod form_appearance;
 mod member_properties;
 mod metadata;
 mod role;
+pub(crate) mod structured_properties;
 pub(crate) use metadata::borrowing_props;
 use role::project_role;
 
 const MAX_PROJECTED_BRANCHES: usize = 256;
 const MAX_COMPACT_PROP_BYTES: usize = 2_048;
+// Заголовок узла ограничен тем же пределом, что и компактное свойство.
+const _: () = assert!(MAX_COMPACT_PROP_BYTES == crate::domain::node_view::MAX_TITLE_BYTES);
 
 pub(super) fn project_typed_payload(
     route: &LogicalTreeRoute,
@@ -722,6 +725,14 @@ pub(super) fn project_configuration_with_counts(
     ))
 }
 
+/// Состояние поддержки членов коллекции: значение `props.support` члена,
+/// который не «не на поддержке», и причины, по которым состояние неизвестно.
+#[derive(Debug, Default)]
+pub(super) struct MemberSupport {
+    pub(super) states: std::collections::BTreeMap<String, Value>,
+    pub(super) limits: Vec<String>,
+}
+
 /// Порядок групп дерева Конфигуратора 8.3.27: «Общие» (от подсистем до
 /// языков), затем константы, справочники, документы с нумераторами и
 /// последовательностями, журналы и далее до задач. Выгрузка пишет виды
@@ -841,6 +852,7 @@ fn is_root_branch_kind(branch: &QualifiedAddress) -> bool {
 pub(super) fn project_registered_metadata_branch(
     address: &QualifiedAddress,
     payload: &Value,
+    support: MemberSupport,
 ) -> Result<NodeViewData, ViewError> {
     validate_reader_payload(LogicalReader::Configuration, payload)?;
     let kind = address
@@ -855,33 +867,47 @@ pub(super) fn project_registered_metadata_branch(
         .flatten()
         .filter(|item| item.get("kind").and_then(Value::as_str) == Some(kind.as_str()))
         .filter_map(|item| item.get("name").and_then(Value::as_str));
-    project_registered_metadata_branch_names_inner(address, kind, names)
+    project_registered_metadata_branch_names_inner(address, kind, names, support)
 }
 
 pub(super) fn project_registered_metadata_branch_names(
     address: &QualifiedAddress,
     names: &[String],
+    support: MemberSupport,
 ) -> Result<NodeViewData, ViewError> {
     let kind = address
         .segments()
         .last()
         .map(AddressSegment::kind)
         .ok_or_else(|| ViewError::new(RefusalCode::NotFound, "metadata branch kind is missing"))?;
-    project_registered_metadata_branch_names_inner(address, kind, names.iter().map(String::as_str))
+    project_registered_metadata_branch_names_inner(
+        address,
+        kind,
+        names.iter().map(String::as_str),
+        support,
+    )
 }
 
+/// Член коллекции несёт `props.support` только в состоянии, отличном от «не на
+/// поддержке»: замок в дереве виден без чтения каждого объекта (#2158).
 fn project_registered_metadata_branch_names_inner<'a>(
     address: &QualifiedAddress,
     kind: NodeKind,
     names: impl Iterator<Item = &'a str>,
+    mut support: MemberSupport,
 ) -> Result<NodeViewData, ViewError> {
     let items = names
         .map(|name| {
+            let props = support
+                .states
+                .remove(name)
+                .map(|state| Map::from_iter([("support".to_string(), state)]))
+                .unwrap_or_default();
             serde_json::to_value(NodeView::new(
                 member_address(address, name),
                 kind.as_str(),
                 name,
-                Map::new(),
+                props,
             ))
             .expect("NodeView always serializes")
         })
@@ -892,7 +918,8 @@ fn project_registered_metadata_branch_names_inner<'a>(
             kind.as_str(),
             kind.as_str(),
             Map::new(),
-        ),
+        )
+        .with_limits(support.limits),
         items,
     )))
 }
@@ -975,6 +1002,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "drawingCount",
         ],
         LogicalReader::Xdto => &[
+            "Comment",
+            "commentError",
             "sourceSet",
             "metadataPath",
             "location",
@@ -1435,42 +1464,69 @@ fn project_subsystem_interface(
     }
 }
 
-/// Разводит записи командного интерфейса на адресуемые и повисшие.
-///
-/// Ссылка `CommonCommand.Печать` или `Catalog.Валюты.Command.Создать` читается
-/// как адрес в том же наборе исходников. Ссылка по идентификатору
-/// (`0:78b4152e-…`) логического адреса не имеет: платформа так пишет указатель
-/// на исчезнувший объект.
+/// Limits describe the source representation, independently of whether the
+/// logical address profile supports that representation.
+#[derive(Default)]
+struct InterfaceCommandLimits {
+    identifiers: Vec<String>,
+    unsupported_named: Vec<String>,
+    malformed: Vec<String>,
+}
+
+fn named_interface_command(reference: &str) -> bool {
+    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_xml_format::names::xml_ncname_is_valid;
+    let parts = reference.split('.').collect::<Vec<_>>();
+    let owner = match parts.as_slice() {
+        ["CommonCommand", name] if xml_ncname_is_valid(name) => reference.to_string(),
+        [kind, name, "Command" | "StandardCommand", command]
+            if xml_ncname_is_valid(name) && xml_ncname_is_valid(command) =>
+        {
+            format!("{kind}.{name}")
+        }
+        _ => return false,
+    };
+    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner).is_ok()
+}
+
 fn split_interface_commands(
     address: &QualifiedAddress,
     commands: &[Value],
-) -> (Vec<(QualifiedAddress, Value)>, Vec<String>) {
+) -> (Vec<(QualifiedAddress, Value)>, InterfaceCommandLimits) {
     let source_set = address.source_set();
     let mut addressable = Vec::new();
-    let mut dangling = Vec::new();
+    let mut limits = InterfaceCommandLimits::default();
     for item in commands {
         let Some(reference) = item.get("name").and_then(Value::as_str) else {
             continue;
         };
-        match QualifiedAddress::parse(&format!("{source_set}:{reference}")) {
-            Ok(at) => addressable.push((at, item.clone())),
-            Err(_) => dangling.push(reference.to_string()),
+        if reference
+            .strip_prefix("0:")
+            .is_some_and(unica_xml_format::names::is_valid_uuid)
+        {
+            limits.identifiers.push(reference.to_string());
+        } else if !named_interface_command(reference) {
+            limits.malformed.push(reference.to_string());
+        } else {
+            match QualifiedAddress::parse(&format!("{source_set}:{reference}")) {
+                Ok(at) => addressable.push((at, item.clone())),
+                Err(_) => limits.unsupported_named.push(reference.to_string()),
+            }
         }
     }
-    (addressable, dangling)
+    (addressable, limits)
 }
 
-/// Повисшие ссылки называются слотом `limits`, а не выбрасываются молча: иначе
-/// счёт ветви и страница расходятся, а читатель считает, что видел всё.
-fn dangling_limits(dangling: &[String]) -> Vec<String> {
-    if dangling.is_empty() {
-        return Vec::new();
-    }
-    vec![format!(
-        "{} команд заданы ссылкой по идентификатору и логического адреса не имеют: {}",
-        dangling.len(),
-        dangling.join(", ")
-    )]
+fn dangling_limits(limits: &InterfaceCommandLimits) -> Vec<String> {
+    [
+        (&limits.identifiers, "Команды, заданные ссылкой по идентификатору, логического адреса не имеют"),
+        (&limits.unsupported_named, "Чтение именованных ссылок на команды не поддерживается профилем логических адресов"),
+        (&limits.malformed, "Обнаружено повреждённое или нераспознанное представление ссылок на команды; проверьте исходное описание интерфейса"),
+    ]
+    .into_iter()
+    .filter(|(references, _)| !references.is_empty())
+    .map(|(references, reason)| format!("{reason} ({}): {}", references.len(), references.join(", ")))
+    .collect()
 }
 
 fn interface_listed(interface: &Value, key: &str) -> Vec<String> {
@@ -1592,7 +1648,26 @@ fn project_xdto(
     suffix: &[AddressSegment],
 ) -> Result<NodeViewData, ViewError> {
     if suffix.is_empty() {
-        let mut props = selected_scalar_props(payload, &["targetNamespace"]);
+        let mut props = structured_properties::direct_props(
+            LogicalReader::Xdto,
+            NodeKind::XdtoPackage,
+            payload,
+        );
+        let mut limits = Vec::new();
+        if let Some(comment) = payload.get("Comment") {
+            place_prop(
+                &mut props,
+                &mut limits,
+                address,
+                "Comment",
+                comment,
+                false,
+                "metadata comment",
+            );
+        }
+        if let Some(message) = payload.get("commentError").and_then(Value::as_str) {
+            limits.push(format!("Comment: {message}"));
+        }
         if let Some(counts) = payload.get("counts") {
             props.extend(selected_scalar_props(
                 counts,
@@ -1635,7 +1710,8 @@ fn project_xdto(
                     .unwrap_or("XDTO"),
                 props,
             )
-            .with_branches(branches),
+            .with_branches(branches)
+            .with_limits(limits),
         ));
     }
     let segment = &suffix[0];
@@ -1787,11 +1863,21 @@ fn xdto_property_branch(
 
 fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) -> NodeView {
     let mut props = reader_node_props(LogicalReader::Xdto, NodeKind::Property, property);
-    let mut limits: Vec<String> = ["type", "reference", "bounds"]
+    let mut limits: Vec<String> = [("type", "type"), ("reference", "ref"), ("bounds", "bounds")]
         .into_iter()
-        .filter(|key| property.get(*key).is_some() && !props.contains_key(*key))
-        .map(|key| compact_limit(&format!("XDTO property {key}"), address, key))
+        .filter(|(input, output)| property.get(*input).is_some() && !props.contains_key(*output))
+        .map(|(_, key)| compact_limit(&format!("XDTO property {key}"), address, key))
         .collect();
+    if let Some(bounds) = property.get("bounds") {
+        for (explicit, key) in [
+            ("lowerExplicit", "lowerBound"),
+            ("upperExplicit", "upperBound"),
+        ] {
+            if bounds[explicit] == true && !props.contains_key(key) {
+                limits.push(compact_limit(&format!("XDTO property {key}"), address, key));
+            }
+        }
+    }
     if let Some([definition]) = property
         .get("typeDefs")
         .and_then(Value::as_array)
@@ -1855,7 +1941,7 @@ fn bounded_observed_prop(key: &str, value: &Value) -> Option<Value> {
 
 /// Кладёт значение в `props`. Если значение есть, но не прошло предел,
 /// ответ называет предел в `limits`, а не теряет свойство молча.
-fn place_prop(
+pub(super) fn place_prop(
     props: &mut Map<String, Value>,
     limits: &mut Vec<String>,
     owner: &QualifiedAddress,
@@ -1918,8 +2004,12 @@ fn dropped_by_size(
         }
         let mut probe = object.clone();
         probe.insert(key.clone(), stand_in);
-        if project(&Value::Object(probe)).contains_key(key) {
-            limits.push(compact_limit(key, owner, key));
+        // Проекция может публиковать поле под именем свойства платформы:
+        // предел называет то имя, под которым свойство появилось бы.
+        for (name, _) in project(&Value::Object(probe)) {
+            if !props.contains_key(&name) {
+                limits.push(compact_limit(&name, owner, &name));
+            }
         }
     }
     limits
@@ -2025,6 +2115,43 @@ fn observed_value(value: &Value) -> Option<Value> {
     }
 }
 
+/// Свойства подсистемы под именами платформы — теми же, что принимает
+/// `props.set`; слева имя в сведениях читателя.
+const SUBSYSTEM_PLATFORM_PROPS: &[(&str, &str)] = &[
+    ("synonym", "Synonym"),
+    ("comment", "Comment"),
+    ("explanation", "Explanation"),
+    ("picture", "Picture"),
+    ("includeInCommandInterface", "IncludeInCommandInterface"),
+    ("useOneCommand", "UseOneCommand"),
+];
+
+fn subsystem_support_props(value: &Value, props: &mut Map<String, Value>) {
+    if let Some(root) = value.get("libraryRoot").filter(|root| root.is_object()) {
+        props.insert("libraryRoot".to_string(), root.clone());
+    }
+    if let Some(support) = value.get("support") {
+        for (source, key) in [("state", "support"), ("directEditSafe", "directEditSafe")] {
+            if let Some(value) = support.get(source).filter(|value| safe_prop(key, value)) {
+                props.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+}
+
+/// Скалярные сведения читателя под публикуемыми именами свойств платформы.
+fn platform_scalar_props(value: &Value, names: &[(&str, &str)]) -> Map<String, Value> {
+    names
+        .iter()
+        .filter_map(|(source, name)| {
+            value
+                .get(*source)
+                .filter(|value| safe_prop(name, value))
+                .map(|value| ((*name).to_string(), value.clone()))
+        })
+        .collect()
+}
+
 fn selected_scalar_props(value: &Value, keys: &[&str]) -> Map<String, Value> {
     keys.iter()
         .filter_map(|key| {
@@ -2121,19 +2248,13 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
         return form::node_props(kind, value);
     }
     let keys: &[&str] = match (reader, kind) {
-        (LogicalReader::Dcs, NodeKind::DataSet) => &["kind", "objectName", "dataSource"],
-        (LogicalReader::Dcs, NodeKind::Field) => &["field", "title"],
-        (LogicalReader::Dcs, NodeKind::Parameter) => &[
-            "type",
-            "value",
-            "expression",
-            "restricted",
-            "availableAsField",
-        ],
-        (LogicalReader::Dcs, NodeKind::Setting) => &["presentation", "filters"],
-        (LogicalReader::Dcs, NodeKind::DataSource) => &["kind"],
-        (LogicalReader::Dcs, NodeKind::CalculatedField) => &["expression", "title"],
-        (LogicalReader::Dcs, NodeKind::Total) => &["expression", "group"],
+        (LogicalReader::Dcs, _) => {
+            let mut props = structured_properties::direct_props(reader, kind, value);
+            if kind == NodeKind::Template {
+                props.insert("format".into(), json!("DataCompositionSchema"));
+            }
+            return props;
+        }
         (LogicalReader::Mxl, NodeKind::Area) => &[
             "kind",
             "beginRow",
@@ -2144,44 +2265,42 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
             "drawingId",
             "contentCount",
         ],
-        (LogicalReader::Subsystem, _) => &[
-            "synonym",
-            "comment",
-            "explanation",
-            "picture",
-            "includeInCommandInterface",
-            "useOneCommand",
-        ],
+        (LogicalReader::Subsystem, _) => {
+            let mut props = platform_scalar_props(value, SUBSYSTEM_PLATFORM_PROPS);
+            if kind == NodeKind::Subsystem {
+                subsystem_support_props(value, &mut props);
+            }
+            return props;
+        }
         (LogicalReader::Interface, NodeKind::Command) => {
             &["visible", "roleOverrides", "group", "placement"]
         }
-        (LogicalReader::Xdto, NodeKind::Type) => &["kind", "abstract", "mixed"],
+        (LogicalReader::Xdto, NodeKind::Type) => {
+            return structured_properties::direct_props(reader, kind, value)
+        }
         (LogicalReader::Xdto, NodeKind::Property) => {
-            return ["type", "reference", "bounds"]
-                .into_iter()
-                .filter_map(|key| {
-                    value
-                        .get(key)
-                        .and_then(|value| bounded_prop(key, value))
-                        .map(|value| (key.to_string(), value))
-                })
-                .collect();
+            let mut props = structured_properties::direct_props(reader, kind, value);
+            // Publish the actual XML attribute names only when explicit. The
+            // existing bounds fact preserves lexical/default/explicit semantics.
+            if let Some(bounds) = value.get("bounds") {
+                for (raw, explicit, name) in [
+                    ("lower", "lowerExplicit", "lowerBound"),
+                    ("upper", "upperExplicit", "upperBound"),
+                ] {
+                    if bounds[explicit] == true {
+                        if let Some(value) =
+                            bounds.get(raw).and_then(|value| bounded_prop(name, value))
+                        {
+                            props.insert(name.into(), value);
+                        }
+                    }
+                }
+            }
+            return props;
         }
         _ => &[],
     };
     let mut props = selected_scalar_props(value, keys);
-    if reader == LogicalReader::Subsystem && kind == NodeKind::Subsystem {
-        if let Some(root) = value.get("libraryRoot").filter(|root| root.is_object()) {
-            props.insert("libraryRoot".to_string(), root.clone());
-        }
-        if let Some(support) = value.get("support") {
-            for (source, key) in [("state", "support"), ("directEditSafe", "directEditSafe")] {
-                if let Some(value) = support.get(source).filter(|value| safe_prop(key, value)) {
-                    props.insert(key.to_string(), value.clone());
-                }
-            }
-        }
-    }
     if kind == NodeKind::Template {
         let format = match reader {
             LogicalReader::Dcs => Some("DataCompositionSchema"),
@@ -2594,6 +2713,31 @@ mod interface_command_tests {
 #[cfg(test)]
 mod composite_prop_tests {
     use super::*;
+
+    #[test]
+    fn xdto_root_comment_keeps_empty_damage_and_whole_value_reading() {
+        let address = QualifiedAddress::parse("main:XDTOPackage.Contracts").unwrap();
+        let node = |payload: &Value| {
+            validate_reader_payload(LogicalReader::Xdto, payload).unwrap();
+            let NodeViewData::Node(node) = project_xdto(&address, payload, &[]).unwrap() else {
+                panic!("package root must be a node");
+            };
+            serde_json::to_value(node).unwrap()
+        };
+        assert_eq!(node(&json!({"Comment":""}))["props"]["Comment"], "");
+        let damaged = node(&json!({"commentError":"duplicate canonical Comment"}));
+        assert!(damaged["props"].get("Comment").is_none());
+        assert!(damaged["limits"][0].as_str().unwrap().contains("Comment"));
+        let payload = json!({"Comment":"Я".repeat(MAX_COMPACT_PROP_BYTES)});
+        let compact = node(&payload);
+        assert!(compact["props"].get("Comment").is_none());
+        assert!(compact["limits"][0]
+            .as_str()
+            .unwrap()
+            .contains(".Props.Comment"));
+        let whole = with_whole_prop("Comment", || node(&payload));
+        assert_eq!(whole["props"]["Comment"], payload["Comment"]);
+    }
 
     /// #2159: a form declaration whose properties fit one by one but not
     /// together is named by its whole address and read there in full.

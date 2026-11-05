@@ -108,7 +108,7 @@ fn runtime_command(entrypoint: &Path, args: &[String], handoff: &RuntimeHandoff<
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
 
     #[cfg(unix)]
