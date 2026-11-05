@@ -1,10 +1,18 @@
 //! The writable StyleItem Color vocabulary, independent of XML prefixes.
+
 //!
 //! Builtins follow the vendor 8.3.27 syntax-help pages
 //! objects/catalog274/{WebColors,StyleColors}.html. These are platform names,
 //! not the CSS color vocabulary. User-defined style references are read-only.
 
 use serde_json::{json, Value};
+
+/// Independent write capabilities established from one valid StyleItem descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StyleItemPropertiesObservation {
+    pub comment: bool,
+    pub color: Option<StyleItemColor>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorPalette {

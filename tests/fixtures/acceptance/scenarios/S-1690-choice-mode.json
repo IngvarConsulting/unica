@@ -1,0 +1,2025 @@
+{
+  "id": "S-1690-choice-mode",
+  "issue": 1690,
+  "area": "Метаданные",
+  "task": "Изменить способ выбора пяти дополнительных владельцев, сохранив отдельный boolean QuickChoice, формы и исходные байты при возврате; проверить Catalog.",
+  "workspace": "tests/fixtures/acceptance/workspace-choice-mode",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ChoiceMode/enum",
+          "eq": [
+            "BothWays",
+            "FromForm",
+            "QuickChoice"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "4beeb87992c242442f2449c76d9996487a7d5f91a8f38aff7a12bbc5370dcd79"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "FromForm"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "FromForm"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "FromForm"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "QuickChoice"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "QuickChoice"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "QuickChoice"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "4beeb87992c242442f2449c76d9996487a7d5f91a8f38aff7a12bbc5370dcd79"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_3": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "4beeb87992c242442f2449c76d9996487a7d5f91a8f38aff7a12bbc5370dcd79"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ChoiceMode/enum",
+          "eq": [
+            "BothWays",
+            "FromForm",
+            "QuickChoice"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "sha256",
+          "eq": "8a29bf42e97281f3e9c7062c850e496633c29bc6ca3d4064143275298f19c977"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0": {
+          "kind": "sha256",
+          "file": "src/Enums/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "FromForm"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Enum/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "FromForm"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "FromForm"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1": {
+          "kind": "sha256",
+          "file": "src/Enums/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "QuickChoice"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Enum/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "QuickChoice"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "QuickChoice"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_2": {
+          "kind": "sha256",
+          "file": "src/Enums/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Enum/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "sha256",
+          "eq": "8a29bf42e97281f3e9c7062c850e496633c29bc6ca3d4064143275298f19c977"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_3": {
+          "kind": "sha256",
+          "file": "src/Enums/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Enum/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/Enums/Codes.xml",
+          "kind": "sha256",
+          "eq": "8a29bf42e97281f3e9c7062c850e496633c29bc6ca3d4064143275298f19c977"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ChoiceMode/enum",
+          "eq": [
+            "BothWays",
+            "FromForm",
+            "QuickChoice"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "591457770cf3098a8421a2058e3ffb08bcfbc3ce5850bd648828f48ce7779c76"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_0": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "FromForm"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCharacteristicTypes/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "FromForm"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "FromForm"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_1": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "QuickChoice"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCharacteristicTypes/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "QuickChoice"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "QuickChoice"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_2": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCharacteristicTypes/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "591457770cf3098a8421a2058e3ffb08bcfbc3ce5850bd648828f48ce7779c76"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_3": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCharacteristicTypes/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "591457770cf3098a8421a2058e3ffb08bcfbc3ce5850bd648828f48ce7779c76"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ChoiceMode/enum",
+          "eq": [
+            "BothWays",
+            "FromForm",
+            "QuickChoice"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "006053376e0554e5dc57eefae95eafdd1ea18116102492c9a62ad303f7a1f28c"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_0": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCalculationTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "FromForm"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCalculationTypes/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "FromForm"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "FromForm"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_1": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCalculationTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "QuickChoice"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCalculationTypes/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "QuickChoice"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "QuickChoice"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_2": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCalculationTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCalculationTypes/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "006053376e0554e5dc57eefae95eafdd1ea18116102492c9a62ad303f7a1f28c"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_3": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCalculationTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCalculationTypes/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "006053376e0554e5dc57eefae95eafdd1ea18116102492c9a62ad303f7a1f28c"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ChoiceMode/enum",
+          "eq": [
+            "BothWays",
+            "FromForm",
+            "QuickChoice"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "c62fd4248bd401d0df1962b9a6e3e975b910b836d80789408027cb66f4cf4b72"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before4_0": {
+          "kind": "sha256",
+          "file": "src/ChartsOfAccounts/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "FromForm"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfAccounts/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "FromForm"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "FromForm"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before4_1": {
+          "kind": "sha256",
+          "file": "src/ChartsOfAccounts/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "QuickChoice"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfAccounts/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "QuickChoice"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "QuickChoice"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before4_2": {
+          "kind": "sha256",
+          "file": "src/ChartsOfAccounts/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfAccounts/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "c62fd4248bd401d0df1962b9a6e3e975b910b836d80789408027cb66f4cf4b72"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before4_3": {
+          "kind": "sha256",
+          "file": "src/ChartsOfAccounts/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfAccounts/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/ChartsOfAccounts/Codes.xml",
+          "kind": "sha256",
+          "eq": "c62fd4248bd401d0df1962b9a6e3e975b910b836d80789408027cb66f4cf4b72"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ChoiceMode/enum",
+          "eq": [
+            "BothWays",
+            "FromForm",
+            "QuickChoice"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "36c24d7f35992d68c6fbab3547acb9da9732f0293f41268d7d7529aee929f4b8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before5_0": {
+          "kind": "sha256",
+          "file": "src/ExchangePlans/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "FromForm"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before5_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ExchangePlan/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "FromForm"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "FromForm"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before5_1": {
+          "kind": "sha256",
+          "file": "src/ExchangePlans/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "QuickChoice"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before5_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ExchangePlan/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "QuickChoice"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "QuickChoice"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before5_2": {
+          "kind": "sha256",
+          "file": "src/ExchangePlans/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before5_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ExchangePlan/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "36c24d7f35992d68c6fbab3547acb9da9732f0293f41268d7d7529aee929f4b8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before5_3": {
+          "kind": "sha256",
+          "file": "src/ExchangePlans/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceMode": "BothWays"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before5_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ExchangePlan/{*}Properties/{*}ChoiceMode",
+          "eq": [
+            "BothWays"
+          ]
+        },
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "36c24d7f35992d68c6fbab3547acb9da9732f0293f41268d7d7529aee929f4b8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceMode",
+          "eq": "BothWays"
+        }
+      ]
+    }
+  ]
+}

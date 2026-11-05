@@ -165,15 +165,15 @@ fn verify_history(kind: &str, directory: &str, name: &str) {
 }
 
 #[test]
-fn data_history_catalog_preserves_neighbors_and_inactive_flags() {
+fn medium_data_history_catalog_preserves_neighbors_and_inactive_flags() {
     verify_history("Catalog", "Catalogs", "Codes");
 }
 #[test]
-fn data_history_document_preserves_neighbors_and_inactive_flags() {
+fn medium_data_history_document_preserves_neighbors_and_inactive_flags() {
     verify_history("Document", "Documents", "Приход");
 }
 #[test]
-fn data_history_register_preserves_neighbors_and_inactive_flags() {
+fn medium_data_history_register_preserves_neighbors_and_inactive_flags() {
     verify_history("InformationRegister", "InformationRegisters", "Цены");
 }
 
