@@ -1,0 +1,238 @@
+{
+  "id": "S-2319-event-source-target-guidance",
+  "issue": 2319,
+  "area": "Метаданные",
+  "task": "Прочитать готовую target-форму источника и схему Can, получить подсказку после неверного kind, затем передать target из view в relation.replace и проверить опубликованный источник",
+  "workspace": "tests/fixtures/acceptance/workspace-event-source-order",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/target/kind",
+          "eq": "object"
+        },
+        {
+          "pointer": "/data/items/0/target/metadataPath",
+          "eq": "Catalog.ПримерВ"
+        }
+      ],
+      "captures": {
+        "target": {
+          "pointer": "/data/items/0/target"
+        },
+        "before": {
+          "file": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Can.relation.replace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/oneOf/0/properties/targets/items/oneOf/0/properties/kind/const",
+          "eq": "object"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/oneOf/0/properties/targets/items/oneOf/0/required",
+          "eq": [
+            "kind",
+            "metadataPath"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Can.relation.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/oneOf/0/properties/targets/items/oneOf/0/properties/kind/const",
+          "eq": "object"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/oneOf/0/properties/targets/items/oneOf/0/required",
+          "eq": [
+            "kind",
+            "metadataPath"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.replace",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "Document",
+                    "at": "main:Document.Order"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unsupported event source kind `Document`; use object, manager, recordSet, definedType, family; example: {\"kind\":\"object\",\"metadataPath\":\"Document.Order\"}",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.targets[0].kind"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.add",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  {
+                    "kind": "DocumentObject",
+                    "at": "main:Document.Order"
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unsupported event source kind `DocumentObject`; use object, manager, recordSet, definedType, family; example: {\"kind\":\"object\",\"metadataPath\":\"Document.Order\"}",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.targets[0].kind"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription",
+        "ops": [
+          {
+            "op": "relation.replace",
+            "args": {
+              "values": {
+                "relation": "source",
+                "targets": [
+                  "$capture.target"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}EventSubscription/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Source/*",
+          "eq": [
+            "cfg:CatalogObject.ПримерВ"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/target",
+          "eq": "$capture.target"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}
