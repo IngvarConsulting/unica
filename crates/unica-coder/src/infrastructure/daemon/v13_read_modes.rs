@@ -1,9 +1,9 @@
-use crate::domain::apply::OperationDescriptorExt;
-use crate::domain::apply::RetiredOperationExt;
 use serde_json::{json, Map, Value};
 use std::fmt;
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_forms::FormItemRole;
+use unica_metadata::style_color::StyleItemColor;
+type ColorLookup<'a> = &'a dyn Fn(&QualifiedAddress) -> Option<StyleItemColor>;
 use unica_refusal::RefusalCode;
 use unica_source_designer::layout::metadata_kind;
 use unica_templates::TemplateFormat;
@@ -136,7 +136,11 @@ fn inherited_node(data: &Map<String, Value>) -> bool {
 /// template, the format filter. `None` means the dictionary is not computed
 /// for this node: the answer then carries no `can`. A computed dictionary
 /// may be empty (`[]`): nothing applies at this node, which is an answer.
-fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Option<Vec<Value>> {
+fn computed_can_entries(
+    data: &Map<String, Value>,
+    context: CanContext,
+    color: ColorLookup<'_>,
+) -> Option<Vec<Value>> {
     let (at, format, item) = node_site(data, context)?;
     let site = crate::domain::apply::operation_site(&at, context)?;
     // Содержимое заимствованного узла без своего файла принадлежит
@@ -147,7 +151,16 @@ fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Optio
         crate::domain::apply::operation_registry()
             .descriptors()
             .iter()
-            .filter(|descriptor| descriptor.applies_to_node(&site, format, item))
+            .filter(|descriptor| {
+                descriptor.applies_with_observations(
+                    &site,
+                    &crate::domain::apply::observation_lookup_with_color(
+                        &|_| format,
+                        &|_| item,
+                        color,
+                    ),
+                )
+            })
             .filter(|descriptor| !inherited || descriptor.content_resource().is_none())
             .map(|descriptor| {
                 json!({
@@ -161,11 +174,15 @@ fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Optio
 
 /// Every `view` answer of a node with a computed dictionary carries `can`:
 /// what `apply` accepts here is part of the answer, not a separate question.
+#[cfg(test)]
 pub(super) fn attach_can(data: &mut Value, context: CanContext) {
+    attach_can_with_color(data, context, &|_| None);
+}
+pub(super) fn attach_can_with_color(data: &mut Value, context: CanContext, color: ColorLookup<'_>) {
     let Some(node) = data.as_object_mut() else {
         return;
     };
-    if let Some(entries) = computed_can_entries(node, context) {
+    if let Some(entries) = computed_can_entries(node, context, color) {
         node.insert("can".to_string(), Value::Array(entries));
     }
 }
@@ -180,7 +197,7 @@ pub(super) fn operation_node(
     at: &str,
     context: CanContext,
 ) -> Result<Value, ReadModeError> {
-    operation_node_with(data, operation, at, context, &|_| None)
+    operation_node_with(data, operation, at, context, &|_| None, &|_| None)
 }
 
 /// The same with the role of an ancestor form item, read by the caller: a
@@ -192,6 +209,7 @@ pub(super) fn operation_node_with(
     at: &str,
     context: CanContext,
     ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    color: ColorLookup<'_>,
 ) -> Result<Value, ReadModeError> {
     let data = data
         .as_object()
@@ -212,6 +230,7 @@ pub(super) fn operation_node_with(
             (format, item),
             inherited_node(data),
             ancestor_role,
+            color,
         ));
     };
     if inherited_node(data) && descriptor.content_resource().is_some() {
@@ -219,7 +238,10 @@ pub(super) fn operation_node_with(
             "operation `{operation}` writes content this borrowed node inherits from the parent; read the parent named by props.extends"
         )));
     }
-    if !descriptor.applies_to_node(&site, format, item) {
+    if !descriptor.applies_with_observations(
+        &site,
+        &crate::domain::apply::observation_lookup_with_color(&|_| format, &|_| item, color),
+    ) {
         let kind = owner
             .segments()
             .last()
@@ -269,6 +291,7 @@ fn retired_operation_contract(
     (format, item): (Option<TemplateFormat>, Option<FormItemRole>),
     inherited: bool,
     ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    color: ColorLookup<'_>,
 ) -> ReadModeError {
     let Some(retired) = crate::domain::apply::retired_operation(operation) else {
         return ReadModeError::bad_value(format!(
@@ -297,7 +320,14 @@ fn retired_operation_contract(
             ancestor_role(at)
         }
     };
-    match retired.replacement_target(site, crate::domain::apply::operation_registry().context(), &format_of, &role_of) {
+    let observations =
+        crate::domain::apply::observation_lookup_with_color(&format_of, &role_of, color);
+    let replacement = retired.replacement_with_observations(
+        site,
+        crate::domain::apply::operation_registry().context(),
+        &observations,
+    );
+    match replacement {
         Some(target) => {
             let contract = format!("{target}.Can.{}", retired.replacement());
             let mut error = ReadModeError::bad_value(format!(
@@ -413,16 +443,18 @@ mod operation_dictionary_tests {
         let context = super::configuration_context();
         let event = format!("{field}.Event.OnChange");
         let data = json!({"at": event, "kind": "Event"});
-        let error = super::operation_node_with(&data, "element.add", &event, context, &roles)
-            .expect_err("a retired operation has no contract");
+        let error =
+            super::operation_node_with(&data, "element.add", &event, context, &roles, &|_| None)
+                .expect_err("a retired operation has no contract");
         assert_eq!(
             error.next(),
             Some(format!("{form}.Item.Header.Can.item.add").as_str()),
             "{error}"
         );
         let data = json!({"at": bar, "kind": "Item", "props": {"tag": "[AutoCommandBar]"}});
-        let error = super::operation_node_with(&data, "element.remove", &bar, context, &roles)
-            .expect_err("a retired operation has no contract");
+        let error =
+            super::operation_node_with(&data, "element.remove", &bar, context, &roles, &|_| None)
+                .expect_err("a retired operation has no contract");
         assert_eq!(error.next(), None, "{error}");
         let data = json!({
             "at": form,

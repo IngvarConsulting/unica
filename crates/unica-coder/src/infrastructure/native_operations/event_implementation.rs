@@ -11,7 +11,7 @@ use unica_bindings::events::{
     project_platform_event_implementation, property_call_type, require_plannable_state,
     require_postcondition, EventProjectionError, EventProjectionErrorKind,
 };
-use unica_bsl::event_text::emit_event_module;
+use unica_bsl::event_text::emit_event_module_with_variant;
 use unica_bsl::profile::PlatformProfile;
 use unica_bsl::projection::EventState;
 use unica_forms_designer::codec::parse_form_event_evidence_xml;
@@ -99,13 +99,18 @@ fn plan_one_event(
         require_plannable_state(&shape)?;
         let module_after = {
             let method = &shape;
-            emit_event_module(
+            emit_event_module_with_variant(
                 module_before.as_deref(),
                 &method.handler,
                 &method.signature,
                 method.method_kind,
                 method.directive,
                 method.region,
+                unica_source_designer::language::staged_script_variant(
+                    staged,
+                    source_set_kind,
+                    "at",
+                )?,
             )
         }?;
         let post_text = utf8_module(&module_after)?;
@@ -171,13 +176,14 @@ fn plan_one_event(
     };
     let module_after = {
         let method = &shape;
-        emit_event_module(
+        emit_event_module_with_variant(
             module_before.as_deref(),
             &method.handler,
             &method.signature,
             method.method_kind,
             method.directive,
             method.region,
+            unica_source_designer::language::staged_script_variant(staged, source_set_kind, "at")?,
         )
     }?;
     let form_after_text = utf8_source(&form_after, "patched Form.xml")?;

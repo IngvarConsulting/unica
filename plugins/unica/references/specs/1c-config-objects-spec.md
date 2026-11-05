@@ -495,11 +495,11 @@ writer он не передаётся. Правка других свойств 
     <xr:Field>Catalog.Номенклатура.StandardAttribute.Description</xr:Field>
     <xr:Field>Catalog.Номенклатура.StandardAttribute.Code</xr:Field>
 </InputByString>
-<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>  <!-- Begin | Anywhere -->
+<SearchStringModeOnInputByString>Begin</SearchStringModeOnInputByString>  <!-- Begin | AnyPart -->
 <FullTextSearchOnInputByString>Use</FullTextSearchOnInputByString>
-<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString> <!-- Directly | SlowlyObtainedSet -->
-<CreateOnInput>DontUse</CreateOnInput>                  <!-- Use | DontUse -->
-<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>        <!-- Auto | Use | DontUse -->
+<ChoiceDataGetModeOnInputByString>Directly</ChoiceDataGetModeOnInputByString> <!-- Directly | Background -->
+<CreateOnInput>DontUse</CreateOnInput>                  <!-- Auto | Use | DontUse -->
+<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>        <!-- Auto | DontUse -->
 ```
 
 ### 4.8. Свойства блокировки данных
@@ -921,7 +921,7 @@ XML-элемент: `<Catalog>`. Категория InternalInfo: CatalogObject,
 <EditType>InDialog</EditType>               <!-- InDialog | InList | Both -->
 <QuickChoice>true</QuickChoice>
 <ChoiceMode>BothWays</ChoiceMode>            <!-- BothWays -->
-<PredefinedDataUpdate>Auto</PredefinedDataUpdate>  <!-- Auto | DontAutoUpdate -->
+<PredefinedDataUpdate>Auto</PredefinedDataUpdate>  <!-- Auto | AutoUpdate | DontAutoUpdate -->
 ```
 
 ### 7.2. Предопределённые элементы (Predefined.xml)
