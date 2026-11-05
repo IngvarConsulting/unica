@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/code_allowed_length.rs"]
+mod code_allowed_length;
+
 #[path = "metadata_can_tests/business_process_task_mode.rs"]
 mod business_process_task_mode;
 
