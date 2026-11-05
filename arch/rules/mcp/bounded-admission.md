@@ -1,9 +1,5 @@
 ---
 id: INV.WIRE.BOUNDED-ADMISSION
-check:
-  - crates/unica-coder/src/interfaces/mcp.rs::admission_crosses_the_former_call_quota_and_retains_exact_ownership
-  - crates/unica-coder/src/interfaces/mcp.rs::admission_identifier_overflow_preserves_existing_call_ownership
-  - crates/unica-coder/src/interfaces/mcp.rs::dispatcher_executes_all_calls_past_the_former_quota
 ---
 
 # MCP принимает вызовы без квоты их количества

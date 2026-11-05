@@ -1,16 +1,5 @@
 ---
 id: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::arguments_are_closed_and_each_refusal_names_the_fix
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::preview_of_an_extension_set_passes_the_extension_and_the_set
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::preview_names_the_target_inside_the_workspace_without_writing
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::preview_refuses_a_target_outside_the_workspace_an_undeclared_set_or_a_write
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_without_prior_preview_counts_the_exported_files_itself
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_refuses_another_target_and_an_empty_target
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::apply_names_the_export_mode_that_happened_when_it_differs
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::published_sources_survive_missing_terminal_ack_failure_and_late_cancel
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::invalid_terminal_after_publication_keeps_changed_and_reports_invalid_result
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::authenticated_ready_capture_precedes_concurrent_input_refusal
 gap: https://github.com/IngvarConsulting/unica/issues/950
 ---
 

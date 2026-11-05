@@ -187,6 +187,7 @@ impl BslDiagnosticBackend for FakeBackend {
     }
 }
 
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
 #[test]
 fn no_deadline_analyze_dispatches_the_analyzer_without_a_timeout() {
     let fixture = ProviderFixture::new();
@@ -216,6 +217,7 @@ fn no_deadline_analyze_dispatches_the_analyzer_without_a_timeout() {
 /// Each place an analyzer run stops keeps its own closed code instead of
 /// one "provider is unavailable", and the backend's text stays inside
 /// (#1338).
+/// rule: INV.APP.DIAGNOSTIC-PROVIDERS
 #[test]
 fn backend_failure_keeps_where_the_run_stopped_and_drops_its_text() {
     let fixture = ProviderFixture::new();
@@ -291,6 +293,7 @@ fn backend_failure_keeps_where_the_run_stopped_and_drops_its_text() {
     }
 }
 
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
 #[test]
 fn no_deadline_diagnostics_refuses_before_legacy_backend_dispatch() {
     let fixture = ProviderFixture::new();
@@ -317,6 +320,7 @@ fn no_deadline_diagnostics_refuses_before_legacy_backend_dispatch() {
     assert!(backend.calls.lock().unwrap().is_empty());
 }
 
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
 #[test]
 fn no_deadline_diagnostics_explicit_cancel_wins_before_unsupported_bridge() {
     let fixture = ProviderFixture::new();
@@ -491,6 +495,7 @@ fn parse_filter_reply(value: Value) -> Result<DiagnosticProviderOutcome, String>
     )
 }
 
+/// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
 #[test]
 fn resident_filters_preserve_captured_baseline_and_authors_together() {
     let mut value = captured_baseline_authors_reply();
@@ -508,6 +513,7 @@ fn resident_filters_preserve_captured_baseline_and_authors_together() {
     assert!(!format!("{actual:?}").contains("secret author"));
 }
 
+/// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
 #[test]
 fn resident_analysis_scope_is_incomplete_without_erasing_proven_findings_or_filters() {
     let mut value = captured_baseline_authors_reply();
@@ -545,6 +551,7 @@ fn resident_analysis_scope_is_incomplete_without_erasing_proven_findings_or_filt
     assert_eq!(broken.suppressions[0].reason().unwrap().code, "missing");
 }
 
+/// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
 #[test]
 fn resident_filter_absence_and_zero_are_clean_but_malformed_flags_are_rejected() {
     let plain = json!({"revision":1,"stale":false,"reload":"none",
@@ -601,6 +608,7 @@ fn truncated_empty_resident_findings_are_incomplete_not_empty() {
 /// the shapes upstream `diagnostics file` publishes: a file answer is
 /// always `partial` with exact `known`/`new`, and a broken baseline is an
 /// `error` branch with `error_code`/`detail` and no findings.
+/// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
 #[test]
 fn resident_baseline_is_a_named_filter_and_a_broken_one_names_its_cause() {
     let reply = |baseline: Value| {

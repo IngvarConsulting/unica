@@ -1,5 +1,6 @@
 use super::*;
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn recursive_content_deduplicates_sources_and_cursors_retain_child_snapshot() {
     let fixture = RealReaderFixture::new();
@@ -81,6 +82,7 @@ fn recursive_content_deduplicates_sources_and_cursors_retain_child_snapshot() {
     assert_eq!(nested[0]["at"], sibling);
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn subtree_content_ignores_unrelated_descriptors_and_refuses_a_broken_registered_child() {
     let fixture = RealReaderFixture::new();

@@ -841,6 +841,7 @@ mod tests {
         (registry, leader, joiner)
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_stale_working_read_cannot_replace_an_observed_shared_terminal_with_cancelled() {
         for leader_holder in [true, false] {
@@ -869,6 +870,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_stale_alias_read_keeps_the_holder_cancellation_after_shared_completion() {
         for leader_holder in [true, false] {
@@ -892,6 +894,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_working_snapshot_from_before_the_cancel_request_must_reload() {
         for leader_holder in [true, false] {
@@ -917,6 +920,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn retired_or_foreign_holder_contexts_never_project_or_cancel_a_new_alias() {
         let (registry, leader, joiner) = joined_pair();
@@ -966,6 +970,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn reply_membership_capture_detects_attach_retire_aba_and_revision_overflow() {
         let registry = JoinRegistry::default();
@@ -1041,6 +1046,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn a_fence_stays_bounded_and_ends_after_its_retention() {
         let fences = SubmitFences::default();
@@ -1063,6 +1069,7 @@ mod tests {
         assert!(fences.fence(digest(MAX_SUBMIT_FENCES)));
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn only_tools_that_change_nothing_are_joinable() {
         for tool in V5ToolIdentity::ALL {
@@ -1081,6 +1088,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn only_the_exact_request_identity_finds_its_leader() {
         let registry = JoinRegistry::default();
@@ -1102,6 +1110,7 @@ mod tests {
         assert!(registry.candidate(&other_tool.request_identity()).is_none());
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_mutation_closes_joins_to_reads_started_before_it() {
         let registry = JoinRegistry::default();
@@ -1127,6 +1136,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn an_identical_read_joins_only_within_the_window_after_the_leader_started() {
         let clock = Arc::new(ManualClock(Mutex::new(std::time::Instant::now())));
@@ -1156,6 +1166,7 @@ mod tests {
         assert!(registry.alias(inside.reserved_task_id()).is_some());
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_read_checked_before_a_mutation_never_leads_after_it() {
         let registry = JoinRegistry::default();
@@ -1177,6 +1188,7 @@ mod tests {
         assert!(registry.register_leader(&after, deadline(), registry.mutation_epoch()));
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn shared_work_is_cancelled_only_when_every_holder_cancelled() {
         let registry = JoinRegistry::default();
@@ -1251,6 +1263,7 @@ mod tests {
         assert!(registry.candidate(&identity).is_none());
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn the_joinable_index_and_the_holders_stay_bounded() {
         let registry = JoinRegistry::default();

@@ -1,11 +1,5 @@
 ---
 id: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE
-check:
-  - tests/ci/test_resource_limits.py::ResourceLimitRegistryTests.test_repository_registry_matches_product_code
-  - tests/ci/test_resource_limits.py::ResourceLimitRegistryTests.test_rejects_a_value_that_drifts_from_the_code
-  - tests/ci/test_resource_limits.py::ResourceLimitRegistryTests.test_rejects_an_unregistered_limit_constant
-  - tests/ci/test_resource_limits.py::ResourceLimitRegistryTests.test_justified_status_requires_evidence_and_decision
-  - tests/ci/test_resource_limits.py::ResourceLimitRegistryTests.test_scanner_reads_past_an_early_test_module_declaration
 gap: https://github.com/IngvarConsulting/unica/issues/1119
 ---
 
