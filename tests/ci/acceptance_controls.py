@@ -243,9 +243,13 @@ def validate_file_operand(assertion, expected):
 def validate_controls(step, declared=None):
     declared = set() if declared is None else declared
     allowed = {"tool", "args", "expect", "form", "gap", "knownGap", "refusal", "status",
-               "validators", "diagnostic", "assertions", "fileAssertions", "captures"}
+               "validators", "diagnostic", "assertions", "fileAssertions", "captures", "awaitTask"}
     if set(step) - allowed:
         raise ValueError("unknown acceptance step field")
+    if "awaitTask" in step and (type(step["awaitTask"]) is not bool
+                                or step.get("tool") != "unica.apply"
+                                or step.get("expect") != ["ok"]):
+        raise ValueError("awaitTask requires a boolean on an apply step expecting terminal ok")
     # References are to earlier successful steps, never to this step itself.
     available = {"captures": {name: None for name in declared}}
     for key in ("args", "assertions", "fileAssertions"):
