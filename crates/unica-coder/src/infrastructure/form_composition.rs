@@ -271,7 +271,11 @@ pub(crate) fn add_form_with_data(
         validate_metadata_owner_shape_8_3_27(&object_xml_full, context, "form.add")?;
         let object_source = read_utf8_sig_snapshot(&object_xml_full)?;
         let object_source_text = object_source.text;
-        let mut object_text = object_source_text.clone();
+        // Registration and the default-form property are written in the
+        // default-namespace spelling; a prefixed owner gets its prefix back.
+        let (mut object_text, object_form) =
+            unica_xml_format::prefix_form::PrefixForm::normalize(&object_source_text)
+                .map_err(|message| format!("form.add: {message}"))?;
         let (object_type, object_name) = detect_form_add_object(&object_text)?;
         let format_version = detect_format_version(&object_xml_full, context)?.to_string();
 
@@ -330,6 +334,9 @@ pub(crate) fn add_form_with_data(
                 updated
             }
         };
+        let object_text = object_form
+            .restore(&object_text)
+            .map_err(|message| format!("form.add: {message}"))?;
         let object_replacement = utf8_bom_bytes(
             &lxml_tree_serialized_text_like_source_preserving_final_newline(
                 &object_text,
