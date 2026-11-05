@@ -46,6 +46,7 @@ pub struct WsReferencePropertyChanges {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
     Metadata(MetaPropertyChanges),
+    CommonPicture(CommonPicturePropertyChanges),
     FunctionalOption(FunctionalOptionPropertyChanges),
     Role(RolePropertyChanges),
     WSReference(WsReferencePropertyChanges),
@@ -58,6 +59,12 @@ pub enum PropertiesIntent {
 pub struct FunctionalOptionPropertyChanges {
     pub location: Option<String>,
     pub privileged_get_mode: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommonPicturePropertyChanges {
+    pub availability_for_choice: Option<bool>,
+    pub availability_for_appearance: Option<bool>,
 }
 
 type DecodeResult<T> = Result<T, ContractError>;
@@ -341,6 +348,14 @@ fn decode_with_contract(
                                     "LocationURL is required",
                                 )
                             })?,
+                    })
+                }
+                PropertiesSite::CommonPicture => {
+                    PropertiesIntent::CommonPicture(CommonPicturePropertyChanges {
+                        availability_for_choice: values_reader
+                            .boolean(DescriptorProperty::AvailabilityForChoice)?,
+                        availability_for_appearance: values_reader
+                            .boolean(DescriptorProperty::AvailabilityForAppearance)?,
                     })
                 }
                 PropertiesSite::FunctionalOption => {

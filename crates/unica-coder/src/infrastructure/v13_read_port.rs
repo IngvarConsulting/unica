@@ -1246,6 +1246,33 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "CommonPicture" {
+            let name = target.as_str().split('.').nth(1).unwrap_or_default();
+            match std::str::from_utf8(&descriptor)
+                .map_err(|error| error.to_string())
+                .and_then(|source| unica_metadata_designer::common_picture::read(source, name))
+            {
+                Ok(flags) => {
+                    if !payload["properties"].is_array() {
+                        payload["properties"] = json!([]);
+                    }
+                    let properties = payload["properties"]
+                        .as_array_mut()
+                        .expect("identity property array");
+                    for (key, flag) in unica_metadata_designer::common_picture::FLAGS
+                        .into_iter()
+                        .zip(flags)
+                    {
+                        if let Some(value) = flag {
+                            properties.push(json!({"key":key,"value":unica_metadata::MetaObservedPropertyValue::Boolean { value }}));
+                        }
+                    }
+                }
+                Err(message) => {
+                    payload["unreadable"] = json!([{"field":"properties", "message":message}])
+                }
+            }
+        }
         if evidence.artifact_kind() == "FunctionalOption" {
             let name = target.as_str().split('.').nth(1).unwrap_or_default();
             match std::str::from_utf8(&descriptor)
