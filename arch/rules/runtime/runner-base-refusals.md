@@ -1,14 +1,5 @@
 ---
 id: INV.RUNTIME.RUNNER-BASE-REFUSALS
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::every_runner_wire_code_maps_away_from_the_fallback
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::runner_outcomes_follow_the_codes_rather_than_the_fallback
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::runner_refusals_keep_their_outcome
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_base_contention_refusals_keep_their_outcomes
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::captured_exchange_refusals_name_both_ways_out_and_the_generations
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::captured_pull_into_the_infobase_of_another_copy_names_it
-  - crates/unica-coder/src/infrastructure/daemon/v13_extensions.rs::captured_extension_change_in_the_infobase_of_another_copy_names_it
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::captured_restore_into_the_infobase_of_another_copy_names_it
 ---
 
 # Отказ раннера о базе называет, кто действует дальше

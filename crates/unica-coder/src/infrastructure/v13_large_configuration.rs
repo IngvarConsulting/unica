@@ -1888,6 +1888,7 @@ mod tests {
     /// One topology answers every object of a source state: it is reused
     /// while every file it was built from keeps its stamp, and built again
     /// once a subsystem descriptor changes (#2235).
+    /// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
     #[test]
     fn retained_subsystem_topology_is_reused_until_a_descriptor_changes() {
         let directory = tempfile::tempdir().unwrap();
@@ -1922,6 +1923,7 @@ mod tests {
         assert_eq!(rebuilt.memberships_of(&module("Other"), None).len(), 1);
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn retained_registrations_are_reused_until_their_file_changes() {
         let fixture = artifact_root("First");
@@ -1965,6 +1967,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_stamp_inside_the_racy_window_is_never_retained() {
         let fixture = artifact_root("First");
@@ -1998,6 +2001,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn stamps_differ_by_every_identity_field() {
         use unica_source_contract::read::FileStamp;
@@ -2017,6 +2021,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_file_changed_during_its_parse_is_not_retained() {
         let fixture = artifact_root("First");
@@ -2085,6 +2090,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn every_payload_file_invalidates_the_retained_root() {
         let fixture = artifact_root("First");
@@ -2132,6 +2138,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_poisoned_retained_index_is_rebuilt() {
         let fixture = artifact_root("First");
@@ -2156,6 +2163,7 @@ mod tests {
         assert!(Arc::ptr_eq(&rebuilt, &retained));
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn a_poisoned_slot_is_emptied_and_reused() {
         let fixture = artifact_root("First");

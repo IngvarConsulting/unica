@@ -128,6 +128,7 @@ fn run_child(scenario: &str, address: &str, root: &TestRoot, extra: &[(&str, &st
     );
 }
 
+/// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
 #[cfg(target_os = "linux")]
 #[test]
 fn standards_answer_over_a_root_from_the_os_store() {
@@ -139,6 +140,7 @@ fn standards_answer_over_a_root_from_the_os_store() {
     assert_eq!(stand.requests(), vec!["POST /mcp HTTP/1.1"]);
 }
 
+/// rule: INV.PKG.NETWORK-PROXY-ROUTING
 #[cfg(target_os = "linux")]
 #[test]
 fn standards_answer_through_https_proxy() {
