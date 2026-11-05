@@ -1,0 +1,3603 @@
+{
+  "id": "S-1680-common-attribute-settings",
+  "issue": 1680,
+  "area": "Метаданные",
+  "task": "От обнаруженного общего реквизита отдельно изменить девять настроек использования и разделения, проверить preview без записи, XML и повторное чтение, обратные изменения через aliases, пустые ссылки, no-op, stale token и типизированные отказы с сохранением остальных исходников.",
+  "workspace": "tests/fixtures/acceptance/workspace-common-attribute",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "root": {
+          "pointer": "/next/0/args/at"
+        },
+        "before": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        },
+        "other0": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        },
+        "other1": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "other2": {
+          "file": "src/SessionParameters/ЗначениеОбласти.xml",
+          "kind": "sha256"
+        },
+        "other3": {
+          "file": "src/SessionParameters/ИспользоватьРазделение.xml",
+          "kind": "sha256"
+        },
+        "other4": {
+          "file": "src/Constants/УсловноеРазделение.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner": {
+          "pointer": "/data/items/0/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonAttribute.ОбластьДанных"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonAttribute.ОбластьДанных.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/AutoUse/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/DataSeparation/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/SeparatedDataUse/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/DataSeparationValue/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/DataSeparationUse/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ConditionalSeparation/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/UsersSeparation/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/AuthenticationSeparation/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ConfigurationExtensionsSeparation/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataSeparation": "Separate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: DataSeparation=Separate requires nonempty DataSeparationValue and DataSeparationUse",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AutoUse": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}AutoUse",
+          "eq": [
+            "Use"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after1": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataSeparationValue": "SessionParameter.ЗначениеОбласти"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DataSeparationValue",
+          "eq": [
+            "SessionParameter.ЗначениеОбласти"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after2": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataSeparationUse": "SessionParameter.ИспользоватьРазделение"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DataSeparationUse",
+          "eq": [
+            "SessionParameter.ИспользоватьРазделение"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after3": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataSeparation": "Separate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DataSeparation",
+          "eq": [
+            "Separate"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after4": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SeparatedDataUse": "IndependentlyAndSimultaneously"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}SeparatedDataUse",
+          "eq": [
+            "IndependentlyAndSimultaneously"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after5": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "autoUse": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}AutoUse",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "autoBeforeCondition": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ConditionalSeparation": "Constant.УсловноеРазделение"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.autoBeforeCondition"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ConditionalSeparation",
+          "eq": [
+            "Constant.УсловноеРазделение"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after6": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": "Constant.УсловноеРазделение"
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "UsersSeparation": "Separate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}UsersSeparation",
+          "eq": [
+            "Separate"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after7": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": "Constant.УсловноеРазделение"
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AuthenticationSeparation": "Separate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}AuthenticationSeparation",
+          "eq": [
+            "Separate"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after8": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": "Constant.УсловноеРазделение"
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ConfigurationExtensionsSeparation": "Separate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ConfigurationExtensionsSeparation",
+          "eq": [
+            "Separate"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after9": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": "Constant.УсловноеРазделение"
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "Separate"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AutoUse": "DontUse",
+                "DataSeparation": "Separate",
+                "SeparatedDataUse": "IndependentlyAndSimultaneously",
+                "DataSeparationValue": "SessionParameter.ЗначениеОбласти",
+                "DataSeparationUse": "SessionParameter.ИспользоватьРазделение",
+                "ConditionalSeparation": "Constant.УсловноеРазделение",
+                "UsersSeparation": "Separate",
+                "AuthenticationSeparation": "Separate",
+                "ConfigurationExtensionsSeparation": "Separate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AutoUse": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ConditionalSeparation constant must not be included in CommonAttribute Content",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AutoUse": "Sometimes"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataSeparation": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"string\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataSeparationValue": "Constant.УсловноеРазделение"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected SessionParameter.Name in this source set or an empty string",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataSeparationUse": "SessionParameter.ЗначениеОбласти"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: DataSeparationUse target must have Boolean type",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ConditionalSeparation": "SessionParameter.ИспользоватьРазделение"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected Constant.Name in this source set or an empty string",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataSeparationValue": "SessionParameter.Missing"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: SessionParameter.Missing is not registered in this source set",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ConditionalSeparation": "Constant.Missing"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Constant.Missing is not registered in this source set",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "configurationExtensionsSeparation": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ConfigurationExtensionsSeparation",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after10": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": "Constant.УсловноеРазделение"
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "authenticationSeparation": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after10"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}AuthenticationSeparation",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after11": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": "Constant.УсловноеРазделение"
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "usersSeparation": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after11"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}UsersSeparation",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after12": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": "Constant.УсловноеРазделение"
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "conditionalSeparation": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after12"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ConditionalSeparation",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after13": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "autoUse": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after13"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}AutoUse",
+          "eq": [
+            "Use"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "autoAfterCondition": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "separatedDataUse": "Independently"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.autoAfterCondition"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}SeparatedDataUse",
+          "eq": [
+            "Independently"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after14": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "Separate"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "dataSeparation": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after14"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DataSeparation",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after15": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": "SessionParameter.ИспользоватьРазделение"
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "dataSeparationUse": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after15"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DataSeparationUse",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after16": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": "SessionParameter.ЗначениеОбласти"
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "dataSeparationValue": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after16"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DataSeparationValue",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after17": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "Use"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "autoUse": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after17"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}AutoUse",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after18": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AutoUse": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "staleToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after18"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SeparatedDataUse": "IndependentlyAndSimultaneously"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after18"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}SeparatedDataUse",
+          "eq": [
+            "IndependentlyAndSimultaneously"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after19": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "IndependentlyAndSimultaneously"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.staleToken"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: CommonAttributes/ОбластьДанных.xml; input `CommonAttributes/ОбластьДанных.xml`: source write target; the plan retains its origi",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "stale_revision"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after19"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "separatedDataUse": "Independently"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.after19"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}SeparatedDataUse",
+          "eq": [
+            "Independently"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "ОбластьДанных"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}Type",
+          "eq": [
+            "xs:string"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}StringQualifiers/{http://v8.1c.ru/8.1/data/core}Length",
+          "eq": [
+            "10"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Content",
+          "eq": [
+            ""
+          ]
+        }
+      ],
+      "captures": {
+        "after20": {
+          "file": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AutoUse",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/DataSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/SeparatedDataUse",
+          "eq": "Independently"
+        },
+        {
+          "pointer": "/data/props/DataSeparationValue",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/DataSeparationUse",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/ConditionalSeparation",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/UsersSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/AuthenticationSeparation",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ConfigurationExtensionsSeparation",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.other0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.other1"
+        },
+        {
+          "path": "src/SessionParameters/ЗначениеОбласти.xml",
+          "kind": "sha256",
+          "eq": "$capture.other2"
+        },
+        {
+          "path": "src/SessionParameters/ИспользоватьРазделение.xml",
+          "kind": "sha256",
+          "eq": "$capture.other3"
+        },
+        {
+          "path": "src/Constants/УсловноеРазделение.xml",
+          "kind": "sha256",
+          "eq": "$capture.other4"
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}AutoUse",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DataSeparation",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}SeparatedDataUse",
+          "eq": [
+            "Independently"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DataSeparationValue",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DataSeparationUse",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ConditionalSeparation",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}UsersSeparation",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}AuthenticationSeparation",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/CommonAttributes/ОбластьДанных.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}CommonAttribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ConfigurationExtensionsSeparation",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    }
+  ]
+}

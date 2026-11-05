@@ -46,6 +46,7 @@ pub struct WsReferencePropertyChanges {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
     Metadata(MetaPropertyChanges),
+    CommonAttribute(CommonAttributePropertyChanges),
     FunctionalOption(FunctionalOptionPropertyChanges),
     Role(RolePropertyChanges),
     WSReference(WsReferencePropertyChanges),
@@ -58,6 +59,11 @@ pub enum PropertiesIntent {
 pub struct FunctionalOptionPropertyChanges {
     pub location: Option<String>,
     pub privileged_get_mode: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommonAttributePropertyChanges {
+    pub changes: Vec<(DescriptorProperty, String)>,
 }
 
 type DecodeResult<T> = Result<T, ContractError>;
@@ -297,6 +303,38 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::CommonAttribute | PropertiesSite::CommonAttributeExtension => {
+                    let mut changes = Vec::new();
+                    for field in site.descriptor_fields() {
+                        let value = if field.kind() == DescriptorPropertyKind::Enum {
+                            values_reader.enumerated(field)?
+                        } else {
+                            values_reader.string(field)?
+                        };
+                        if let Some(value) = value {
+                            if field.kind() == DescriptorPropertyKind::String && !value.is_empty() {
+                                let expected = if field == DescriptorProperty::ConditionalSeparation
+                                {
+                                    "Constant"
+                                } else {
+                                    "SessionParameter"
+                                };
+                                let at = unica_address::address::QualifiedAddress::parse(&format!("reference:{value}"))
+                                    .ok().filter(|at| matches!(at.segments(), [owner] if owner.kind().as_str() == expected && owner.name().is_some()));
+                                if at.is_none() {
+                                    let spelling = field
+                                        .names()
+                                        .iter()
+                                        .find(|name| values_reader.object.contains_key(**name))
+                                        .expect("supplied alias");
+                                    return Err(invalid(format!("{values_path}.{spelling}"), format!("expected {expected}.Name in this source set or an empty string")));
+                                }
+                            }
+                            changes.push((field, value));
+                        }
+                    }
+                    PropertiesIntent::CommonAttribute(CommonAttributePropertyChanges { changes })
+                }
                 PropertiesSite::StyleItem => {
                     let value = values_reader
                         .field("Value", false)?
@@ -396,6 +434,18 @@ fn decode_with_contract(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn common_attribute_reference_refusal_keeps_the_supplied_alias_path() {
+        let error = decode_properties(
+            PropertiesOperation::Set,
+            PropertiesSite::CommonAttribute,
+            &json!({"values":{"dataSeparationUse":"Constant.WrongKind"}}),
+            "ops[7].args",
+        )
+        .unwrap_err();
+        assert_eq!(error.path, "ops[7].args.values.dataSeparationUse");
+    }
     use crate::{MetaPropertyKey, MetaPropertyValue, MetadataKind, MetadataTypeVariant};
     use serde_json::json;
 
@@ -478,6 +528,8 @@ mod tests {
             })
         );
         for site in [
+            PropertiesSite::CommonAttribute,
+            PropertiesSite::CommonAttributeExtension,
             PropertiesSite::Role,
             PropertiesSite::Subsystem,
             PropertiesSite::Configuration { extension: false },
@@ -502,6 +554,8 @@ mod tests {
     #[test]
     fn collisions_types_and_closed_fields_report_the_original_caller_path() {
         for site in [
+            PropertiesSite::CommonAttribute,
+            PropertiesSite::CommonAttributeExtension,
             PropertiesSite::Role,
             PropertiesSite::Subsystem,
             PropertiesSite::Configuration { extension: false },
@@ -543,8 +597,16 @@ mod tests {
             ] {
                 assert_eq!(decode(site, args).unwrap_err().path, "ops[7].args.values");
             }
+            let valid_values = if matches!(
+                site,
+                PropertiesSite::CommonAttribute | PropertiesSite::CommonAttributeExtension
+            ) {
+                json!({"AutoUse":"Use"})
+            } else {
+                json!({"Comment":"x"})
+            };
             assert_eq!(
-                decode(site, json!({"values":{"Comment":"x"},"unknown":true}))
+                decode(site, json!({"values":valid_values,"unknown":true}))
                     .unwrap_err()
                     .path,
                 "ops[7].args.unknown"

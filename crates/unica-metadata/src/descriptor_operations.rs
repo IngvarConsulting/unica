@@ -45,6 +45,8 @@ properties_operations!(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertiesSite {
     Metadata(MetadataKind),
+    CommonAttribute,
+    CommonAttributeExtension,
     FunctionalOption,
     Role,
     WSReference,
@@ -97,6 +99,8 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Metadata(_) | PropertiesSite::StyleItem => false,
                     PropertiesSite::WSReference => matches!(self, Self::LocationUrl),
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode),
+                    PropertiesSite::CommonAttribute => matches!(self, Self::AutoUse | Self::DataSeparation | Self::SeparatedDataUse | Self::DataSeparationValue | Self::DataSeparationUse | Self::ConditionalSeparation | Self::UsersSeparation | Self::AuthenticationSeparation | Self::ConfigurationExtensionsSeparation),
+                    PropertiesSite::CommonAttributeExtension => matches!(self, Self::AutoUse),
                 }
             }
         }
@@ -110,6 +114,15 @@ macro_rules! descriptor_properties {
 // re-export of 8.3.27 resets a configuration's own
 // `ConfigurationExtensionCompatibilityMode`, so only an extension sets it.
 descriptor_properties!(
+    AutoUse => ("AutoUse", "autoUse", Enum, false, false, false, false),
+    DataSeparation => ("DataSeparation", "dataSeparation", Enum, false, false, false, false),
+    SeparatedDataUse => ("SeparatedDataUse", "separatedDataUse", Enum, false, false, false, false),
+    DataSeparationValue => ("DataSeparationValue", "dataSeparationValue", String, false, false, false, false),
+    DataSeparationUse => ("DataSeparationUse", "dataSeparationUse", String, false, false, false, false),
+    ConditionalSeparation => ("ConditionalSeparation", "conditionalSeparation", String, false, false, false, false),
+    UsersSeparation => ("UsersSeparation", "usersSeparation", Enum, false, false, false, false),
+    AuthenticationSeparation => ("AuthenticationSeparation", "authenticationSeparation", Enum, false, false, false, false),
+    ConfigurationExtensionsSeparation => ("ConfigurationExtensionsSeparation", "configurationExtensionsSeparation", Enum, false, false, false, false),
     LocationUrl => ("LocationURL", "locationURL", String, false, false, false, false),
     Location => ("Location", "location", String, false, false, false, false),
     PrivilegedGetMode => ("PrivilegedGetMode", "privilegedGetMode", Boolean, false, false, false, false),
@@ -159,6 +172,15 @@ impl DescriptorProperty {
     /// The closed 8.3.27 value set of an enumerated property. A compatibility
     /// mode leaves out `DontUse`: the platform reads it back as another mode.
     pub fn allowed_values(self) -> &'static [&'static str] {
+        match self {
+            Self::AutoUse => return &["Use", "DontUse"],
+            Self::SeparatedDataUse => return &["Independently", "IndependentlyAndSimultaneously"],
+            Self::DataSeparation
+            | Self::UsersSeparation
+            | Self::AuthenticationSeparation
+            | Self::ConfigurationExtensionsSeparation => return &["Separate", "DontUse"],
+            _ => {}
+        }
         let values = crate::configuration::cf_validate_enum_allowed(self.names()[0]);
         match (self, values.split_first()) {
             (
@@ -171,13 +193,21 @@ impl DescriptorProperty {
 }
 
 impl PropertiesSite {
+    pub fn for_source_kind(self, kind: unica_source_contract::SourceSetKind) -> Self {
+        if self == Self::CommonAttribute && kind == unica_source_contract::SourceSetKind::Extension
+        {
+            Self::CommonAttributeExtension
+        } else {
+            self
+        }
+    }
     /// The profile of an operation site: a source-set root selects the root
     /// profile of its kind, any other address its descriptor owner.
     pub fn from_site(site: &unica_source_contract::context::OperationSite<'_>) -> Option<Self> {
         if site.route() == unica_source_contract::route::RouteClass::Configuration {
             return Self::root_of(site.source().kind());
         }
-        let profile = Self::from_address(site.at())?;
+        let profile = Self::from_address(site.at())?.for_source_kind(site.source().kind());
         if profile == Self::WSReference
             && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
         {
@@ -218,6 +248,7 @@ impl PropertiesSite {
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::CommonAttribute => Some(Self::CommonAttribute),
             NodeKind::StyleItem => Some(Self::StyleItem),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
             NodeKind::Role => Some(Self::Role),
@@ -245,7 +276,9 @@ impl PropertiesSite {
                     crate::style_color::StyleItemColor::argument_schema(),
                 );
             }
-            Self::FunctionalOption
+            Self::CommonAttribute
+            | Self::CommonAttributeExtension
+            | Self::FunctionalOption
             | Self::WSReference
             | Self::Role
             | Self::Subsystem
@@ -300,11 +333,14 @@ impl PropertiesOperation {
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
                 notes: match site {
+                    PropertiesSite::CommonAttributeExtension => "A borrowed CommonAttribute in an 8.3.27 extension changes only its existing AutoUse (Use or DontUse). Data-separation declarations are absent from its native descriptor. Content and the borrowed identity stay unchanged. Preview writes nothing; execute its saved executionToken.",
+                    PropertiesSite::CommonAttribute => "Only the nine root AutoUse/data-separation settings are writable. Enum values are closed. DataSeparationValue names an existing SessionParameter with the CommonAttribute type; DataSeparationUse names a Boolean SessionParameter; ConditionalSeparation names a Boolean Constant excluded from Content while DataSeparation=Separate. References are unqualified Kind.Name in this source set, or an explicit empty string. Separate requires nonempty value/use parameters and a supported hashable type; ValueStorage, unbounded String and BinaryData are refused. Named types are resolved from guarded source descriptors before comparing effective types and qualifiers. The final batch is validated before publication; Content rows, Type and all other bytes stay unchanged. Preview writes nothing; execute its saved executionToken. Referenced descriptors and registration are guarded, including a no-op.",
                     PropertiesSite::WSReference => "LocationURL is an exact string; an empty string clears the existing field. Missing or damaged fields are refused. Editing preserves identity, registration and the local WSDL; it does not download WSDL/imports or generate a client. Preview writes nothing; publish only its execution token. Changes to the descriptor or configuration registration invalidate the saved plan.",
                     PropertiesSite::StyleItem => "Only values.Value is accepted: #RRGGBB or an enumerated web/builtin style color. Empty, null and arbitrary XML are refused. Type, identity and bytes outside Value stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
+                    PropertiesSite::CommonAttribute | PropertiesSite::CommonAttributeExtension => json!({"values":{"AutoUse":"Use"}}),
                     PropertiesSite::WSReference => json!({"values":{"LocationURL":"https://example.invalid/service?wsdl"}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
@@ -312,7 +348,8 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) | PropertiesSite::FunctionalOption | PropertiesSite::WSReference | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::CommonAttributeExtension => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::CommonAttribute | PropertiesSite::FunctionalOption | PropertiesSite::WSReference | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -370,6 +407,35 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn common_attribute_exposes_nine_root_settings_without_type_or_content_writes() {
+        let at = QualifiedAddress::parse("main:CommonAttribute.Tenant").unwrap();
+        let site = PropertiesSite::from_address(&at).expect("CommonAttribute property profile");
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        for (field, value) in [
+            ("AutoUse", "Use"),
+            ("DataSeparation", "Separate"),
+            ("SeparatedDataUse", "Independently"),
+            ("DataSeparationValue", "SessionParameter.TenantValue"),
+            ("DataSeparationUse", "SessionParameter.UseTenant"),
+            ("ConditionalSeparation", "Constant.UseTenant"),
+            ("UsersSeparation", "Separate"),
+            ("AuthenticationSeparation", "Separate"),
+            ("ConfigurationExtensionsSeparation", "Separate"),
+        ] {
+            assert!(oracle.is_valid(&json!({"values":{field:value}})), "{field}");
+        }
+        for values in [
+            json!({"Type":"String"}),
+            json!({"Content":[]}),
+            json!({"AutoUse":"Auto"}),
+            json!({"DataSeparationUse":null}),
+        ] {
+            assert!(!oracle.is_valid(&json!({"values":values})));
+        }
+    }
 
     #[test]
     fn ws_reference_location_url_has_a_closed_existing_descriptor_contract() {

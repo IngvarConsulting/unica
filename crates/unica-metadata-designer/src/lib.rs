@@ -19,6 +19,7 @@ pub mod format_contract;
 
 pub mod edit;
 
+pub mod common_attribute;
 pub mod functional_option;
 pub mod info;
 pub mod numerator_read;

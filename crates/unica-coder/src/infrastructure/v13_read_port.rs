@@ -1267,6 +1267,31 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "CommonAttribute" {
+            let name = target.as_str().split('.').nth(1).unwrap_or_default();
+            match std::str::from_utf8(&descriptor)
+                .map_err(|error| error.to_string())
+                .and_then(|source| {
+                    unica_metadata_designer::common_attribute::read_for_source(
+                        source,
+                        name,
+                        self.source_set_kind,
+                    )
+                }) {
+                Ok(values) => {
+                    if !payload["properties"].is_array() {
+                        payload["properties"] = json!([]);
+                    }
+                    let properties = payload["properties"]
+                        .as_array_mut()
+                        .expect("identity properties");
+                    properties.extend(values.into_iter().map(|(field, value)| json!({"key":field.names()[0], "value":unica_metadata::MetaObservedPropertyValue::Text { value }})));
+                }
+                Err(message) => {
+                    payload["unreadable"] = json!([{"field":"properties", "message":message}]);
+                }
+            }
+        }
         if evidence.artifact_kind() == "SessionParameter" {
             match unica_metadata_designer::session_parameter_comment::read_comment(&descriptor) {
                 Ok(Some(comment)) => {

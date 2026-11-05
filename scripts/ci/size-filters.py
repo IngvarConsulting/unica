@@ -104,6 +104,11 @@ MEASURED_MEDIUM_CASES = (
     # Замер задержки MCP под потоком hover (#2173). Локально, macOS arm64,
     # 26.10.2026: 4,5–7 с, под фоновой нагрузкой до 16 с.
     MeasuredMediumCase("unica-coder", "unica_coder", "interfaces::lsp::tests::an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call"),
+    # CommonAttribute #1680, Windows, 05.11.2026: 3.1, 9.0, 5.4 и 8.6 с.
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::common_attribute::common_attribute_borrowed_extension_changes_only_existing_autouse"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::common_attribute::common_attribute_each_root_field_changes_only_its_declaration"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::common_attribute::common_attribute_named_types_are_resolved_guarded_and_cannot_hide_storage"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::common_attribute::common_attribute_saved_plan_guards_noop_dependencies_registration_and_owner"),
 )
 
 

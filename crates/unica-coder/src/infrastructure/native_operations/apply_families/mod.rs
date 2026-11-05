@@ -1289,6 +1289,26 @@ pub(crate) fn plan_hidden_v13_apply(
     }
 
     code_type_plan.validate_final(&mut staged.proposal(), binding.source_kind())?;
+    let mut validated_common_attributes = std::collections::BTreeSet::new();
+    for operation in &parsed {
+        if let ParsedApplyOperation::Metadata(operation) = operation {
+            if let Some((name, relative)) = operation.operation().common_attribute_owner() {
+                if !validated_common_attributes.insert(relative) {
+                    continue;
+                }
+                unica_metadata_designer::common_attribute::validate_final(
+                    &mut staged.proposal(),
+                    binding.source_kind(),
+                    name,
+                    relative,
+                )
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                        .at_path(format!("ops[{}].args.values", operation.index()))
+                })?;
+            }
+        }
+    }
     unica_metadata_designer::planner::validate_final_object_integrity(
         &mut staged.proposal(),
         binding.source_set_name(),
