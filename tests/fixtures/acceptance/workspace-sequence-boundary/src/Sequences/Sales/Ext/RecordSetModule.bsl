@@ -1,0 +1,1 @@
+﻿// Sequence record set companion.

@@ -88,6 +88,7 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
+    Sequence(unica_metadata::property_input::SequencePropertyChanges),
     CommentOnly { kind: NodeKind, comment: String },
     DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
     StyleItem(unica_metadata::property_input::StyleItemPropertyChanges),
@@ -1081,7 +1082,11 @@ pub fn parse_properties(
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
-    let site = if site == PropertiesSite::WSReference
+    let site = if site == PropertiesSite::Sequence
+        && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
+    {
+        PropertiesSite::CommentOnly(NodeKind::Sequence)
+    } else if site == PropertiesSite::WSReference
         && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
     {
         PropertiesSite::CommentOnly(NodeKind::WsReference)
@@ -1110,6 +1115,9 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::Sequence(values) => {
+            ("Sequences", DescriptorPropertyChanges::Sequence(values))
+        }
         unica_metadata::property_input::PropertiesIntent::CommentOnly { kind, comment } => {
             let directory = unica_source_designer::layout::metadata_kind(kind.as_str())
                 .expect("comment owner has a Designer layout")

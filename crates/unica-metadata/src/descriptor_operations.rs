@@ -44,6 +44,7 @@ properties_operations!(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertiesSite {
+    Sequence,
     Metadata(MetadataKind),
     CommentOnly(NodeKind),
     DocumentNumerator,
@@ -97,6 +98,7 @@ macro_rules! descriptor_properties {
                         match self { $(Self::$field => $extension),+ }
                     }
                     PropertiesSite::Metadata(_) => false,
+                    PropertiesSite::Sequence => matches!(self, Self::MoveBoundaryOnPosting | Self::Comment),
                     PropertiesSite::DocumentNumerator => self == Self::Comment,
                     PropertiesSite::CommentOnly(_) => self == Self::Comment,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
@@ -115,6 +117,7 @@ macro_rules! descriptor_properties {
 // re-export of 8.3.27 resets a configuration's own
 // `ConfigurationExtensionCompatibilityMode`, so only an extension sets it.
 descriptor_properties!(
+    MoveBoundaryOnPosting => ("MoveBoundaryOnPosting", "moveBoundaryOnPosting", Enum, false, false, false, false),
     LocationUrl => ("LocationURL", "locationURL", String, false, false, false, false),
     Location => ("Location", "location", String, false, false, false, false),
     PrivilegedGetMode => ("PrivilegedGetMode", "privilegedGetMode", Boolean, false, false, false, false),
@@ -164,6 +167,9 @@ impl DescriptorProperty {
     /// The closed 8.3.27 value set of an enumerated property. A compatibility
     /// mode leaves out `DontUse`: the platform reads it back as another mode.
     pub fn allowed_values(self) -> &'static [&'static str] {
+        if self == Self::MoveBoundaryOnPosting {
+            return &["DontMove", "Move"];
+        }
         let values = crate::configuration::cf_validate_enum_allowed(self.names()[0]);
         match (self, values.split_first()) {
             (
@@ -183,6 +189,11 @@ impl PropertiesSite {
             return Self::root_of(site.source().kind());
         }
         let profile = Self::from_address(site.at())?;
+        if profile == Self::Sequence
+            && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
+        {
+            return Some(Self::CommentOnly(NodeKind::Sequence));
+        }
         if profile == Self::WSReference
             && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
         {
@@ -227,6 +238,7 @@ impl PropertiesSite {
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::Sequence => Some(Self::Sequence),
             NodeKind::DocumentNumerator => Some(Self::DocumentNumerator),
             NodeKind::StyleItem => Some(Self::StyleItem),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
@@ -245,7 +257,6 @@ impl PropertiesSite {
             | NodeKind::Language
             | NodeKind::IntegrationService
             | NodeKind::XdtoPackage
-            | NodeKind::Sequence
             | NodeKind::Style => Some(Self::CommentOnly(owner.kind())),
             kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
         }
@@ -285,7 +296,8 @@ impl PropertiesSite {
                 return values;
             }
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
-            Self::StyleItem
+            Self::Sequence
+            | Self::StyleItem
             | Self::WSReference
             | Self::FunctionalOption
             | Self::Role
@@ -337,6 +349,7 @@ impl PropertiesOperation {
             Self::Set => OperationContract {
                 schema: object(&[("values", site.values_schema())], &["values"]),
                 target: match site {
+                    PropertiesSite::Sequence => "An existing registered Sequence in a configuration source set, platform XML 2.20. Its Comment and existing MoveBoundaryOnPosting properties can change.",
                     PropertiesSite::WSReference => "An existing registered WSReference in a configuration source set, platform XML 2.20. Its Comment and existing LocationURL properties can change.",
                     PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
@@ -347,11 +360,13 @@ impl PropertiesOperation {
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
                 notes: match site {
+                    PropertiesSite::Sequence => "MoveBoundaryOnPosting is DontMove or Move; Comment/comment is an optional exact string. Comment-only edits do not validate the boundary mode. Mixed edits validate both fields before publication. Identity, InternalInfo, Documents, dimensions and modules stay. An equivalent value is a byte-preserving no-op. Preview writes nothing; execute only its saved executionToken.",
                     PropertiesSite::WSReference => "LocationURL and optional Comment/comment are exact strings; an empty string clears the supplied field. Comment-only edits do not validate LocationURL; mixed edits validate both fields before publication. Missing or damaged fields are refused. Editing preserves identity, registration and the local WSDL; it does not download WSDL/imports or generate a client. Preview writes nothing; publish only its execution token. Changes to the descriptor or configuration registration invalidate the saved plan.",
                     PropertiesSite::StyleItem => "Color Value and optional string Comment/comment are accepted: #RRGGBB or an enumerated web/builtin style color. Empty Value, null and arbitrary XML are refused; empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Type, identity and bytes outside supplied Value/Comment stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
+                    PropertiesSite::Sequence => json!({"values":{"MoveBoundaryOnPosting":"Move"}}),
                     PropertiesSite::DocumentNumerator => json!({"values":{"NumberLength":12,"CheckUnique":true}}),
                     PropertiesSite::WSReference => json!({"values":{"LocationURL":"https://example.invalid/service?wsdl"}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
@@ -360,7 +375,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Sequence | PropertiesSite::WSReference | PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -448,6 +463,117 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sequence_boundary_and_comment_profiles_preserve_configuration_and_extension_contracts() {
+        use unica_source_contract::context::{OperationSite, SourceSetTraits};
+        use unica_source_contract::{SourceProfile, SourceSetKind};
+        let at = QualifiedAddress::parse("main:Sequence.Sales").unwrap();
+        let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+        for (kind, boundary) in [
+            (SourceSetKind::Configuration, true),
+            (SourceSetKind::Extension, false),
+        ] {
+            let traits = SourceSetTraits::from_profiles(kind, Some(profile), profile);
+            let operation_site = OperationSite::from_route(
+                &at,
+                traits,
+                unica_source_contract::route::RouteClass::Metadata,
+            );
+            let site = PropertiesSite::from_site(&operation_site).unwrap();
+            let schema = PropertiesOperation::Set.contract(site).schema;
+            let oracle = jsonschema::validator_for(&schema).unwrap();
+            for args in [
+                json!({"values":{"Comment":"only"}}),
+                json!({"values":{"comment":""}}),
+            ] {
+                assert!(oracle.is_valid(&args));
+                assert!(matches!(
+                    crate::property_input::decode_properties(
+                        PropertiesOperation::Set,
+                        site,
+                        &args,
+                        "args"
+                    )
+                    .unwrap(),
+                    crate::property_input::PropertiesIntent::CommentOnly {
+                        kind: NodeKind::Sequence,
+                        ..
+                    }
+                ));
+            }
+            for args in [
+                json!({"values":{"MoveBoundaryOnPosting":"Move","comment":"mixed"}}),
+                json!({"values":{"moveBoundaryOnPosting":"DontMove","Comment":"mixed"}}),
+            ] {
+                assert_eq!(oracle.is_valid(&args), boundary);
+                let decoded = crate::property_input::decode_properties(
+                    PropertiesOperation::Set,
+                    site,
+                    &args,
+                    "args",
+                );
+                assert_eq!(decoded.is_ok(), boundary);
+                if let Ok(crate::property_input::PropertiesIntent::Sequence(values)) = decoded {
+                    assert_eq!(values.comment.as_deref(), Some("mixed"));
+                    assert!(
+                        ["Move", "DontMove"].contains(&values.move_boundary_on_posting.as_str())
+                    );
+                }
+            }
+            assert!(!oracle.is_valid(
+                &json!({"values":{"Comment":"a","comment":"b","MoveBoundaryOnPosting":"Move"}})
+            ));
+        }
+    }
+
+    #[test]
+    fn sequence_boundary_has_a_closed_existing_descriptor_contract() {
+        let at = QualifiedAddress::parse("main:Sequence.Sales").unwrap();
+        let site = PropertiesSite::from_address(&at).expect("Sequence property profile");
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        for value in ["DontMove", "Move"] {
+            let args = json!({"values":{"MoveBoundaryOnPosting":value}});
+            assert!(oracle.is_valid(&args));
+            crate::property_input::decode_properties(PropertiesOperation::Set, site, &args, "args")
+                .unwrap();
+        }
+        for values in [
+            json!({}),
+            json!({"MoveBoundaryOnPosting":"Unknown"}),
+            json!({"MoveBoundaryOnPosting":true}),
+            json!({"MoveBoundaryOnPosting":null}),
+            json!({"Name":"Other"}),
+            json!({"Documents":[]}),
+            json!({"MoveBoundaryOnPosting":"Move", "moveBoundaryOnPosting":"DontMove"}),
+        ] {
+            let args = json!({"values":values});
+            assert!(!oracle.is_valid(&args), "{args}");
+            assert!(
+                crate::property_input::decode_properties(
+                    PropertiesOperation::Set,
+                    site,
+                    &args,
+                    "args"
+                )
+                .is_err(),
+                "{args}"
+            );
+        }
+        let document =
+            PropertiesSite::from_address(&QualifiedAddress::parse("main:Document.Sales").unwrap())
+                .unwrap();
+        assert!(
+            !jsonschema::validator_for(&PropertiesOperation::Set.contract(document).schema)
+                .unwrap()
+                .is_valid(&json!({"values":{"MoveBoundaryOnPosting":"Move"}}))
+        );
+        assert!(PropertiesSite::from_address(
+            &QualifiedAddress::parse("main:Sequence.Sales.Dimension.Company").unwrap()
+        )
+        .is_none());
+    }
 
     #[test]
     fn ws_reference_location_url_has_a_closed_existing_descriptor_contract() {
@@ -640,7 +766,11 @@ mod tests {
             let properties = schema["properties"]["values"]["properties"]
                 .as_object()
                 .unwrap();
-            assert_eq!(properties.len(), 2, "{at}: {properties:?}");
+            assert_eq!(
+                properties.len(),
+                if kind == "Sequence" { 4 } else { 2 },
+                "{at}: {properties:?}"
+            );
             for alias in ["Comment", "comment"] {
                 assert_eq!(properties[alias], json!({"type":"string"}));
                 assert!(

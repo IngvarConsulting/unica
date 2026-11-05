@@ -1,6 +1,9 @@
 *.sh text eol=lf
 *.rs text eol=lf
 
+# Native Sequence fixture: post-image hashes include the exported BOM and CRLF.
+tests/fixtures/acceptance/workspace-sequence-boundary/src/** -text whitespace=cr-at-eol
+
 # Source-scanned V13 fixtures and the hashed catalog must not inherit
 # Git-for-Windows CRLF conversion from the runner's global configuration.
 tests/fixtures/v013/modules/*.bsl text eol=lf

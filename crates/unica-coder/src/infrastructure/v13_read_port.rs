@@ -1201,6 +1201,22 @@ impl ProviderReadAuthority {
         let evidence = prove_already_read_metadata_owner(&relative, &descriptor)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
+        if evidence.artifact_kind() == "Sequence" {
+            let name = evidence.artifact_name().unwrap_or_default();
+            match std::str::from_utf8(&descriptor)
+                .map_err(|e| e.to_string())
+                .and_then(|source| unica_metadata_designer::sequence_boundary::read(source, name))
+            {
+                Ok(Some(value)) => {
+                    payload["properties"] = json!([{"key":"MoveBoundaryOnPosting", "value":unica_metadata::MetaObservedPropertyValue::Text { value }}]);
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    payload["unreadable"] =
+                        json!([{"field":"properties.MoveBoundaryOnPosting","message":message}])
+                }
+            }
+        }
         if evidence.artifact_kind() == "DocumentNumerator" {
             match unica_metadata_designer::numerator_read::read(&descriptor) {
                 Ok(facts) => {

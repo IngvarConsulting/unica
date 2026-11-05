@@ -1,0 +1,796 @@
+{
+  "id": "S-1677-sequence-boundary",
+  "issue": 1677,
+  "area": "Режим перемещения границы последовательности",
+  "workspace": "tests/fixtures/acceptance/workspace-sequence-boundary",
+  "task": "Обнаружить режим последовательности, выполнить DontMove → Move → DontMove через preview и сохранённый executionToken, прочитать свойство и XML. Сохранить все байты вне значения, включая UUID, InternalInfo, Documents, измерение и модули. Повтор эквивалентной операции и отказы ничего не записывают.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Sequence.Sales.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "original": {
+          "file": "src/Sequences/Sales.xml",
+          "kind": "sha256"
+        },
+        "neighbor0": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "neighbor1": {
+          "file": "src/Documents/Linked.xml",
+          "kind": "sha256"
+        },
+        "neighbor2": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "neighbor3": {
+          "file": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256"
+        },
+        "neighbor4": {
+          "file": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/MoveBoundaryOnPosting/enum",
+          "eq": [
+            "DontMove",
+            "Move"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Documents",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Sequence.Sales"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MoveBoundaryOnPosting",
+          "eq": "DontMove"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Sequence.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MoveBoundaryOnPosting": "Move"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "DontMove"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "4735cf127ba095e51f43d5487335194bd5945d239ae9042a42365ec17e488412"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "Move"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Sequence.Sales"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MoveBoundaryOnPosting",
+          "eq": "Move"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Sequence.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MoveBoundaryOnPosting": "Move"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "4735cf127ba095e51f43d5487335194bd5945d239ae9042a42365ec17e488412"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "Move"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "4735cf127ba095e51f43d5487335194bd5945d239ae9042a42365ec17e488412"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "Move"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Sequence.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MoveBoundaryOnPosting": "Unknown"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "4735cf127ba095e51f43d5487335194bd5945d239ae9042a42365ec17e488412"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "Move"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Sequence.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MoveBoundaryOnPosting": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "4735cf127ba095e51f43d5487335194bd5945d239ae9042a42365ec17e488412"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "Move"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ],
+      "refusal": "bad_value: expected \"string\""
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Sequence.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MoveBoundaryOnPosting": null
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "4735cf127ba095e51f43d5487335194bd5945d239ae9042a42365ec17e488412"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "Move"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ],
+      "refusal": "bad_value: expected \"string\""
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Sequence.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Documents": []
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "4735cf127ba095e51f43d5487335194bd5945d239ae9042a42365ec17e488412"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "Move"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ],
+      "refusal": "bad_value: MoveBoundaryOnPosting or Comment is required"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Linked",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MoveBoundaryOnPosting": "Move"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "4735cf127ba095e51f43d5487335194bd5945d239ae9042a42365ec17e488412"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "Move"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ],
+      "refusal": "bad_value: unknown metadata property `MoveBoundaryOnPosting`; supported properties for Document: FullTextSearch, SearchStringModeOnInputByString, FullTextSearchOnInputBySt"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Sequence.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MoveBoundaryOnPosting": "DontMove"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "4735cf127ba095e51f43d5487335194bd5945d239ae9042a42365ec17e488412"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "Move"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "DontMove"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Sequence.Sales"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MoveBoundaryOnPosting",
+          "eq": "DontMove"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        },
+        {
+          "path": "src/Sequences/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Sequence/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MoveBoundaryOnPosting",
+          "eq": [
+            "DontMove"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor3"
+        },
+        {
+          "path": "src/Sequences/Sales/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.neighbor4"
+        }
+      ]
+    }
+  ]
+}

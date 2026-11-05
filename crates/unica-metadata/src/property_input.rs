@@ -46,6 +46,7 @@ pub struct WsReferencePropertyChanges {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
+    Sequence(SequencePropertyChanges),
     DocumentNumerator(crate::document_numerator::DocumentNumeratorChanges),
     Metadata(MetaPropertyChanges),
     CommentOnly {
@@ -58,6 +59,12 @@ pub enum PropertiesIntent {
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
     StyleItem(StyleItemPropertyChanges),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SequencePropertyChanges {
+    pub move_boundary_on_posting: String,
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -310,6 +317,28 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::Sequence => {
+                    let boundary =
+                        values_reader.enumerated(DescriptorProperty::MoveBoundaryOnPosting)?;
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    match boundary {
+                        Some(move_boundary_on_posting) => {
+                            PropertiesIntent::Sequence(SequencePropertyChanges {
+                                move_boundary_on_posting,
+                                comment,
+                            })
+                        }
+                        None => PropertiesIntent::CommentOnly {
+                            kind: unica_address::address::NodeKind::Sequence,
+                            comment: comment.ok_or_else(|| {
+                                invalid(
+                                    &values_path,
+                                    "MoveBoundaryOnPosting or Comment is required",
+                                )
+                            })?,
+                        },
+                    }
+                }
                 PropertiesSite::CommentOnly(kind) => PropertiesIntent::CommentOnly {
                     kind,
                     comment: values_reader
