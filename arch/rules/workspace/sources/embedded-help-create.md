@@ -1,8 +1,5 @@
 ---
 id: INV.SOURCE.EMBEDDED-HELP-CREATE
-check:
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs::help_create_stages_the_embedded_help_facet
-  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_help_saved_execute_creates_the_facet_and_preserves_neighbors_and_refusals
 ---
 
 # Создание встроенной справки не заменяет существующую

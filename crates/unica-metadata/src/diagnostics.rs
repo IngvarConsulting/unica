@@ -108,6 +108,7 @@ impl MetaDiagnostic {
 mod tests {
     use super::*;
 
+    /// rule: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
     #[test]
     fn diagnostic_codes_serialize_to_the_stable_exhaustive_vocabulary() {
         let cases = [

@@ -108,6 +108,7 @@ mod tests {
         assert!(writer.bytes.is_empty());
     }
 
+    /// rule: INV.WIRE.DAEMON-REQUEST-FRAMING
     #[test]
     fn a_frame_above_the_request_bound_is_refused_with_both_sizes_before_writing() {
         let value = serde_json::json!({"text": "x".repeat(64)});

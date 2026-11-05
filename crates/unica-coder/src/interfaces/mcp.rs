@@ -1714,6 +1714,8 @@ mod medium_tests {
         super::assert_unica_server_implements_official_rmcp_server_handler();
     }
 
+    /// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
+    /// rule: INV.WIRE.SURFACE-RELEASE-ROUTING
     #[test]
     fn production_mcp_surface_exposes_only_canonical_v13_tools_and_task_compatibility() {
         let canonical: Arc<CanonicalCallHandler> = Arc::new(|_, _, _, _, _| {
@@ -1770,6 +1772,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn every_tool_that_can_return_source_text_declares_its_result_size() {
         let (key, chars) = unica_bootstrap::source_text_tool_meta();
@@ -1798,6 +1801,7 @@ mod medium_tests {
         assert!(unica_bootstrap::MAX_RESPONSE_BUDGET as u64 <= chars);
     }
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn client_name_comes_from_initialize_or_from_the_request_meta() {
         let meta =
@@ -1811,6 +1815,7 @@ mod medium_tests {
         assert_eq!(super::client_name(None, &Map::new()), None);
     }
 
+    /// rule: INV.SURFACE.ARGUMENTS-DESCRIBED
     #[test]
     fn canonical_tools_are_described_within_wire_budget() {
         let tools = v13_tool_definitions(V13TaskProfile::Compatibility);
@@ -2420,6 +2425,7 @@ mod medium_tests {
         assert_eq!(startup_notice_from(None), None);
     }
 
+    /// rule: INV.WIRE.SDK-INITIALIZE
     #[tokio::test]
     async fn initialize_uses_single_public_server_name_and_negotiates_version() {
         let (mut client, _) = spawn_unica_server(canonical_direct_server());
@@ -2644,6 +2650,7 @@ mod medium_tests {
         assert_eq!(meta.0["io.unica/runtimeProgress"]["phase"], "running");
     }
 
+    /// rule: CTR.WIRE.LIST-CACHE-FIELDS
     #[tokio::test]
     async fn modern_list_results_carry_required_cache_fields_and_legacy_stays_clean() {
         // 2026-07-28 wire schemas (SEP-2549) require ttlMs/cacheScope on list
@@ -3105,6 +3112,7 @@ mod medium_tests {
         direct.shutdown().await;
     }
 
+    /// rule: CTR.WIRE.CANONICAL-TOOL-PROFILES
     #[tokio::test]
     async fn surface_profiles_publish_eight_native_or_eleven_compatibility_tools_per_client() {
         surface_profiles_case().await;
@@ -3879,6 +3887,7 @@ mod medium_tests {
     /// A ready result read with `waitMs: 0` on a slow host arrives as the
     /// result: connect and exchange spend the frontend transport cutoff, not
     /// `waitMs + 125 ms` (#2063).
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[tokio::test]
     async fn compatibility_ready_result_at_wait_zero_survives_a_slow_connect() {
         let task_id = unica_execution_contract::invocation::TaskId::new();
@@ -4016,6 +4025,7 @@ mod medium_tests {
         result
     }
 
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[test]
     fn compatibility_get_and_cancel_do_not_replace_open_frontend_cutoff_with_125ms() {
         for tool_name in ["unica.task.get", "unica.task.cancel"] {
@@ -4032,6 +4042,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[test]
     fn compatibility_get_and_cancel_share_one_absolute_cutoff_across_connect_and_exchange() {
         for tool_name in ["unica.task.get", "unica.task.cancel"] {
@@ -4300,6 +4311,7 @@ mod medium_tests {
         compatibility_hostile_status_payload_case().await;
     }
 
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[tokio::test]
     async fn compatibility_task_get_and_result_preserve_each_closed_failure_reason() {
         use unica_execution::invocation_store_v5::V5SafeFailureReason;
@@ -4438,6 +4450,7 @@ mod medium_tests {
         codes
     }
 
+    /// rule: INV.WIRE.TASK-RESPONSE-ERRORS
     #[tokio::test]
     async fn task_reads_report_complete_malformed_daemon_frames_as_protocol_failures() {
         let task_id = unica_execution_contract::invocation::TaskId::new();
@@ -4507,6 +4520,7 @@ mod medium_tests {
         (owner, daemon.join().unwrap())
     }
 
+    /// rule: INV.WIRE.TASK-RESPONSE-ERRORS
     #[tokio::test]
     async fn task_reads_report_unreachable_or_truncated_daemon_as_transport_failures() {
         let task_id = unica_execution_contract::invocation::TaskId::new();
@@ -4568,6 +4582,8 @@ mod medium_tests {
         compatibility_daemon_restart_case().await;
     }
 
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[tokio::test]
     async fn v13_compatibility_task_tools_are_profile_gated_durable_and_replay_free() {
         surface_profiles_case().await;
@@ -4632,11 +4648,13 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn public_task_cancel_and_result_preserve_a_started_infobase_create_receipt() {
         protected_create_cancel_case(false).await;
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_protected_create_preserves_external_receipt_without_replay(
     ) {
@@ -4835,6 +4853,7 @@ mod medium_tests {
         daemon.finish(owner);
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[tokio::test]
     async fn public_native_cancel_waits_for_slow_job_attach_before_answering() {
         use crate::infrastructure::daemon::server::actor_capacity_tests::{
@@ -5629,6 +5648,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[tokio::test]
     async fn a_lost_submit_is_a_task_for_native_clients_and_a_task_receipt_for_others() {
         use unica_execution_contract::invocation::{InvocationStatus, TaskId};
@@ -5710,6 +5730,7 @@ mod medium_tests {
         tasks_projection_rejects_reverse_timestamps_on_wire_case().await;
     }
 
+    /// rule: INV.APP.DAEMON-RESULT-SIZE
     #[tokio::test]
     async fn tasks_projection_bounds_near_limit_wire_and_rejects_over_limit() {
         tasks_projection_keeps_near_limit_wire_bounded_and_rejects_over_limit_case().await;
@@ -5720,6 +5741,8 @@ mod medium_tests {
         tasks_hooks_closed_errors_case().await;
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
+    /// rule: INV.WIRE.NATIVE-TASK-CAPABILITY
     #[tokio::test]
     async fn native_task_projection_contract_is_capability_gated_durable_and_replay_free() {
         tasks_direct_first_capability_case().await;
@@ -5732,6 +5755,8 @@ mod medium_tests {
         tasks_hooks_closed_errors_case().await;
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[tokio::test]
     async fn native_task_get_reports_late_cancel_request_without_claiming_cancellation() {
         use unica_execution_contract::invocation::{InvocationStatus, TaskId};
@@ -5796,6 +5821,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.VERSION-TIERS
     #[tokio::test]
     async fn legacy_offer_2025_11_25_is_echoed() {
         let (mut client, _) = spawn_unica_server(canonical_direct_server());
@@ -5816,6 +5842,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.VERSION-TIERS
     #[tokio::test]
     async fn legacy_unknown_offer_falls_back_to_pinned_version() {
         // The fallback is pinned to 2025-11-25 explicitly; an SDK bump that
@@ -5854,6 +5881,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.TOOL-LIST-COMPATIBILITY
     #[tokio::test]
     async fn modern_meta_inside_legacy_session_keeps_the_session_model() {
         // Метаданные одного запроса не повышают полномочия сессии: внутри
@@ -5892,6 +5920,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.TOOL-LIST-COMPATIBILITY
     #[tokio::test]
     async fn tools_list_rejects_any_presented_cursor() {
         let (mut client, _) = spawn_unica_server(canonical_direct_server());
@@ -5909,6 +5938,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.SURFACE-RELEASE-ROUTING
     #[tokio::test]
     async fn a_name_outside_the_canonical_profile_is_refused_without_dispatch() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -5945,6 +5975,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.VERSION-TIERS
     #[tokio::test]
     async fn modern_discover_can_open_the_connection() {
         let (mut client, _) = spawn_unica_server(canonical_profile_server());
@@ -5991,6 +6022,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.VERSION-TIERS
     #[tokio::test]
     async fn discovery_probe_response_matches_unwrapped_sdk_bytes() {
         let probe = json!({
@@ -6006,6 +6038,7 @@ mod medium_tests {
         sdk.shutdown().await;
     }
 
+    /// rule: INV.WIRE.VERSION-TIERS
     #[tokio::test]
     async fn discover_probe_followed_by_legacy_initialize_serves_compatibility_tools() {
         let (mut client, _) = spawn_unica_server(canonical_profile_server());
@@ -6066,6 +6099,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.VERSION-TIERS
     #[tokio::test]
     async fn queued_ping_discovery_and_legacy_initialize_keep_every_frame() {
         let (mut client, _) = spawn_unica_server(canonical_profile_server());
@@ -6106,6 +6140,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.VERSION-TIERS
     #[tokio::test]
     async fn unsupported_discovery_version_still_uses_sdk_error() {
         let (mut client, _) = spawn_unica_server(canonical_profile_server());
@@ -6123,6 +6158,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.TOOL-LIST-COMPATIBILITY
     #[tokio::test]
     async fn modern_direct_first_tools_list_pages_through_the_full_registry() {
         // Modern peers page the registry (25 per page, offset cursors);
@@ -6174,6 +6210,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.TOOL-LIST-COMPATIBILITY
     #[tokio::test]
     async fn modern_tools_list_rejects_a_cursor_the_server_never_issued() {
         // Каталог длиннее страницы: сервер выдаёт настоящие курсоры, и
@@ -6199,6 +6236,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.VERSION-TIERS
     #[tokio::test]
     async fn modern_unknown_version_direct_first_gets_unsupported_error() {
         let (mut client, _) = spawn_unica_server(canonical_direct_server());
@@ -6220,6 +6258,7 @@ mod medium_tests {
         client.shutdown().await;
     }
 
+    /// rule: INV.WIRE.VERSION-TIERS
     #[tokio::test]
     async fn modern_partial_meta_opener_is_rejected_before_serving() {
         // A direct-first request with an incomplete reserved set is not a
@@ -7291,6 +7330,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_sdk_refusal_after_eof_retires_registered_request() {
         let service = ManualDaemonService::new(false);
@@ -7326,6 +7366,7 @@ mod medium_tests {
         assert_eq!(service.executions("sdk-refused"), 0);
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_compatibility_wait_releases_only_observation() {
         let service = ManualDaemonService::new(true);
@@ -7497,6 +7538,7 @@ mod medium_tests {
         assert_eq!(service.executions("direct-first"), 1);
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_eof_before_handler_preserves_registered_intent() {
         use unica_daemon::protocol_v5::V5ServerResponse;
@@ -7571,6 +7613,7 @@ mod medium_tests {
         assert_eq!(service.executions("delayed-handler"), 0);
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_eof_waits_for_accepted_control_confirmation() {
         let service = ManualDaemonService::new(false);
@@ -7632,6 +7675,7 @@ mod medium_tests {
         assert_eq!(service.executions("manual-then-eof"), 1);
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_normal_response_does_not_cancel_daemon_operation() {
         let service = ManualDaemonService::new(false);
@@ -7661,6 +7705,7 @@ mod medium_tests {
         assert_eq!(service.executions("normal"), 1);
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_before_task_id_stops_only_target_and_preserves_ping() {
         let service = ManualDaemonService::new(false);
@@ -7703,6 +7748,7 @@ mod medium_tests {
         assert_eq!(service.executions("neighbor"), 1);
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_eof_preserves_accepted_work_and_exact_recovery_without_replay(
     ) {
@@ -7766,11 +7812,13 @@ mod medium_tests {
         assert_eq!(service.executions("eof-work"), 1);
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_before_submit_reserves_exact_cancel_before_admission() {
         manual_before_submit_exact_cancel(false).await;
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_lost_cancel_answer_reconciles_original_key_without_replay(
     ) {
@@ -7901,6 +7949,7 @@ mod medium_tests {
         assert!(!service.cancelled("reused-id"));
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_stdio_drain_does_not_cancel_held_daemon_admission() {
         use unica_daemon::protocol_v5::V5ServerResponse;
@@ -8054,6 +8103,7 @@ mod medium_tests {
         manual_cancellation_during_send(false).await;
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_after_partial_json_finishes_the_same_frame() {
         manual_cancellation_during_send(true).await;
@@ -8234,6 +8284,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_shared_index_stops_only_its_consumer() {
         let activity = ManualDaemonService::new(false);
@@ -8307,6 +8358,7 @@ mod medium_tests {
         assert_eq!(activity.executions("shared-neighbor"), 1);
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_after_completed_before_flush_preserves_exact_terminal() {
         use unica_daemon::protocol_v5::V5ServerResponse;
@@ -8375,6 +8427,7 @@ mod medium_tests {
         assert_eq!(service.executions("completed-winner"), 1);
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_reused_id_keeps_old_control_and_targets_new_receipt() {
         let service = ManualDaemonService::new(false);
@@ -8502,6 +8555,7 @@ mod medium_tests {
         assert!(!premature_drain && drain_settled, "an older accepted control must remain owned through its actual acknowledgement after RequestId reuse");
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_sole_engine_waiter_preserves_delivery_and_pinned_artifact(
     ) {
@@ -8724,6 +8778,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn canonical_manual_cancellation_native_reuse_does_not_inherit_old_suppression() {
         let service = ManualDaemonService::new(false);
@@ -8893,6 +8948,7 @@ fn main() {
         assert!(cancellation_seen.load(Ordering::SeqCst));
     }
 
+    /// rule: INV.WIRE.BOUNDED-ADMISSION
     #[test]
     fn admission_crosses_the_former_call_quota_and_retains_exact_ownership() {
         let registry = Arc::new(InFlightRegistry::default());
@@ -8928,6 +8984,7 @@ fn main() {
         assert!(registry.wait_idle(Duration::from_millis(100)));
     }
 
+    /// rule: INV.WIRE.BOUNDED-ADMISSION
     #[test]
     fn admission_identifier_overflow_preserves_existing_call_ownership() {
         let registry = Arc::new(InFlightRegistry::default());
@@ -9047,6 +9104,7 @@ fn main() {
         );
     }
 
+    /// rule: INV.WIRE.BOUNDED-ADMISSION
     #[tokio::test]
     async fn dispatcher_executes_all_calls_past_the_former_quota() {
         let release = Arc::new(AtomicBool::new(false));
@@ -9205,6 +9263,7 @@ fn main() {
         assert_eq!(std::fs::read(&module).unwrap(), before_invalid);
         std::fs::remove_dir_all(root).unwrap();
     }
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[test]
     fn compatibility_result_keeps_original_cutoff_after_frontend_admission_delay() {
         let task_id = unica_execution_contract::invocation::TaskId::new();
@@ -9241,6 +9300,7 @@ fn main() {
         assert!(result.result().ok, "{:?}", result.result());
         assert_eq!(*observed.lock().unwrap(), Some(received + Duration::from_millis(7125)), "admission time must shrink daemon wait without shortening the original transport cutoff twice");
     }
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[test]
     fn compatibility_final_projection_obeys_cutoff_and_same_result_remains_recoverable() {
         let result = CompatibilityTaskResult::Snapshot(canonical_result(
@@ -9292,6 +9352,7 @@ fn main() {
         );
     }
 
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[tokio::test]
     async fn compatibility_long_producer_survives_7000_and_100_ms_observations_once() {
         for wait_ms in [7000_u64, 100] {
@@ -9348,6 +9409,7 @@ fn main() {
             client.shutdown().await;
         }
     }
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[test]
     fn native_task_transport_failure_logs_the_observation_and_answers_only_the_refusal() {
         let observation = TaskObservationTimer::start(Instant::now()).failed(
@@ -9370,6 +9432,7 @@ fn main() {
         );
     }
 
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[test]
     fn compatibility_final_projection_preserves_exchange_failure_stage_and_generation() {
         let task_id = unica_execution_contract::invocation::TaskId::new();
@@ -9432,6 +9495,7 @@ fn main() {
         assert!(!public.to_string().contains(record.token()));
         assert!(!public.to_string().contains(record.instance_id()));
     }
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[tokio::test]
     async fn compatibility_recovers_same_task_after_partial_malformed_and_late_frames() {
         use std::io::Write as _;

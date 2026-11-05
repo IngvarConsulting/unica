@@ -202,6 +202,7 @@ mod tests {
     use super::*;
     use std::sync::{mpsc, Arc};
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_waits_on_occupied_lane_then_acquires_after_release() {
         let lock = Arc::new(DeadlineLock::<Recover>::default());
@@ -235,6 +236,7 @@ mod tests {
         });
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_occupied_lane_still_observes_explicit_cancellation() {
         let lock = Arc::new(DeadlineLock::<Recover>::default());

@@ -67,6 +67,7 @@ mod tests {
 
     /// #549: отказ один на все маршруты, и поля движка в нём названы, а не
     /// спрятаны в тексте.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn the_missing_engine_refusal_carries_its_fields_in_data_and_one_code() {
         for stage in EngineStage::ALL {

@@ -21,6 +21,7 @@ fn install(fixture: &RealReaderFixture, properties: &str) {
     );
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn document_form_relations_preserve_each_role_and_read_the_returned_form() {
     let fixture = RealReaderFixture::new();
@@ -79,6 +80,7 @@ fn document_form_relations_preserve_each_role_and_read_the_returned_form() {
     );
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn document_form_relations_keep_other_roles_when_one_slot_is_unknown_or_damaged() {
     for (property, role) in SLOTS {
@@ -161,6 +163,7 @@ fn document_form_relations_keep_other_roles_when_one_slot_is_unknown_or_damaged(
     }
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn document_form_relations_prove_registration_and_identity_of_each_target() {
     for variant in ["unregistered", "missing", "wrong-name", "wrong-kind"] {
