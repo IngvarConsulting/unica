@@ -20,6 +20,18 @@ fn module_paths_map_to_the_logical_module_view_reads() {
         (
             "main",
             SourceSetKind::Configuration,
+            "SettingsStorages/Варианты/Forms/Выбор/Ext/Form/Module.bsl",
+            "main:SettingsStorage.Варианты.Form.Выбор.Module.Form",
+        ),
+        (
+            "ext",
+            SourceSetKind::Extension,
+            "SettingsStorages/Варианты/Forms/Выбор/Ext/Form/Module.bsl",
+            "ext:SettingsStorage.Варианты.Form.Выбор.Module.Form",
+        ),
+        (
+            "main",
+            SourceSetKind::Configuration,
             "CommonModules/Общий/Ext/Module.bsl",
             "main:CommonModule.Общий",
         ),
@@ -193,11 +205,9 @@ fn files_outside_the_module_layout_have_no_logical_address() {
             SourceSetKind::Configuration,
             "WebSocketClients/Клиент/Ext/Module.bsl",
         ),
-        // The 8.3.27 profile has no SettingsStorage form module, so view
-        // refuses that address too; the hit stays unaddressed.
         (
             SourceSetKind::Configuration,
-            "SettingsStorages/Варианты/Forms/Выбор/Ext/Form/Module.bsl",
+            "SettingsStorages/Варианты/Commands/Открыть/Ext/CommandModule.bsl",
         ),
         (SourceSetKind::Configuration, "Импорт/Ext/ObjectModule.bsl"),
         (SourceSetKind::Extension, "Ext/Module.bsl"),
