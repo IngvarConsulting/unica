@@ -202,6 +202,7 @@ fn acceptance_ineligible_joins_preserve_state_and_release_both_alias_ids() {
     }
 }
 
+/// rule: INV.APP.EXECUTION-DELIVERY
 #[test]
 fn acceptance_pending_ack_and_expose_follow_commit_order_without_resurrection() {
     for expose_first in [true, false] {

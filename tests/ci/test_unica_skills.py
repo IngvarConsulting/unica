@@ -1586,6 +1586,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                     self.assertNotIn(token, text)
 
     def test_runtime_is_tool_native_and_v8_runner_skill_is_not_shipped(self) -> None:
+        """rule: INV.SURFACE.RUNTIME-NO-SKILL"""
         skill_dir = self.skill_root() / "v8-runner"
         self.assertFalse((skill_dir / "SKILL.md").exists())
         self.assertFalse(any(path.is_file() for path in skill_dir.rglob("*")))

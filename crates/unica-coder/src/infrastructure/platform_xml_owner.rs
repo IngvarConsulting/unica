@@ -800,6 +800,7 @@ pub(crate) mod medium_tests {
         }
     }
 
+    /// rule: INV.SOURCE.EXACT-ROOT-QNAME
     #[test]
     fn exact_declared_target_rejects_a_source_set_owner_with_the_wrong_root() {
         let context = temp_context("exact-target-source-owner");
@@ -827,6 +828,7 @@ pub(crate) mod medium_tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// rule: INV.SOURCE.EXACT-ROOT-QNAME
     #[test]
     fn exact_declared_versionless_roots_and_absent_outputs_have_no_owner() {
         let context = temp_context("exact-versionless-or-absent");
@@ -925,6 +927,7 @@ pub(crate) mod medium_tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// rule: INV.SOURCE.ROOT-POLICY-OWNERSHIP
     #[test]
     fn container_scoped_versioned_roots_never_become_standalone_owners() {
         let cases = [
@@ -1314,6 +1317,7 @@ pub(crate) mod medium_tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// rule: INV.SOURCE.EXACT-VERSION
     #[test]
     fn existing_form_content_resolves_exact_wrapper_and_source_set_owners() {
         let context = temp_context("form-content-bounded-owners");

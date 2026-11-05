@@ -1,12 +1,5 @@
 ---
 id: INV.PLATFORM.OS-BEHIND-FACADE
-check:
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_repository_currently_complies_with_platform_boundary
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_rejects_platform_constructs_outside_facade_with_stable_lines
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_allows_platform_constructs_only_in_facades_and_nested_platform_tests
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_lifetimes_labels_and_chars_do_not_hide_code
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_component_platform_facades_have_closed_owners_and_no_path_exemptions
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_platform_implementation_module_is_private_even_for_an_authorized_owner
 ---
 
 # Выбор кода под операционную систему сосредоточен в отдельных каталогах

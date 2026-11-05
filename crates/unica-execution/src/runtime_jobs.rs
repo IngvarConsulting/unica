@@ -598,6 +598,8 @@ pub struct RuntimeWorkKey {
 mod medium_shared_identity_tests {
     use super::{RuntimeWorkKey, Uuid};
 
+    /// rule: INV.APP.EXACT-LONG-WORK-OWNERSHIP
+    /// rule: INV.APP.EXACT-SHARED-WORK
     #[test]
     fn typed_runtime_keys_remain_exact() {
         assert_ne!(

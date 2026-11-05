@@ -1,7 +1,5 @@
 ---
 id: INV.PKG.COLD-INSTALL-STARTUP-BUDGET
-check:
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_packaged_mcp_declares_its_own_cold_install_startup_budget
 ---
 
 # Пакет выделяет время на первую загрузку ядра

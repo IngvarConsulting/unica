@@ -618,6 +618,7 @@ mod tests {
         assert!(!coverage.contains(4));
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn empty_accounting_does_not_release_an_unsignaled_process() {
         let mut coverage = Coverage::new();
@@ -625,6 +626,7 @@ mod tests {
         assert!(!coverage.ready(0, 1, |ready| Ok(*ready)).unwrap());
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn every_retained_process_must_signal() {
         let mut coverage = Coverage::new();
@@ -642,6 +644,7 @@ mod tests {
         assert!(!coverage.ready(1, 1, |ready| Ok(*ready)).unwrap());
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn a_missing_notification_or_failed_admission_keeps_the_gap() {
         let mut coverage = Coverage::new();
@@ -668,6 +671,7 @@ mod tests {
         assert!(!coverage.ready(0, 1, |ready| Ok(*ready)).unwrap());
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn reused_gone_pid_does_not_earn_a_second_lifetime_credit() {
         let mut coverage = Coverage::new();
@@ -677,6 +681,7 @@ mod tests {
         assert!(coverage.ready(0, 1, |ready| Ok(*ready)).is_err());
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn gone_then_attested_owned_handle_proves_exactly_two_lifetimes() {
         let mut coverage = Coverage::new();
@@ -696,6 +701,7 @@ mod tests {
         assert!(!coverage.ready(0, 3, |ready| Ok(*ready)).unwrap());
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn gone_then_foreign_signaled_handle_cannot_prove_another_membership() {
         let mut coverage = Coverage::new();
@@ -707,6 +713,7 @@ mod tests {
         assert!(!coverage.ready(0, 2, |ready| Ok(*ready)).unwrap());
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[cfg(windows)]
     #[test]
     fn a_stopped_collector_cannot_release_even_an_empty_job() {
