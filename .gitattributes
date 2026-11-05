@@ -114,3 +114,6 @@ tests/fixtures/platform_8_3_27/job_schedule/*.xml -text -whitespace
 # Spliced by tests with newline-prefixed patterns; keep their LF bytes on every host.
 /tests/fixtures/platform_8_3_27/mxl/** -text -whitespace
 /tests/fixtures/unica_mcp_script_parity/dcs-validate/** -text -whitespace
+
+# Mutating tool schema snapshots are compared after LF normalization; keep them LF.
+tests/fixtures/mutation-schemas/*.json text eol=lf

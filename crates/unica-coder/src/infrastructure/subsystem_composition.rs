@@ -1093,4 +1093,4 @@ pub(crate) mod tests;
 
 #[cfg(test)]
 #[path = "../../tests/platform/subsystem_subsystem_read_selector_bridge_tests.rs"]
-pub(crate) mod subsystem_read_selector_bridge_tests;
+pub(crate) mod medium_subsystem_read_selector_bridge_tests;
