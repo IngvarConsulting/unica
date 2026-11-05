@@ -1599,6 +1599,94 @@ pub fn apply_typed_properties(
                 Some("values"),
             )
         })?;
+        if *key == MetaPropertyKey::DataHistory {
+            let same_name_count = properties
+                .children()
+                .filter(|node| node.is_element() && node.tag_name().name() == tag)
+                .count();
+            let observed: String = property
+                .children()
+                .filter(|node| node.is_text())
+                .filter_map(|node| node.text())
+                .collect();
+            if same_name_count != 1
+                || property.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+                || property.attributes().len() != 0
+                || property.children().any(|node| node.is_element())
+                || !spec.enum_values.contains(&observed.as_str())
+            {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "existing DataHistory is damaged; restore a confirmed valid source before changing it",
+                    Some("values.DataHistory"),
+                ));
+            }
+        }
+        let history_value = match (key, value) {
+            (MetaPropertyKey::DataHistory, MetaPropertyValue::String(value)) => Some(value.clone()),
+            (
+                MetaPropertyKey::UpdateDataHistoryImmediatelyAfterWrite
+                | MetaPropertyKey::ExecuteAfterWriteDataHistoryVersionProcessing,
+                MetaPropertyValue::Boolean(value),
+            ) => Some(value.to_string()),
+            _ => None,
+        };
+        if let Some(value) = history_value {
+            let observed: String = property
+                .children()
+                .filter(|node| node.is_text())
+                .filter_map(|node| node.text())
+                .collect();
+            if *key != MetaPropertyKey::DataHistory
+                && (properties
+                    .children()
+                    .filter(|node| node.is_element() && node.tag_name().name() == tag)
+                    .count()
+                    != 1
+                    || property.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+                    || property.attributes().len() != 0
+                    || property.children().any(|node| node.is_element())
+                    || !matches!(observed.as_str(), "true" | "false"))
+            {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    format!("existing {tag} is damaged; restore a confirmed valid source before changing it"),
+                    Some(&format!("values.{tag}")),
+                ));
+            }
+            if observed != value {
+                // Preserve the qualified history element and its namespace bindings.
+                let raw = &parsed_body[property.range()];
+                let mut quote = None;
+                let content_start = raw
+                    .bytes()
+                    .enumerate()
+                    .find_map(|(index, byte)| {
+                        if let Some(delimiter) = quote {
+                            if byte == delimiter {
+                                quote = None;
+                            }
+                        } else if matches!(byte, b'\'' | b'"') {
+                            quote = Some(byte);
+                        } else if byte == b'>' {
+                            return Some(index + 1);
+                        }
+                        None
+                    })
+                    .expect("parsed opening tag");
+                let content_end = raw
+                    .rfind("</")
+                    .expect("nonempty history scalar closing tag");
+                let replacement =
+                    format!("{}{}{}", &raw[..content_start], value, &raw[content_end..]);
+                let property_range = property.range();
+                replacements.push((
+                    property_range.start - range.start..property_range.end - range.start,
+                    replacement,
+                ));
+            }
+            continue;
+        }
         if spec.in_place(kind) {
             let same_name_count = properties
                 .children()
@@ -1828,16 +1916,15 @@ pub fn ensure_typed_name_free(
         None => meta_edit_ensure_top_child_name_free(xml_text, tag, name),
     };
     result.map_err(|message| {
-        let code = if message.contains("already exists") {
-            MetaDiagnosticCode::AlreadyExists
+        if message.contains("already exists") {
+            typed_diagnostic(MetaDiagnosticCode::AlreadyExists, message, Some("name"))
         } else {
-            MetaDiagnosticCode::TargetNotFound
-        };
-        typed_diagnostic(
-            code,
-            "metadata element identity is not available",
-            Some("name"),
-        )
+            typed_diagnostic(
+                MetaDiagnosticCode::TargetNotFound,
+                "metadata element identity is not available",
+                Some("name"),
+            )
+        }
     })
 }
 /// Settings a new register field takes from the fields already in the register.
