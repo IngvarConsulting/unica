@@ -1,10 +1,5 @@
 ---
 id: INV.APP.DOCUMENTATION-NETWORK-READ-BOUNDARIES
-check:
-  - crates/unica-documentation-sources/src/standards_documentation.rs::v8std_denied_by_policy_answers_policy_denied_without_touching_the_network
-  - crates/unica-documentation-sources/src/standards_documentation.rs::v8std_get_not_found_and_policy_deny_are_owner_failures
-  - crates/unica-documentation-sources/src/standards_documentation.rs::v8std_cancellation_stops_before_the_network_for_search_and_get
-  - crates/unica-documentation-sources/src/standards_documentation.rs::v8std_later_page_failure_or_cancellation_never_publishes_a_partial_stream
 gap: https://github.com/IngvarConsulting/unica/issues/953
 ---
 

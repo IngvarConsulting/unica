@@ -73,6 +73,7 @@ class PreparedBinaryTests(unittest.TestCase):
         self.assertIn(f"{product.MANIFEST_ENV}=DIR/manifest.json", stderr.getvalue())
 
     def test_wrong_source_target_toolchain_features_or_path_are_rejected(self):
+        """rule: INV.WIRE.SDK-TRANSPORT"""
         changes = [("features", ["default", "receipt-ledger-test-support"]), ("features", []),
                    ("profile", "release"), ("binary", "../unica"), ("mode", 0o755), ("schemaVersion", 999)]
         for field, value in changes:

@@ -1551,6 +1551,8 @@ pub mod tests {
     use super::*;
     use unica_source_contract::{ProjectSourceSet, SourceFormat, SourceSetKind};
 
+    /// rule: INV.SOURCE.GENERATED-BUILD-READINESS
+    /// rule: INV.SOURCE.PORTABLE-GIT
     #[test]
     fn project_health_serializes_independent_source_and_repository_readiness() {
         let report = evaluate_project_health(snapshot_with(
@@ -1623,6 +1625,7 @@ pub mod tests {
         assert!(!report.repository_ready);
     }
 
+    /// rule: INV.SOURCE.PORTABLE-GIT
     #[test]
     fn incomplete_repository_fact_serializes_its_check_as_not_run() {
         let report = evaluate_project_health(snapshot_with(
@@ -1799,6 +1802,7 @@ pub mod tests {
         assert_eq!(report.diagnostics[0].scope, DiagnosticScope::Workspace);
     }
 
+    /// rule: INV.SOURCE.PORTABLE-LFS-ADVISORY
     #[test]
     pub fn lfs_advice_is_informational_and_does_not_close_readiness() {
         let report = evaluate_project_health(snapshot_with(
@@ -1825,6 +1829,7 @@ pub mod tests {
         assert_eq!(report.diagnostics[0].count, 2);
     }
 
+    /// rule: INV.SOURCE.SIDECAR-REMOVAL-ADVICE
     #[test]
     fn runtime_sidecar_remediation_keeps_unusual_path_in_one_argv_item() {
         let mut snapshot = snapshot_with(
@@ -2055,6 +2060,7 @@ pub mod tests {
             .all(|step| step.contains("v8project.yaml")));
     }
 
+    /// rule: INV.SOURCE.SIDECAR-REMOVAL-ADVICE
     #[test]
     fn runtime_sidecar_aggregation_never_publishes_a_partial_command() {
         let facts = (0..21)
@@ -2148,6 +2154,7 @@ pub mod tests {
         assert!(facts.push(like).is_err());
     }
 
+    /// rule: INV.SOURCE.SIDECAR-REMOVAL-ADVICE
     #[test]
     fn ambiguous_config_dump_info_never_has_a_removal_command() {
         let report = evaluate_project_health(snapshot_with(

@@ -162,6 +162,7 @@ fn model() -> AppliedModel {
     )
 }
 
+/// rule: INV.ANALYSIS.APPLIED-TYPE-FACTS
 #[test]
 fn managers_objects_and_references_carry_typed_members_and_their_templates() {
     let model = model();
@@ -319,6 +320,7 @@ fn collections_and_common_modules_answer_their_names() {
         .is_none());
 }
 
+/// rule: INV.ANALYSIS.APPLIED-TYPE-FACTS
 #[test]
 fn registers_split_dimensions_from_resources_and_partial_facts_mark_members() {
     let rates = ObjectFacts {
@@ -497,6 +499,7 @@ fn comment_types_skip_descriptions_structure_keys_and_other_sections() {
     assert_eq!(types.returns, ["Строка", "Булево"]);
 }
 
+/// rule: INV.ANALYSIS.APPLIED-TYPE-FACTS
 #[test]
 fn comment_names_resolve_to_declared_objects_only() {
     let model = model();
@@ -539,6 +542,7 @@ fn comment_names_resolve_to_declared_objects_only() {
     );
 }
 
+/// rule: INV.ANALYSIS.APPLIED-TYPE-FACTS
 #[test]
 fn a_model_of_one_object_resolves_comment_names_through_the_declared_objects() {
     struct Configuration;
@@ -574,6 +578,7 @@ fn documented_signature(doc: &str) -> Signature {
         .clone()
 }
 
+/// rule: INV.ANALYSIS.APPLIED-TYPE-FACTS
 #[test]
 fn nested_array_alternatives_preserve_parameter_and_return_types() {
     let number = TypeRef {
@@ -612,6 +617,7 @@ fn nested_array_alternatives_preserve_parameter_and_return_types() {
     assert_eq!(observed, wanted);
 }
 
+/// rule: INV.ANALYSIS.APPLIED-TYPE-FACTS
 #[test]
 fn ordinary_arrays_unknown_names_and_prose_keep_their_boundaries() {
     let n = TypeRef {
@@ -690,6 +696,7 @@ fn deeply_nested_arrays_keep_only_the_representable_element_without_recursion() 
     );
 }
 
+/// rule: INV.ANALYSIS.APPLIED-TYPE-FACTS
 #[test]
 fn method_addresses_and_areas_are_preserved() {
     for area in [
@@ -716,6 +723,7 @@ fn method_addresses_and_areas_are_preserved() {
     }
 }
 
+/// rule: INV.ANALYSIS.APPLIED-TYPE-FACTS
 #[test]
 fn collection_partial_is_the_union_of_each_distinct_object() {
     for (first_partial, second_partial) in [(false, true), (true, false), (false, false)] {

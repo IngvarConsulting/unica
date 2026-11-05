@@ -1200,6 +1200,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn root_check_inspects_resources_past_the_former_classification_count() {
         // 65 537 staged binary resources pass the former 65 536-entry refusal.
@@ -1224,6 +1225,7 @@ mod medium_tests {
         assert_repository_checks_passed(&root_check(&root));
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn root_check_streams_an_index_past_the_former_capture_limit() {
         // 200 000 long staged paths make `git ls-files --stage -z` print more
@@ -1245,6 +1247,7 @@ mod medium_tests {
         assert_repository_checks_passed(&root_check(&root));
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn root_check_keeps_its_continuation_outside_the_workspace_and_a_new_daemon_continues() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
@@ -1313,6 +1316,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn root_check_repeats_after_eol_timeout_and_finishes_with_shared_checkpoint() {
         use super::{prepare, Preparation};
@@ -1367,6 +1371,7 @@ mod medium_tests {
         assert_eq!(second.data.as_ref().unwrap()["repositoryReady"], true);
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn root_eol_timeout_keeps_earlier_attribute_failure() {
         use super::{prepare, Preparation};
@@ -1425,6 +1430,7 @@ mod medium_tests {
             .any(|check| { check["id"] == "repository.index_eol" && check["status"] == "notRun" }));
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn root_check_resumes_inside_working_file_without_losing_attribute_failure() {
         use super::{prepare, Preparation};
@@ -1509,6 +1515,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn root_check_does_not_recommend_repeat_for_a_fixed_failure() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
@@ -1548,6 +1555,7 @@ mod medium_tests {
             .any(|action| action["tool"] == "unica.check"));
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn root_inspection_discovers_sources_after_response_handoff() {
         use super::{prepare, Preparation, RootCheckContinuationStore};
@@ -1684,6 +1692,7 @@ mod medium_tests {
         assert_eq!(pause.entries(), 1);
     }
 
+    /// rule: INV.SURFACE.WORKSPACE-BOOTSTRAP
     #[test]
     fn project_config_recipe_quotes_yaml_significant_source_identity() {
         let source_map = ProjectSourceMap {
@@ -1884,6 +1893,7 @@ mod medium_tests {
     /// Источник ставится рядом с корнем, где бы корень ни был назван, —
     /// в фактах `view {}` и в отказах допуска, — и не появляется там, где
     /// корня нет: без корня объяснять нечего.
+    /// rule: INV.WORKSPACE.HOST-CONTEXT
     #[test]
     fn workspace_origin_is_named_next_to_every_workspace_root() {
         use serde_json::Value;
