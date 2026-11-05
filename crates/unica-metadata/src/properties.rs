@@ -237,6 +237,8 @@ const EVENT_SUBSCRIPTION_KINDS: &[MetadataKind] = &[MetadataKind::EventSubscript
 const WEB_SERVICE_SESSION_KINDS: &[MetadataKind] =
     &[MetadataKind::HTTPService, MetadataKind::WebService];
 
+const NUMBER_PERIODICITY_KINDS: &[MetadataKind] =
+    &[MetadataKind::Document, MetadataKind::BusinessProcess];
 const DOCUMENT_NUMBER_KINDS: &[MetadataKind] = &[
     MetadataKind::Document,
     MetadataKind::BusinessProcess,
@@ -597,14 +599,14 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "NumberAllowedLength",
         "NumberAllowedLength",
         MetaPropertyKey::NumberAllowedLength,
-        DOCUMENT_KINDS,
+        DOCUMENT_NUMBER_KINDS,
         NUMBER_ALLOWED_LENGTH_VALUES,
     ),
     enum_property(
         "NumberPeriodicity",
         "NumberPeriodicity",
         MetaPropertyKey::NumberPeriodicity,
-        DOCUMENT_KINDS,
+        NUMBER_PERIODICITY_KINDS,
         NUMBER_PERIODICITY_VALUES,
     ),
     enum_property(
@@ -1435,7 +1437,7 @@ mod tests {
             (
                 "NumberAllowedLength",
                 MetaPropertyValue::String("Fixed".into()),
-                &[Document],
+                &[Document, BusinessProcess, Task],
             ),
             (
                 "NumberLength",
@@ -1445,7 +1447,7 @@ mod tests {
             (
                 "NumberPeriodicity",
                 MetaPropertyValue::String("Month".into()),
-                &[Document],
+                &[Document, BusinessProcess],
             ),
             (
                 "NumberType",
