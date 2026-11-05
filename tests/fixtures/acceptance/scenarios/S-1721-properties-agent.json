@@ -225,7 +225,7 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/synonym",
+          "pointer": "/data/props/Synonym",
           "eq": "Agent1721 role"
         }
       ],
@@ -432,19 +432,19 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/synonym",
+          "pointer": "/data/props/Synonym",
           "eq": "Agent1721 subsystem"
         },
         {
-          "pointer": "/data/props/comment",
+          "pointer": "/data/props/Comment",
           "eq": "Agent1721 subsystem comment"
         },
         {
-          "pointer": "/data/props/explanation",
+          "pointer": "/data/props/Explanation",
           "eq": ""
         },
         {
-          "pointer": "/data/props/includeInCommandInterface",
+          "pointer": "/data/props/IncludeInCommandInterface",
           "eq": "false"
         }
       ],

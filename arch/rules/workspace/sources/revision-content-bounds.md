@@ -2,8 +2,8 @@
 id: INV.SOURCE.REVISION-CONTENT-BOUNDS
 check:
   - crates/unica-workspace/src/apply.rs::apply_stages_a_file_larger_than_the_former_read_bound
-  - crates/unica-coder/src/infrastructure/daemon/apply_large_input_tests.rs::object_remove_scans_a_module_larger_than_the_former_bound
-  - crates/unica-coder/src/infrastructure/daemon/apply_large_input_tests.rs::apply_edits_a_descriptor_larger_than_the_former_staging_bound
+  - crates/unica-coder/src/infrastructure/daemon/apply_large_input_tests.rs::medium_object_remove_scans_a_module_larger_than_the_former_bound
+  - crates/unica-coder/src/infrastructure/daemon/apply_large_input_tests.rs::medium_apply_edits_a_descriptor_larger_than_the_former_staging_bound
   - crates/unica-workspace/src/platform/filesystem.rs::checked_read_stops_between_chunks_and_keeps_a_planner_limit
   - crates/unica-workspace/src/platform/filesystem.rs::checked_comparison_matches_only_the_exact_image
   - crates/unica-workspace/src/apply.rs::reference_scan_entry_budget_stops_incrementally_at_a_test_limit

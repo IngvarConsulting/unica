@@ -1415,3 +1415,328 @@ fn contextual_form_event_does_not_accept_server_no_context() {
         assert_eq!(fs::read_to_string(&path).unwrap(), source);
     }
 }
+
+fn dynamic_list_fixture(settings: &str) -> RealReaderFixture {
+    let fixture = RealReaderFixture::new();
+    fixture.install_main_form_sources(
+        &format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Attributes><Attribute name="Rows" id="1"><Type><v8:Type>cfg:DynamicList</v8:Type></Type>{settings}</Attribute><Attribute name="Flag" id="2"><Type><v8:Type>xs:boolean</v8:Type></Type></Attribute></Attributes></Form>"#),
+        "",
+    );
+    fixture
+}
+
+#[test]
+fn dynamic_list_query_and_key_facts_reach_collection_and_detail() {
+    let fixture = dynamic_list_fixture(
+        r#"<Settings xsi:type="DynamicList"><ManualQuery>true</ManualQuery><QueryText>SELECT Code, Part
+FROM Source WHERE Code &gt; 0</QueryText><DynamicDataRead>false</DynamicDataRead><KeyType>RowKey</KeyType><KeyField>Code</KeyField><KeyField>Part</KeyField></Settings>"#,
+    );
+    let service = fixture.view_service();
+    let at = "main:Report.ParityReport.Form.MainForm.Attribute.Rows";
+    let detail = service.view(ViewRequest::new(at).unwrap());
+    assert!(detail.ok);
+    let detail = detail.data.unwrap();
+    let collection =
+        service.view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Attribute").unwrap());
+    assert!(collection.ok);
+    let collection = collection.data.unwrap();
+    let row = collection["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["at"] == at)
+        .unwrap();
+    for node in [&detail, row] {
+        assert_eq!(node["props"]["manualQuery"], true, "manualQuery");
+        assert_eq!(
+            node["props"]["queryText"],
+            "SELECT Code, Part\nFROM Source WHERE Code > 0"
+        );
+        assert_eq!(node["props"]["dynamicDataRead"], false);
+        assert_eq!(node["props"]["keyType"], "RowKey");
+        assert_eq!(node["props"]["keyFields"], json!(["Code", "Part"]));
+        assert_eq!(node["props"]["keyFieldsApplicable"], true);
+    }
+}
+
+#[test]
+fn dynamic_list_main_table_keeps_the_trimmed_text_reading_of_form_child_text() {
+    for (main_table, expected) in [
+        (
+            "<MainTable> Catalog.Items </MainTable>",
+            json!("Catalog.Items"),
+        ),
+        (
+            "<MainTable>\n\tCatalog.Items\n</MainTable>",
+            json!("Catalog.Items"),
+        ),
+        ("<MainTable>   </MainTable>", serde_json::Value::Null),
+        (
+            "<MainTable>Catalog.A&amp;B</MainTable>",
+            json!("Catalog.A&B"),
+        ),
+    ] {
+        let fixture = dynamic_list_fixture(&format!(
+            r#"<Settings xsi:type="DynamicList">{main_table}<KeyType>Auto</KeyType></Settings>"#
+        ));
+        let view = fixture.view_service().view(
+            ViewRequest::new("main:Report.ParityReport.Form.MainForm.Attribute.Rows").unwrap(),
+        );
+        assert!(view.ok);
+        assert_eq!(
+            view.data.unwrap()["props"].get("mainTable"),
+            Some(&expected),
+            "{main_table}"
+        );
+    }
+}
+
+#[test]
+fn dynamic_list_empty_main_table_stays_null_in_collection_and_detail() {
+    let fixture = dynamic_list_fixture(
+        r#"<Settings xsi:type="DynamicList"><MainTable/><KeyType>Auto</KeyType></Settings>"#,
+    );
+    let service = fixture.view_service();
+    let at = "main:Report.ParityReport.Form.MainForm.Attribute.Rows";
+    let detail = service.view(ViewRequest::new(at).unwrap());
+    assert!(detail.ok);
+    let collection =
+        service.view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Attribute").unwrap());
+    assert!(collection.ok);
+    let collection = collection.data.unwrap();
+    let row = collection["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["at"] == at)
+        .cloned()
+        .unwrap();
+    for node in [detail.data.unwrap(), row] {
+        assert_eq!(
+            node["props"].get("mainTable"),
+            Some(&serde_json::Value::Null),
+            "empty MainTable names no table"
+        );
+        assert_eq!(node["props"]["keyFieldsApplicable"], true);
+    }
+}
+
+#[test]
+fn dynamic_list_missing_and_inapplicable_settings_remain_explicit() {
+    let fixture = dynamic_list_fixture("");
+    let view = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Attribute.Rows").unwrap());
+    assert!(view.ok);
+    let data = view.data.unwrap();
+    for key in [
+        "manualQuery",
+        "queryText",
+        "dynamicDataRead",
+        "keyType",
+        "keyFields",
+    ] {
+        assert_eq!(
+            data["props"].get(key),
+            Some(&serde_json::Value::Null),
+            "{key}: explicit null"
+        );
+    }
+    let fixture = dynamic_list_fixture(
+        r#"<Settings xsi:type="DynamicList"><MainTable>Catalog.Goods</MainTable><KeyType>Auto</KeyType><KeyField>Code</KeyField></Settings>"#,
+    );
+    let service = fixture.view_service();
+    let view = service
+        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Attribute.Rows").unwrap());
+    assert!(view.ok);
+    let data = view.data.unwrap();
+    assert_eq!(data["props"]["keyFieldsApplicable"], false);
+    assert_eq!(data["props"]["keyFields"], json!(["Code"]));
+    let flag = service
+        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Attribute.Flag").unwrap());
+    assert!(flag.ok);
+    assert!(flag.data.unwrap()["props"].get("queryText").is_none());
+}
+
+#[test]
+fn dynamic_list_large_query_and_keys_name_full_addresses_without_hiding_other_facts() {
+    let query = format!("  SELECT Code\n{}\n", " ".repeat(2200));
+    let fields = (0..260).map(|n| format!("Field{n}")).collect::<Vec<_>>();
+    let keys = fields
+        .iter()
+        .map(|s| format!("<KeyField>{s}</KeyField>"))
+        .collect::<String>();
+    let fixture = dynamic_list_fixture(&format!(
+        r#"<Settings xsi:type="DynamicList"><ManualQuery>true</ManualQuery><QueryText>{query}</QueryText><DynamicDataRead>false</DynamicDataRead><KeyType>RowKey</KeyType>{keys}</Settings>"#
+    ));
+    let at = "main:Report.ParityReport.Form.MainForm.Attribute.Rows";
+    let read = || fixture.view_service().view(ViewRequest::new(at).unwrap());
+    let node = read().data.unwrap();
+    assert!(
+        node["props"].get("queryText").is_none(),
+        "queryText over the limit"
+    );
+    assert!(
+        node["props"].get("keyFields").is_none(),
+        "keyFields over the limit"
+    );
+    assert_eq!(node["props"]["manualQuery"], true);
+    assert_eq!(node["props"]["dynamicDataRead"], false);
+    for key in ["queryText", "keyFields"] {
+        assert!(
+            node["limits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v.as_str().unwrap().contains(&format!("{at}.Props.{key}"))),
+            "{key}: limit names the full address"
+        );
+    }
+    let whole = crate::infrastructure::v13_read_projection::with_whole_prop("queryText", read)
+        .data
+        .unwrap();
+    assert_eq!(whole["props"]["queryText"], query);
+    assert!(whole["props"].get("keyFields").is_none());
+    let whole = crate::infrastructure::v13_read_projection::with_whole_prop("keyFields", read)
+        .data
+        .unwrap();
+    assert_eq!(whole["props"]["keyFields"], json!(fields));
+    assert!(whole["props"].get("queryText").is_none());
+}
+
+#[test]
+fn dynamic_list_platform_export_is_read_without_writes() {
+    let fixture = RealReaderFixture::new();
+    fixture.install_main_form_sources(include_str!("../../../../../../tests/fixtures/acceptance/workspace-dynamic-list/src/Reports/CorpusReport/Forms/Main/Ext/Form.xml"), "");
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let node = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Attribute.Rows").unwrap());
+    assert!(node.ok);
+    let node = node.data.unwrap();
+    assert_eq!(node["props"]["queryText"], "SELECT 1 AS Code, 2 AS Part");
+    assert_eq!(node["props"]["keyFields"], json!(["Code", "Part"]));
+    assert_eq!(node["props"]["keyType"], "RowKey");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
+}
+
+#[test]
+fn dynamic_list_public_damage_is_local() {
+    let fixture = dynamic_list_fixture(
+        r#"<Settings xsi:type="DynamicList"><ManualQuery>broken</ManualQuery><QueryText>SELECT 1</QueryText><KeyType>RowNumber</KeyType></Settings>"#,
+    );
+    let view = fixture
+        .view_service()
+        .view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Attribute").unwrap());
+    assert!(view.ok);
+    let collection = view.data.unwrap();
+    let row = &collection["items"][0];
+    assert_eq!(row["props"]["type"], "DynamicList");
+    assert_eq!(row["props"]["manualQuery"], serde_json::Value::Null);
+    assert_eq!(row["props"]["queryText"], "SELECT 1");
+    assert!(row["limits"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v.as_str().unwrap().contains("ManualQuery")));
+}
+
+#[test]
+fn dynamic_list_profile_rejects_unknown_and_wrongly_typed_backend_facts() {
+    for (kind, type_name) in [
+        ("Attribute", "DynamicList"),
+        ("Attribute", "ValueTable"),
+        ("Column", "DynamicList"),
+    ] {
+        let at = QualifiedAddress::parse(&format!(
+            "main:CommonForm.Test.Attribute.Rows{}",
+            if kind == "Column" { ".Column.Code" } else { "" }
+        ))
+        .unwrap();
+        let route = route_logical_address(&at, PlatformProfile::v8_3_27()).unwrap();
+        let list = json!({"manualQuery":true,"queryText":{"raw":"must-not-leak"},"keyFields":["Code", {"raw":"must-not-leak"}],"unknown":"must-not-leak"});
+        let item = json!({"name":"Rows","type":type_name,"dynamicList":list,"columns":[{"name":"Code","type":"DynamicList","dynamicList":list}]});
+        let view =
+            project_typed_payload(&route, json!({"name":"Test","attributes":[item]})).unwrap();
+        let serialized = serde_json::to_string(&view).unwrap();
+        assert!(!serialized.contains("must-not-leak"), "{serialized}");
+        if kind != "Attribute" || type_name != "DynamicList" {
+            assert!(!serialized.contains("manualQuery"), "{serialized}");
+        }
+    }
+}
+
+#[test]
+fn dynamic_list_type_uses_namespace_identity_instead_of_a_literal_prefix() {
+    for (xml_type, settings_visible) in [
+        (
+            r#"<Type><v8:Type xmlns:c="http://v8.1c.ru/8.1/data/enterprise/current-config">c:DynamicList</v8:Type></Type>"#,
+            true,
+        ),
+        (
+            r#"<Type><v8:Type xmlns:cfg="urn:foreign">cfg:DynamicList</v8:Type></Type>"#,
+            false,
+        ),
+        (
+            r#"<other:Type xmlns:other="urn:foreign"><v8:Type>cfg:DynamicList</v8:Type></other:Type>"#,
+            false,
+        ),
+        (
+            r#"<Type><other:Type xmlns:other="urn:foreign">cfg:DynamicList</other:Type></Type>"#,
+            false,
+        ),
+    ] {
+        let fixture = RealReaderFixture::new();
+        fixture.install_main_form_sources(&format!(r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><Attributes><Attribute name="Rows" id="1">{xml_type}<Settings xsi:type="DynamicList"><ManualQuery>true</ManualQuery><QueryText>SELECT 1</QueryText></Settings></Attribute></Attributes></Form>"#), "");
+        let view = fixture.view_service().view(
+            ViewRequest::new("main:Report.ParityReport.Form.MainForm.Attribute.Rows").unwrap(),
+        );
+        assert!(view.ok);
+        let data = view.data.unwrap();
+        assert_eq!(
+            data["props"].get("manualQuery").is_some(),
+            settings_visible,
+            "{xml_type}: unexpected answer"
+        );
+        if settings_visible {
+            assert_eq!(data["props"]["type"], "DynamicList");
+        }
+    }
+}
+
+#[test]
+fn managed_form_without_support_state_keeps_content_when_declaration_is_damaged() {
+    let fixture = RealReaderFixture::new();
+    install_form_metadata_test_sources(&fixture);
+    assert!(!fixture.source.join("Ext/ParentConfigurations.bin").exists());
+    for (at, path) in [
+        ("main:CommonForm.ОбщаяФорма", "CommonForms/ОбщаяФорма.xml"),
+        (
+            "main:DataProcessor.Обработка.Form.Форма",
+            "DataProcessors/Обработка/Forms/Форма.xml",
+        ),
+    ] {
+        let descriptor = fixture.source.join(path);
+        let xml = fs::read_to_string(&descriptor)
+            .unwrap()
+            .replace(" uuid=\"e9455333-3333-4333-8333-333333333333\"", "")
+            .replace(
+                "</Properties>",
+                "<Comment>one</Comment><Comment>two</Comment></Properties>",
+            );
+        fs::write(descriptor, xml).unwrap();
+        let result = fixture.view_service().view(ViewRequest::new(at).unwrap());
+        assert!(
+            result.ok,
+            "content remains readable independently of declaration: {result:?}"
+        );
+        let data = result.data.unwrap();
+        assert_eq!(data["kind"], "Form");
+        assert!(data["limits"].as_array().unwrap().iter().any(|limit| limit
+            .as_str()
+            .is_some_and(|message| message.contains("declaration"))));
+    }
+}

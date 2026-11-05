@@ -1,0 +1,16 @@
+# Очередь слияния main. Запуск от корня репозитория в любой оболочке:
+# gh api graphql -F query=@.agents/skills/unica-conveyor/references/merge-queue.graphql
+{
+  repository(owner: "IngvarConsulting", name: "unica") {
+    mergeQueue(branch: "main") {
+      entries(first: 50) {
+        nodes {
+          position
+          state
+          enqueuedAt
+          pullRequest { number headRefOid }
+        }
+      }
+    }
+  }
+}
