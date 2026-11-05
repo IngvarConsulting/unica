@@ -14,6 +14,7 @@ fn address(source_set: &str, kind: SourceSetKind, relative: &str) -> Option<Stri
 /// Search hits name the module that `view` reads at the same path: every
 /// module role maps to one logical address, and that address routes back
 /// to the module reader.
+/// rule: INV.WIRE.SEARCH-CORPUS
 #[test]
 fn module_paths_map_to_the_logical_module_view_reads() {
     let cases = [
@@ -174,6 +175,7 @@ fn module_paths_map_to_the_logical_module_view_reads() {
 
 /// A `.bsl` file outside the module layout gets no address: neither a
 /// guess from its directory nor the address of a neighbouring module.
+/// rule: INV.WIRE.SEARCH-CORPUS
 #[test]
 fn files_outside_the_module_layout_have_no_logical_address() {
     for (kind, relative) in [

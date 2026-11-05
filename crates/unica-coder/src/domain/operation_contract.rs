@@ -66,6 +66,7 @@ mod tests {
     /// Контракт прав публикует ту же форму, что принимает планировщик
     /// (#1354): объект — только `Kind.Name`, право — значение или
     /// ограничение, объект записи прав не аргумент `right.set`.
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn role_contracts_publish_the_entry_shape() {
         let registry = crate::domain::apply::operation_registry();
@@ -260,6 +261,7 @@ mod tests {
         assert_eq!(parse_mxl_cell_address("R01C+01"), Some((1, 1)));
     }
 
+    /// rule: INV.SOURCE.FORM-OPERATION-TARGETS
     #[test]
     fn form_move_contract_selects_one_source_and_preserves_exact_names() {
         for (args, accepted) in [
@@ -312,6 +314,7 @@ mod tests {
         assert_eq!(count, 53);
     }
 
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn dcs_contract_defaults_aliases_and_roles_match_the_typed_boundary() {
         let query = dcs_contract("query.patch").unwrap();

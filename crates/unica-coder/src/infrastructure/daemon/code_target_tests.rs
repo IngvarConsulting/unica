@@ -65,6 +65,7 @@ impl Fixture {
     }
 }
 
+/// rule: INV.SOURCE.WRITE-TARGET-KIND
 #[test]
 fn canonical_code_edits_write_only_at_a_module_address() {
     let fixture = Fixture::code();
@@ -183,6 +184,7 @@ fn canonical_code_edits_write_only_at_a_module_address() {
 /// The saved plan keeps the owner descriptors it was planned against: an
 /// owner changed after the preview refuses execution by token, and the
 /// module stays as it was.
+/// rule: INV.SOURCE.WRITE-TARGET-KIND
 #[test]
 fn canonical_code_execution_refuses_a_module_owner_changed_after_preview() {
     for owner in ["CommonModules/Пример.xml", "Configuration.xml"] {

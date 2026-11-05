@@ -120,6 +120,7 @@ fn directory_alias(source: &Path, alias: &Path) {
     );
 }
 
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[test]
 fn working_directory_selection_uses_physical_candidate_and_root_identity() {
     let fixture = CwdFixture::new(true);

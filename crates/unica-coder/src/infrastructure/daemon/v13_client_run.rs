@@ -1270,6 +1270,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn waited_launch_real_process_has_private_writable_logs_until_terminal_and_cleans_up() {
         let (_executable_directory, executable) = fake_launch_executable();
@@ -1402,6 +1403,7 @@ fn main() {
     /// «нет движка» на шаге `start`, что у остальных операций; владеемый
     /// запуск, который начался и не завершился, остаётся сбоем поставщика без
     /// полей движка.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn owned_launch_that_never_started_is_a_missing_engine() {
         let root = workspace();
@@ -1562,6 +1564,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn application_parameter_uses_exact_argv_and_private_receipts() {
         let root = workspace();
@@ -1646,6 +1649,7 @@ fn main() {
         assert!(!calls[0].args.contains(&"--wait-for-exit".into()));
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn application_parameter_rejects_invalid_inputs_and_wrong_wait_variants() {
         let root = workspace();
@@ -1716,6 +1720,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn application_parameter_allows_a_bounded_wait_without_execute() {
         let root = workspace();
@@ -1733,6 +1738,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn arguments_are_closed_and_each_refusal_names_the_fix() {
         let root = workspace();
@@ -1812,6 +1818,7 @@ fn main() {
         );
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn preview_names_the_platform_without_dispatching_or_exposing_the_command() {
         let root = workspace();
@@ -1862,6 +1869,7 @@ fn main() {
         assert!(!encoded.contains(&root.path().display().to_string()));
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn launch_reports_the_session_the_provider_attests() {
         let root = workspace();
@@ -1899,6 +1907,7 @@ fn main() {
         );
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn unverified_launch_receipts_discard_owned_processes() {
         let root = workspace();
@@ -2007,6 +2016,7 @@ fn main() {
             .contains(&root.path().display().to_string()));
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn cancellation_before_verified_handoff_discards_the_client() {
         let root = workspace();
@@ -2030,6 +2040,7 @@ fn main() {
         );
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn waited_launch_reports_the_exit_code_and_the_timeout() {
         let root = workspace();
@@ -2141,6 +2152,7 @@ fn main() {
             .contains("/private/"));
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn waiting_requires_a_thin_epf_but_nonwait_launch_modes_stay_available() {
         let root = workspace();
@@ -2162,6 +2174,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn waited_receipts_reject_inconsistent_identity_and_terminal_evidence() {
         let root = workspace();
@@ -2255,6 +2268,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn platform_receipts_keep_only_a_typed_version_or_explicit_unknown() {
         let root = workspace();
@@ -2309,6 +2323,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn a_preview_that_dispatched_a_client_is_refused_as_a_broken_contract() {
         let root = workspace();
@@ -2374,6 +2389,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn timeout_words_without_a_wait_receipt_remain_an_ordinary_runner_failure() {
         let root = workspace();

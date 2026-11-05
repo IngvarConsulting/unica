@@ -1679,6 +1679,7 @@ mod tests {
     /// Область создаёт только `area.add` на макете, а `mxl.set` пишет только
     /// в существующую область по её адресу (#1354): опечатка в имени области
     /// не заводит новую, повтор имени в `area.add` не перекрывает ячейки.
+    /// rule: INV.WIRE.OPERATION-CREATION-PARENT
     #[test]
     fn an_area_is_written_only_where_it_exists_and_created_only_by_area_add() {
         let fixture = ApplySeamFixture::new();
@@ -1779,6 +1780,7 @@ mod tests {
     /// Запись прав и область макета живут в присоединённом файле: их
     /// существование читается из него, и `not_found` по адресу такого узла
     /// ведёт к родителю, где их создаёт `right.add` или `area.add` (#1354).
+    /// rule: INV.WIRE.OPERATION-CREATION-PARENT
     #[test]
     fn a_missing_rights_entry_or_area_routes_next_to_the_parent() {
         let fixture = ApplySeamFixture::new();
@@ -1917,6 +1919,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.SUPPORT-SEPARATE-APPLY
     #[test]
     fn support_state_classification_preserves_names_across_targets_and_profiles() {
         use unica_address::address::QualifiedAddress;
@@ -2008,6 +2011,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.SUPPORT-SEPARATE-APPLY
     #[test]
     fn support_and_ordinary_edits_require_separate_batches_under_every_policy() {
         for policy in ["deny", "warn", "off"] {
@@ -2108,6 +2112,7 @@ mod tests {
 
     /// An editable vendor object is removed while staying on support, as the
     /// configurator removes it, under every support policy and silently.
+    /// rule: INV.SOURCE.VENDOR-OBJECT-REMOVAL
     #[test]
     fn vendor_object_removal_keeps_editable_objects_on_support_under_every_policy() {
         for policy in ["deny", "warn", "off"] {
@@ -2122,6 +2127,7 @@ mod tests {
 
     /// A locked vendor object refuses removal under `deny` with the way out,
     /// is removed with `support_locked` under `warn` and silently under `off`.
+    /// rule: INV.SOURCE.VENDOR-OBJECT-REMOVAL
     #[test]
     fn vendor_object_removal_of_locked_objects_follows_the_support_policy() {
         let marker = vendor_removal_support_marker(0, true);
@@ -2251,6 +2257,7 @@ mod tests {
     /// An editable vendor object with a locked child of its own — an
     /// attribute in its descriptor or a form described next to it — follows
     /// the policy of a locked object and names that child.
+    /// rule: INV.SOURCE.VENDOR-OBJECT-REMOVAL
     #[test]
     fn vendor_object_removal_with_locked_children_follows_the_support_policy() {
         // The fixture attribute `Total` carries the uuid 2222….
@@ -2316,6 +2323,7 @@ mod tests {
         )
     }
 
+    /// rule: INV.SOURCE.VENDOR-OBJECT-REMOVAL
     #[test]
     fn vendor_object_removal_preserves_allowed_support_states() {
         use unica_workspace::test_support::tree_snapshot;
@@ -2422,6 +2430,8 @@ mod tests {
         assert_eq!(effects.warnings().len(), 0);
     }
 
+    /// rule: INV.SOURCE.SUPPORT-SEPARATE-APPLY
+    /// rule: INV.SOURCE.VENDOR-OBJECT-REMOVAL
     #[test]
     fn support_removal_and_object_removal_require_separate_batches_under_every_policy() {
         use unica_workspace::test_support::tree_snapshot;
@@ -2469,6 +2479,8 @@ mod tests {
     /// refuses every family before a byte is staged, the support operations
     /// stay the way out of the lock, and a source without the marker is not
     /// on support at all.
+    /// rule: INV.SAFETY.APPLY-SUPPORT-GATE
+    /// rule: INV.SOURCE.SUPPORT-SEPARATE-APPLY
     #[test]
     fn locked_vendor_objects_refuse_every_family_before_staging() {
         use unica_operations::OperationFamily;
@@ -3835,6 +3847,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.REQUEST-LEVEL-APPLY-EFFECT-RECONCILIATION
     #[test]
     fn request_level_reconciliation_drops_cancelled_effect_before_deduplication() {
         let fixture = ApplySeamFixture::new();

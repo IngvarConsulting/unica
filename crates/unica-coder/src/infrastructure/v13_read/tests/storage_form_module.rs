@@ -28,6 +28,7 @@ pub(super) fn install_storage_sources(fixture: &RealReaderFixture) {
     }
 }
 
+/// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 #[test]
 fn storage_forms_publish_only_form_modules_and_keep_registration_boundaries() {
     let fixture = RealReaderFixture::new();

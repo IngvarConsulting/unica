@@ -312,6 +312,7 @@ mod tests {
     /// Прежнее поколение (данные, кэш и блокировка) удаляется целиком,
     /// текущее и посторонние каталоги остаются; недавняя активность сохраняет
     /// и прежнее поколение.
+    /// rule: INV.CACHE.RLM-GENERATION-COLLECTION
     #[test]
     fn only_an_idle_previous_generation_is_removed_in_every_location() {
         let (_guard, pair_root) = root();
@@ -358,6 +359,7 @@ mod tests {
 
     /// Поколение, чью блокировку держит живой процесс, остаётся до следующей
     /// попытки и удаляется после её освобождения.
+    /// rule: INV.CACHE.RLM-GENERATION-COLLECTION
     #[test]
     fn a_generation_whose_lock_is_held_is_kept_until_released() {
         let (_guard, pair_root) = root();
@@ -390,6 +392,7 @@ mod tests {
 
     /// Ссылка с именем поколения не открывается и не удаляется, вместе с ней
     /// остаётся и остальная часть этого поколения; цель ссылки цела.
+    /// rule: INV.CACHE.RLM-GENERATION-COLLECTION
     #[test]
     fn a_link_named_like_a_generation_is_neither_followed_nor_removed() {
         let (_guard, pair_root) = root();
@@ -423,6 +426,7 @@ mod tests {
     /// Ссылка на любом уровне маршрута к поколению — `caches` или
     /// `caches/rlm-bsl` — не обходится: уборка не выходит по ней за пределы
     /// корня пары, чужой каталог с именем поколения не переименовывается.
+    /// rule: INV.CACHE.RLM-GENERATION-COLLECTION
     #[test]
     fn a_linked_generation_parent_is_not_walked() {
         for linked in ["caches", "caches/rlm-bsl"] {
@@ -472,6 +476,7 @@ mod tests {
 
     /// Свежий файл глубоко в дереве (база сборки) удерживает всё поколение,
     /// даже когда сами каталоги давно не менялись.
+    /// rule: INV.CACHE.RLM-GENERATION-COLLECTION
     #[test]
     fn a_recent_file_deep_in_a_generation_keeps_it() {
         let (_guard, pair_root) = root();
@@ -506,6 +511,7 @@ mod tests {
 
     /// Содержимое глубже предела обхода не просматривается и потому не
     /// доказывает простой: такое поколение остаётся.
+    /// rule: INV.CACHE.RLM-GENERATION-COLLECTION
     #[test]
     fn content_below_the_walk_limit_keeps_the_generation() {
         let (_guard, pair_root) = root();
