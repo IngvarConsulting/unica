@@ -220,7 +220,7 @@
         {
           "kind": "sha256",
           "path": "src/SettingsStorages/Probe/Forms/Empty.xml",
-          "eq": "5c1f7800229ee8542fe9eccd55d0675159a0fb459005046a6f21e47e4191a0f0"
+          "eq": "b6ce7a4fadcad8ab2190a6c87dc3963f365d6ee7f3b6f1b41f030560be781f93"
         },
         {
           "kind": "sha256",
@@ -235,7 +235,7 @@
         {
           "kind": "sha256",
           "path": "src/SettingsStorages/Probe/Forms/Save.xml",
-          "eq": "dfbb49e0cb61fae35aac77b391fa3970425c06867eeb1ccc1ea4d05aabcf10fb"
+          "eq": "ba6f879dfa39d6759b83afbb6b64ec2426b96cccbb124a78110abd6e0764f0ce"
         },
         {
           "kind": "sha256",
