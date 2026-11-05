@@ -3,6 +3,7 @@ use super::*;
 use std::sync::mpsc;
 use std::thread;
 
+/// rule: INV.APP.DAEMON-ACTOR-CAPACITY
 #[test]
 fn replaced_named_root_outweighs_unavailable_root_in_any_iteration_order() {
     for unavailable_first in [false, true] {
@@ -99,6 +100,7 @@ fn workspace_actor_allows_reads_to_overlap() {
     fixture.cleanup();
 }
 
+/// rule: INV.SOURCE.REVISION-READ-PROVENANCE
 #[test]
 fn retained_binding_rejects_a_root_replaced_by_another_source_set_link() {
     use crate::platform::testing::{
@@ -140,6 +142,7 @@ fn retained_binding_rejects_a_root_replaced_by_another_source_set_link() {
     fixture.cleanup();
 }
 
+/// rule: INV.SOURCE.REVISION-READ-PROVENANCE
 #[test]
 fn retained_binding_rejects_a_same_path_directory_replacement() {
     let fixture = actor_fixture("root-directory-replacement", &["A"]);
@@ -223,6 +226,7 @@ fn path_provider_discards_output_when_root_changes_mid_operation() {
     fixture.cleanup();
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 #[test]
 pub(crate) fn duplicate_physical_root_names_are_rejected_as_ambiguous() {
     let root = temp_root("duplicate-physical-root");
@@ -243,6 +247,7 @@ pub(crate) fn duplicate_physical_root_names_are_rejected_as_ambiguous() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 #[test]
 pub(crate) fn duplicate_source_set_names_with_distinct_roots_are_rejected() {
     let root = temp_root("duplicate-source-set-name");
@@ -284,6 +289,7 @@ fn workspace_actor_exposes_no_raw_generic_runtime_payload() {
     );
 }
 
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 fn actor_state_scope_digest_is_fallible_and_bounded() {
     fn digest(identity: &WorkspaceIdentity) -> Result<String, String> {
@@ -331,6 +337,8 @@ fn actor_state_scope_distinguishes_native_non_unicode_paths() {
     );
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-IDENTITY
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 pub(crate) fn same_name_root_changed_kind_rotates_actor_and_state_scope() {
     let root = temp_root("typed-kind-identity");
@@ -369,6 +377,9 @@ pub(crate) fn same_name_root_changed_kind_rotates_actor_and_state_scope() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// rule: CTR.SOURCE.REVISION-ARTIFACT-PROFILE
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-IDENTITY
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 pub(crate) fn same_name_root_changed_format_or_platform_profile_rotates_actor() {
     let root = temp_root("typed-format-profile-identity");
@@ -449,11 +460,13 @@ fn warm_registry_reuses_the_same_actor_across_sequential_admissions() {
     super::retention_contract_tests::warm_registry_reuses_the_same_actor_across_sequential_admissions();
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn warm_actor_expires_after_the_idle_ttl_and_is_rebuilt() {
     super::retention_contract_tests::warm_actor_expires_after_the_idle_ttl_and_is_rebuilt();
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn idle_listener_retains_unknown_registry_ownership() {
     for poison_warm in [false, true] {
@@ -476,6 +489,8 @@ fn idle_listener_retains_unknown_registry_ownership() {
     }
 }
 
+/// rule: INV.APP.DAEMON-ACTOR-CAPACITY
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn idle_cleanup_retains_unknown_actor_state_without_rejecting_other_profiles() {
     for poison_plans in [true, false] {
@@ -541,6 +556,8 @@ fn warm_actors_do_not_block_a_distinct_identity() {
     super::retention_contract_tests::warm_actors_do_not_block_a_distinct_identity();
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-IDENTITY
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 pub(crate) fn workspace_actor_registry_keys_exact_identity_and_separates_worktrees_and_source_roots(
 ) {
@@ -633,6 +650,7 @@ pub(crate) fn workspace_actor_registry_keys_exact_identity_and_separates_worktre
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 fn two_frontends_reuse_the_actor_for_one_canonical_worktree() {
     let root = temp_root("frontend-reuse");
@@ -846,6 +864,7 @@ fn multiroot_provider_keeps_identical_relative_paths_bound_to_the_requesting_roo
     fixture.cleanup();
 }
 
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 pub(crate) fn active_platform_actor_cannot_select_the_legacy_state_scope() {
     let fixture = actor_fixture("active-actor-legacy-bypass", &["src"]);

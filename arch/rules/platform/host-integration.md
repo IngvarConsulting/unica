@@ -1,10 +1,5 @@
 ---
 id: INV.HOST.KNOWLEDGE-BEHIND-FACADE
-check:
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_rejects_host_names_outside_the_host_facade
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_allows_host_names_only_in_the_host_facade_and_nested_host_tests
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_host_facade_root_is_not_granted_to_other_crates
-  - tests/ci/test_rust_platform_boundary.py::RustPlatformBoundaryTests.test_repository_currently_complies_with_platform_boundary
 gap: https://github.com/IngvarConsulting/unica/issues/983
 ---
 

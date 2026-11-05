@@ -1,8 +1,5 @@
 ---
 id: INV.PKG.BUILD-ARCHIVE-SAFETY
-check:
-  - tests/ci/test_build_unica_tools.py::BuildUnicaToolsTests.test_verified_archive_rejects_unsafe_and_drifted_members
-  - tests/ci/test_build_unica_tools.py::BuildUnicaToolsTests.test_upstream_archive_rejects_unsafe_members_before_materialization
 ---
 
 # Сборщик принимает только архив с проверенными файлами

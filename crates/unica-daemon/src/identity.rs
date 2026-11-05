@@ -785,6 +785,7 @@ mod tests {
         assert_eq!(state.read_startup_failure(10), None);
     }
 
+    /// rule: INV.APP.HIDDEN-SERVICES
     #[test]
     fn production_identity_is_the_frozen_v5_digest_and_the_only_daemon_protocol() {
         let production = CoreIdentity::production();
@@ -805,6 +806,7 @@ mod tests {
 
     /// Сборка определяется байтами исполняемого файла: та же сборка под
     /// другим путём делит демон, любая пересборка получает свой.
+    /// rule: INV.APP.HIDDEN-SERVICES
     #[test]
     fn executable_bytes_name_the_build_and_its_daemon_directory() {
         let root = tempfile::tempdir().unwrap();
@@ -827,6 +829,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.HIDDEN-SERVICES
     #[test]
     fn every_canonical_core_identity_lives_under_the_protocol_v5_state_path() {
         let state_root = Path::new("/provider-state");

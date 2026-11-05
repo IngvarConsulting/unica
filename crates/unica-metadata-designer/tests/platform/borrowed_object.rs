@@ -138,6 +138,7 @@ fn comment_is_extension_owned_without_a_property_state() {
     assert!(!next.contains("changed parent comment"));
 }
 
+/// rule: INV.SOURCE.BORROWED-OBJECT-IDENTITY
 #[test]
 fn refresh_updates_transferred_properties_preserving_local_xml_and_noop_bytes() {
     let old = borrow("CommonModule", &[]);
@@ -238,6 +239,7 @@ fn catalog_refresh_keeps_platform_identity_children_and_overridden_property_stat
     );
 }
 
+/// rule: INV.SOURCE.BORROWED-OBJECT-REFRESH
 #[test]
 fn catalog_refresh_updates_platform_control_properties_and_keeps_override() {
     let parent =
@@ -302,6 +304,7 @@ fn catalog_refresh_updates_platform_control_properties_and_keeps_override() {
     );
 }
 
+/// rule: INV.SOURCE.BORROWED-OBJECT-IDENTITY
 #[test]
 fn exchange_plan_identity_is_fresh_then_stable_after_untransferred_parent_changes() {
     let parent_uuid = "00000000-0000-4000-8000-000000000001";
@@ -407,6 +410,7 @@ fn exchange_plan_identity_is_fresh_then_stable_after_untransferred_parent_change
     assert_eq!(repeated.bytes, first.bytes);
 }
 
+/// rule: INV.SOURCE.BORROWED-OBJECT-IDENTITY
 #[test]
 fn extension_identity_damage_is_refused_instead_of_repaired() {
     let original = String::from_utf8(borrow("ExchangePlan", &[])).unwrap();

@@ -36,6 +36,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
                          "use std::path::Path; fn join(p: &Path) { let _ = p.join(\"x\"); }"), [])
 
     def test_moved_semantic_packages_keep_domain_io_and_dependency_guards(self) -> None:
+        """rule: INV.APP.DOMAIN-INPUTS"""
         checker = load_checker_module()
         for owner in (
             "unica-address", "unica-source-contract", "unica-operation-contract",
@@ -61,6 +62,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
             self.assertEqual(checker.check_source(f"crates/{owner}/src/lib.rs", "use std::fs;"), [])
 
     def test_file_io_free_sources_refuse_third_party_file_crates(self) -> None:
+        """rule: INV.APP.DOMAIN-INPUTS"""
         checker = load_checker_module()
         source = (
             "use walkdir::WalkDir;\n"
@@ -92,6 +94,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(checker.check_source("crates/unica-workspace/src/walk.rs", source), [])
 
     def test_file_io_free_manifests_refuse_file_crate_dependencies(self) -> None:
+        """rule: INV.APP.DOMAIN-INPUTS"""
         checker = load_checker_module()
         workspace = {"tokio": {"version": "1", "features": ["rt", "fs"]}, "plain": {"version": "1"},
                      "renamed": {"version": "2", "package": "walkdir"}}
@@ -127,6 +130,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(checker.check_manifest("crates/unica-workspace/Cargo.toml", free, workspace), [])
 
     def test_file_io_free_package_list_follows_the_source_boundary(self) -> None:
+        """rule: INV.APP.DOMAIN-INPUTS"""
         checker = load_checker_module()
         packages = checker.file_io_free_packages(REPO_ROOT)
         self.assertIn("unica-address", packages)
@@ -140,6 +144,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
                 self.assertTrue(checker._is_file_io_free_source(source) or checker._is_domain_source(source))
 
     def test_codecs_and_engines_reach_files_only_through_workspace(self) -> None:
+        """rule: INV.APP.DOMAIN-INPUTS"""
         checker = load_checker_module()
         owners = (
             "unica-dcs-designer", "unica-forms-designer", "unica-metadata-designer",
@@ -191,6 +196,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
             self.assertEqual(checker.check_source(f"crates/{neighbour}/src/lib.rs", "use std::fs;"), [])
 
     def test_platform_implementation_module_is_private_even_for_an_authorized_owner(self) -> None:
+        """rule: INV.PLATFORM.OS-BEHIND-FACADE"""
         checker = load_checker_module()
         for declaration in ("pub mod platform;", "pub mod platform {}"):
             with self.subTest(declaration=declaration):
@@ -203,6 +209,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(checker.check_source("crates/unica-process/src/lib.rs", '// pub mod platform;\nconst S: &str = "pub mod platform;";'), [])
 
     def test_component_platform_facades_have_closed_owners_and_no_path_exemptions(self) -> None:
+        """rule: INV.PLATFORM.OS-BEHIND-FACADE"""
         checker = load_checker_module()
         source = '#[cfg(unix)]\nuse std::os::unix::fs::PermissionsExt;\n'
         for owner in (
@@ -224,6 +231,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
                 self.assertEqual(len(checker.check_source(path, source)), 2)
 
     def test_rejects_platform_constructs_outside_facade_with_stable_lines(self) -> None:
+        """rule: INV.PLATFORM.OS-BEHIND-FACADE"""
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
@@ -246,6 +254,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         )
 
     def test_allows_platform_constructs_only_in_facades_and_nested_platform_tests(self) -> None:
+        """rule: INV.PLATFORM.OS-BEHIND-FACADE"""
         checker = load_checker_module()
         source = (
             "#[cfg(target_os = \"windows\")]\n"
@@ -398,6 +407,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         )
 
     def test_lifetimes_labels_and_chars_do_not_hide_code(self) -> None:
+        """rule: INV.PLATFORM.OS-BEHIND-FACADE"""
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
@@ -422,6 +432,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         )
 
     def test_rejects_direct_layer_references(self) -> None:
+        """rule: INV.APP.DEPENDENCY-DIRECTION"""
         checker = load_checker_module()
 
         domain_diagnostics = checker.check_source(
@@ -459,6 +470,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         )
 
     def test_rejects_grouped_layer_references_in_use_trees(self) -> None:
+        """rule: INV.APP.DEPENDENCY-DIRECTION"""
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
@@ -481,6 +493,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         )
 
     def test_rejects_layer_references_through_root_aliases(self) -> None:
+        """rule: INV.APP.DEPENDENCY-DIRECTION"""
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
@@ -502,6 +515,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         )
 
     def test_rejects_domain_std_io_in_direct_grouped_and_common_alias_forms(self) -> None:
+        """rule: INV.APP.DOMAIN-INPUTS"""
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
@@ -531,6 +545,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         )
 
     def test_rejects_explicit_path_ufcs_and_common_import_aliases(self) -> None:
+        """rule: INV.APP.DOMAIN-INPUTS"""
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
@@ -561,6 +576,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         )
 
     def test_allows_business_instance_methods_and_pure_path_operations(self) -> None:
+        """rule: INV.APP.DOMAIN-INPUTS"""
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
@@ -578,6 +594,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(diagnostics, [])
 
     def test_masks_domain_io_text_in_comments_and_literals(self) -> None:
+        """rule: INV.APP.DOMAIN-INPUTS"""
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
@@ -603,6 +620,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(diagnostics, [])
 
     def test_rejects_host_names_outside_the_host_facade(self) -> None:
+        """rule: INV.HOST.KNOWLEDGE-BEHIND-FACADE"""
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
@@ -631,6 +649,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         )
 
     def test_allows_host_names_only_in_the_host_facade_and_nested_host_tests(self) -> None:
+        """rule: INV.HOST.KNOWLEDGE-BEHIND-FACADE"""
         checker = load_checker_module()
         source = (
             "const HOME: &str = \"CODEX_HOME\";\n"
@@ -727,6 +746,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         )
 
     def test_host_facade_root_is_not_granted_to_other_crates(self) -> None:
+        """rule: INV.HOST.KNOWLEDGE-BEHIND-FACADE"""
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
@@ -804,6 +824,12 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         )
 
     def test_repository_currently_complies_with_platform_boundary(self) -> None:
+        """
+        rule: INV.APP.DEPENDENCY-DIRECTION
+        rule: INV.APP.DOMAIN-INPUTS
+        rule: INV.HOST.KNOWLEDGE-BEHIND-FACADE
+        rule: INV.PLATFORM.OS-BEHIND-FACADE
+        """
         checker = load_checker_module()
 
         self.assertEqual(checker.check_repository(REPO_ROOT), [])

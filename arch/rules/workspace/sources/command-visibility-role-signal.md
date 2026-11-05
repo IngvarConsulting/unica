@@ -1,7 +1,5 @@
 ---
 id: INV.SOURCE.COMMAND-VISIBILITY-ROLE-SIGNAL
-check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::command_visibility_says_when_roles_override_it
 ---
 
 # Общая видимость команды сопровождается числом переопределений по ролям
