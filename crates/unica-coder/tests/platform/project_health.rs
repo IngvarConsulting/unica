@@ -683,6 +683,7 @@ fn project_health_rejects_cross_kind_staged_config_dump_descriptors() {
     }
 }
 
+/// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
 #[test]
 fn project_health_full_portable_repository_is_ready() {
     let root = temp_root("full-ready");
@@ -727,6 +728,8 @@ fn project_health_full_portable_repository_is_ready() {
 /// to portable repository readiness.  Keeping the failure cases beside the
 /// real public `project.status` fixtures prevents the happy path from being
 /// mistaken for proof that each repository prerequisite closes readiness.
+/// rule: INV.SOURCE.PORTABLE-GIT
+/// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
 #[test]
 fn portable_git_readiness_contract_is_a_closed_positive_and_negative_matrix() {
     project_health_full_portable_repository_is_ready();
@@ -897,6 +900,7 @@ fn project_health_checks_a_proven_platform_root_when_a_sibling_format_is_unknown
     let _ = fs::remove_dir_all(root);
 }
 
+/// rule: INV.SOURCE.ROOT-SEPARATION
 #[test]
 fn project_health_workspace_root_rejection_suppresses_source_derived_git_facts() {
     let root = temp_root("workspace-root-rejected");
@@ -1354,6 +1358,7 @@ fn project_health_does_not_execute_configured_fsmonitor_hook() {
     let _ = fs::remove_dir_all(root);
 }
 
+/// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
 #[test]
 fn project_health_full_portable_linked_worktree_is_ready_and_read_only() {
     let root = temp_root("linked-worktree");

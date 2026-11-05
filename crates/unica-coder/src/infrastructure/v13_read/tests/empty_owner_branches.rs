@@ -20,6 +20,7 @@ fn install_empty_owners(fixture: &RealReaderFixture) {
     write(&path, &xml);
 }
 
+/// rule: CTR.SOURCE.EMPTY-BRANCHES
 #[test]
 fn modeled_empty_owner_branches_are_advertised_and_readable_in_platform_order() {
     let fixture = RealReaderFixture::new();
@@ -96,6 +97,7 @@ fn modeled_empty_owner_branches_are_advertised_and_readable_in_platform_order() 
     );
 }
 
+/// rule: CTR.SOURCE.EMPTY-BRANCHES
 #[test]
 fn damaged_service_children_keep_owner_facts_without_claiming_empty_branches() {
     for (kind, directory, name, child, field) in [
@@ -153,6 +155,7 @@ fn damaged_service_children_keep_owner_facts_without_claiming_empty_branches() {
     }
 }
 
+/// rule: CTR.SOURCE.EMPTY-BRANCHES
 #[test]
 fn unnamed_form_command_and_template_entries_are_not_reported_as_empty() {
     for (kind, directory, child, field, sibling) in [
@@ -223,6 +226,7 @@ fn unnamed_form_command_and_template_entries_are_not_reported_as_empty() {
     }
 }
 
+/// rule: CTR.SOURCE.EMPTY-BRANCHES
 #[test]
 fn incomplete_registrations_keep_known_rows_and_independent_empty_siblings() {
     for (fragment, known) in [

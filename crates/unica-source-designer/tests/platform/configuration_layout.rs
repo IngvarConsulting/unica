@@ -27,6 +27,7 @@ fn cf_consumers_share_the_canonical_metadata_kind_order() {
     }
 }
 
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
 #[test]
 fn child_object_insertion_orders_bot_and_rejects_unknown_kinds() {
     let mut xml = concat!(
@@ -171,6 +172,7 @@ fn child_object_insertion_targets_only_the_root_metadata_child_objects() {
     assert!(!xml.replace("\r\n", "").contains('\n'));
 }
 
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
 #[test]
 fn storage_child_order_matches_the_native_synthetic_export() {
     let xml = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/acceptance/workspace-empty-owner-branches/native-order/SettingsStorage.xml"));

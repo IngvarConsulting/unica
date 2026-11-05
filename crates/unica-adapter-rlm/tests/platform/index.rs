@@ -132,6 +132,7 @@ fn neutral_provider_state_root_all_empty_values_report_missing_root() {
     cleanup(&context);
 }
 
+/// rule: INV.CACHE.RLM-STATE-LOCATION
 #[test]
 fn safe_root_failure_never_falls_back_to_generation_markers_inside_sources() {
     let mut context = test_context("safe-root-no-source-fallback");
@@ -213,6 +214,7 @@ fn rlm_provider_state_scopes_the_existing_safe_cache_layout() {
     cleanup(&context);
 }
 
+/// rule: INV.CACHE.RLM-STATE-LOCATION
 #[test]
 fn rlm_provider_state_moves_outside_a_workspace_wide_source_root() {
     let mut context = test_context("unsafe-provider-root");
@@ -437,6 +439,7 @@ pub fn rlm_coordination_contract(
     cleanup(&context);
 }
 
+/// rule: INV.RLM.MAINTENANCE-STATUS
 #[test]
 fn worker_terminal_observation_tracks_real_failure_cancellation_and_publication() {
     for case in [
@@ -624,6 +627,7 @@ fn poisoned_owner_never_proves_maintenance_or_writes_a_release_record() {
     cleanup(&context);
 }
 
+/// rule: INV.RLM.MAINTENANCE-STATUS
 #[test]
 fn foreign_or_replaced_lock_never_proves_queued_or_running_maintenance() {
     use std::io::Read;
@@ -681,6 +685,7 @@ fn foreign_or_replaced_lock_never_proves_queued_or_running_maintenance() {
     cleanup(&context);
 }
 
+/// rule: INV.CACHE.GENERATION-CUTOVER
 #[test]
 fn builder_17_uses_a_new_generation_and_leaves_older_generations_untouched() {
     let context = test_context("generation-cutover");
@@ -721,6 +726,7 @@ fn builder_17_uses_a_new_generation_and_leaves_older_generations_untouched() {
 
 /// Чтение активной сборки запускает уборку прежнего поколения той же пары:
 /// давно не тронутое index-v15 исчезает, текущее поколение остаётся.
+/// rule: INV.CACHE.RLM-GENERATION-COLLECTION
 #[test]
 fn active_build_collects_an_idle_previous_generation_but_not_the_current_one() {
     let context = test_context("generation-collection-wiring");
@@ -857,6 +863,7 @@ fn builder_15_rejects_a_generation_alias_to_builder_14_storage() {
     cleanup(&context);
 }
 
+/// rule: INV.CACHE.GENERATION-CUTOVER
 #[test]
 fn legacy_status_and_lock_do_not_gate_builder_15() {
     let context = test_context("legacy-markers");
@@ -888,6 +895,7 @@ fn legacy_status_and_lock_do_not_gate_builder_15() {
     cleanup(&context);
 }
 
+/// rule: INV.CACHE.GENERATION-CUTOVER
 #[test]
 fn current_pair_scoped_builder_14_bytes_are_ignored_and_preserved() {
     let context = test_context("pair-scoped-legacy-markers");
@@ -933,6 +941,7 @@ fn current_pair_scoped_builder_14_bytes_are_ignored_and_preserved() {
     cleanup(&context);
 }
 
+/// rule: INV.CACHE.GENERATION-CUTOVER
 #[test]
 fn active_build_rejects_db_outside_declared_build_directory() {
     enum InvalidDbLocation {
@@ -1196,6 +1205,7 @@ fn successful_background_job_records_last_run_metrics_in_status() {
     cleanup(&context);
 }
 
+/// rule: INV.RLM.MAINTENANCE-STATUS
 #[test]
 fn actor_bound_background_job_publishes_no_result_after_mid_command_root_swap() {
     let context = test_context("actor-bound-background-root-replacement");
@@ -1521,6 +1531,7 @@ fn stale_lock_held_by_current_process_is_still_active() {
     cleanup(&context);
 }
 
+/// rule: INV.RLM.INDEX-LOCK-OWNER
 #[test]
 fn cleanup_does_not_remove_lock_replaced_by_new_owner() {
     let context = test_context("cleanup-owner");
@@ -1540,6 +1551,7 @@ fn cleanup_does_not_remove_lock_replaced_by_new_owner() {
     cleanup(&context);
 }
 
+/// rule: INV.RLM.INDEX-LOCK-OWNER
 #[test]
 fn heartbeat_does_not_overwrite_lock_replaced_by_new_owner() {
     let context = test_context("heartbeat-owner");
@@ -1586,6 +1598,7 @@ fn failed_background_start_does_not_remove_lock_replaced_by_new_owner() {
     cleanup(&context);
 }
 
+/// rule: INV.RLM.INDEX-LOCK-OWNER
 #[test]
 fn stale_recovery_does_not_overwrite_an_unexpected_held_record() {
     let context = test_context("recovery-unexpected-record");
@@ -1629,6 +1642,7 @@ fn stale_structured_lock_is_recovered_by_active_lock() {
     cleanup(&context);
 }
 
+/// rule: INV.RLM.INDEX-LOCK-OWNER
 #[test]
 fn stale_recovery_preserves_the_matching_record_identity_and_fields() {
     let context = test_context("recovery-matching-record");
@@ -1672,6 +1686,7 @@ fn stale_recovery_preserves_the_matching_record_identity_and_fields() {
     cleanup(&context);
 }
 
+/// rule: INV.RLM.INDEX-LOCK-OWNER
 #[test]
 fn stale_recovery_with_expected_identity_preserves_unreadable_records() {
     let context = test_context("recovery-unreadable-record");
@@ -2059,6 +2074,7 @@ fn isolated_build_keeps_last_usable_index_until_candidate_is_ready() {
     cleanup(&context);
 }
 
+/// rule: INV.CACHE.GENERATION-CUTOVER
 #[test]
 fn legacy_ready_marker_requires_an_isolated_build_before_becoming_active() {
     let context = test_context("legacy-ready-isolated-migration");

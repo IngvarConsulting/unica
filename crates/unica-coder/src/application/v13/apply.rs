@@ -67,6 +67,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.APPLY-REQUIRES-THE-FENCE
     #[test]
     fn planning_and_saved_plan_execution_have_disjoint_public_shapes() {
         let catalog = catalog_for(SurfaceRelease::V13).expect("v0.13 catalog");

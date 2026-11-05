@@ -265,6 +265,7 @@ fn form_info_projects_direct_command_action_as_execute_binding() {
 /// #1385: a form is registered in the platform slot of forms, which
 /// depends on the owner kind: a catalog writes its forms after its tabular
 /// sections, a document before them; templates and commands follow.
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
 #[test]
 fn form_registration_takes_the_platform_slot_of_its_owner_kind() {
     fn owner(kind: &str, children: &[&str]) -> String {

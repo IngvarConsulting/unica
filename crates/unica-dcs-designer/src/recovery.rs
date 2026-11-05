@@ -103,6 +103,7 @@ mod tests {
 
     /// Набор находится по имени на любой глубине объединения; повторённое
     /// имя даёт все пути, отсутствующее — ни одного (#1357).
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_data_set_is_found_by_name_inside_unions() {
         let schema = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema">
@@ -127,6 +128,7 @@ mod tests {
     /// Элемент структуры находится так, как его адресует чтение: путь —
     /// именованные предки, безымянная группа прозрачна, повторённое имя
     /// даёт пути всех адресуемых совпадений (#1357).
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_structure_item_is_found_by_its_named_ancestors() {
         let schema = r#"<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema" xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">

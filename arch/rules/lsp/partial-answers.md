@@ -1,6 +1,5 @@
 ---
 id: INV.LSP.PARTIAL-ANSWERS
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/2176
 ---
 
