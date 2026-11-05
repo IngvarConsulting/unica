@@ -1420,6 +1420,11 @@ pub fn apply_typed_properties(
             ) | (
                 MetadataKind::BusinessProcess,
                 MetaPropertyKey::NumberPeriodicity
+            ) | (
+                MetadataKind::ChartOfCharacteristicTypes
+                    | MetadataKind::ChartOfCalculationTypes
+                    | MetadataKind::ExchangePlan,
+                MetaPropertyKey::CodeAllowedLength
             )
         );
         if kind_scoped_enum
