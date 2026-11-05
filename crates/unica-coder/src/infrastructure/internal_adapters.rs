@@ -2551,6 +2551,7 @@ source-set:
         cleanup_context(&context);
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn diagnostics_analyze_preserves_cyrillic_paths_through_typed_jsonl() {
         let context = temp_context("diagnostics-cyrillic-jsonl-path");
@@ -2653,6 +2654,7 @@ source-set:
         cleanup_context(&context);
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn diagnostics_analyze_without_configured_timeout_runs_without_process_timeout() {
         let context = temp_context("diagnostics-default-timeout");
@@ -2695,6 +2697,7 @@ source-set:
         cleanup_context(&context);
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn diagnostics_analyze_uses_workspace_operational_config_default() {
         let context = temp_context("diagnostics-operational-config-timeout");
@@ -3172,6 +3175,7 @@ analyze_timeout_seconds = 900
         assert_eq!(results[1].diagnostics, results[2].diagnostics);
     }
 
+    /// rule: INV.ANALYSIS.ANALYZER-JSONL-STREAM
     #[test]
     fn diagnostics_analyze_parses_more_than_the_legacy_stdout_capture_limit() {
         let files = 20_000usize;
@@ -3197,6 +3201,7 @@ analyze_timeout_seconds = 900
         assert_eq!(batch.outcome.observations.len(), files);
     }
 
+    /// rule: INV.ANALYSIS.ANALYZER-JSONL-STREAM
     #[test]
     fn diagnostics_analyze_rejects_one_oversized_line_without_publishing_it() {
         let oversized = "x".repeat(MAX_DIAGNOSTICS_JSONL_LINE_BYTES + 1);
@@ -3350,6 +3355,7 @@ analyze_timeout_seconds = 900
     /// and exits 1 with the cause on stderr (`analyze.rs`). The module check
     /// must see a named, incomplete section, not "provider is unavailable";
     /// any other failed run keeps failing as before.
+    /// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
     #[test]
     fn analyze_names_a_broken_baseline_the_cli_refused_before_start() {
         let context = temp_context("baseline refused, анализ");
@@ -3413,6 +3419,7 @@ analyze_timeout_seconds = 900
     /// A run that gives no diagnostics batch says where it stopped: the
     /// engine is absent, failed its install checks, could not start, ran out
     /// of time or exited with an error (#1338).
+    /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
     #[test]
     fn analyze_failure_names_where_the_run_stopped() {
         struct StagedFailure(ProcessStreamFailure);
@@ -3511,6 +3518,7 @@ analyze_timeout_seconds = 900
     }
 
     /// The real runner tells a process that never started from one that did.
+    /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
     #[test]
     fn streaming_runner_reports_a_spawn_failure_as_such() {
         let failure = system_process_runner()
@@ -3538,6 +3546,7 @@ analyze_timeout_seconds = 900
     /// Ревью #549: рабочий каталог, которого нет, — не незапуск программы.
     /// Оба пути запуска раннера отвечают на него сбоем после старта, а не
     /// `Spawn`, которым маршрут назвал бы отказ «нет движка».
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn a_missing_working_directory_is_not_a_failed_launch() {
         let command = ProcessCommand {

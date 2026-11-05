@@ -1741,6 +1741,7 @@ mod registration_cache_tests {
         )
     }
 
+    /// rule: INV.SOURCE.CONFIGURATION-ROOT-CACHE-REUSE
     #[test]
     fn medium_logical_read_retains_root_artifacts_across_calls_and_isolates_sources() {
         let workspace = tempfile::tempdir().unwrap();
@@ -1934,6 +1935,7 @@ mod body_range_refusal_tests {
         json!({"at":top,"ops":[{"op":"code.replace","args":args}]})
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
     #[test]
     fn body_range_refusal_capability_is_closed_to_the_original_unpublished_call() {
         let root = workspace();
@@ -2012,6 +2014,7 @@ mod body_range_refusal_tests {
         assert!(read.apply_range_refusal_source(&ranged).is_err());
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
     #[test]
     fn body_range_refusal_capability_rejects_foreign_actor_and_preserves_profile() {
         use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
@@ -2069,6 +2072,7 @@ mod body_range_refusal_tests {
         );
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
     #[test]
     fn body_range_refusal_read_preserves_cancellation_and_rejects_replaced_root() {
         use unica_workspace::test_support::{
@@ -2110,6 +2114,7 @@ mod body_range_refusal_tests {
         }
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
     #[test]
     fn body_range_refusal_publication_rechecks_cancellation_after_advisory_read() {
         let root = workspace();
@@ -2140,6 +2145,7 @@ mod body_range_refusal_tests {
         assert!(result.next.is_empty());
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
     #[test]
     fn body_range_refusal_publication_rechecks_root_after_advisory_read() {
         use unica_workspace::test_support::{

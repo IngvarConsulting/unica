@@ -110,6 +110,7 @@ fn assert_only_predefined_changed(fixture: &Fixture, before: &SourceImage, expec
     );
 }
 
+/// rule: INV.SOURCE.PREDEFINED-IDENTITY-AND-SUBTREE
 #[test]
 fn canonical_predefined_apply_adds_at_root_and_updates_and_removes_nested_identity() {
     let (fixture, runtime, original, branch) = nested_fixture();
@@ -226,6 +227,7 @@ fn canonical_predefined_apply_adds_at_root_and_updates_and_removes_nested_identi
     }
 }
 
+/// rule: INV.SOURCE.PREDEFINED-IDENTITY-AND-SUBTREE
 #[test]
 fn canonical_predefined_apply_refuses_duplicate_source_uuids_without_mutation() {
     for duplicate in [ROOT_ID.to_string(), ROOT_ID.to_ascii_uppercase()] {
