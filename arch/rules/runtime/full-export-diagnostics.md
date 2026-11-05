@@ -1,9 +1,5 @@
 ---
 id: CTR.RUNTIME.FULL-EXPORT-DIAGNOSTICS
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::full_export_rejects_invalid_results_before_replacing_sources
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::full_export_reports_unconfirmed_private_location_without_changing_publication_facts
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export/publication_protocol.rs::validation_projection_excludes_untrusted_text_and_keeps_uncertain_publication
 ---
 
 # Отказ полной выгрузки объясняет причину и состояние сохранённых данных

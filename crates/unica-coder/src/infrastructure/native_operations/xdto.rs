@@ -2220,6 +2220,7 @@ pub(crate) mod medium_tests {
         fixture.cleanup();
     }
 
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_add_type_then_property_reads_prior_postimage() {
         let fixture = staged_xdto_fixture("compose", PACKAGE.as_bytes());
@@ -2270,6 +2271,7 @@ pub(crate) mod medium_tests {
         fixture.cleanup();
     }
 
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_poisoned_second_op_publishes_nothing() {
         let referenced = REFERENCED_PACKAGE;
@@ -2326,6 +2328,7 @@ pub(crate) mod medium_tests {
     /// INV.SOURCE.XDTO-ORDERED-BATCH: an exact repeat of an addition changes
     /// nothing — the canonical plan is empty and publication writes neither
     /// sources nor cache.
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_exact_repeat_of_an_addition_plans_and_publishes_nothing() {
         let package = package_with_declarations();
@@ -2374,6 +2377,7 @@ pub(crate) mod medium_tests {
     /// INV.SOURCE.XDTO-ORDERED-BATCH: an addition with an existing name and
     /// other content is refused at its own operation, and nothing of the
     /// batch is written.
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_conflicting_duplicate_is_refused_at_its_operation_without_writes() {
         let package = package_with_declarations();
@@ -2422,6 +2426,7 @@ pub(crate) mod medium_tests {
         }
     }
 
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_dry_and_real_share_postimage_effects_and_revision() {
         let fixture = staged_xdto_fixture("dry-real-plan", PACKAGE.as_bytes());
@@ -2581,6 +2586,7 @@ pub(crate) mod medium_tests {
         fixture.cleanup();
     }
 
+    /// rule: INV.SOURCE.XDTO-PROPERTY-PATH
     #[test]
     fn staged_xdto_args_are_closed_typed_and_report_exact_paths() {
         let fixture = staged_xdto_fixture("args", PACKAGE.as_bytes());
@@ -2826,6 +2832,7 @@ pub(crate) mod medium_tests {
         }
     }
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     pub(crate) fn staged_xdto_v12_parity_preserves_exact_bytes_errors_and_noop() {
         let before = r#"<package xmlns="http://v8.1c.ru/8.1/xdto" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:tns="urn:test" targetNamespace="urn:test">
@@ -2991,6 +2998,7 @@ pub(crate) mod medium_tests {
     /// становится путём писателя, точка в имени (`\.` в адресе) остаётся
     /// точкой имени, а удаляемое свойство — последним сегментом. Писатель
     /// получает тот же путь, что прежде давал `propertyPath`.
+    /// rule: INV.SOURCE.XDTO-PROPERTY-PATH
     #[test]
     fn staged_xdto_property_chain_comes_from_the_address() {
         let fixture = staged_xdto_fixture("chain", PACKAGE.as_bytes());
@@ -3073,6 +3081,7 @@ pub(crate) mod medium_tests {
         fixture.cleanup();
     }
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     fn staged_xdto_package_mapping_is_logical_and_single_resource() {
         let fixture = staged_xdto_fixture("mapping", PACKAGE.as_bytes());
@@ -3233,6 +3242,7 @@ pub(crate) mod medium_tests {
     const RENAMED_PACKAGE: &str = "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\r\n\t<objectType name=\"Товар\">\r\n\t\t<property name=\"Наименование\" type=\"xs:string\"/>\r\n\t\t<property name=\"Код\" type=\"xs:string\" lowerBound=\"0\" form=\"Attribute\" localName=\"code\"/>\r\n\t\t<property name=\"Цена\" type=\"xs:decimal\" lowerBound=\"0\" upperBound=\"-1\"/>\r\n\t</objectType>\r\n</package>";
     const RENAMED_TYPE: &str = "main:XDTOPackage.Sample.Type.Товар";
 
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_rename_changes_only_names_and_keeps_pre_existing_findings() {
         let fixture = staged_xdto_fixture("rename", RENAMED_PACKAGE.as_bytes());
@@ -3403,6 +3413,7 @@ pub(crate) mod medium_tests {
 
     const BASED_PACKAGE: &str = "\u{feff}<package xmlns=\"http://v8.1c.ru/8.1/xdto\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:tns=\"urn:test\" targetNamespace=\"urn:test\">\r\n\t<valueType name=\"Процент\" base=\"xs:decimal\" totalDigits=\"5\" fractionDigits=\"2\"/>\r\n\t<valueType name=\"Количество\" base=\"xs:decimal\"/>\r\n\t<objectType name=\"ОсноваА\">\r\n\t\t<property name=\"А\" type=\"xs:string\"/>\r\n\t</objectType>\r\n\t<objectType name=\"ОсноваБ\">\r\n\t\t<property name=\"Б\" type=\"tns:Количество\"/>\r\n\t</objectType>\r\n\t<objectType name=\"Производный\" base=\"tns:ОсноваА\" sequenced=\"true\">\r\n\t\t<property name=\"Своё\" type=\"tns:Процент\"/>\r\n\t</objectType>\r\n\t<objectType name=\"Ссылка\">\r\n\t\t<property name=\"Цель\" type=\"tns:Производный\"/>\r\n\t</objectType>\r\n</package>";
 
+    /// rule: INV.SOURCE.XDTO-LOCAL-CHANGE
     #[test]
     fn staged_xdto_type_set_changes_only_the_base_and_repeats_the_current_base_as_no_op() {
         let fixture = staged_xdto_fixture("type-set", BASED_PACKAGE.as_bytes());
@@ -3455,6 +3466,7 @@ pub(crate) mod medium_tests {
         fixture.cleanup();
     }
 
+    /// rule: INV.SOURCE.XDTO-ORDERED-BATCH
     #[test]
     fn staged_xdto_type_set_refuses_cycles_families_and_restrictions_without_writes() {
         let fixture = staged_xdto_fixture("type-set-refusals", BASED_PACKAGE.as_bytes());

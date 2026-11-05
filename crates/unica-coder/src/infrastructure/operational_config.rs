@@ -246,6 +246,7 @@ pub(crate) mod tests {
         assert_eq!(diagnostic.field_path(), expected_path);
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn missing_files_use_exact_compiled_defaults() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -365,6 +366,7 @@ analyze_timeout_seconds = 900
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-LAYERS
     #[test]
     fn local_config_overrides_fields_and_inherits_the_rest() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -402,6 +404,7 @@ analyze_timeout_seconds = 700
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-LAYERS
     #[test]
     fn local_config_is_valid_without_shared_config() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -425,6 +428,7 @@ search_total_timeout_seconds = 90
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn positive_timeout_values_are_accepted_without_clamping() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -522,6 +526,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-LAYERS
     #[test]
     fn separate_workspaces_do_not_share_a_process_global_snapshot() {
         let first = tempdir().expect("first workspace tempdir");
@@ -550,6 +555,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-LAYERS
     #[test]
     fn a_changed_file_is_observed_by_the_next_load_only() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -622,6 +628,7 @@ analyze_timeout_seconds = 7200
         }
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn all_timeout_fields_reject_invalid_types_and_ranges() {
         let cases = [
@@ -696,6 +703,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.INVALID-LAYER
     #[test]
     fn invalid_shared_layer_is_not_masked_by_a_local_override() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -723,6 +731,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.INVALID-LAYER
     #[test]
     fn invalid_local_overlay_is_not_ignored() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -765,6 +774,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn final_snapshot_enforces_provider_deadlines_not_exceeding_total() {
         let cases = [
@@ -798,6 +808,7 @@ analyze_timeout_seconds = 7200
         }
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn cross_layer_constraint_is_attributed_to_the_later_override() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -825,6 +836,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.SAFETY.CONFIG-ERROR-REDACTION
     #[test]
     pub(crate) fn diagnostics_never_expose_absolute_paths_raw_toml_or_values() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -852,6 +864,7 @@ analyze_timeout_seconds = 7200
         assert!(serialized.contains("operational.code_intelligence.provider_read_timeout_seconds"));
     }
 
+    /// rule: INV.SAFETY.CONFIG-ERROR-REDACTION
     #[test]
     pub(crate) fn read_errors_are_redacted_to_the_fixed_basename() {
         let workspace = tempdir().expect("workspace tempdir");

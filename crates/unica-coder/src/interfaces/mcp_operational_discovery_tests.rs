@@ -53,6 +53,8 @@ async fn catalog(client: &mut McpClient, native: bool) -> Vec<Value> {
     all
 }
 
+/// rule: INV.CONFIG.OPERATIONAL-CALL-SNAPSHOT
+/// rule: INV.SAFETY.CONFIG-ERROR-REDACTION
 #[tokio::test]
 async fn mcp_construction_and_discovery_never_load_workspace_operational_settings() {
     for native in [false, true] {

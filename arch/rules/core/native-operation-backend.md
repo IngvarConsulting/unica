@@ -1,7 +1,5 @@
 ---
 id: INV.APP.NATIVE-OPERATION-BACKEND
-check:
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_unica_coder_has_no_runtime_operation_script_fallback
 gap: https://github.com/IngvarConsulting/unica/issues/983
 ---
 

@@ -173,6 +173,8 @@ fn budget_is(value: Option<Duration>, expected: u64) {
         "unexpected remaining budget {actual:?}, expected {expected}"
     );
 }
+/// rule: INV.CONFIG.OPERATIONAL-CALL-SNAPSHOT
+/// rule: INV.SAFETY.CONFIG-ERROR-REDACTION
 #[test]
 fn operational_graph_complete_fetch_keeps_one_snapshot_then_next_call_refreshes() {
     let workspace = graph_fixture();
@@ -245,6 +247,8 @@ fn operational_graph_complete_fetch_keeps_one_snapshot_then_next_call_refreshes(
     }
 }
 
+/// rule: INV.CONFIG.OPERATIONAL-CALL-SNAPSHOT
+/// rule: INV.SAFETY.CONFIG-ERROR-REDACTION
 #[test]
 fn operational_search_keeps_loaded_budget_and_refreshes_next_call() {
     let workspace = graph_fixture();
@@ -285,6 +289,8 @@ fn operational_search_keeps_loaded_budget_and_refreshes_next_call() {
     }
 }
 
+/// rule: INV.CONFIG.OPERATIONAL-CALL-SNAPSHOT
+/// rule: INV.SAFETY.CONFIG-ERROR-REDACTION
 #[test]
 fn operational_bsl_check_holds_loaded_timeout_and_refreshes_next_call() {
     let workspace = graph_fixture();
@@ -408,15 +414,20 @@ fn invalid_load_matrix(cancel: bool) {
         no_values(&result, &root);
     }
 }
+/// rule: INV.CONFIG.OPERATIONAL-CALL-SNAPSHOT
+/// rule: INV.SAFETY.CONFIG-ERROR-REDACTION
 #[test]
 fn operational_invalid_load_stops_all_canonical_providers_and_redacts_values() {
     invalid_load_matrix(false);
 }
+/// rule: INV.CONFIG.OPERATIONAL-CALL-SNAPSHOT
 #[test]
 fn operational_cancellation_during_failed_load_wins_at_actor_publication() {
     invalid_load_matrix(true);
 }
 
+/// rule: INV.CONFIG.OPERATIONAL-CALL-SNAPSHOT
+/// rule: INV.SAFETY.CONFIG-ERROR-REDACTION
 #[test]
 fn operational_diff_graph_sides_share_one_lazy_snapshot() {
     let workspace = graph_fixture();
