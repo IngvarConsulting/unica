@@ -112,7 +112,17 @@ fn validate_form(
         let (_, doc) = unica_xml_format::read::parse_metadata_image(&owner_bytes)?;
         if !child(child(doc.root_element(), kind)?, "ChildObjects")?
             .children()
-            .any(|node| node.has_tag_name((MD, "Form")) && node.text() == Some(form_name))
+            .any(|node| {
+                node.has_tag_name((MD, "Form"))
+                    && (node.text() == Some(form_name)
+                        || child(node, "Properties")
+                            .and_then(|properties| child(properties, "Name"))
+                            .is_ok_and(|name| {
+                                name.attributes().len() == 0
+                                    && name.children().all(|child| child.is_text())
+                                    && name.text() == Some(form_name)
+                            }))
+            })
         {
             return Err("form is not registered by its owner".into());
         }

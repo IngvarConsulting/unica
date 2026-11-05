@@ -26,6 +26,49 @@ fn request(at: &str, op: &str, values: Value) -> Value {
     json!({"at":at,"ops":[{"op":op,"args":{"values":values}}]})
 }
 
+fn legacy_catalog_form(fixture: &Fixture, owner: &str, form: &str) -> (PathBuf, String) {
+    let path = fixture.source.join(format!("Catalogs/{owner}.xml"));
+    let descriptor = std::fs::read_to_string(
+        fixture.source.join(format!("Catalogs/{owner}/Forms/{form}.xml")),
+    )
+    .unwrap();
+    let descriptor = descriptor.trim_start_matches('\u{feff}');
+    let doc = roxmltree::Document::parse(descriptor).unwrap();
+    let child = doc.root_element().children().find(|n| n.is_element()).unwrap();
+    let text = std::fs::read_to_string(&path).unwrap();
+    let registration = format!("<Form>{form}</Form>");
+    assert_eq!(text.matches(&registration).count(), 1);
+    let legacy = text.replace(&registration, &descriptor[child.range()]);
+    std::fs::write(&path, &legacy).unwrap();
+    (path, legacy)
+}
+
+fn assert_legacy_choice_repair(runtime: &V5CanonicalInvocationRuntime) {
+    let fixture = Fixture::new("workspace-member-choice");
+    let (path, _) = legacy_catalog_form(&fixture, "Валюты", "ФормаСписка");
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let planned = call(
+        runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        request(CASES[0].0, CASES[0].1, json!({"choiceForm":"Catalog.Валюты.Form.ФормаСписка"})),
+    );
+    assert!(planned.ok, "legacy form must be repaired: {planned:?}");
+    assert_eq!(unica_workspace::test_support::tree_snapshot(&fixture.source), before);
+    assert!(planned.warnings.iter().any(|w| w["code"] == "legacy_inline_registration"));
+    let published = call(
+        runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"executionToken":planned.data.unwrap()["executionToken"]}),
+    );
+    assert!(published.ok, "{published:?}");
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.contains("<Form>ФормаСписка</Form>"));
+    assert!(!text.contains("<Form uuid="));
+    assert_eq!(view(runtime, &fixture, CASES[0].0)["props"]["ChoiceForm"], "Catalog.Валюты.Form.ФормаСписка");
+}
+
 #[test]
 fn member_choice_roundtrip_preserves_identity_types_neighbors_and_noop() {
     for &(at, op, owner) in CASES {
@@ -121,6 +164,7 @@ fn member_choice_roundtrip_preserves_identity_types_neighbors_and_noop() {
 #[test]
 fn member_choice_refuses_invalid_values_forms_context_and_malformed_preimage() {
     let runtime = runtime();
+    assert_legacy_choice_repair(&runtime);
     let fixture = Fixture::new("workspace-member-choice");
     for &(at, op, _) in CASES {
         for values in [
@@ -292,6 +336,7 @@ fn member_choice_refuses_invalid_values_forms_context_and_malformed_preimage() {
     // Form ownership does not determine its selected type: a standard list
     // may belong to Codes while selecting currency references.
     let cross_owner = Fixture::new("workspace-member-choice");
+    let (cross_path, cross_legacy) = legacy_catalog_form(&cross_owner, "Codes", "Choose");
     std::fs::copy(
         cross_owner
             .source
@@ -317,6 +362,7 @@ fn member_choice_refuses_invalid_values_forms_context_and_malformed_preimage() {
             json!({"choiceForm":"Catalog.Codes.Form.Choose"}),
         ),
     );
+    assert_eq!(std::fs::read_to_string(cross_path).unwrap(), cross_legacy);
     assert_eq!(
         view(&runtime, &cross_owner, CASES[0].0)["props"]["ChoiceForm"],
         "Catalog.Codes.Form.Choose"
