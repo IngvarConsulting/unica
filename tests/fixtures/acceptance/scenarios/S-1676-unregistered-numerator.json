@@ -1,0 +1,120 @@
+{
+  "id": "S-1676-unregistered-numerator",
+  "issue": 1676,
+  "area": "Регистрация нумератора документов",
+  "workspace": "tests/fixtures/acceptance/workspace-numerator-unregistered",
+  "task": "Отказать в изменении и эквивалентном no-op для существующего XML нумератора без регистрации в Configuration.xml; все исходные файлы сохраняют байты.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "original0": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "original1": {
+          "file": "src/DocumentNumerators/Sales.xml",
+          "kind": "sha256"
+        },
+        "original2": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        },
+        "original3": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentNumerator.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CheckUnique": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: DocumentNumerator `Sales` is not registered in Configuration.xml",
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.original0"
+        },
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.original1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.original2"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.original3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentNumerator.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CheckUnique": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: DocumentNumerator `Sales` is not registered in Configuration.xml",
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.original0"
+        },
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.original1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.original2"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.original3"
+        }
+      ]
+    }
+  ]
+}

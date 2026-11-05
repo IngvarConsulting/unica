@@ -1,0 +1,1049 @@
+{
+  "id": "S-1692-code-allowed-length",
+  "issue": 1692,
+  "area": "Метаданные",
+  "task": "Изменить допустимую длину кода трёх дополнительных владельцев и сохранить существующий Catalog, исходные байты при повторе и обратном переходе.",
+  "workspace": "tests/fixtures/acceptance/workspace-code-allowed-length",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CodeAllowedLength/enum",
+          "eq": [
+            "Variable",
+            "Fixed"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "5edbdd501b57180e289743e6a9ec90f3b230470f5b502902797009b52552e27c"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Variable"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Variable"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "5edbdd501b57180e289743e6a9ec90f3b230470f5b502902797009b52552e27c"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Variable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CodeAllowedLength/enum",
+          "eq": [
+            "Variable",
+            "Fixed"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "677e551ab0a228956e7b02b5b52d7b0cbaca99917fffe7d23908853bbcf13af3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCharacteristicTypes/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCharacteristicTypes/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_2": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCharacteristicTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Variable"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCharacteristicTypes/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Variable"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "677e551ab0a228956e7b02b5b52d7b0cbaca99917fffe7d23908853bbcf13af3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Variable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CodeAllowedLength/enum",
+          "eq": [
+            "Variable",
+            "Fixed"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "97f681f288c2d9f383fe9d4aedc2a86496dd216a26e3da53d1d49f48e96dc839"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_0": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCalculationTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCalculationTypes/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_1": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCalculationTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCalculationTypes/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_2": {
+          "kind": "sha256",
+          "file": "src/ChartsOfCalculationTypes/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Variable"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ChartOfCalculationTypes/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Variable"
+          ]
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/Codes.xml",
+          "kind": "sha256",
+          "eq": "97f681f288c2d9f383fe9d4aedc2a86496dd216a26e3da53d1d49f48e96dc839"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCalculationTypes.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Variable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CodeAllowedLength/enum",
+          "eq": [
+            "Variable",
+            "Fixed"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "074753c3826ebc91e6c51734eaff334cb7fcef01c53777ddf420074537de47fe"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_0": {
+          "kind": "sha256",
+          "file": "src/ExchangePlans/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ExchangePlan/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_1": {
+          "kind": "sha256",
+          "file": "src/ExchangePlans/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ExchangePlan/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        },
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_2": {
+          "kind": "sha256",
+          "file": "src/ExchangePlans/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CodeAllowedLength": "Variable"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ExchangePlan/{*}Properties/{*}CodeAllowedLength",
+          "eq": [
+            "Variable"
+          ]
+        },
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "074753c3826ebc91e6c51734eaff334cb7fcef01c53777ddf420074537de47fe"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CodeAllowedLength",
+          "eq": "Variable"
+        }
+      ]
+    }
+  ]
+}
