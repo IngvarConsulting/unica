@@ -1278,6 +1278,7 @@ mod medium_tests {
         assert_eq!(frame, b"{\"kind\":\"pong\"}");
     }
 
+    /// rule: INV.WIRE.DAEMON-RESPONSE-TIME
     #[test]
     fn partial_v5_response_bytes_cannot_replenish_client_deadline() {
         let (mut owner, mut peer) = connected_owner();
@@ -1304,6 +1305,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn owned_v5_frames_preserve_real_tcp_prefixes_across_a_socket_poll() {
         use crate::protocol_v5::{
@@ -1369,6 +1371,7 @@ mod medium_tests {
     /// An answer one byte over the frame limit, or one cut before its line
     /// ends, poisons the owner session the same way: the next request is
     /// refused and nothing more is written to that connection.
+    /// rule: INV.WIRE.DAEMON-RESPONSE-SIZE
     #[test]
     fn oversized_or_cut_v5_response_permanently_poisons_owner_session() {
         let limit = crate::protocol_v5::MAX_V5_RESPONSE_LINE_BYTES;
@@ -1412,6 +1415,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.DAEMON-RESPONSE-SIZE
     #[test]
     fn malformed_v5_response_permanently_poisons_owner_session() {
         let (mut owner, mut peer) = connected_owner();
@@ -1466,6 +1470,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
     #[test]
     fn failed_startup_cleanup_never_adopts_successor_with_reused_pid() {
         let (_root, state) = state_directory();
@@ -1631,6 +1636,7 @@ mod medium_tests {
         })
     }
 
+    /// rule: INV.WIRE.TASK-RESPONSE-ERRORS
     #[test]
     fn task_exchange_reports_complete_malformed_frame_as_protocol_and_closes_the_session() {
         let task_id = TaskId::new();
@@ -1678,6 +1684,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.TASK-RESPONSE-ERRORS
     #[test]
     fn task_exchange_reports_connection_lost_before_a_complete_frame_as_transport() {
         let task_id = TaskId::new();
@@ -1710,6 +1717,8 @@ mod medium_tests {
 
     /// The controlled clock reports the cutoff as passed once the complete
     /// frame has been decoded: the read itself finished well inside it.
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
+    /// rule: INV.WIRE.TASK-RESPONSE-ERRORS
     #[test]
     fn task_exchange_post_parse_expiry_wins_for_valid_and_malformed_frames() {
         let task_id = TaskId::new();

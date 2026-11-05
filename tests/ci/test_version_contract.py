@@ -24,6 +24,7 @@ def load_module():
 
 class VersionContractTests(unittest.TestCase):
     def test_public_runtime_binary_name_is_unica(self) -> None:
+        """rule: INV.PKG.PUBLIC-BINARY-NAME"""
         manifest = tomllib.loads(
             (REPO_ROOT / "crates/unica-coder/Cargo.toml").read_text(encoding="utf-8")
         )
@@ -52,6 +53,7 @@ class VersionContractTests(unittest.TestCase):
         )
 
     def test_every_contract_location_declares_the_same_version(self) -> None:
+        """rule: INV.PKG.VERSION-LOCKSTEP"""
         module = load_module()
 
         values = module.read_version_contract(REPO_ROOT)

@@ -1,6 +1,5 @@
 ---
 id: INV.LSP.DOCUMENT-ADDRESS
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/2174
 ---
 

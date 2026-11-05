@@ -1,32 +1,5 @@
 ---
 id: INV.APP.READ-CALL-JOINING
-check:
-  - crates/unica-coder/src/interfaces/daemon_router.rs::lost_submit_names_its_task_and_a_retry_joins_it_instead_of_running_again
-  - crates/unica-coder/src/interfaces/daemon_router.rs::only_an_identical_read_joins_and_a_mutation_never_does
-  - crates/unica-coder/src/interfaces/daemon_router.rs::an_external_edit_after_the_leader_started_makes_the_repeat_run_fresh
-  - crates/unica-coder/src/interfaces/daemon_router.rs::one_holder_cancelling_leaves_the_shared_work_to_the_others_until_all_cancel
-  - crates/unica-coder/src/interfaces/daemon_router.rs::a_joined_holder_keeps_the_result_after_another_holder_cancelled
-  - crates/unica-coder/src/interfaces/daemon_router.rs::holder_cancel_before_completion_stays_cancelled_at_the_same_epoch
-  - crates/unica-coder/src/interfaces/daemon_router.rs::shared_completion_before_holder_cancel_keeps_result_at_the_same_epoch
-  - crates/unica-execution/src/receipt_runtime/joining.rs::a_stale_working_read_cannot_replace_an_observed_shared_terminal_with_cancelled
-  - crates/unica-execution/src/receipt_runtime/joining.rs::a_stale_alias_read_keeps_the_holder_cancellation_after_shared_completion
-  - crates/unica-execution/src/receipt_runtime/joining.rs::a_working_snapshot_from_before_the_cancel_request_must_reload
-  - crates/unica-execution/src/receipt_runtime/joining.rs::retired_or_foreign_holder_contexts_never_project_or_cancel_a_new_alias
-  - crates/unica-execution/src/receipt_runtime/joining.rs::reply_membership_capture_detects_attach_retire_aba_and_revision_overflow
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::an_unjoined_task_reply_does_not_read_its_canonical_store_again
-  - crates/unica-coder/src/interfaces/daemon_router.rs::an_exact_repeat_of_a_call_with_its_own_receipt_never_becomes_a_joiner
-  - crates/unica-coder/src/interfaces/daemon_router.rs::a_frame_that_arrives_cancelled_never_leads_identical_reads
-  - crates/unica-execution/src/receipt_runtime/joining.rs::only_tools_that_change_nothing_are_joinable
-  - crates/unica-execution/src/receipt_runtime/joining.rs::only_the_exact_request_identity_finds_its_leader
-  - crates/unica-execution/src/receipt_runtime/joining.rs::a_mutation_closes_joins_to_reads_started_before_it
-  - crates/unica-execution/src/receipt_runtime/joining.rs::a_read_checked_before_a_mutation_never_leads_after_it
-  - crates/unica-execution/src/receipt_runtime/joining.rs::an_identical_read_joins_only_within_the_window_after_the_leader_started
-  - crates/unica-execution/src/receipt_runtime/joining.rs::shared_work_is_cancelled_only_when_every_holder_cancelled
-  - crates/unica-execution/src/receipt_runtime/joining.rs::the_joinable_index_and_the_holders_stay_bounded
-  - crates/unica-coder/tests/platform/receipt_join_freshness.rs::unchanged_sources_allow_the_join
-  - crates/unica-coder/tests/platform/receipt_join_freshness.rs::a_file_edited_after_the_walk_started_forbids_the_join
-  - crates/unica-coder/tests/platform/receipt_join_freshness.rs::a_file_edited_within_the_margin_before_the_walk_forbids_the_join
-  - crates/unica-coder/tests/platform/receipt_join_freshness.rs::an_edited_project_file_forbids_the_join
 gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 

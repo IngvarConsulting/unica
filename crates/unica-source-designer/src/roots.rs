@@ -225,6 +225,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.ROOT-POLICIES-CLOSED
     #[test]
     fn every_root_has_independently_recorded_publication_and_owner_policies() {
         use PlatformXmlOwnerPolicy::{
@@ -364,6 +365,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.ROOT-POLICIES-CLOSED
     #[test]
     fn unregistered_roots_have_no_policies() {
         for (namespace, local_name) in [

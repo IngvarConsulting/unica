@@ -805,6 +805,8 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.FORM-OPERATION-TARGETS
+    /// rule: INV.WIRE.OPERATION-CREATION-PARENT
     #[test]
     fn form_add_then_element_and_event_edits_compose_in_one_batch() {
         let fixture = ApplySeamFixture::new();
@@ -1043,6 +1045,7 @@ mod tests {
     /// с формой, отсутствующий элемент даёт `not_found`, в поле не
     /// добавить, сосед `after` берётся только из адресованного контейнера,
     /// а удаление и событие касаются только названного элемента.
+    /// rule: INV.SOURCE.FORM-OPERATION-TARGETS
     #[test]
     fn a_form_edit_writes_only_the_addressed_item() {
         let fixture = ApplySeamFixture::new();
@@ -1352,6 +1355,7 @@ mod tests {
     /// значения видимости по ролям — соседние элементы того же блока —
     /// остаются как были. Читатель их не показывает, поэтому наивный писатель,
     /// переписывающий блок по прочитанному, снёс бы их молча.
+    /// rule: INV.SOURCE.COMMAND-INTERFACE-SECTION-ISOLATION
     #[test]
     fn command_visibility_edits_common_and_leaves_role_values_alone() {
         let fixture = ApplySeamFixture::new();
@@ -1433,6 +1437,7 @@ mod tests {
         assert!(seen < important, "группы переставлены: {text}");
     }
 
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn right_set_grants_lists_and_restricts_rights_on_the_staged_document() {
         let fixture = ApplySeamFixture::new();
@@ -1677,6 +1682,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn subsystem_interface_contracts_match_decoder_for_every_registered_operation() {
         let fixture = ApplySeamFixture::new();
@@ -1828,6 +1834,8 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.OPERATION-CREATION-PARENT
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn role_create_contract_preserves_typed_names_and_rejects_unknown_args() {
         let fixture = ApplySeamFixture::new();
@@ -2151,6 +2159,7 @@ mod tests {
             .any(|n| n.has_tag_name(("http://v8.1c.ru/8.3/xcf/readable", "Item"))));
     }
 
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn support_contracts_and_productive_parser_agree_on_closed_arguments() {
         let fixture = ApplySeamFixture::new();
@@ -2537,6 +2546,7 @@ mod tests {
     /// Имя дочерней подсистемы задаёт адрес: аргумент, который его
     /// повторял, отказывает и в разборе планировщиком (#1353). Форму создаёт
     /// `form.add` на владельце: снятую `form.create` планировщик не знает.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn form_and_child_subsystem_names_come_only_from_the_address() {
         let fixture = ApplySeamFixture::new();

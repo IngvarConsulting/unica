@@ -1,8 +1,5 @@
 ---
 id: INV.SOURCE.EXACT-ROOT-QNAME
-check:
-  - crates/unica-coder/src/infrastructure/platform_xml_owner.rs::exact_declared_target_rejects_a_source_set_owner_with_the_wrong_root
-  - crates/unica-coder/src/infrastructure/platform_xml_owner.rs::exact_declared_versionless_roots_and_absent_outputs_have_no_owner
 ---
 
 # XML-цель должна соответствовать объявленному виду документа
