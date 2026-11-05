@@ -1,7 +1,5 @@
 ---
 id: INV.SURFACE.DOCS-BEFORE-ADMISSION
-check:
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_documentation_answers_before_source_admission_without_an_actor_lease
 ---
 
 # Справка доступна без набора исходников

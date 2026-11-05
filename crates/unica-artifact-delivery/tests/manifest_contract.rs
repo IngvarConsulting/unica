@@ -66,6 +66,7 @@ fn valid_manifest_selects_the_requested_target() {
     );
 }
 
+/// rule: INV.PKG.MANIFEST-ARTIFACT-ROLES
 #[test]
 fn loading_a_manifest_rejects_an_unknown_artifact_role() {
     for role in ["core", "engine", "future-resource"] {
@@ -242,6 +243,7 @@ fn fixture_with_maintained_runner() -> serde_json::Value {
     manifest
 }
 
+/// rule: INV.PKG.ENGINE-RELEASE-SOURCES
 #[test]
 fn an_engine_is_accepted_from_the_toolchain_release() {
     // Тулчейн уже публикует по архиву на инструмент, с суммами и
@@ -254,6 +256,7 @@ fn an_engine_is_accepted_from_the_toolchain_release() {
         .expect("toolchain origin is approved");
 }
 
+/// rule: INV.PKG.ENGINE-RELEASE-SOURCES
 #[test]
 fn a_maintained_engine_source_is_approved_without_opening_other_origins() {
     parse(fixture_with_maintained_runner())
@@ -315,6 +318,7 @@ fn a_missing_artifact_is_a_configuration_failure_everywhere() {
     assert_eq!(direct.to_string(), target.to_string());
 }
 
+/// rule: INV.PKG.ENGINE-RELEASE-SOURCES
 #[test]
 fn an_engine_from_an_unapproved_origin_is_refused() {
     let mut value = fixture_with_engine();
@@ -326,6 +330,7 @@ fn an_engine_from_an_unapproved_origin_is_refused() {
     assert!(error.to_string().contains("release origin"), "{error}");
 }
 
+/// rule: INV.PKG.ENGINE-RELEASE-SOURCES
 #[test]
 fn an_engine_may_not_borrow_the_core_origin() {
     // Ядро собирается здесь, движок — нет. Смешать источники значит потерять
@@ -400,6 +405,7 @@ fn fixture_with_file_artifact() -> serde_json::Value {
     manifest
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn an_artifact_delivered_as_one_file_is_accepted() {
     parse(fixture_with_file_artifact())
@@ -407,6 +413,7 @@ fn an_artifact_delivered_as_one_file_is_accepted() {
         .expect("a bare asset is a delivery form, not a defect");
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn a_one_file_artifact_declares_exactly_the_file_it_delivers() {
     // Форма «один файл» ничего не распаковывает, поэтому перечислять больше
@@ -422,6 +429,7 @@ fn a_one_file_artifact_declares_exactly_the_file_it_delivers() {
     assert!(error.to_string().contains("single file"), "{error}");
 }
 
+/// rule: INV.PKG.ARTIFACT-DELIVERY-FORM
 #[test]
 fn the_core_is_still_required_to_arrive_as_an_archive() {
     // Ядро несёт бинарь и его окружение: одним файлом оно не бывает, а его

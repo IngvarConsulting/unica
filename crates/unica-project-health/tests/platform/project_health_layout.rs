@@ -15,6 +15,7 @@ use unica_workspace::test_support::{
     create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
 };
 
+/// rule: INV.SOURCE.ROOT-SEPARATION
 #[test]
 fn root_identity_equal_to_workspace_is_one_primary_fact() {
     for configured in [".", "./", "src/.."] {
@@ -63,6 +64,7 @@ fn malformed_project_config_is_a_typed_incomplete_snapshot() {
     ));
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn oversized_invalid_project_config_is_a_typed_yaml_refusal() {
     let fixture = raw_layout_fixture("");
@@ -85,12 +87,14 @@ fn oversized_invalid_project_config_is_a_typed_yaml_refusal() {
     );
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn project_config_past_eight_mib_keeps_its_exact_useful_root() {
     let fixture = useful_layout_fixture(&large_layout_config());
     assert_exact_main_layout(&fixture, &inspect_without_deadline(&fixture));
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn project_config_past_eight_mib_rejects_malformed_tail_and_extra_document() {
     for tail in ["broken: [\n", "---\nformat: DESIGNER\nsource-set: []\n"] {
@@ -138,6 +142,7 @@ fn large_platform_marker_does_not_consume_health_source_map_bytes() {
     );
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn source_layout_inspects_all_1025_declared_source_roots() {
     let mut config = "format: DESIGNER\nsource-set:\n".to_string();
@@ -189,6 +194,7 @@ fn source_layout_inspects_all_1025_declared_source_roots() {
         .all(|observation| matches!(observation.outcome, ProjectCheckOutcome::Completed)));
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn medium_health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity() {
     let mut config = "format: DESIGNER\nsource-set:\n".to_string();
@@ -288,6 +294,7 @@ fn health_yaml_parser_rejects_duplicate_top_level_contract_fields() {
     }
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn health_yaml_aliases_keep_exact_selected_values_and_real_name_ambiguity() {
     let name = "x".repeat(4096);
@@ -346,6 +353,7 @@ fn health_yaml_parser_accepts_anchor_tokens_inside_unknown_block_scalar() {
     assert!(inspection.source_sets.is_some(), "{:?}", inspection.facts);
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn health_yaml_many_selected_container_nodes_keep_the_useful_layout() {
     let fixture = useful_layout_fixture(&format!(
@@ -356,6 +364,7 @@ fn health_yaml_many_selected_container_nodes_keep_the_useful_layout() {
     assert_exact_main_layout(&fixture, &inspect_without_deadline(&fixture));
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn health_yaml_aliased_root_key_keeps_the_useful_layout_after_many_selected_nodes() {
     let fixture = useful_layout_fixture(&format!(
@@ -526,6 +535,7 @@ fn complete_empty_discovery_reports_no_source_sets() {
     ));
 }
 
+/// rule: INV.SOURCE.AMBIGUOUS-NAME-HEALTH
 #[test]
 fn duplicate_names_have_one_group_fact_and_no_ambiguous_root() {
     let fixture = raw_layout_fixture(
@@ -619,6 +629,7 @@ fn regular_file_cannot_be_a_source_root() {
     }));
 }
 
+/// rule: INV.SOURCE.ROOT-SEPARATION
 #[test]
 fn outside_source_root_is_a_typed_unsafe_path() {
     let fixture = layout_fixture("../outside");
@@ -634,6 +645,7 @@ fn outside_source_root_is_a_typed_unsafe_path() {
     ));
 }
 
+/// rule: INV.SOURCE.GENERATED-BUILD-READINESS
 #[test]
 fn build_and_cache_are_independent_facts_for_a_nested_root() {
     let fixture = layout_fixture("src");
@@ -666,6 +678,7 @@ fn build_and_cache_are_independent_facts_for_a_nested_root() {
     assert_eq!(fs::read(sentinel).unwrap(), b"keep these bytes");
 }
 
+/// rule: INV.SOURCE.ROOT-SEPARATION
 #[test]
 fn linked_alias_to_workspace_reports_the_primary_identity_cause_with_evidence() {
     let fixture = layout_fixture("alias");

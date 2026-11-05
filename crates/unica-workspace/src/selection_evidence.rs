@@ -2385,16 +2385,19 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn aggregate_selection_records_cross_former_65536_with_real_absences() {
         observe_absent_routes_past_former_cap(65_537, 16);
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn aggregate_selection_route_names_cross_former_8mib_with_real_absences() {
         observe_absent_routes_past_former_cap(20_000, 220);
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     pub(crate) fn production_exact_work_can_cross_the_former_byte_ceiling() {
         let mut usage = SelectionEvidenceUsage::actor_admission();
@@ -2403,6 +2406,7 @@ pub(crate) mod tests {
         assert_eq!(usage.exact_work_bytes, 32 * 1024 * 1024 + 1);
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     pub(crate) fn unlimited_exact_work_still_rejects_counter_overflow() {
         let mut usage = SelectionEvidenceUsage::actor_admission();
@@ -2413,6 +2417,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn unbounded_selection_counters_refuse_overflow_without_mutation() {
         let mut usage = SelectionEvidenceUsage::actor_admission();
@@ -2446,6 +2451,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     #[ignore = "capacity proof rechecks 8 MiB content five times"]
     pub(crate) fn repeated_exact_observations_do_not_exhaust_a_pass_work_ceiling() {
@@ -2724,6 +2730,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     pub(crate) fn retained_exact_read_never_appends_a_growth_chunk_past_the_limit() {
         let root = tempfile::tempdir().unwrap();
@@ -2788,6 +2795,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     pub(crate) fn retained_selection_pass_deduplicates_repeated_observations() {
         let root = tempfile::tempdir().unwrap();
@@ -2830,6 +2838,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
     #[test]
     pub(crate) fn retained_selection_pass_rejects_inconsistent_directory_repeat() {
         let root = tempfile::tempdir().unwrap();
@@ -2856,6 +2865,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
     #[test]
     pub(crate) fn retained_selection_pass_rejects_inconsistent_membership_repeat() {
         let root = tempfile::tempdir().unwrap();
