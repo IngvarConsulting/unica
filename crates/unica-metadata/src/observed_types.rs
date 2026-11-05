@@ -39,6 +39,14 @@ pub enum ObservedMetadataTypeVariant {
     Reference {
         metadata_path: MetadataAddress,
     },
+    /// Generated object identity, readable but outside the mutation algebra.
+    Object {
+        metadata_path: MetadataAddress,
+    },
+    /// Generated record-set identity, readable but outside the mutation algebra.
+    RecordSet {
+        metadata_path: MetadataAddress,
+    },
     DefinedType {
         metadata_path: MetadataAddress,
     },
@@ -84,6 +92,8 @@ impl ObservedMetadataType {
                 ));
             }
         }
+        // Read-only members do not waive scalar constraints or scalar identity.
+        // Validate every writable member with the same algebra used by writes.
         let writable_variants = variants
             .iter()
             .cloned()
@@ -232,7 +242,9 @@ fn observed_variant_into_writer(
         // Editable capability. In particular a family is never one reference.
         ObservedMetadataTypeVariant::CharacteristicTypes { .. }
         | ObservedMetadataTypeVariant::TypeId { .. }
-        | ObservedMetadataTypeVariant::ReferenceFamily { .. } => return None,
+        | ObservedMetadataTypeVariant::ReferenceFamily { .. }
+        | ObservedMetadataTypeVariant::Object { .. }
+        | ObservedMetadataTypeVariant::RecordSet { .. } => return None,
         ObservedMetadataTypeVariant::Uuid => MetadataTypeVariant::Uuid,
     })
 }
@@ -240,6 +252,80 @@ fn observed_variant_into_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn readonly_members() -> Vec<ObservedMetadataTypeVariant> {
+        let path = |name| {
+            MetadataAddress::parse(
+                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                name,
+            )
+            .unwrap()
+        };
+        vec![
+            ObservedMetadataTypeVariant::TypeId {
+                type_id: "cc442f88-d708-4a83-af58-60c85a5d28a8".into(),
+            },
+            ObservedMetadataTypeVariant::CharacteristicTypes {
+                metadata_path: path("ChartOfCharacteristicTypes.Properties"),
+            },
+            ObservedMetadataTypeVariant::Object {
+                metadata_path: path("Catalog.Items"),
+            },
+            ObservedMetadataTypeVariant::RecordSet {
+                metadata_path: path("InformationRegister.Facts"),
+            },
+        ]
+    }
+
+    #[test]
+    fn readonly_members_do_not_bypass_scalar_validation() {
+        for readonly in readonly_members() {
+            for mut variants in [
+                vec![ObservedMetadataTypeVariant::Number {
+                    digits: 39,
+                    fraction: 40,
+                    sign: NumberSign::Any,
+                }],
+                vec![
+                    ObservedMetadataTypeVariant::String {
+                        length: 10,
+                        allowed_length: StringLengthMode::Variable,
+                    },
+                    ObservedMetadataTypeVariant::String {
+                        length: 20,
+                        allowed_length: StringLengthMode::Variable,
+                    },
+                ],
+                vec![ObservedMetadataTypeVariant::ValueStorage],
+            ] {
+                variants.push(readonly.clone());
+                assert!(
+                    ObservedMetadataType::new(variants.clone()).is_err(),
+                    "{variants:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn valid_readonly_members_remain_visible_and_cannot_be_written() {
+        for readonly in readonly_members() {
+            let variants = vec![ObservedMetadataTypeVariant::Boolean, readonly.clone()];
+            let observed = ObservedMetadataType::new(variants.clone()).unwrap();
+            assert_eq!(observed.variants, variants);
+            assert_eq!(
+                observed.mutation_capability,
+                MetadataMutationCapability::ReadOnly
+            );
+            assert!(MetadataType::try_from(observed).is_err());
+            assert!(MetadataType::try_from(ObservedMetadataType {
+                variants,
+                mutation_capability: MetadataMutationCapability::Editable
+            })
+            .is_err());
+            assert!(ObservedMetadataType::new(vec![readonly.clone(), readonly]).is_err());
+        }
+    }
 
     #[test]
     fn uuid_is_narrowed_only_by_the_explicit_observation_bridge() {
