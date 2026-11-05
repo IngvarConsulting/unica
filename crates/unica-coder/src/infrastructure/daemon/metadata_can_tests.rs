@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/number_settings.rs"]
+mod number_settings;
+
 #[path = "metadata_can_tests/code_allowed_length.rs"]
 mod code_allowed_length;
 
@@ -13,6 +16,8 @@ mod functional_option;
 mod property_name_parity;
 #[path = "metadata_can_tests/relation_diagnostic_path.rs"]
 mod relation_diagnostic_path;
+#[path = "metadata_can_tests/root_comments.rs"]
+mod root_comments;
 #[path = "metadata_can_tests/search_input.rs"]
 mod search_input;
 

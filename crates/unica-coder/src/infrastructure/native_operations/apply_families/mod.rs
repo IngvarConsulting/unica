@@ -825,48 +825,94 @@ fn descriptor_node(
     }
 }
 
-/// Формат макета по его описанию в стадированном состоянии допуска.
-/// Recovery uses the same closed staged preimage as the final Color writer.
-pub(crate) fn staged_style_item_color(
+/// Recovery hints may omit evidence; productive admission uses the Result below.
+pub(crate) fn staged_style_item_properties_hint(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
     at: &unica_address::address::QualifiedAddress,
-) -> Option<unica_metadata::style_color::StyleItemColor> {
+) -> Option<unica_metadata::style_color::StyleItemPropertiesObservation> {
+    staged_style_item_properties(admission, binding, at, None)
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn staged_style_item_properties(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    at: &unica_address::address::QualifiedAddress,
+    intent: Option<&unica_metadata::property_input::PropertiesIntent>,
+) -> Result<Option<unica_metadata::style_color::StyleItemPropertiesObservation>, ApplyPlanError> {
     let [owner] = at.segments() else {
-        return None;
+        return Ok(None);
     };
     if owner.kind() != unica_address::address::NodeKind::StyleItem
         || at.source_set() != binding.source_set_name()
     {
-        return None;
+        return Ok(None);
     }
-    let name = owner.name()?;
-    let (address, covered) = descriptor_node(at)?;
+    let Some(name) = owner.name() else {
+        return Ok(None);
+    };
+    let path = at.to_string();
+    let invalid = |message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(path.clone())
+    };
+    let (address, covered) = descriptor_node(at)
+        .ok_or_else(|| invalid("StyleItem descriptor route is unavailable".to_string()))?;
     if covered != 1 {
-        return None;
+        return Ok(None);
     }
     let relative = unica_source_designer::layout::metadata_descriptor_relative(
         &address,
         binding.source_kind(),
     )
-    .ok()?;
-    let mut staged = admission.staged_state().ok()?;
+    .map_err(invalid)?;
+    let mut staged = admission
+        .staged_state()
+        .map_err(|error| ApplyPlanError::staging(error, path.clone()))?;
     let parent = staged
         .read(std::path::Path::new("Configuration.xml"))
-        .ok()??;
-    let raw = staged.read(&relative).ok()??;
+        .map_err(|error| ApplyPlanError::staging(error, path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(ApplyPlanErrorKind::NotFound, "source-set owner is absent")
+                .at_path(path.clone())
+        })?;
+    let raw = staged
+        .read(&relative)
+        .map_err(|error| ApplyPlanError::staging(error, path.clone()))?
+        .ok_or_else(|| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::NotFound,
+                "StyleItem descriptor is absent",
+            )
+            .at_path(path.clone())
+        })?;
     let text = std::str::from_utf8(&raw)
-        .ok()?
+        .map_err(|error| invalid(error.to_string()))?
         .trim_start_matches('\u{feff}');
-    unica_metadata_designer::style_color::StyleColorImage::parse_registered(
+    unica_metadata_designer::style_color::observe_registered_properties(
         text,
         name,
         &relative,
         &parent,
         binding.source_kind(),
+        intent,
     )
-    .ok()
-    .map(|image| image.color())
+    .map(Some)
+    .map_err(|error| {
+        let kind = match &error {
+            unica_metadata_designer::style_color::ColorIssue::NotFound(_) => {
+                ApplyPlanErrorKind::NotFound
+            }
+            unica_metadata_designer::style_color::ColorIssue::Invalid(_) => {
+                ApplyPlanErrorKind::InvalidSource
+            }
+            unica_metadata_designer::style_color::ColorIssue::ReadOnly(_) => {
+                ApplyPlanErrorKind::InvalidState
+            }
+        };
+        ApplyPlanError::new(kind, error.to_string()).at_path(path)
+    })
 }
 
 pub(crate) fn staged_template_format(
@@ -986,6 +1032,34 @@ pub(crate) fn staged_form_item_role(
         .map(|element| unica_forms::FormItemRole::from_tag(&element.tag))
 }
 
+/// Form facts for the same admission predicate used by the published dictionary.
+pub(crate) fn staged_form_observation(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    at: &unica_address::address::QualifiedAddress,
+) -> Option<unica_forms::FormObservation> {
+    if let Some(role) = staged_form_item_role(admission, binding, at) {
+        return Some(unica_forms::FormObservation::Item(role));
+    }
+    if !unica_forms::applicability::is_form_attribute(at.segments()) {
+        return None;
+    }
+    let form = unica_address::address::QualifiedAddress {
+        line_range: None,
+        source_set: at.source_set().to_string(),
+        segments: at.segments()[..2].to_vec(),
+    };
+    let xml = staged_form_xml(admission, binding, &form)?;
+    let attributes = unica_forms_designer::codec::parse_form_attributes_xml(&xml).ok()?;
+    let name = at.segments()[2].name()?;
+    let mut found = attributes.iter().filter(|attribute| attribute.name == name);
+    let attribute = found.next()?;
+    if found.next().is_some() {
+        return None;
+    }
+    unica_forms::FormObservation::from_attribute_type(attribute.type_name.as_deref()?)
+}
+
 /// Дерево элементов стадированной формы `Owner.X.Form.F`, как его читает
 /// `view`. `None` — формы или её `Form.xml` нет.
 fn staged_form_items(
@@ -993,6 +1067,15 @@ fn staged_form_items(
     binding: &ProviderRootBinding,
     form: &unica_address::address::QualifiedAddress,
 ) -> Option<Vec<unica_forms::facts::FormInfoElement>> {
+    let xml = staged_form_xml(admission, binding, form)?;
+    unica_forms_designer::planner::form_items_of(&xml).ok()
+}
+
+fn staged_form_xml(
+    admission: &ApplyAdmission,
+    binding: &ProviderRootBinding,
+    form: &unica_address::address::QualifiedAddress,
+) -> Option<String> {
     let (address, covered) = descriptor_node(form)?;
     if covered != 2 {
         return None;
@@ -1004,7 +1087,7 @@ fn staged_form_items(
     )
     .ok()?;
     let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
-    unica_forms_designer::planner::form_items_of(std::str::from_utf8(&bytes).ok()?).ok()
+    std::str::from_utf8(&bytes).ok().map(str::to_owned)
 }
 
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным

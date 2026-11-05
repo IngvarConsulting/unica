@@ -88,8 +88,9 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
+    CommentOnly { kind: NodeKind, comment: String },
     DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
-    StyleItem(unica_metadata::style_color::StyleItemColor),
+    StyleItem(unica_metadata::property_input::StyleItemPropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
     WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
@@ -1080,15 +1081,13 @@ pub fn parse_properties(
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
-    if site == PropertiesSite::WSReference
+    let site = if site == PropertiesSite::WSReference
         && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
     {
-        return Err(ApplyPlanError::new(
-            ApplyPlanErrorKind::BadValue,
-            "WSReference LocationURL editing requires a configuration source set",
-        )
-        .at_path(format!("ops[{op_index}].args.at")));
-    }
+        PropertiesSite::CommentOnly(NodeKind::WsReference)
+    } else {
+        site
+    };
     // ApplyRequest has already resolved the operation address. It is an
     // internal carrier key, not part of the published property arguments.
     let mut payload = args.clone();
@@ -1111,6 +1110,15 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::CommentOnly { kind, comment } => {
+            let directory = unica_source_designer::layout::metadata_kind(kind.as_str())
+                .expect("comment owner has a Designer layout")
+                .directory;
+            (
+                directory,
+                DescriptorPropertyChanges::CommentOnly { kind, comment },
+            )
+        }
         unica_metadata::property_input::PropertiesIntent::DocumentNumerator(values) => (
             "DocumentNumerators",
             DescriptorPropertyChanges::DocumentNumerator(values),
