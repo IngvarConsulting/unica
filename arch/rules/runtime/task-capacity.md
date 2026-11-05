@@ -4,8 +4,8 @@ check:
   - crates/unica-execution/src/task_store.rs::production_catalog_creates_past_4096_and_reopens_exactly
   - crates/unica-execution/src/task_store.rs::inspection_cleans_staging_past_former_directory_bound
   - crates/unica-execution/src/task_store.rs::terminal_records_remain_until_exact_retirement_and_not_found_is_typed
-  - crates/unica-execution/src/lifecycle_link_store.rs::production_links_reserve_and_materialize_past_4096_and_reopen
-  - crates/unica-execution/src/lifecycle_link_store.rs::real_snapshot_over_8mib_can_reopen_mutate
+  - crates/unica-execution/src/lifecycle_link_store.rs::medium_production_links_reserve_and_materialize_past_4096_and_reopen
+  - crates/unica-execution/src/lifecycle_link_store.rs::medium_real_snapshot_over_8mib_can_reopen_mutate
   - crates/unica-execution/src/lifecycle_link_store.rs::inspection_cleans_links_staging_past_former_directory_bound
   - crates/unica-execution/src/lifecycle_link_store.rs::corrupt_snapshot_preserves_verified_orphan_before_cleanup
   - crates/unica-execution/src/lifecycle_link_store.rs::catalog_schema_rejects_duplicate_unknown_missing_and_trailing_fields

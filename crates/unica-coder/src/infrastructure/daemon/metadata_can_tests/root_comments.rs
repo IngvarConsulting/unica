@@ -176,7 +176,7 @@ fn root_comment_saved_plan_rejects_registration_drift_without_overwriting_it() {
 }
 
 #[test]
-fn root_comments_preview_publish_read_and_repeat_preserve_native_companions() {
+fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companions() {
     let fixture = Fixture::new("workspace-root-comments");
     let form_dir = fixture.source.join("CommonForms/Probe/Ext");
     std::fs::create_dir_all(form_dir.join("Form")).unwrap();
@@ -292,7 +292,7 @@ fn root_comments_preview_publish_read_and_repeat_preserve_native_companions() {
 }
 
 #[test]
-fn root_comment_refusals_and_late_batch_failure_do_not_publish_any_file() {
+fn medium_root_comment_refusals_and_late_batch_failure_do_not_publish_any_file() {
     let fixture = Fixture::new("workspace-root-comments");
     let runtime = runtime();
     for (kind, name, directory) in owners() {
