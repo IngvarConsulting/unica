@@ -21,7 +21,7 @@ Guards и Python `small` обоих наборов (`tests/ci`, `tests/dev`) о�
 
 Прогон занимает по одной джобе на ОС. Тариф даёт 20 одновременных джоб,
 из них 5 macOS, поэтому запись очереди — три раннера: Linux-джоба
-`Unica CI`, `Rust (macos-14)` и лёгкая `Clippy (windows-latest)` (только
+`Unica CI`, `Rust (macos-15)` и лёгкая `Clippy (windows-latest)` (только
 Clippy, кэш зависимостей Windows на чтение; её же запускает кнопка `main`).
 `Unica CI` ждёт её исход по jobs API отдельной записью `lint-rust-windows`:
 при Rust она обязательна, её пропуск — отказ. Pull request — `Unica CI` и `Lint and Python`

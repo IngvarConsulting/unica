@@ -1079,6 +1079,7 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
             &request, checked.traits, &|_| None,
             &|at| (at == &address).then_some(form_observation).flatten(),
             &unica_operations::recovery::no_member_lookup,
+            &|_| None,
         );
         if !checked.traits.writes(descriptor.family()) {
             // Набор без записи: словарь пуст, предварительная проверка
@@ -1973,6 +1974,7 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
                 unica_operations::recovery::NamedLookup::Missing
             }
         },
+        &|_| None,
     )
     .expect_err("the dataSet argument is retired");
     let actual = refusal
@@ -2366,6 +2368,7 @@ fn retired_dcs_container_arguments_route_next_to_the_structure_item() {
             &|_| None,
             &|_| None,
             &lookup,
+            &|_| None,
         )
         .expect_err("a retired DCS argument refuses before planning");
         let case = format!("{op} at {at}");
@@ -3001,6 +3004,7 @@ fn column_add_uses_the_same_attribute_fact_for_dictionary_and_preflight() {
             &|_| None,
             &|_| observed,
             &unica_operations::recovery::no_member_lookup,
+            &|_| None,
         );
         assert_eq!(admitted.is_ok(), allowed, "{type_name}: {admitted:?}");
         assert_eq!(

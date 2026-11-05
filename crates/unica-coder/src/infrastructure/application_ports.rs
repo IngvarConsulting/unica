@@ -891,8 +891,12 @@ fn prepared_subsystem_info_failure(
 
 /// Идентификаторы поставщиков документации — единственный перечень, против
 /// которого политика `unica.toml` проверяет свои секции `[providers.*]`.
-const DOCUMENTATION_PROVIDER_IDS: &[&str] =
-    &["configuration-help", "platform-syntax-help", "v8std"];
+const DOCUMENTATION_PROVIDER_IDS: &[&str] = &[
+    "configuration-help",
+    "platform-syntax-help",
+    "v8std",
+    "bsl-analyzer-rules",
+];
 
 /// Предупреждения политики документации — в `warnings` ответа: секция
 /// удалённого поставщика принимается, но пользователь должен её увидеть.
@@ -960,6 +964,8 @@ fn documentation_registry(
         Arc::new(
             unica_documentation_sources::platform_help::provider::PlatformSyntaxHelpProvider::new(),
         ),
+        Arc::new(unica_documentation_sources::diagnostic_rules::DiagnosticRulesProvider)
+            as Arc<dyn unica_documentation::model::DocumentationProvider>,
         Arc::new(
             unica_documentation_sources::standards_documentation::V8StdDocumentationProvider {
                 search_cache_ttl:
@@ -1093,7 +1099,7 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
                     None,
                     RefusalCode::UnsupportedSource,
                     format!(
-                        "docs source `{source}` is unsupported; allowed: platform-help, development-standard, configuration-documentation"
+                        "docs source `{source}` is unsupported; allowed: platform-help, development-standard, diagnostic-rule, configuration-documentation"
                     ),
                 )
             }
@@ -1112,6 +1118,15 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
     // и второго входа для него не нужно: `docs` смотрит, что подали.
     if let Some(document_id) = documentation_locator(query) {
         return open_documentation_page(workspace, document_id, cancellation);
+    }
+    if source == Some("diagnostic-rule")
+        && !unica_documentation_sources::diagnostic_rules::is_rule_code(query.trim())
+    {
+        return unica_execution_contract::invocation::DomainResult::canonical_rejection(
+            None,
+            RefusalCode::BadValue,
+            "diagnostic-rule requires one exact diagnostic code; query each code separately",
+        );
     }
     let request = unica_documentation::model::DocumentationSearchRequest {
         query: query.to_string(),
@@ -2499,6 +2514,7 @@ mod tests {
             vec![
                 "configuration-help".to_string(),
                 "platform-syntax-help".to_string(),
+                "bsl-analyzer-rules".to_string(),
                 "v8std".to_string()
             ],
             "состав и порядок реестра"
@@ -2514,9 +2530,14 @@ mod tests {
             2,
             "syntax-context and platform-guides"
         );
-        assert_eq!(providers[2].corpora().len(), 1, "public-standards");
         assert_eq!(
             providers[2].corpora()[0].source_kind,
+            unica_documentation::model::SourceKind::DiagnosticRule
+        );
+        assert!(!providers[2].needs_network());
+        assert_eq!(providers[3].corpora().len(), 1, "public-standards");
+        assert_eq!(
+            providers[3].corpora()[0].source_kind,
             unica_documentation::model::SourceKind::DevelopmentStandard
         );
     }
@@ -3025,6 +3046,58 @@ mod tests {
             seen[0].0.source_kinds,
             vec![unica_documentation::model::SourceKind::PlatformHelp]
         );
+    }
+
+    #[test]
+    fn canonical_v13_docs_resolves_each_diagnostic_code_offline_without_source_admission() {
+        let _serial = documentation_registry_serial();
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = dir.path().to_path_buf();
+        std::fs::write(
+            workspace.join("unica.toml"),
+            "[network]\ndefault = \"deny\"\n",
+        )
+        .unwrap();
+        let context = WorkspaceContext {
+            cwd: workspace.clone(),
+            workspace_root: workspace.clone(),
+            cache_root: workspace.join(".build/unica"),
+            workspace_epoch: 1,
+        };
+        let cancellation = CancellationToken::default();
+        for code in [
+            "UnresolvedMethodCall",
+            "AmbiguousFieldInQuery",
+            "UnresolvedField",
+        ] {
+            let result =
+                canonical_v13_docs_search(&context, code, Some("diagnostic-rule"), &cancellation);
+            assert!(result.ok, "{result:?}");
+            let section = &result.data.as_ref().unwrap()["sections"][0];
+            assert_eq!(section["sourceKind"], "diagnostic-rule");
+            assert_eq!(section["status"], "ok");
+            let hit = &section["hits"][0];
+            assert_eq!(hit["signature"], code);
+            let opened = canonical_v13_docs_search(
+                &context,
+                hit["documentId"].as_str().unwrap(),
+                None,
+                &cancellation,
+            );
+            assert!(opened.ok, "{opened:?}");
+            assert_eq!(
+                opened.data.as_ref().unwrap()["document"]["documentId"],
+                hit["documentId"]
+            );
+        }
+        let combined = canonical_v13_docs_search(
+            &context,
+            "UnresolvedMethodCall UnresolvedField",
+            Some("diagnostic-rule"),
+            &cancellation,
+        );
+        assert!(!combined.ok);
+        assert_eq!(combined.diagnostics[0]["code"], "bad_value");
     }
 
     #[test]
