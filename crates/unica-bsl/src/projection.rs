@@ -692,6 +692,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.MODULE-SUMMARY
     #[test]
     fn serialized_module_projection_shape_is_stable() {
         let projection = ModuleProjectionSet::new(
@@ -1003,6 +1004,7 @@ mod tests {
         assert_forbidden_keys_are_absent(&summary);
     }
 
+    /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
     #[test]
     fn common_module_flags_serialize_exactly_once_and_never_become_contexts() {
         let props = ModuleProperties::common(CommonModuleProperties {

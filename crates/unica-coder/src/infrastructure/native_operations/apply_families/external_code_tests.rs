@@ -197,6 +197,7 @@ impl Fixture {
     }
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn external_object_code_publishes_for_erf_and_epf_without_touching_neighbors() {
     for kind in [
@@ -241,6 +242,7 @@ fn external_code_can_create_an_absent_object_module_only_under_a_proven_owner() 
     }
 }
 
+/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
 fn external_code_token_retains_its_bsl_and_specific_owner_descriptor() {
     for descriptor in [false, true] {

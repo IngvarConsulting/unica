@@ -1,7 +1,5 @@
 ---
 id: INV.SOURCE.DCS-READ-FACTS
-check:
-  - crates/unica-dcs-designer/tests/codec.rs::dcs_info_data_carries_every_fact_the_retired_modes_printed
 ---
 
 # Читатель СКД сохраняет настройки данных и вариантов отчёта

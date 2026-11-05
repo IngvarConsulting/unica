@@ -209,6 +209,7 @@ fn document_journal_template_registers_its_mandatory_document() {
     assert!(!xml.contains("<RegisteredDocuments/>"), "{xml}");
 }
 
+/// rule: INV.SOURCE.MINIMAL-REGISTER-HAS-NO-INVENTED-RESOURCE
 #[test]
 fn minimal_templates_never_invent_content() {
     // Выдуманный ресурс — молчаливое решение за вызывающего, которое почти

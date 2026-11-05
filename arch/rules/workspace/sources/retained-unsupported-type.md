@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.RETAINED-UNEDITABLE-TYPE
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/965
 ---
 

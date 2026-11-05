@@ -9,6 +9,7 @@ use serde_json::json;
 use unica_artifact_delivery::Failure;
 use unica_bootstrap::verify_mcp_runtime;
 
+/// rule: INV.WIRE.GUARANTEED-VERSIONS
 #[test]
 fn verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface() {
     let root = temp_root("valid");
@@ -48,6 +49,7 @@ fn verify_requires_both_lifecycles_and_the_exact_v13_compatibility_surface() {
     );
 }
 
+/// rule: INV.WIRE.GUARANTEED-VERSIONS
 #[test]
 fn verify_requires_each_lifecycle_to_expose_each_public_tool() {
     const REQUIRED: [&str; 11] = [
@@ -101,6 +103,7 @@ fn verify_requires_each_lifecycle_to_expose_each_public_tool() {
     }
 }
 
+/// rule: INV.WIRE.GUARANTEED-VERSIONS
 #[test]
 fn verify_rejects_legacy_names_mixed_into_the_v13_surface() {
     let root = temp_root("mixed-v12-v13");
@@ -134,6 +137,7 @@ fn verify_rejects_legacy_names_mixed_into_the_v13_surface() {
     );
 }
 
+/// rule: INV.WIRE.GUARANTEED-VERSIONS
 #[test]
 fn verify_rejects_duplicate_names_in_the_v13_surface() {
     let root = temp_root("duplicate-v13-name");
@@ -160,6 +164,7 @@ fn verify_rejects_duplicate_names_in_the_v13_surface() {
     assert!(error.to_string().contains("unica.view"), "{error}");
 }
 
+/// rule: INV.WIRE.GUARANTEED-VERSIONS
 #[test]
 fn verify_rejects_discover_without_the_guaranteed_versions() {
     const GUARANTEED: [&str; 3] = ["2025-06-18", "2025-11-25", "2026-07-28"];
@@ -272,6 +277,7 @@ fn temp_root(name: &str) -> PathBuf {
     root
 }
 
+/// rule: INV.WIRE.GUARANTEED-VERSIONS
 #[test]
 fn a_runtime_that_never_answers_is_a_timeout_not_a_defect() {
     // Единственный настоящий срок в загрузчике — рукопожатие релизного шлюза:

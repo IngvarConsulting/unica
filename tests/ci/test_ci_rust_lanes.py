@@ -277,6 +277,7 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
                 self.assertEqual(descriptor["path"], relative)
 
     def test_build_binds_only_the_existing_ordinary_archive_non_test_executable(self):
+        """rule: INV.WIRE.SDK-TRANSPORT"""
         for lane in lanes.LANES:
             with self.subTest(lane=lane), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary).resolve()

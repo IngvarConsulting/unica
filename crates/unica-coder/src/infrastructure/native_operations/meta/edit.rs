@@ -719,6 +719,7 @@ pub(crate) mod tests {
     /// order of its own per owner kind (settled by load and export of
     /// reverse-ordered descriptors), so a new entry lands before the first
     /// entry of a later kind, else at the end.
+    /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
     #[test]
     fn child_objects_insert_into_the_platform_slot_of_their_owner_kind() {
         fn owner_xml(kind: &str, children: &[(&str, &str)]) -> String {
@@ -2469,6 +2470,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.EVENT-SUBSCRIPTION-SOURCE-LOCAL-CHANGE
     #[test]
     fn typed_event_source_add_remove_preserve_old_order_bytes_and_repeat_as_noop() {
         let first = "<v8:Type>cfg:CatalogObject.ПримерВ</v8:Type>";
@@ -2501,6 +2503,7 @@ pub(crate) mod tests {
         assert_ne!(xml, before);
     }
 
+    /// rule: INV.SOURCE.EVENT-SUBSCRIPTION-SOURCE-LOCAL-CHANGE
     #[test]
     fn typed_event_source_incremental_edits_keep_aliases_type_ids_and_distinct_manager_classes() {
         let retained = "<d:Type>c:ConstantManager.Setting</d:Type>";
@@ -2558,6 +2561,7 @@ pub(crate) mod tests {
         assert_eq!(xml, before.replace(family, &format!("{family}{appended}")));
     }
 
+    /// rule: INV.SOURCE.EVENT-SUBSCRIPTION-SOURCE-LOCAL-CHANGE
     #[test]
     fn typed_event_source_incremental_add_declares_namespaces_and_preserves_bom_eol() {
         for eol in ["\n", "\r\n", "\r"] {
@@ -2603,6 +2607,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.EVENT-SUBSCRIPTION-SOURCE-LOCAL-CHANGE
     #[test]
     fn typed_event_source_incremental_edits_refuse_invalid_and_empty_results_without_writes() {
         for source in [
@@ -2722,6 +2727,7 @@ pub(crate) mod tests {
         assert!(!xml.contains("CatalogObject.Settings"), "{xml}");
     }
 
+    /// rule: INV.SOURCE.EVENT-SUBSCRIPTION-SOURCE-LOCAL-CHANGE
     #[test]
     fn typed_event_source_semantic_noop_is_order_insensitive_and_preserves_exact_bytes() {
         let source = concat!(

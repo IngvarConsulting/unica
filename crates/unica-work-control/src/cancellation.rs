@@ -196,6 +196,7 @@ mod tests {
         assert!(!child.is_cancelled());
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[test]
     fn cancellation_waits_for_in_flight_protected_dispatch() {
         let token = CancellationToken::new();
