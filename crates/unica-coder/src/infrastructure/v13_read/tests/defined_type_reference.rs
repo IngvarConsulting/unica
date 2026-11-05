@@ -49,7 +49,7 @@ fn a_defined_type_attribute_names_the_type_whose_node_holds_the_composition() {
     let defined = read(&fixture, "main:DefinedType.Money");
     assert_eq!(defined["kind"], "DefinedType");
     assert_eq!(
-        defined["props"]["type"]["variants"],
+        defined["props"]["Type"]["variants"],
         json!([{"kind": "number", "digits": 15, "fraction": 2, "sign": "any"}])
     );
 

@@ -267,7 +267,9 @@ fn retained_apply_publication_preserves_exact_typed_causes_end_to_end() {
 
 #[test]
 fn prepared_apply_cache_authority_diagnostic_never_exposes_absolute_root() {
-    unica_workspace::actor::policy_contract_tests::prepared_apply_cache_authority_diagnostic_never_exposes_absolute_root(policies());
+    if let Err(skip) = unica_workspace::actor::policy_contract_tests::prepared_apply_cache_authority_diagnostic_never_exposes_absolute_root(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
 }
 
 #[test]
@@ -694,7 +696,9 @@ fn external_cache_route_rejects_links_including_components_cancelled_by_parent()
 
 #[test]
 fn external_cache_ancestor_replacement_does_not_publish_source_or_foreign_cache() {
-    unica_workspace::actor::cache_authority_contract_tests::external_cache_ancestor_replacement_does_not_publish_source_or_foreign_cache(policies());
+    if let Err(skip) = unica_workspace::actor::cache_authority_contract_tests::external_cache_ancestor_replacement_does_not_publish_source_or_foreign_cache(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
 }
 
 #[test]
@@ -726,6 +730,73 @@ fn relative_cache_uses_process_cwd_when_workspace_has_an_alias() {
 #[test]
 fn cache_override_drive_prefix_follows_host_path_semantics_without_erasing_links() {
     if let Err(skip) = unica_workspace::actor::cache_authority_contract_tests::cache_override_drive_prefix_follows_host_path_semantics_without_erasing_links(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn apply_policy_stable_unreadable_deny_evidence_allows_publication() {
+    if let Err(skip) = unica_workspace::actor::policy_contract_tests::apply_policy_stable_unreadable_deny_evidence_allows_publication(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn apply_policy_symlink_transition_is_rejected() {
+    if let Err(skip) =
+        unica_workspace::actor::policy_contract_tests::apply_policy_symlink_transition_is_rejected(
+            policies(),
+        )
+    {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn apply_policy_oversized_identity_transition_is_rejected() {
+    if let Err(skip) = unica_workspace::actor::policy_contract_tests::apply_policy_oversized_identity_transition_is_rejected(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn apply_policy_unreadable_transition_is_rejected() {
+    if let Err(skip) = unica_workspace::actor::policy_contract_tests::apply_policy_unreadable_transition_is_rejected(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn apply_policy_unreadable_mode_matches_v12() {
+    if let Err(skip) =
+        unica_workspace::actor::policy_contract_tests::apply_policy_unreadable_mode_matches_v12(
+            policies(),
+        )
+    {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn workspace_actor_rejects_nested_directory_link_read() {
+    if let Err(skip) = unica_workspace::actor::policy_contract_tests::workspace_actor_rejects_nested_directory_link_read(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn prepared_apply_cache_authority_allows_unchanged_root() {
+    unica_workspace::actor::policy_contract_tests::prepared_apply_cache_authority_allows_unchanged_root(policies());
+}
+
+#[test]
+fn external_cache_unchanged_ancestor_allows_publication() {
+    unica_workspace::actor::cache_authority_contract_tests::external_cache_unchanged_ancestor_allows_publication(policies());
+}
+
+#[test]
+fn native_path_identities_do_not_share_actor_state() {
+    if let Err(skip) = unica_workspace::actor::index_contract_tests::native_path_identities_do_not_share_actor_state() {
         unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
     }
 }

@@ -76,14 +76,14 @@ pub struct Param {
 }
 
 /// A type the help names, by its page.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TypeRef {
     pub ty: TypeName,
     /// The element type of an array (`Массив из элементов типа X`).
     pub element: Option<TypeName>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TypeName {
     /// A type with its own page in the catalog.
     Context(TypeId),
@@ -92,6 +92,9 @@ pub enum TypeName {
     /// A type the catalog has no page for, kept as written: a dangling link
     /// or a name in text (`Произвольный`).
     Unresolved(String),
+    /// A type of the configuration; [`crate::AppliedTypes::members`] answers
+    /// what it has beyond its catalog template.
+    Applied(crate::applied::AppliedType),
 }
 
 /// Where code runs, as the help's «Доступность» lists it.
