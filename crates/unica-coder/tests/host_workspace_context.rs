@@ -204,6 +204,7 @@ fn assert_workspace(response: &Value, expected: &Path) {
     );
 }
 
+/// rule: INV.WORKSPACE.HOST-CONTEXT
 #[test]
 fn stdio_call_uses_host_workspace_instead_of_plugin_cwd() {
     let root = tempfile::tempdir().unwrap();
@@ -235,6 +236,7 @@ fn stdio_call_uses_host_workspace_instead_of_plugin_cwd() {
     );
 }
 
+/// rule: INV.WORKSPACE.HOST-CONTEXT
 #[test]
 fn two_frontends_and_interleaved_calls_keep_their_workspace_on_one_daemon() {
     let root = tempfile::tempdir().unwrap();
@@ -325,6 +327,7 @@ fn two_frontends_and_interleaved_calls_keep_their_workspace_on_one_daemon() {
     );
 }
 
+/// rule: INV.WORKSPACE.HOST-CONTEXT
 #[test]
 fn startup_project_environment_and_request_override_are_forwarded() {
     let root = tempfile::tempdir().unwrap();
@@ -370,6 +373,7 @@ fn assert_refusal(response: &Value) {
     );
 }
 
+/// rule: INV.WORKSPACE.HOST-CONTEXT
 #[test]
 fn required_or_malformed_context_never_falls_back_to_process_cwd() {
     let root = tempfile::tempdir().unwrap();
@@ -422,6 +426,7 @@ fn required_or_malformed_context_never_falls_back_to_process_cwd() {
     assert_workspace(&direct.view(2, None), &project);
 }
 
+/// rule: INV.WORKSPACE.HOST-CONTEXT
 #[test]
 fn conflicting_startup_project_environments_refuse_workspace_selection() {
     let root = tempfile::tempdir().unwrap();
@@ -512,6 +517,7 @@ fn daemon_directories(state: &Path) -> Vec<String> {
 /// daemon is keyed by the build: two builds on one state root never share a
 /// daemon, and a frontend whose executable was replaced does not start the
 /// new build under its own identity.
+/// rule: INV.APP.HIDDEN-SERVICES
 #[test]
 fn each_build_gets_its_own_daemon_and_a_replaced_build_is_refused() {
     let root = tempfile::tempdir().unwrap();
@@ -602,6 +608,7 @@ fn root(path: &Path) -> String {
 /// хоста может сменить каталог позже (а в worktree-сессии окружение
 /// и вовсе называет основной checkout). Первый root клиента, запрошенный на
 /// этот вызов, перекрывает устаревшее окружение; метаданные вызова — выше.
+/// rule: INV.WORKSPACE.HOST-CONTEXT
 #[test]
 fn client_roots_override_stale_startup_environment_on_every_call() {
     let root_dir = tempfile::tempdir().unwrap();
@@ -682,6 +689,7 @@ fn origin(response: &Value) -> Value {
 /// #1237: ответ называет канал, выбравший каталог, и сам запрошенный
 /// каталог. Подсказка о переходе есть только у каналов, захваченных при
 /// запуске: метаданные вызова и roots уже следуют за проектом сессии.
+/// rule: INV.WORKSPACE.HOST-CONTEXT
 #[test]
 fn view_names_the_channel_that_chose_the_workspace_and_hints_only_for_stale_ones() {
     let root_dir = tempfile::tempdir().unwrap();

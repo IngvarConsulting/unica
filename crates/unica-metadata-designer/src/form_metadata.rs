@@ -115,6 +115,7 @@ mod tests {
     use serde_json::json;
     use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 
+    /// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
     #[test]
     fn form_use_purposes_preserves_absence_empty_and_malformed_observations() {
         let target =

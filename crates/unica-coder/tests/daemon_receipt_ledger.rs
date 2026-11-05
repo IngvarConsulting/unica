@@ -6558,6 +6558,7 @@ fn production_known_long_task_executes_after_the_initial_working_projection() {
 /// and the bound Task are committed and the answer is written while the
 /// provider is still held inside its work, on a clock that never moved. No
 /// cutoff is waited for. Released, the same attempt finishes once.
+/// rule: INV.APP.DAEMON-INVOCATION-HANDOFF
 #[test]
 fn known_long_answers_its_task_before_the_long_phase_on_an_unmoved_clock() {
     let report = execute(Scenario::fake(vec![
@@ -6632,6 +6633,7 @@ fn checkpoint_action(label: &str) -> Action {
     }
 }
 
+/// rule: INV.APP.RECEIPT-BEFORE-EXECUTION
 #[test]
 fn malformed_outer_envelope_creates_no_receipt_and_runs_no_domain_code() {
     let malformed = [
@@ -6672,6 +6674,8 @@ fn malformed_outer_envelope_creates_no_receipt_and_runs_no_domain_code() {
     }
 }
 
+/// rule: INV.APP.RECEIPT-BEFORE-EXECUTION
+/// rule: INV.APP.WORKSPACE-REGISTRY-FAILURE
 #[test]
 fn reserve_precedes_validation_admission_prepare() {
     let cases = [
@@ -6881,6 +6885,7 @@ fn restart_reserved_without_committed_handoff_never_invents_task() {
     }
 }
 
+/// rule: INV.APP.DAEMON-TASK-RECOVERY
 #[test]
 fn restart_begun_without_committed_handoff_is_direct_outcome_uncertain() {
     let report = execute(Scenario::fake(vec![
@@ -6904,6 +6909,7 @@ fn restart_begun_without_committed_handoff_is_direct_outcome_uncertain() {
     assert_eq!(recovered.callbacks.total_domain(), 0);
 }
 
+/// rule: CTR.WIRE.DAEMON-INVOCATION-PROTOCOL
 #[test]
 fn v5_rejects_v3_v4_and_strictly_round_trips_receipt_messages() {
     let v5_cases = [
@@ -7626,6 +7632,7 @@ fn v5_rejects_v3_v4_and_strictly_round_trips_receipt_messages() {
     assert_ne!(selector_fingerprints[0], selector_fingerprints[1]);
 }
 
+/// rule: INV.WIRE.DAEMON-RECEIPT-KEY
 #[test]
 fn receipt_key_is_canonicalized_identically_by_client_and_server() {
     let report = execute(Scenario::fake(vec![Action::CompareClientServerIdentity]));
@@ -7692,6 +7699,7 @@ fn receipt_key_is_canonicalized_identically_by_client_and_server() {
     );
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-HANDOFF
 #[test]
 fn response_budget_is_not_receipt_identity() {
     let report = execute(Scenario::fake(vec![
@@ -7750,6 +7758,7 @@ fn response_budget_is_not_receipt_identity() {
     );
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_duplicate_preserves_cutoff_without_second_domain_callback() {
     let report = execute(Scenario::fake(vec![
@@ -7812,6 +7821,7 @@ fn exact_duplicate_preserves_cutoff_without_second_domain_callback() {
 /// #1384: once a known-long call has passed into its Task, the receipt
 /// ledger forgets its key and the Task link remembers it. An exact duplicate
 /// after that reads the same Task; the key is never reserved again.
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_duplicate_of_a_bound_task_reads_the_task_without_a_second_reservation() {
     let report = execute(Scenario::fake(vec![
@@ -8027,6 +8037,7 @@ fn lost_direct_transport_recovers_durable_terminal_before_ack() {
     );
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn crash_after_begun_returns_outcome_uncertain_without_replay() {
     let report = execute(Scenario::fake(vec![
@@ -8063,6 +8074,7 @@ fn crash_after_begun_returns_outcome_uncertain_without_replay() {
     assert_eq!(recovered.callbacks.execute, 0);
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn side_effect_before_terminal_returns_outcome_uncertain_without_replay() {
     let report = execute(Scenario::fake(vec![
@@ -8250,6 +8262,7 @@ fn acknowledge_receipt_compacts_to_bounded_tombstone() {
     assert!(expired.receipts.is_empty());
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-HANDOFF
 #[test]
 fn cutoff_during_admission_projects_exact_unbound_task() {
     let report = execute(Scenario::fake(vec![
@@ -9023,6 +9036,7 @@ fn cancel_or_restart_before_actor_bind_terminalizes_without_callback() {
 /// #1251: validation and admission of a promised Task have no deadline. Far
 /// past the former two-second grace the daemon keeps listening, and the
 /// released admission continues the same attempt into its Task.
+/// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
 #[test]
 fn unbound_validation_and_admission_continue_past_the_former_fail_stop_grace() {
     let far_past_former_grace_ms = 600_000;
@@ -9208,6 +9222,8 @@ fn begun_cutoff_intent_survives_crash_before_task_create() {
     assert_eq!(count_event(&report, EventKind::PrepareEntered), 1);
 }
 
+/// rule: INV.APP.DAEMON-TASK-RECOVERY
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn every_cross_store_crash_point_reconciles_without_split_brain() {
     #[derive(Clone, Copy)]
@@ -9856,6 +9872,7 @@ fn v5_active_task_without_exact_receipt_link_fail_stops_before_listener() {
     assert_eq!(reconciled.callbacks.total_domain(), 0);
 }
 
+/// rule: INV.APP.DAEMON-TASK-RECOVERY
 #[test]
 fn working_readback_before_receipt_begun_recovers_interrupted_without_callback() {
     let report = execute(Scenario::fake(vec![
@@ -10164,6 +10181,7 @@ fn bound_false_cancel_flag_recovers_cancelled_without_callback() {
     );
 }
 
+/// rule: INV.APP.DAEMON-ACTOR-AUTHORITY
 #[test]
 fn bound_task_start_rejects_missing_foreign_stale_actor_proof_without_mutation() {
     let proofs = [
@@ -10235,6 +10253,7 @@ fn bound_task_start_rejects_missing_foreign_stale_actor_proof_without_mutation()
     }
 }
 
+/// rule: INV.APP.DAEMON-ACTOR-AUTHORITY
 #[test]
 fn bound_task_start_rechecks_proof_after_working_readback() {
     let report = execute(Scenario::fake(vec![
@@ -10567,6 +10586,7 @@ fn direct_actor_bound_cancel_vs_mark_begun_has_one_linearized_winner() {
     );
 }
 
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn task_terminal_receipt_crash_reconciles_without_replay() {
     let report = execute(Scenario::fake(vec![
@@ -10613,6 +10633,7 @@ fn task_terminal_receipt_crash_reconciles_without_replay() {
     assert_eq!(task_read(&report, "recovered"), only_task(reconciled));
 }
 
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn begun_staged_post_store_crash_recovers_exact_winner_without_replay() {
     let report = execute(Scenario::fake(vec![
@@ -10718,6 +10739,7 @@ fn begun_staged_post_store_crash_recovers_exact_winner_without_replay() {
     assert_eq!(count_event(&report, EventKind::TaskStoreCreated), 1);
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn late_submit_preserves_early_cancellation_after_delay_and_restart() {
     for (delay, restart) in [(7_125, false), (37_125, true), (3_600_000, true)] {
@@ -10754,6 +10776,7 @@ fn late_submit_preserves_early_cancellation_after_delay_and_restart() {
     }
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn cancel_before_submit_preserves_full_key_after_arbitrary_delay() {
     let report = execute(Scenario::fake(vec![
@@ -10820,6 +10843,7 @@ fn cancel_before_submit_preserves_full_key_after_arbitrary_delay() {
     assert_eq!(count_event(&report, EventKind::ReceiptTerminalCommitted), 1);
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn cancel_reserved_reopens_and_recovery_preserves_original_cancellation() {
     let report = execute(Scenario::fake(vec![
@@ -10875,6 +10899,7 @@ fn cancel_reserved_reopens_and_recovery_preserves_original_cancellation() {
     assert_eq!(count_event(&report, EventKind::ReceiptTerminalCommitted), 0);
 }
 
+/// rule: INV.APP.RECEIPT-POOL-CAPACITY
 #[test]
 fn cancel_reserved_crosses_former_live_quotas_without_result_reservation() {
     let report = execute(Scenario::fake(vec![
@@ -11627,6 +11652,7 @@ fn thirty_two_lazy_cancel_actor_batch_finishes_within_125ms() {
 /// #1251, owner decision: an attempt that does not answer its cancel keeps
 /// only its own receipt. Far past the former two-second grace the daemon
 /// keeps listening, and the late attempt still ends as cancelled.
+/// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
 #[test]
 fn noncooperative_prepare_cancel_keeps_the_daemon_listening() {
     let report = execute(Scenario::fake(vec![
@@ -11673,6 +11699,7 @@ fn noncooperative_prepare_cancel_keeps_the_daemon_listening() {
     assert_eq!(count_event(&report, EventKind::PrepareEntered), 1);
 }
 
+/// rule: INV.APP.RECEIPT-RESULT-RESERVATION
 #[test]
 fn promised_and_handoff_states_hold_worst_case_result_quota() {
     let report = execute(Scenario::fake(vec![
@@ -11837,6 +11864,8 @@ fn promised_and_handoff_states_hold_worst_case_result_quota() {
     assert_eq!(bound.task_link_count, 1);
 }
 
+/// rule: INV.APP.DAEMON-TASK-CAPACITY
+/// rule: INV.APP.TASK-RETIREMENT-PROCESS-AUTHORITY
 #[test]
 fn task_bind_direct_ack_and_receipt_terminal_expiry_release_exact_quota() {
     let task_bind = execute(Scenario::fake(vec![
@@ -12215,6 +12244,7 @@ fn direct_unacked_expiry_deletes_payload_and_releases_exact_quota() {
     ));
 }
 
+/// rule: INV.APP.DAEMON-TASK-CAPACITY
 #[test]
 fn task_handoff_before_begun_materializes_past_former_link_quota_without_callback() {
     for state in [
@@ -12266,6 +12296,7 @@ fn task_handoff_before_begun_materializes_past_former_link_quota_without_callbac
     }
 }
 
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn unstaged_task_bind_is_refused_against_a_staged_handoff_predecessor() {
     let report = execute(Scenario::fake(vec![
@@ -12314,6 +12345,7 @@ fn unstaged_task_bind_is_refused_against_a_staged_handoff_predecessor() {
     );
 }
 
+/// rule: INV.APP.DAEMON-TASK-CAPACITY
 #[test]
 fn task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops() {
     let report = execute(Scenario::fake(vec![
@@ -12458,6 +12490,7 @@ fn task_store_capacity_after_reservation_is_invariant_violation_and_fail_stops()
     );
 }
 
+/// rule: INV.APP.DAEMON-TASK-CAPACITY
 #[test]
 fn staged_handoff_materializes_past_former_link_quota_and_reopens_exact_winner() {
     let report = execute(Scenario::fake(vec![
@@ -12577,6 +12610,7 @@ fn receipt_owned_begun_crash_terminalizes_outcome_uncertain_without_task_store()
     assert_eq!(recovered.task_store_create_attempts, 0);
 }
 
+/// rule: INV.APP.DAEMON-TASK-CAPACITY
 #[test]
 fn historical_receipt_owned_capacity_state_can_complete_and_reopen_without_task_store() {
     let report = execute(Scenario::fake(vec![
@@ -12618,6 +12652,7 @@ fn historical_receipt_owned_capacity_state_can_complete_and_reopen_without_task_
     assert_eq!(response_terminal(response(&report, "recovered")), winner);
 }
 
+/// rule: INV.APP.DAEMON-TASK-CAPACITY
 #[test]
 fn task_store_4097_materialization_preserves_existing_tasks_listener_and_recovery() {
     for (state, failure) in [
@@ -12688,6 +12723,7 @@ fn task_store_4097_materialization_preserves_existing_tasks_listener_and_recover
     }
 }
 
+/// rule: INV.APP.DAEMON-TASK-CAPACITY
 #[test]
 fn retained_receipt_and_task_catalogs_are_independent_after_restart() {
     let report = execute(Scenario::fake(vec![
@@ -12889,6 +12925,7 @@ fn retained_receipt_backed_terminals_do_not_starve_target_direct_load() {
     );
 }
 
+/// rule: INV.APP.RECEIPT-ACK-CAPACITY
 #[test]
 fn deterministic_horizon_load_does_not_saturate() {
     let report = execute(Scenario::fake(vec![
@@ -13131,6 +13168,7 @@ fn restart_releases_a_retained_receipt_actor_without_a_live_listener() {
     assert_eq!(only_receipt(recovered), only_receipt(before));
 }
 
+/// rule: INV.APP.RECEIPT-ACK-CAPACITY
 #[test]
 fn acknowledgement_crosses_former_tombstone_count_and_reopens_without_replay() {
     let report = execute(Scenario::fake(vec![
@@ -13245,6 +13283,7 @@ fn actor_owned_direct_load_survives_ten_full_reservation_batches() {
     assert_retained_receipt_backed_set(checkpoint(&report, "ten-batches-retained"), 32);
 }
 
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn prepared_handoff_preserves_staged_epoch_across_clock_jumps() {
     let report = execute(Scenario::fake(vec![
@@ -13493,16 +13532,19 @@ fn assert_promised_staged_transfer(epoch_jump: u64) {
     );
 }
 
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn promised_queued_staged_transfer_preserves_exact_winner_at_same_epoch() {
     assert_promised_staged_transfer(0);
 }
 
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn promised_queued_staged_transfer_preserves_exact_winner_across_clock_jumps() {
     assert_promised_staged_transfer(1_000);
 }
 
+/// rule: INV.APP.DAEMON-RESULT-SIZE
 #[test]
 fn oversized_result_and_uncertain_store_commit_fail_closed() {
     let near_limit = execute(Scenario::fake(vec![
@@ -13764,6 +13806,8 @@ fn oversized_result_and_uncertain_store_commit_fail_closed() {
 /// call whose Task creation is commit-uncertain stops the daemon before its
 /// long phase: the provider is never entered, no other attempt runs, and
 /// the stopped daemon continues nothing after the closed answer.
+/// rule: INV.APP.DAEMON-STORE-FAIL-STOP
+/// rule: INV.WIRE.DAEMON-RESPONSE-TIME
 #[test]
 fn fail_stop_before_the_long_phase_never_enters_the_provider() {
     let report = execute(Scenario::fake(vec![
@@ -13802,6 +13846,7 @@ fn fail_stop_before_the_long_phase_never_enters_the_provider() {
     assert_eq!(count_event(&healthy, EventKind::ExecuteEntered), 1);
 }
 
+/// rule: INV.APP.RECEIPT-ACK-CAPACITY
 #[test]
 fn acknowledged_catalog_crosses_former_byte_pool_and_reopens_exactly() {
     let report = execute(Scenario::fake(vec![
