@@ -27,6 +27,7 @@ fn ack_crash_child_receipts_path() -> PathBuf {
     PathBuf::from(std::env::var_os(ACK_CRASH_RECEIPTS_PATH).expect("child receipts path"))
 }
 
+/// rule: INV.APP.RECEIPT-ACKNOWLEDGEMENT
 #[test]
 fn ack_crash_after_witness_row_before_generation_heals_and_compacts_on_reopen() {
     if std::env::var_os(ACK_CRASH_CHILD_MARKER).is_some() {
@@ -126,6 +127,7 @@ fn ack_generation_is_published_while_the_durable_witness_is_still_visible() {
     ));
 }
 
+/// rule: INV.APP.RECEIPT-ACKNOWLEDGEMENT
 #[test]
 fn ack_crash_after_compact_row_rename_reopens_the_same_tombstone() {
     if std::env::var_os(ACK_CRASH_CHILD_MARKER).is_some() {

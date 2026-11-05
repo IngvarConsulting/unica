@@ -37,6 +37,7 @@ fn retained_displacement_preserves_provider_and_identity_failure_kinds() {
     }
 }
 
+/// rule: INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS
 #[test]
 fn commit_failure_kind_does_not_depend_on_message_wording() {
     let provider = CommitFailure::provider(
@@ -990,6 +991,7 @@ fn rollback_preserves_concurrent_edit_of_create_only_target() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// rule: INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS
 #[test]
 fn removal_rollback_preserves_concurrent_file_and_recovery_artifact() {
     let root = temp_root("rollback-removal-concurrent-file");
@@ -1033,6 +1035,7 @@ fn removal_rollback_preserves_concurrent_file_and_recovery_artifact() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// rule: INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS
 #[test]
 fn removal_rollback_preserves_concurrent_empty_directory_and_recovery_tree() {
     let root = temp_root("rollback-removal-concurrent-directory");

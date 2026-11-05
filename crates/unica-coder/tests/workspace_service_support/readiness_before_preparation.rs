@@ -202,6 +202,7 @@ impl Drop for RunningStartup {
     }
 }
 
+/// rule: INV.PERF.SERVICE-READINESS-WITHOUT-SOURCE-SCAN
 #[test]
 fn production_service_readiness_does_not_wait_for_provider_source_preparation() {
     for finite in [false, true] {

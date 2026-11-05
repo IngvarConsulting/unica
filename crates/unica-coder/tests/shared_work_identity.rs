@@ -33,6 +33,8 @@ assert_no_conversion!(DeliveryWorkKey => RuntimeWorkKey);
 assert_no_conversion!(ProviderHostKey => RuntimeWorkKey);
 assert_no_conversion!(IndexWorkIdentity => RuntimeWorkKey);
 
+/// rule: INV.APP.EXACT-LONG-WORK-OWNERSHIP
+/// rule: INV.APP.EXACT-SHARED-WORK
 #[test]
 fn exact_key_vocabulary_covers_delivery_index_provider_and_runtime() {
     let delivery = TypeId::of::<DeliveryWorkKey>();
