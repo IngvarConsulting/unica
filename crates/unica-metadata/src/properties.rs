@@ -197,17 +197,6 @@ const DOCUMENT_NUMBER_KINDS: &[MetadataKind] = &[
 ];
 const CODE_TYPE_KINDS: &[MetadataKind] =
     &[MetadataKind::Catalog, MetadataKind::ChartOfCalculationTypes];
-/// Kinds whose 8.3.27 descriptor carries a root `IncludeHelpInContents`.
-///
-/// Source: the Sendbox vendor configuration dumped by Designer 8.3.27
-/// (format 2.20) and the v8-runner designer fixture
-/// `tests/fixtures/designer/configuration` (format 2.20). The vendor dump
-/// has no AccountingRegister, CalculationRegister, ChartOfAccounts or
-/// ChartOfCalculationTypes; the v8-runner fixture confirms those four. Every
-/// object of the listed kinds in both dumps has the element; no object of the
-/// other typed kinds has it (Constant, Enum, CommonModule, ScheduledJob,
-/// EventSubscription, HTTPService, WebService, DefinedType).
-
 const POSTING_VALUES: &[&str] = &["Allow", "Deny"];
 const REGISTER_RECORDS_DELETION_VALUES: &[&str] =
     &["AutoDelete", "AutoDeleteOnUnpost", "AutoDeleteOff"];

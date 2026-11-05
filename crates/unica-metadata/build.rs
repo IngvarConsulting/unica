@@ -6,8 +6,7 @@
 //! module declarations, the `MetaPropertyKey` enum and `METADATA_PROPERTY_SPECS`
 //! sorted by public name, so a new property adds a file and does not edit a
 //! shared list. A `// serde-rename: <Name>` line sets the key's serialized name.
-//! `scripts/ci/size-filters.py` and `scripts/ci/removed_tests.py` resolve the
-//! same directory.
+//! `scripts/ci/removed_tests.py` resolves the same directory.
 use std::path::{Path, PathBuf};
 
 const PROPERTIES: &str = "src/properties";
