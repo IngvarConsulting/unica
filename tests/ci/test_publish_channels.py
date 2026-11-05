@@ -201,6 +201,7 @@ class PublishChannelTests(unittest.TestCase):
         return flag
 
     def test_a_candidate_reaches_only_the_next_channel(self) -> None:
+        """rule: INV.PKG.STABLE-CATALOG-RELEASES-ONLY"""
         main_before = self.marketplace("rev-parse", "main")
 
         self.release("v0.13.0-rc.3", "next")
@@ -215,6 +216,7 @@ class PublishChannelTests(unittest.TestCase):
         self.assertIn("next: start from main at v0.12.3", history)
 
     def test_a_release_reaches_both_channels_after_its_candidate(self) -> None:
+        """rule: INV.PKG.NEXT-CHANNEL-NOT-OLDER"""
         self.release("v0.13.0-rc.3", "next")
         self.release("v0.13.0", "stable")
 
@@ -224,12 +226,14 @@ class PublishChannelTests(unittest.TestCase):
         self.assertEqual(self.plugin_version("next"), "0.13.0")
 
     def test_a_stable_release_opens_the_next_channel_when_none_exists(self) -> None:
+        """rule: INV.PKG.NEXT-CHANNEL-NOT-OLDER"""
         self.release("v0.12.4", "stable")
 
         self.assertEqual(self.served("main"), ("unica", "v0.12.4", "v0.12.4"))
         self.assertEqual(self.served("next"), ("unica-next", "v0.12.4", "v0.12.4"))
 
     def test_an_older_stable_release_leaves_the_newer_candidate_in_next(self) -> None:
+        """rule: INV.PKG.NEXT-CHANNEL-NOT-OLDER"""
         self.release("v0.13.0", "stable")
         self.release("v0.14.0-rc.1", "next")
         self.release("v0.13.1", "stable")
@@ -248,6 +252,7 @@ class PublishChannelTests(unittest.TestCase):
         self.assertEqual({branch: self.marketplace("rev-parse", branch) for branch in before}, before)
 
     def test_a_rerun_of_a_completed_publication_changes_nothing(self) -> None:
+        """rule: INV.PKG.MARKETPLACE-TAG-IS-PUBLISHED-CATALOG"""
         for tag, channel in (("v0.13.0-rc.3", "next"), ("v0.13.0", "stable")):
             with self.subTest(tag=tag):
                 self.release(tag, channel)
@@ -279,6 +284,10 @@ class PublishChannelTests(unittest.TestCase):
         self.assertEqual(self.heads(), before)
 
     def test_next_main_and_the_tag_move_in_one_push_and_a_rerun_completes_the_release(self) -> None:
+        """
+        rule: INV.PKG.MARKETPLACE-TAG-IS-PUBLISHED-CATALOG
+        rule: INV.PKG.NEXT-CHANNEL-NOT-OLDER
+        """
         self.release("v0.13.0-rc.3", "next")
         for step in (STAGE_STEP, ANCHOR_STEP):
             self.assertEqual(self.run_step(step, "v0.13.0", "stable").returncode, 0)
@@ -305,6 +314,7 @@ class PublishChannelTests(unittest.TestCase):
     def test_the_release_tag_is_the_published_catalog(self) -> None:
         # Тег vX называет коммит продвижения: поставивший по --ref vX получает
         # каталог, который называет vX, а не предыдущий выпуск.
+        """rule: INV.PKG.MARKETPLACE-TAG-IS-PUBLISHED-CATALOG"""
         for tag, channel, home, name in (
             ("v0.13.0-rc.3", "next", "next", "unica-next"),
             ("v0.13.0", "stable", "main", "unica"),
@@ -322,6 +332,7 @@ class PublishChannelTests(unittest.TestCase):
                 self.assertNotEqual(self.tag_serves(f"candidate-{tag}")[1], tag)
 
     def test_a_stable_release_kept_out_of_next_is_tagged_on_main(self) -> None:
+        """rule: INV.PKG.MARKETPLACE-TAG-IS-PUBLISHED-CATALOG"""
         self.release("v0.13.0", "stable")
         self.release("v0.14.0-rc.1", "next")
         self.release("v0.13.1", "stable")
@@ -332,6 +343,7 @@ class PublishChannelTests(unittest.TestCase):
         self.assertEqual(tags["v0.14.0-rc.1"], self.marketplace("rev-parse", "next").strip())
 
     def test_install_checks_resolve_the_candidate_anchor(self) -> None:
+        """rule: INV.PKG.MARKETPLACE-TAG-IS-PUBLISHED-CATALOG"""
         for tag, channel, name in (("v0.13.0-rc.3", "next", "unica-next"), ("v0.13.0", "stable", "unica")):
             for step in (FRESH_CATALOG_STEP, UPGRADE_CATALOG_STEP):
                 with self.subTest(tag=tag, job=step[0]):
@@ -347,6 +359,7 @@ class PublishChannelTests(unittest.TestCase):
     def test_a_tag_left_on_the_staging_commit_is_kept_and_the_catalog_completes(self) -> None:
         # До 0.13.0-rc.6 тег vX ставился на коммит stage. Повтор такого выпуска
         # тег не двигает: деревья плагина совпали — продвигаются одни ветки.
+        """rule: INV.PKG.MARKETPLACE-TAG-IS-PUBLISHED-CATALOG"""
         for step in (STAGE_STEP, ANCHOR_STEP):
             self.assertEqual(self.run_step(step, "v0.13.0-rc.3", "next").returncode, 0)
         self.marketplace("tag", "-a", "v0.13.0-rc.3", self.staging_sha, "-m", "Unica v0.13.0-rc.3")
@@ -360,6 +373,7 @@ class PublishChannelTests(unittest.TestCase):
     def test_an_anchor_with_other_bytes_stops_the_install_checks(self) -> None:
         # Якорь не двигается: повтор с якорем на чужих байтах — отказ, а не
         # проверка установки по не тем байтам.
+        """rule: INV.PKG.MARKETPLACE-TAG-IS-PUBLISHED-CATALOG"""
         self.release("v0.13.0-rc.3", "next")
         self.assertEqual(self.run_step(STAGE_STEP, "v0.13.0-rc.4", "next").returncode, 0)
         self.marketplace("tag", "-a", "candidate-v0.13.0-rc.4", "v0.13.0-rc.3^{commit}", "-m", "stale")
@@ -371,6 +385,7 @@ class PublishChannelTests(unittest.TestCase):
         self.assertEqual((self.heads(), self.tags()), before)
 
     def test_a_push_refused_once_is_rebuilt_and_published(self) -> None:
+        """rule: INV.PKG.MARKETPLACE-TAG-IS-PUBLISHED-CATALOG"""
         self.release("v0.13.0-rc.3", "next")
         for step in (STAGE_STEP, ANCHOR_STEP):
             self.assertEqual(self.run_step(step, "v0.13.0", "stable").returncode, 0)
@@ -397,6 +412,7 @@ class PublishChannelTests(unittest.TestCase):
     def test_a_candidate_overtaken_before_promote_leaves_next_alone(self) -> None:
         # Гонка: к promote кандидата rc.4 next уже раздаёт rc.5. Опоздавший
         # кандидат не откатывает канал и не получает тега.
+        """rule: INV.PKG.NEXT-CHANNEL-NOT-OLDER"""
         self.release("v0.13.0-rc.3", "next")
         for step in (STAGE_STEP, ANCHOR_STEP):
             self.assertEqual(self.run_step(step, "v0.13.0-rc.4", "next").returncode, 0)
@@ -415,6 +431,7 @@ class PublishChannelTests(unittest.TestCase):
     def test_a_release_tag_with_other_bytes_stops_the_publication(self) -> None:
         # Опубликованный тег не двигается: тот же номер с другими байтами —
         # сожжённая версия, а не повтор.
+        """rule: INV.PKG.MARKETPLACE-TAG-IS-PUBLISHED-CATALOG"""
         self.release("v0.13.0-rc.3", "next")
         self.assertEqual(self.run_step(STAGE_STEP, "v0.13.0-rc.4", "next").returncode, 0)
         self.marketplace("tag", "-a", "v0.13.0-rc.4", "v0.13.0-rc.3^{commit}", "-m", "burnt")

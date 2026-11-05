@@ -1539,6 +1539,7 @@ mod tests {
     /// поэтому вторую половину ключа не различают. Здесь установка одна и та
     /// же, а язык между вызовами меняется, и ответ обязан меняться вместе с
     /// ним: индексы разных языков не должны смешиваться.
+    /// rule: INV.APP.DOCUMENTATION-CONTAINER-FINGERPRINT
     #[test]
     fn a_second_language_on_the_same_installation_does_not_answer_from_the_first_ones_index() {
         // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
@@ -1574,6 +1575,7 @@ mod tests {
     /// хотя на диске не менялось ничего. Наблюдаемо через порчу контейнеров:
     /// второй запрос, разрешающийся в ту же локаль, обязан ответить из
     /// индекса, а перестройка увидела бы испорченный файл.
+    /// rule: INV.APP.DOCUMENTATION-CONTAINER-FINGERPRINT
     #[test]
     fn two_requests_resolving_to_the_same_locale_share_one_index() {
         // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
@@ -1694,6 +1696,7 @@ mod tests {
     /// правки полный `read_corpus` спотыкался о соседа, контейнер попадал в
     /// «неразобравшиеся», и страница объявлялась недоступной — а заодно
     /// каждый вызов платил 4.4 секунды за разбор всех 25 тысяч страниц.
+    /// rule: INV.APP.DOCUMENTATION-DIRECT-PAGE
     #[test]
     fn get_reads_only_the_requested_entry_and_survives_a_corrupted_sibling() {
         let _serial = index_test_lock();
@@ -1803,6 +1806,7 @@ mod tests {
     /// совпадает, и подменённый контейнер никто не перечитывал. Отпечаток
     /// выбранных контейнеров (длина и время изменения) входит в ключ, поэтому
     /// подмена файла на диске обязана перестроить индекс.
+    /// rule: INV.APP.DOCUMENTATION-CONTAINER-FINGERPRINT
     #[test]
     fn a_replaced_container_is_reindexed_instead_of_answering_stale_help() {
         // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
@@ -1863,6 +1867,7 @@ mod tests {
     /// длины с возвращённым временем изменения: отпечаток не меняется, заново
     /// прочитать файл осмысленно уже нельзя, и ответ из индекса отличим от
     /// перестройки.
+    /// rule: INV.APP.DOCUMENTATION-CONTAINER-FINGERPRINT
     #[test]
     fn a_second_call_answers_from_the_index_instead_of_rereading_the_installation() {
         // Слот индекса общий на процесс — тесты, которые его пишут, идут по одному.
