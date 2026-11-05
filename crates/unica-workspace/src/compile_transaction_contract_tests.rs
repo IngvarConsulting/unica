@@ -854,6 +854,19 @@ pub fn compile_transaction_rejects_hard_linked_registration_without_mutation(
 pub fn post_validation_failure_rolls_back_two_registrations_and_one_create(
     registrar: fn(&mut String, &str, &str) -> Result<bool, String>,
 ) {
+    assert_post_validation_rollback(registrar, false).unwrap();
+}
+
+pub fn post_validation_rollback_preserves_unix_modes(
+    registrar: fn(&mut String, &str, &str) -> Result<bool, String>,
+) -> Result<(), crate::test_support::CapabilitySkip> {
+    assert_post_validation_rollback(registrar, true)
+}
+
+fn assert_post_validation_rollback(
+    registrar: fn(&mut String, &str, &str) -> Result<bool, String>,
+    check_modes: bool,
+) -> Result<(), crate::test_support::CapabilitySkip> {
     let root = temp_root("rollback-two-registrations");
     let config_a = root.join("Configuration.xml");
     let config_b = root.join("Subsystems/Core.xml");
@@ -862,12 +875,21 @@ pub fn post_validation_failure_rolls_back_two_registrations_and_one_create(
     let original_b = configuration_bytes();
     fs::write(&config_a, &original_a).expect("first fixture must be written");
     fs::write(&config_b, &original_b).expect("second fixture must be written");
-    let modes_supported = testing::set_unix_mode_for_test(&config_a, 0o600)
-        .and_then(|supported| {
-            testing::set_unix_mode_for_test(&config_b, 0o640)
-                .map(|second_supported| supported && second_supported)
-        })
-        .expect("mode fixtures must be configurable");
+    if check_modes {
+        let modes_supported = testing::set_unix_mode_for_test(&config_a, 0o600)
+            .and_then(|supported| {
+                testing::set_unix_mode_for_test(&config_b, 0o640)
+                    .map(|second_supported| supported && second_supported)
+            })
+            .expect("mode fixtures must be configurable");
+        if !modes_supported {
+            fs::remove_dir_all(&root).unwrap();
+            return Err(crate::test_support::CapabilitySkip {
+                capability: "unix-permission-bits",
+                reason: "rollback mode preservation needs Unix permission bits",
+            });
+        }
+    }
     let object = root.join("Deep/Roles/Reader.xml");
     let mut transaction = CompileTransaction::new();
     transaction
@@ -888,7 +910,7 @@ pub fn post_validation_failure_rolls_back_two_registrations_and_one_create(
     assert!(error.contains("post-write validation"), "{error}");
     assert_eq!(fs::read(&config_a).unwrap(), original_a);
     assert_eq!(fs::read(&config_b).unwrap(), original_b);
-    if modes_supported {
+    if check_modes {
         assert_eq!(testing::unix_mode_for_test(&config_a).unwrap(), Some(0o600));
         assert_eq!(testing::unix_mode_for_test(&config_b).unwrap(), Some(0o640));
     }
@@ -896,6 +918,7 @@ pub fn post_validation_failure_rolls_back_two_registrations_and_one_create(
     assert!(!root.join("Deep").exists());
     assert!(transaction_debris(&root).is_empty());
     fs::remove_dir_all(root).expect("temporary root must be removed");
+    Ok(())
 }
 
 pub fn rollback_preserves_concurrent_registration_replacement_and_original_recovery(

@@ -20,7 +20,8 @@ counts by the queue gate's own rule: the exact ID or a literal prefix ending
 in `*` of the same binary, or `Removes-test-target:` for a binary that is
 gone. Packages under `crates/` and `vendor/ureq` are checked. `cfg` is not
 evaluated; tests a macro generates and files reached only through a computed
-`include!` are not seen. The queue still checks what this misses.
+`include!` are not seen, except the modules `crates/unica-coder/build.rs`
+declares for each `*.rs` of a module's own directory. The queue still checks what this misses.
 """
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ import os
 import posixpath
 from pathlib import Path, PurePosixPath
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -48,7 +50,10 @@ TEST_FUNCTION = re.compile(
 
 
 def git(root: Path, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout
+    # Git writes manifests and sources as UTF-8 whatever the locale. Decoding
+    # here, not in `subprocess`, keeps a bad byte an error: a reader thread
+    # would swallow it and return no output at all (#2445).
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True).stdout.decode("utf-8")
 
 
 _spec = importlib.util.spec_from_file_location("rust_platform_boundary", Path(__file__).with_name("check-rust-platform-boundary.py"))
@@ -119,6 +124,10 @@ MODULE_ITEM = re.compile(
     r"|\binclude!\s*\((?P<include>[^)]*)\)|(?P<brace>[{}])")
 PATH_ATTRIBUTE = re.compile(r"#\[path\s*=([^\[\]]*)\]")
 STRING = re.compile(r'^\s*"([^"\\]*)"\s*$')
+# `include!` of the `mod` declarations build.rs writes for every `*.rs` file
+# of the including module's own directory (crates/unica-coder/build.rs).
+DISCOVERED_MODULES = re.compile(
+    r'\s*concat!\s*\(\s*env!\s*\(\s*"OUT_DIR"\s*\)\s*,\s*"/[a-z0-9_]+_modules\.rs"\s*\)\s*\)')
 
 
 class Packages:
@@ -208,13 +217,15 @@ class Packages:
             if source is None:
                 continue
             reached.setdefault(path, set()).add((binary, module))
-            pending.extend(self.children(path, source, binary, module, mod_rs))
+            pending.extend(self.children(path, source, binary, module, mod_rs,
+                                         self.sources.get(package_root(path), {})))
         self.trees[directory] = reached
         return reached
 
     @staticmethod
-    def children(path: str, source: str, binary: str, module: str, mod_rs: bool):
-        """Files a source declares, with the module each is compiled as."""
+    def children(path: str, source: str, binary: str, module: str, mod_rs: bool, files=()):
+        """Files a source declares, with the module each is compiled as.
+        `files` lists the package's `.rs` files for build.rs-discovered modules."""
         masked = _boundary._mask_non_code(source)
         here = PurePosixPath(path).parent
         own = here if mod_rs else here / PurePosixPath(path).stem
@@ -229,6 +240,14 @@ class Packages:
                 if inline and inline[-1][0] == depth:
                     inline.pop()
                 depth -= 1
+            elif item["include"] is not None and DISCOVERED_MODULES.match(source, item.start("include")):
+                names = [name for _, name in inline]
+                # build.rs reads the directory named after the including file, also
+                # when that file is itself reached through `#[path]`.
+                directory = PurePosixPath(path).with_suffix("").joinpath(*names)
+                for file in sorted(files):
+                    if PurePosixPath(file).parent == directory and file.endswith(".rs"):
+                        yield file, binary, joined(*names, PurePosixPath(file).stem), True
             elif item["include"] is not None:
                 literal = STRING.match(source[item.start("include"):item.end("include")])
                 if literal:
@@ -358,7 +377,14 @@ def main() -> int:
         description = event_description()
         if description is None:
             parser.error("give --description-file or --description outside a pull request run")
-    problems = check(args.repo_root, args.base, description, args.head)
+    try:
+        problems = check(args.repo_root, args.base, description, args.head)
+    except subprocess.CalledProcessError as error:
+        # No verdict: git could not read the revisions, so nothing was checked.
+        detail = error.stderr.decode("utf-8", "replace").strip()
+        message = f"{shlex.join(error.cmd)} failed with exit code {error.returncode}: {detail}"
+        print(f"::error::{message}" if os.environ.get("GITHUB_ACTIONS") else message, file=sys.stderr)
+        return 2
     for problem in problems:
         print(f"::error::{problem}" if os.environ.get("GITHUB_ACTIONS") else problem)
     if not problems:
