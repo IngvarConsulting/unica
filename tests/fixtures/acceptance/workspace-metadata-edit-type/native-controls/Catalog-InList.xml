@@ -310,7 +310,7 @@
 			<DefaultListForm>Catalog.Items.Form.List</DefaultListForm>
 			<DefaultChoiceForm/>
 			<DefaultFolderChoiceForm/>
-			<AuxiliaryObjectForm>Catalog.Items.Form.Aux</AuxiliaryObjectForm>
+			<AuxiliaryObjectForm>Catalog.Items.Form.Auxiliary</AuxiliaryObjectForm>
 			<AuxiliaryFolderForm/>
 			<AuxiliaryListForm/>
 			<AuxiliaryChoiceForm/>
@@ -377,7 +377,7 @@
 				</Properties>
 			</Attribute>
 			<Form>Main</Form>
-			<Form>Aux</Form>
+			<Form>Auxiliary</Form>
 			<Form>List</Form>
 		</ChildObjects>
 	</Catalog>

@@ -4,8 +4,8 @@
 		<Metadata name="Catalog.Items" id="dfc3974e-a852-4bbc-85f5-2b951f5952d4" configVersion="43ba3b1878a69447b9d0bf20996b567400000000">
 			<Metadata name="Catalog.Items.Attribute.Detail" id="29f7aaf6-9220-40fb-86e9-940650327187"/>
 		</Metadata>
-		<Metadata name="Catalog.Items.Form.Aux" id="8735088b-43fd-4f51-83dc-b0046d75dd9f" configVersion="0baabeface971547af49e606ab317bb600000000"/>
-		<Metadata name="Catalog.Items.Form.Aux.Form" id="8735088b-43fd-4f51-83dc-b0046d75dd9f.0" configVersion="dbff74440f0789449a12931dda5477f600000000"/>
+		<Metadata name="Catalog.Items.Form.Auxiliary" id="8735088b-43fd-4f51-83dc-b0046d75dd9f" configVersion="0baabeface971547af49e606ab317bb600000000"/>
+		<Metadata name="Catalog.Items.Form.Auxiliary.Form" id="8735088b-43fd-4f51-83dc-b0046d75dd9f.0" configVersion="dbff74440f0789449a12931dda5477f600000000"/>
 		<Metadata name="Catalog.Items.Form.List" id="1b85407a-c74a-4bb2-8b35-dca3f2ebcad0" configVersion="405716f2318f344babf2cdfa81267b9e00000000"/>
 		<Metadata name="Catalog.Items.Form.List.Form" id="1b85407a-c74a-4bb2-8b35-dca3f2ebcad0.0" configVersion="c61125ad42d0eb4389bd9e736e227be500000000"/>
 		<Metadata name="Catalog.Items.Form.Main" id="5cccc029-e788-4180-8d38-a8b0f5e5b79a" configVersion="965ae549cdf9f94abb9ded1322e85aa300000000"/>
@@ -17,8 +17,8 @@
 			<Metadata name="InformationRegister.History.Resource.Value" id="a475734b-52fc-4fe9-ad9c-122c31826998"/>
 			<Metadata name="InformationRegister.History.Dimension.Key" id="be13745e-d10c-4c5f-9ad9-b4c9244d822e"/>
 		</Metadata>
-		<Metadata name="InformationRegister.History.Form.Aux" id="a6e0f791-41bd-4c12-87de-61d3cf32e842" configVersion="0acba21c14ec7f4a945aa673723e536a00000000"/>
-		<Metadata name="InformationRegister.History.Form.Aux.Form" id="a6e0f791-41bd-4c12-87de-61d3cf32e842.0" configVersion="7c7a01d29be54b4494b0892f63d08c3d00000000"/>
+		<Metadata name="InformationRegister.History.Form.Auxiliary" id="a6e0f791-41bd-4c12-87de-61d3cf32e842" configVersion="0acba21c14ec7f4a945aa673723e536a00000000"/>
+		<Metadata name="InformationRegister.History.Form.Auxiliary.Form" id="a6e0f791-41bd-4c12-87de-61d3cf32e842.0" configVersion="7c7a01d29be54b4494b0892f63d08c3d00000000"/>
 		<Metadata name="InformationRegister.History.Form.List" id="3907928c-46d8-4f60-8c53-3489589855cd" configVersion="292811d80d59a34eaa5076a269a65a7200000000"/>
 		<Metadata name="InformationRegister.History.Form.List.Form" id="3907928c-46d8-4f60-8c53-3489589855cd.0" configVersion="c9569d3ff6750a498c5a38ffb8141c7f00000000"/>
 		<Metadata name="InformationRegister.History.Form.Main" id="88f04993-eea4-4390-b488-3ce6f5651bf9" configVersion="76fa9d22533fd44fb3b9277bbbfaf76700000000"/>

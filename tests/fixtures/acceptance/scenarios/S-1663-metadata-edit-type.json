@@ -132,19 +132,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3d1135f4383fea8ad63c3ebb497956c02f78ddf9771fc6a3ffbed9ddb473120e"
+          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
@@ -179,12 +179,12 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "64c43cc2406225ad0286988b95ac7e4182f5c5c2c71d30f845af5de0f7347370"
+          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "cb218cc3d7ca240e0cd7fcdf0b095242a912cb677e3878280ee0dae0c619bdd4"
+          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
         },
         {
           "path": "src/Configuration.xml",
@@ -202,19 +202,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "0e9a626659378ff832ed9d22850f986fba481f0b509e3c2bb9879634145be05c"
+          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
@@ -249,7 +249,7 @@
         {
           "path": "src/InformationRegisters/History.xml",
           "kind": "sha256",
-          "eq": "f353c8c5adc5106269688405487ada50fa41e73b80428f624fc31b8ad736a2cb"
+          "eq": "31c79ec34a415f935ef62f49e2cfe97a3467d8d23db539208af60d8d057d10ed"
         },
         {
           "path": "src/Languages/Русский.xml",
@@ -283,19 +283,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3d1135f4383fea8ad63c3ebb497956c02f78ddf9771fc6a3ffbed9ddb473120e"
+          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
@@ -330,7 +330,7 @@
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "cb218cc3d7ca240e0cd7fcdf0b095242a912cb677e3878280ee0dae0c619bdd4"
+          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
         },
         {
           "path": "src/Configuration.xml",
@@ -348,19 +348,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "0e9a626659378ff832ed9d22850f986fba481f0b509e3c2bb9879634145be05c"
+          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
@@ -481,19 +481,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3d1135f4383fea8ad63c3ebb497956c02f78ddf9771fc6a3ffbed9ddb473120e"
+          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
@@ -528,7 +528,7 @@
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "cb218cc3d7ca240e0cd7fcdf0b095242a912cb677e3878280ee0dae0c619bdd4"
+          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
         },
         {
           "path": "src/Configuration.xml",
@@ -546,19 +546,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "0e9a626659378ff832ed9d22850f986fba481f0b509e3c2bb9879634145be05c"
+          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
@@ -679,19 +679,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3d1135f4383fea8ad63c3ebb497956c02f78ddf9771fc6a3ffbed9ddb473120e"
+          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
@@ -726,7 +726,7 @@
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "cb218cc3d7ca240e0cd7fcdf0b095242a912cb677e3878280ee0dae0c619bdd4"
+          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
         },
         {
           "path": "src/Configuration.xml",
@@ -744,19 +744,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "0e9a626659378ff832ed9d22850f986fba481f0b509e3c2bb9879634145be05c"
+          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
@@ -877,19 +877,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3d1135f4383fea8ad63c3ebb497956c02f78ddf9771fc6a3ffbed9ddb473120e"
+          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
@@ -924,7 +924,7 @@
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "cb218cc3d7ca240e0cd7fcdf0b095242a912cb677e3878280ee0dae0c619bdd4"
+          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
         },
         {
           "path": "src/Configuration.xml",
@@ -942,19 +942,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "0e9a626659378ff832ed9d22850f986fba481f0b509e3c2bb9879634145be05c"
+          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
@@ -1075,19 +1075,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3d1135f4383fea8ad63c3ebb497956c02f78ddf9771fc6a3ffbed9ddb473120e"
+          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
@@ -1122,7 +1122,7 @@
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "cb218cc3d7ca240e0cd7fcdf0b095242a912cb677e3878280ee0dae0c619bdd4"
+          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
         },
         {
           "path": "src/Configuration.xml",
@@ -1140,19 +1140,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "0e9a626659378ff832ed9d22850f986fba481f0b509e3c2bb9879634145be05c"
+          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
@@ -1200,7 +1200,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "64c43cc2406225ad0286988b95ac7e4182f5c5c2c71d30f845af5de0f7347370"
+          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
         }
       ]
     },
@@ -1278,19 +1278,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3d1135f4383fea8ad63c3ebb497956c02f78ddf9771fc6a3ffbed9ddb473120e"
+          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
@@ -1325,12 +1325,12 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "64c43cc2406225ad0286988b95ac7e4182f5c5c2c71d30f845af5de0f7347370"
+          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "cb218cc3d7ca240e0cd7fcdf0b095242a912cb677e3878280ee0dae0c619bdd4"
+          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
         },
         {
           "path": "src/Configuration.xml",
@@ -1348,19 +1348,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "0e9a626659378ff832ed9d22850f986fba481f0b509e3c2bb9879634145be05c"
+          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
@@ -1395,7 +1395,7 @@
         {
           "path": "src/InformationRegisters/History.xml",
           "kind": "sha256",
-          "eq": "f353c8c5adc5106269688405487ada50fa41e73b80428f624fc31b8ad736a2cb"
+          "eq": "31c79ec34a415f935ef62f49e2cfe97a3467d8d23db539208af60d8d057d10ed"
         },
         {
           "path": "src/Languages/Русский.xml",
@@ -1459,19 +1459,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3d1135f4383fea8ad63c3ebb497956c02f78ddf9771fc6a3ffbed9ddb473120e"
+          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
@@ -1506,12 +1506,12 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "64c43cc2406225ad0286988b95ac7e4182f5c5c2c71d30f845af5de0f7347370"
+          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "cb218cc3d7ca240e0cd7fcdf0b095242a912cb677e3878280ee0dae0c619bdd4"
+          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
         },
         {
           "path": "src/Configuration.xml",
@@ -1529,19 +1529,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "0e9a626659378ff832ed9d22850f986fba481f0b509e3c2bb9879634145be05c"
+          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
@@ -1576,7 +1576,7 @@
         {
           "path": "src/InformationRegisters/History.xml",
           "kind": "sha256",
-          "eq": "f353c8c5adc5106269688405487ada50fa41e73b80428f624fc31b8ad736a2cb"
+          "eq": "31c79ec34a415f935ef62f49e2cfe97a3467d8d23db539208af60d8d057d10ed"
         },
         {
           "path": "src/Languages/Русский.xml",
@@ -1610,19 +1610,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3d1135f4383fea8ad63c3ebb497956c02f78ddf9771fc6a3ffbed9ddb473120e"
+          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
@@ -1657,7 +1657,7 @@
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "cb218cc3d7ca240e0cd7fcdf0b095242a912cb677e3878280ee0dae0c619bdd4"
+          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
         },
         {
           "path": "src/Configuration.xml",
@@ -1675,19 +1675,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "0e9a626659378ff832ed9d22850f986fba481f0b509e3c2bb9879634145be05c"
+          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
@@ -1735,7 +1735,7 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "64c43cc2406225ad0286988b95ac7e4182f5c5c2c71d30f845af5de0f7347370"
+          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
         }
       ]
     },
@@ -1794,19 +1794,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3d1135f4383fea8ad63c3ebb497956c02f78ddf9771fc6a3ffbed9ddb473120e"
+          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
@@ -1841,12 +1841,12 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "64c43cc2406225ad0286988b95ac7e4182f5c5c2c71d30f845af5de0f7347370"
+          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "cb218cc3d7ca240e0cd7fcdf0b095242a912cb677e3878280ee0dae0c619bdd4"
+          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
         },
         {
           "path": "src/Configuration.xml",
@@ -1864,19 +1864,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "0e9a626659378ff832ed9d22850f986fba481f0b509e3c2bb9879634145be05c"
+          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
@@ -1911,7 +1911,7 @@
         {
           "path": "src/InformationRegisters/History.xml",
           "kind": "sha256",
-          "eq": "f353c8c5adc5106269688405487ada50fa41e73b80428f624fc31b8ad736a2cb"
+          "eq": "31c79ec34a415f935ef62f49e2cfe97a3467d8d23db539208af60d8d057d10ed"
         },
         {
           "path": "src/Languages/Русский.xml",
@@ -1945,19 +1945,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux/Ext/Form.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "c805079d51b56e80a5982ecbb6c2d1e9b0ae4af2c5f1ee20abe22bc1697789b3"
         },
         {
-          "path": "src/Catalogs/Items/Forms/Aux.xml",
+          "path": "src/Catalogs/Items/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "3d1135f4383fea8ad63c3ebb497956c02f78ddf9771fc6a3ffbed9ddb473120e"
+          "eq": "3a653150eb222476979e4363ea5850d9ceba997768c6916247b947cc6eee2c07"
         },
         {
           "path": "src/Catalogs/Items/Forms/List/Ext/Form/Module.bsl",
@@ -1992,12 +1992,12 @@
         {
           "path": "src/Catalogs/Items.xml",
           "kind": "sha256",
-          "eq": "64c43cc2406225ad0286988b95ac7e4182f5c5c2c71d30f845af5de0f7347370"
+          "eq": "e538d48e7af910b9640dd7f3c33d05bdd4c1a7258be0f1e12ee06f0e51e8eb05"
         },
         {
           "path": "src/ConfigDumpInfo.xml",
           "kind": "sha256",
-          "eq": "cb218cc3d7ca240e0cd7fcdf0b095242a912cb677e3878280ee0dae0c619bdd4"
+          "eq": "438abe08db5c26c99431c04e60c9f5e02898ffd9ce464d37b53c777c4260272f"
         },
         {
           "path": "src/Configuration.xml",
@@ -2015,19 +2015,19 @@
           "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form/Module.bsl",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form/Module.bsl",
           "kind": "sha256",
           "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux/Ext/Form.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary/Ext/Form.xml",
           "kind": "sha256",
           "eq": "d8d62ceee315b36b28b578c6ce7b9a3bc52e7bb99b8fb8ba2522fec16f1086fb"
         },
         {
-          "path": "src/InformationRegisters/History/Forms/Aux.xml",
+          "path": "src/InformationRegisters/History/Forms/Auxiliary.xml",
           "kind": "sha256",
-          "eq": "0e9a626659378ff832ed9d22850f986fba481f0b509e3c2bb9879634145be05c"
+          "eq": "15fcd4a0ef6dcced5798c5937c94a2a9167b0aeda1904dde599741fbcd0b958e"
         },
         {
           "path": "src/InformationRegisters/History/Forms/List/Ext/Form/Module.bsl",
@@ -2062,7 +2062,7 @@
         {
           "path": "src/InformationRegisters/History.xml",
           "kind": "sha256",
-          "eq": "f353c8c5adc5106269688405487ada50fa41e73b80428f624fc31b8ad736a2cb"
+          "eq": "31c79ec34a415f935ef62f49e2cfe97a3467d8d23db539208af60d8d057d10ed"
         },
         {
           "path": "src/Languages/Русский.xml",

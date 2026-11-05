@@ -44,7 +44,7 @@
 			<EditType>BothWays</EditType>
 			<DefaultRecordForm>InformationRegister.History.Form.Main</DefaultRecordForm>
 			<DefaultListForm>InformationRegister.History.Form.List</DefaultListForm>
-			<AuxiliaryRecordForm>InformationRegister.History.Form.Aux</AuxiliaryRecordForm>
+			<AuxiliaryRecordForm>InformationRegister.History.Form.Auxiliary</AuxiliaryRecordForm>
 			<AuxiliaryListForm/>
 			<StandardAttributes>
 				<xr:StandardAttribute name="Active">
@@ -265,7 +265,7 @@
 				</Properties>
 			</Dimension>
 			<Form>Main</Form>
-			<Form>Aux</Form>
+			<Form>Auxiliary</Form>
 			<Form>List</Form>
 		</ChildObjects>
 	</InformationRegister>
