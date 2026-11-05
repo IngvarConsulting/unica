@@ -1,4 +1,4 @@
-use super::{dropped_by_size, item_identity, select_named, selected_scalar_props};
+use super::{dropped_by_size, item_identity, place_prop, select_named, selected_scalar_props};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_bsl::projection::EventProjection;
 use unica_execution_contract::view_error::ViewError;
@@ -346,6 +346,41 @@ fn form_node(
 ) -> NodeView {
     let mut props = node_props(kind, item);
     let mut limits = dropped_by_size(item, &props, address, |probe| node_props(kind, probe));
+    if kind == NodeKind::Attribute
+        && item.get("type").and_then(Value::as_str) == Some("DynamicList")
+    {
+        if let Some(settings) = item.get("dynamicList").and_then(Value::as_object) {
+            for (key, value) in settings {
+                let typed = match key.as_str() {
+                    "manualQuery" | "dynamicDataRead" | "keyFieldsApplicable" => {
+                        value.is_null() || value.is_boolean()
+                    }
+                    "queryText" | "keyType" => value.is_null() || value.is_string(),
+                    "keyFields" => {
+                        value.is_null()
+                            || value
+                                .as_array()
+                                .is_some_and(|fields| fields.iter().all(Value::is_string))
+                    }
+                    _ => false,
+                };
+                if typed {
+                    place_prop(
+                        &mut props,
+                        &mut limits,
+                        address,
+                        key,
+                        value,
+                        false,
+                        &format!("DynamicList {key}"),
+                    );
+                }
+            }
+            if let Some(issues) = settings.get("limits").and_then(Value::as_array) {
+                limits.extend(issues.iter().filter_map(Value::as_str).map(str::to_string));
+            }
+        }
+    }
     if kind == NodeKind::Item {
         for (source, property) in [("dataPath", "DataPath"), ("commandName", "CommandName")] {
             if let Some(value) = item.get(source).filter(|value| value.is_string()) {
@@ -446,7 +481,8 @@ pub(super) fn node_props(kind: NodeKind, value: &Value) -> Map<String, Value> {
     let keys: &[&str] = match kind {
         NodeKind::Item => &["tag", "title", "visible", "enabled", "readOnly"],
         NodeKind::Event => &["handler", "callType"],
-        NodeKind::Attribute | NodeKind::Column => &["type", "isMain", "mainTable"],
+        NodeKind::Attribute => &["type", "isMain", "mainTable"],
+        NodeKind::Column => &["type", "parentType"],
         NodeKind::Parameter => &["type", "isKey"],
         NodeKind::Command => &[
             "title",

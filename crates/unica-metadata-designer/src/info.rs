@@ -377,7 +377,10 @@ pub fn typed_element(
                 let typed = if unmodelled {
                     MetaDiagnostic::warning(
                         MetaDiagnosticCode::ValidationWarning,
-                        "metadata type is syntactically valid but not modelled by this format profile",
+                        format!(
+                            "metadata type composition is incomplete: {}",
+                            diagnostic.message
+                        ),
                     )
                 } else {
                     MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, diagnostic.message)
@@ -858,7 +861,8 @@ pub fn parse_typed_meta_local_info_inner(
             columns: typed_root_collection(
                 xml,
                 child_objects,
-                collection_route("Column", false, "collections.columns"),
+                collection_route("Column", false, "collections.columns")
+                    .with_member_read_profile(member_read_profile),
                 target,
                 &mut diagnostics,
             ),
@@ -879,7 +883,8 @@ pub fn parse_typed_meta_local_info_inner(
             commands: typed_root_collection(
                 xml,
                 child_objects,
-                collection_route("Command", false, "collections.commands"),
+                collection_route("Command", false, "collections.commands")
+                    .with_member_read_profile(member_read_profile),
                 target,
                 &mut diagnostics,
             ),
