@@ -1510,8 +1510,14 @@ fn dynamic_list_large_query_and_keys_name_full_addresses_without_hiding_other_fa
     let at = "main:Report.ParityReport.Form.MainForm.Attribute.Rows";
     let read = || fixture.view_service().view(ViewRequest::new(at).unwrap());
     let node = read().data.unwrap();
-    assert!(node["props"].get("queryText").is_none(), "queryText over the limit");
-    assert!(node["props"].get("keyFields").is_none(), "keyFields over the limit");
+    assert!(
+        node["props"].get("queryText").is_none(),
+        "queryText over the limit"
+    );
+    assert!(
+        node["props"].get("keyFields").is_none(),
+        "keyFields over the limit"
+    );
     assert_eq!(node["props"]["manualQuery"], true);
     assert_eq!(node["props"]["dynamicDataRead"], false);
     for key in ["queryText", "keyFields"] {
