@@ -1546,7 +1546,7 @@ mod tests {
     }
 
     #[test]
-    fn actual_cursor_size_is_reserved_for_late_items_and_metadata() {
+    fn medium_actual_cursor_size_is_reserved_for_late_items_and_metadata() {
         use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
         use unica_navigation::result_store::ViewCursorBinding;
         let at = "main:Document.Заказ.Module.Object.Body";

@@ -23,6 +23,7 @@ use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
 
 mod command_properties;
 mod conditional_appearance;
+mod dynamic_list;
 
 pub const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
 
@@ -1403,6 +1404,15 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
                     // namespace or complete type shape for column creation.
                     .filter(|type_name| type_name != "ValueTable")
             });
+            let dynamic_list =
+                dynamic_list::is_dynamic_list(attr).then(|| dynamic_list::read(attr));
+            let type_name = if dynamic_list.is_some() {
+                Some("DynamicList".to_string())
+            } else {
+                type_name
+            };
+            // The attribute's mainTable keeps the form_child_text reading:
+            // trimmed text, empty is null. The settings keep the raw text.
             let main_table = (type_name.as_deref() == Some("DynamicList"))
                 .then(|| form_child(attr, "Settings").and_then(|s| form_child_text(s, "MainTable")))
                 .flatten();
@@ -1413,6 +1423,7 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
                         form_children(columns, "Column")
                             .into_iter()
                             .map(|column| FormInfoColumn {
+                                parent_type: crate::column_type::observed_parent_type(column),
                                 name: column.attribute("name").unwrap_or("").to_string(),
                                 type_name: form_child(column, "Type")
                                     .map(form_format_type)
@@ -1429,6 +1440,7 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
                 type_name,
                 is_main: form_child_text(attr, "MainAttribute").as_deref() == Some("true"),
                 main_table,
+                dynamic_list,
                 columns,
             }
         })

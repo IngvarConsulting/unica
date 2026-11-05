@@ -861,7 +861,8 @@ pub fn parse_typed_meta_local_info_inner(
             columns: typed_root_collection(
                 xml,
                 child_objects,
-                collection_route("Column", false, "collections.columns"),
+                collection_route("Column", false, "collections.columns")
+                    .with_member_read_profile(member_read_profile),
                 target,
                 &mut diagnostics,
             ),
@@ -882,7 +883,8 @@ pub fn parse_typed_meta_local_info_inner(
             commands: typed_root_collection(
                 xml,
                 child_objects,
-                collection_route("Command", false, "collections.commands"),
+                collection_route("Command", false, "collections.commands")
+                    .with_member_read_profile(member_read_profile),
                 target,
                 &mut diagnostics,
             ),

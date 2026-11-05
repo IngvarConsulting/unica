@@ -290,4 +290,4 @@ pub(crate) fn plan_event_implement_batch_owned_for_test(
 
 #[cfg(test)]
 #[path = "../../../tests/platform/event_implementation.rs"]
-pub(super) mod tests;
+pub(super) mod medium_tests;

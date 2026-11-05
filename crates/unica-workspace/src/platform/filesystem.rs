@@ -6783,7 +6783,7 @@ pub(crate) fn assert_owned_snapshot_markers_present(
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     #[cfg(unix)]
     use super::stable_path_identity_bytes;
     use super::{

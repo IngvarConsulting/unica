@@ -7,7 +7,7 @@ check:
   - crates/unica-coder/src/interfaces/task_projection.rs::v5_completed_task_embeds_the_exact_direct_call_result
   - crates/unica-coder/src/interfaces/task_projection.rs::source_text_result_is_an_envelope_then_raw_text_without_structured_content
   - crates/unica-coder/src/interfaces/task_projection.rs::task_result_with_source_text_follows_the_client_budget
-  - crates/unica-coder/src/interfaces/task_projection.rs::error_fallback_is_bounded_without_losing_structured_diagnostics
+  - crates/unica-coder/src/interfaces/task_projection.rs::medium_error_fallback_is_bounded_without_losing_structured_diagnostics
   - crates/unica-coder/src/interfaces/task_projection.rs::error_without_diagnostics_still_has_readable_summary
   - crates/unica-coder/src/interfaces/task_projection.rs::error_recovery_preserves_all_hints_beyond_the_diagnostic_text_budget
   - crates/unica-coder/src/interfaces/task_projection.rs::error_recovery_that_exceeds_the_total_projection_limit_is_refused_whole
