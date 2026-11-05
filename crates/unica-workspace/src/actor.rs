@@ -1605,6 +1605,9 @@ pub struct WorkspaceActor<R = (), C = ()> {
     state_scope: WorkspaceStateScope,
     mutation_lane: DeadlineLock<FailClosed>,
     saved_apply_plans: Mutex<SavedApplyPlans>,
+    /// Open editor buffers read in place of their files by the sessions
+    /// that opened them.
+    documents: crate::documents::DocumentOverlay,
     /// Parsed root artifacts of each admitted source set, retained across
     /// calls and revalidated by file stamp on every use.
     source_artifacts: Mutex<HashMap<WorkspaceSourceSetIdentity, Arc<C>>>,
@@ -1728,6 +1731,7 @@ impl<R, C> WorkspaceActor<R, C> {
             state_scope,
             mutation_lane: DeadlineLock::fail_closed("workspace actor mutation lane is poisoned"),
             saved_apply_plans: Mutex::new(SavedApplyPlans::default()),
+            documents: crate::documents::DocumentOverlay::default(),
             source_artifacts: Mutex::new(HashMap::new()),
             policies: None,
             index_work: SharedWork::new(SharedWorkLifetime::ProducerBound),
@@ -1750,7 +1754,12 @@ impl<R, C> WorkspaceActor<R, C> {
             .lock()
             .map(|plans| !plans.entries.is_empty())
             .unwrap_or(true);
-        saved || self.index_work.has_live_entries()
+        saved || !self.documents.is_empty() || self.index_work.has_live_entries()
+    }
+
+    /// The open editor buffers of this workspace.
+    pub fn documents(&self) -> &crate::documents::DocumentOverlay {
+        &self.documents
     }
 
     /// Whether every retained source-set root is still the directory its

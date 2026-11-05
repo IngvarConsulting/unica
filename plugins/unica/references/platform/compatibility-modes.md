@@ -125,5 +125,7 @@ from inferences based on BSP or project code.
   exact mode literal, affected metadata owner, and feature boundary.
 - Do not compare mode strings lexically.
 - Do not invent future enum literals or support ranges.
-- If public MCP `unica` cannot confirm the required platform source or project
-  state, report a Unica MCP contract gap.
+- If the platform source cannot confirm the required behavior, report a
+  `platform-help contract gap` and name the required version and context.
+- If project context is missing, name the missing fact and read it through
+  `unica.view` or ask the user before giving a version-sensitive answer.

@@ -345,9 +345,9 @@ fn property_definition() -> Value {
                     &["properties"],
                 ),
             ),
-            ("minOccurs", json!({"type":"integer", "enum":[0,1]})),
+            ("lowerBound", json!({"type":"integer", "enum":[0,1]})),
             (
-                "maxOccurs",
+                "upperBound",
                 json!({"type":"integer", "anyOf":[{"enum":[-1]}, {"minimum":1}]}),
             ),
         ],
@@ -398,7 +398,7 @@ impl XdtoOperation {
                 Some(object(&[("property", property_definition())], &["property"])),
                 "An object type or a property that holds one nested anonymous ObjectType: ...Type.T[.Property.P...].",
                 "Add one own property with exactly one QName type, anonymous ValueType with primitive base and optional facets, or anonymous ObjectType with ordered child properties. Omitted bounds stay absent and mean 1; explicit values stay explicit.",
-                json!({"values":{"property":{"name":"AddedProperty", "type":"xs:string", "minOccurs":0}}}),
+                json!({"values":{"property":{"name":"AddedProperty", "type":"xs:string", "lowerBound":0}}}),
             ),
             Self::RemoveType => (
                 None,
@@ -532,8 +532,8 @@ fn property_spec<'a>(
     property: &mut ArgumentReader<'a>,
     definition: ArgumentShape<'a>,
 ) -> Result<XdtoPropertySpec, ContractError> {
-    let min_occurs = property.min_occurs("minOccurs")?;
-    let max_occurs = property.max_occurs("maxOccurs")?;
+    let min_occurs = property.min_occurs("lowerBound")?;
+    let max_occurs = property.max_occurs("upperBound")?;
     let name = property.ncname("name")?;
     if ["type", "objectType", "valueType"]
         .iter()
@@ -787,7 +787,7 @@ impl<'a> ArgumentReader<'a> {
             let parsed = match value.as_f64() {
                 Some(0.0) => 0,
                 Some(1.0) => 1,
-                _ => return Err(invalid(path, "minOccurs must be 0 or 1")),
+                _ => return Err(invalid(path, "lowerBound must be 0 or 1")),
             };
             shape.validate_field(&json!(parsed), path)?;
             Ok(parsed)
@@ -809,7 +809,7 @@ impl<'a> ArgumentReader<'a> {
                     shape.validate_field(&json!(parsed), path)?;
                     Ok(parsed)
                 }
-                _ => Err(invalid(path, "maxOccurs must be -1 or a positive integer")),
+                _ => Err(invalid(path, "upperBound must be -1 or a positive integer")),
             }
         })
     }
@@ -1163,8 +1163,8 @@ mod tests {
         let contract = operation.contract();
         let validator = jsonschema::validator_for(&contract.schema).unwrap();
         let valid = json!({"at":"main:XDTOPackage.Sample.Type.Target","values":{"property":{
-        "name":"Rows","minOccurs":0,"maxOccurs":-1,"objectType":{"properties":[
-            {"name":"Recipient","type":"tns:Recipient","maxOccurs":1},
+        "name":"Rows","lowerBound":0,"upperBound":-1,"objectType":{"properties":[
+            {"name":"Recipient","type":"tns:Recipient","upperBound":1},
             {"name":"Nested","objectType":{"properties":[{"name":"Code","type":"xs:string"}]}}
         ]}}}});
         assert!(validator.is_valid(&valid));
@@ -1189,14 +1189,14 @@ mod tests {
         let child = "/values/property/objectType/properties/0";
         for (field, value, path) in [
             (
-                "maxOccurs",
+                "upperBound",
                 json!(0),
-                "ops[0].args.values.property.objectType.properties[0].maxOccurs",
+                "ops[0].args.values.property.objectType.properties[0].upperBound",
             ),
             (
-                "maxOccurs",
+                "upperBound",
                 json!(-2),
-                "ops[0].args.values.property.objectType.properties[0].maxOccurs",
+                "ops[0].args.values.property.objectType.properties[0].upperBound",
             ),
             (
                 "unknown",
@@ -1251,8 +1251,8 @@ mod tests {
         let at = "main:XDTOPackage.Sample.Type.Target";
         for (property, path) in [
             (
-                json!({"name":"X","minOccurs":2}),
-                "ops[0].args.values.property.minOccurs",
+                json!({"name":"X","lowerBound":2}),
+                "ops[0].args.values.property.lowerBound",
             ),
             (
                 json!({"name":"bad:name"}),
@@ -1273,7 +1273,7 @@ mod tests {
 
         // An integral spelling is exact; a value beyond the integer range is refused.
         let bound = |value: Value| {
-            let args = json!({"at":at,"values":{"property":{"name":"X","type":"xs:string","maxOccurs":value}}});
+            let args = json!({"at":at,"values":{"property":{"name":"X","type":"xs:string","upperBound":value}}});
             match operation.decode(&args, "ops[0].args", "main") {
                 Ok(XdtoPlanOperation::AddProperty(args)) => Ok(args.property.max_occurs),
                 Ok(other) => panic!("{other:?}"),
@@ -1288,21 +1288,21 @@ mod tests {
         assert_eq!(bound(json!(-1.0)), Ok(Some(-1)));
         assert_eq!(
             bound(json!(1e19)),
-            Err("ops[0].args.values.property.maxOccurs".to_string())
+            Err("ops[0].args.values.property.upperBound".to_string())
         );
 
-        // A narrowed declaration of maxOccurs is honoured by the decoder.
+        // A narrowed declaration of upperBound is honoured by the decoder.
         let mut narrowed = operation.contract();
         narrowed.schema["properties"]["values"]["properties"]["property"]["properties"]
-            ["maxOccurs"]["enum"] = json!([-1]);
+            ["upperBound"]["enum"] = json!([-1]);
         let args =
-            json!({"at":at,"values":{"property":{"name":"X","type":"xs:string","maxOccurs":5}}});
+            json!({"at":at,"values":{"property":{"name":"X","type":"xs:string","upperBound":5}}});
         assert_eq!(
             operation
                 .decode_with_contract(&narrowed, &args, "ops[0].args", "main")
                 .unwrap_err()
                 .path,
-            "ops[0].args.values.property.maxOccurs"
+            "ops[0].args.values.property.upperBound"
         );
     }
 
@@ -1336,18 +1336,18 @@ mod tests {
         absent["values"]["property"]
             .as_object_mut()
             .unwrap()
-            .remove("minOccurs");
+            .remove("lowerBound");
         let mut contract = operation.contract();
         contract.schema["properties"]["values"]["properties"]["property"]["properties"]
-            ["minOccurs"]["default"] = json!(1);
+            ["lowerBound"]["default"] = json!(1);
         let error = operation
             .decode_with_contract(&contract, &absent, "ops[3].args", "main")
             .unwrap_err();
-        assert_eq!(error.path, "ops[3].args.values.property.minOccurs");
+        assert_eq!(error.path, "ops[3].args.values.property.lowerBound");
 
         let mut contract = operation.contract();
         contract.schema["properties"]["values"]["properties"]["property"]["properties"]
-            ["minOccurs"]["enum"] = json!([1]);
+            ["lowerBound"]["enum"] = json!([1]);
         assert!(operation
             .decode_with_contract(&contract, &args, "ops[3].args", "main")
             .is_err());
@@ -1372,28 +1372,28 @@ mod tests {
         absent["values"]["property"]
             .as_object_mut()
             .unwrap()
-            .remove("minOccurs");
+            .remove("lowerBound");
         assert!(operation.decode(&absent, "ops[6].args", "main").is_ok());
         let mut contract = operation.contract();
         contract.schema["properties"]["values"]["properties"]["property"]["required"] =
-            json!(["name", "type", "minOccurs"]);
+            json!(["name", "type", "lowerBound"]);
         let oracle = jsonschema::validator_for(&contract.schema).unwrap();
         assert!(!oracle.is_valid(&absent));
         let error = operation
             .decode_with_contract(&contract, &absent, "ops[6].args", "main")
             .unwrap_err();
-        assert_eq!(error.path, "ops[6].args.values.property.minOccurs");
-        absent["values"]["property"]["minOccurs"] = json!(0);
+        assert_eq!(error.path, "ops[6].args.values.property.lowerBound");
+        absent["values"]["property"]["lowerBound"] = json!(0);
         assert!(oracle.is_valid(&absent));
         assert!(operation
             .decode_with_contract(&contract, &absent, "ops[6].args", "main")
             .is_ok());
 
-        absent["values"]["property"] = json!({"minOccurs":2,"name":"bad:name","type":"bad"});
+        absent["values"]["property"] = json!({"lowerBound":2,"name":"bad:name","type":"bad"});
         let error = operation
             .decode(&absent, "ops[6].args", "main")
             .unwrap_err();
-        assert_eq!(error.path, "ops[6].args.values.property.minOccurs");
+        assert_eq!(error.path, "ops[6].args.values.property.lowerBound");
         let args =
             json!({"at":"main:XDTOPackage.Sample","values":{"name":"bad:name","base":"bad"}});
         let error = XdtoOperation::AddValueType
@@ -1481,7 +1481,7 @@ mod tests {
             "\"1\"",
         ] {
             let mut args = arguments(operation);
-            args["values"]["property"]["minOccurs"] = serde_json::from_str(literal).unwrap();
+            args["values"]["property"]["lowerBound"] = serde_json::from_str(literal).unwrap();
             let decoded = operation.decode(&args, "args", "main");
             assert_eq!(oracle.is_valid(&args), decoded.is_ok(), "{literal}");
         }
@@ -1489,14 +1489,14 @@ mod tests {
         absent["values"]["property"]
             .as_object_mut()
             .unwrap()
-            .remove("minOccurs");
+            .remove("lowerBound");
         let XdtoPlanOperation::AddProperty(args) =
             operation.decode(&absent, "args", "main").unwrap()
         else {
             panic!("property expected");
         };
         assert_eq!(args.property.min_occurs, None);
-        absent["values"]["property"]["minOccurs"] = json!(1);
+        absent["values"]["property"]["lowerBound"] = json!(1);
         let XdtoPlanOperation::AddProperty(args) =
             operation.decode(&absent, "args", "main").unwrap()
         else {

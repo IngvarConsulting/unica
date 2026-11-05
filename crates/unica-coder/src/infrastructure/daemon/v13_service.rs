@@ -1,7 +1,5 @@
 use super::server::{ActorBoundExecution, ActorBoundInvocation, CanonicalInvocationService};
 use crate::domain::apply::OperationDescriptorExt;
-use crate::domain::apply::OperationRegistryExt;
-use crate::domain::apply::RetiredOperationExt;
 use crate::domain::apply::SourceSetWriteSupport;
 use crate::domain::engine::MissingEngineRefusal;
 use unica_work_control::provider_deadline::ProviderDeadline;
@@ -25,7 +23,7 @@ use super::v13_call_graph::{
     unready_branch_result, CallGraphFetchError, CallGraphSummary, CompleteBranchError,
 };
 use super::v13_read_modes::{
-    attach_can, operation_node_with, search_scope_route, source_backed, SearchScopeRoute,
+    attach_can_with_color, operation_node_with, search_scope_route, source_backed, SearchScopeRoute,
 };
 use crate::application::tool_contracts::SurfaceRelease;
 use crate::application::v13::apply::parse_request as parse_apply_request;
@@ -85,6 +83,13 @@ use unica_workspace::actor::{
     SavedApplyExecutionError,
 };
 use unica_workspace::apply::ApplyStagedState;
+
+/// Keep the point-proven external placement for subsequent batch line reads.
+/// This is invocation-local evidence, not a complete external inventory.
+struct LocatedSource {
+    source: ResolvedSource,
+    external_binding: Option<unica_source_designer::external_artifact::ExternalArtifactBinding>,
+}
 
 /// Canonical v0.13 service installed by the production v3 daemon composition.
 /// Each public name has a useful closed mode; unfinished variants fail with a
@@ -463,12 +468,18 @@ impl CanonicalV13ReadService {
                 &admission, &binding, item,
             )
         };
+        let color = |at: &QualifiedAddress| {
+            crate::infrastructure::native_operations::apply_families::staged_style_item_color(
+                &admission, &binding, at,
+            )
+        };
         if let Err(refusal) = preflight_apply_operations_with(
             &request,
             traits,
             &template_format,
             &form_item,
             &member_path,
+            &color,
         ) {
             return *refusal;
         }
@@ -666,14 +677,13 @@ impl CanonicalV13ReadService {
         let read_at = match QualifiedAddress::parse(at) {
             Ok(address) if address.property_query().is_some() => {
                 let (owner, name) = address.property_query().expect("checked above");
-                if let Some(paging) = ["cursor", "limit"]
-                    .into_iter()
-                    .find(|name| arguments.contains_key(*name))
-                {
+                // A property is one value: like any single node it accepts a
+                // page size it does not need, but it has no continuation.
+                if arguments.contains_key("cursor") {
                     return error_result(
                         Some(at.to_string()),
                         RefusalCode::BadValue,
-                        format!("a node property is one value and has no pages; omit {paging}"),
+                        "a node property is one value and has no pages; omit cursor",
                     );
                 }
                 property = Some(name.to_string());
@@ -984,6 +994,26 @@ impl CanonicalV13ReadService {
             if let Some(node) = data.as_object_mut() {
                 declare_method_branches(node);
             }
+            // Read failures are not evidence that this Color profile is absent.
+            // Resolve the fallible observation before passing a pure lookup to Can.
+            let observed_color = if address.segments().len() == 1
+                && address.segments()[0].kind() == NodeKind::StyleItem
+                && address.segments()[0].name().is_some()
+            {
+                source
+                    .logical_view_read_authority(cancellation)
+                    .map_err(|message| ViewError::detailed(RefusalDetail::ProviderAbsent, message))?
+                    .style_item_color_observation(&address)?
+            } else {
+                None
+            };
+            let color = |at: &QualifiedAddress| {
+                if at == &address {
+                    observed_color
+                } else {
+                    None
+                }
+            };
             match operation.as_deref() {
                 Some(op) => {
                     let owner_at = data
@@ -1004,8 +1034,8 @@ impl CanonicalV13ReadService {
                             .as_str()
                             .map(unica_forms::FormItemRole::from_tag)
                     };
-                    operation_node_with(&data, op, &owner_at, can_context, &ancestor_role).map_err(
-                        |error| {
+                    operation_node_with(&data, op, &owner_at, can_context, &ancestor_role, &color)
+                        .map_err(|error| {
                             let mut refused = ViewError::new(error.code(), error.to_string());
                             // Снятая операция ведёт к контракту заменившей (#1465).
                             refused.set_next(match error.next() {
@@ -1021,11 +1051,10 @@ impl CanonicalV13ReadService {
                                 }),
                             });
                             refused
-                        },
-                    )
+                        })
                 }
                 None => {
-                    attach_can(&mut data, can_context);
+                    attach_can_with_color(&mut data, can_context, &color);
                     Ok(data)
                 }
             }
@@ -1447,6 +1476,9 @@ impl CanonicalV13ReadService {
                         ToString::to_string,
                     ),
                     prefix: route.as_ref().and_then(|route| route.prefix.clone()),
+                    external_binding: route
+                        .as_ref()
+                        .and_then(|route| route.external_binding.clone()),
                     // A nested source set owns its files; its parent skips them.
                     excluded: sources
                         .iter()
@@ -1532,7 +1564,7 @@ impl CanonicalV13ReadService {
         cancellation: &CancellationToken,
     ) -> Result<SearchScopeRoute, Box<DomainResult>> {
         let refuse = |result: DomainResult| Box::new(result);
-        let route = search_scope_route(scope).map_err(|error| {
+        let mut route = search_scope_route(scope, source.source_kind()).map_err(|error| {
             refuse(error_result(
                 Some(scope.to_string()),
                 error.code(),
@@ -1569,6 +1601,32 @@ impl CanonicalV13ReadService {
         authority
             .validate_search_scope_owner(&owner, &snapshot)
             .map_err(|error| refuse(view_error_result(Some(scope.to_string()), error)))?;
+        if matches!(
+            source.source_kind(),
+            unica_source_contract::SourceSetKind::ExternalProcessor
+                | unica_source_contract::SourceSetKind::ExternalReport
+        ) {
+            if let Some(name) = owner.segments()[0].name() {
+                let descriptor = authority
+                    .existing_export_path(&owner, None)
+                    .map_err(|error| refuse(view_error_result(Some(scope.to_string()), error)))?;
+                let binding =
+                    unica_source_designer::external_artifact::ExternalArtifactBinding::new(
+                        source.source_kind(),
+                        name,
+                        std::path::Path::new(&descriptor),
+                    )
+                    .map_err(|error| {
+                        refuse(error_result(
+                            Some(scope.to_string()),
+                            RefusalCode::InvalidSource,
+                            error,
+                        ))
+                    })?;
+                route.prefix = Some(binding.payload().to_string_lossy().replace('\\', "/"));
+                route.external_binding = Some(binding);
+            }
+        }
         if owner.segments()[0].kind() == NodeKind::Configuration
             || owner.segments()[0].name().is_none()
         {
@@ -1647,6 +1705,15 @@ impl CanonicalV13ReadService {
             };
             let Ok(authority) = source.logical_view_read_authority(cancellation) else {
                 continue;
+            };
+            let authority = match scan.hits[indices[0]].external_binding.as_ref() {
+                Some(proof) => {
+                    if let Err(error) = proof.validate(source) {
+                        return view_error_result(Some(module.to_string()), error);
+                    }
+                    authority.with_external_point_binding(proof.binding.clone())
+                }
+                None => authority,
             };
             for index in indices {
                 let hit = &mut values[index];
@@ -2861,7 +2928,7 @@ impl CanonicalV13ReadService {
                 match with_resolve_layout(invocation, |layout, deadline| {
                     self.locate_path(invocation, layout, deadline, &path, cancellation)
                 }) {
-                    Ok(Ok(source)) => resolve_result(source),
+                    Ok(Ok(source)) => resolve_result(source.source),
                     Ok(Err(refusal)) | Err(refusal) => *refusal,
                 }
             }
@@ -2892,7 +2959,7 @@ impl CanonicalV13ReadService {
         items: &[Result<PathLine, ResolveError>],
         cancellation: &CancellationToken,
     ) -> DomainResult {
-        let mut located = BTreeMap::<String, Result<ResolvedSource, Box<DomainResult>>>::new();
+        let mut located = BTreeMap::<String, Result<LocatedSource, Box<DomainResult>>>::new();
         let mut lines = BTreeMap::<String, BTreeSet<usize>>::new();
         for item in items.iter().flatten() {
             let key = item.key();
@@ -2909,7 +2976,7 @@ impl CanonicalV13ReadService {
             if let (Some(line), Ok(source)) = (item.line(), &located[&key]) {
                 // Строчный источник — файл BSL; у модуля целиком диапазона
                 // нет, но строки у файла есть.
-                if source.path().to_ascii_lowercase().ends_with(".bsl") {
+                if source.source.path().to_ascii_lowercase().ends_with(".bsl") {
                     lines.entry(key).or_default().insert(line);
                 }
             }
@@ -2917,9 +2984,10 @@ impl CanonicalV13ReadService {
         let mut placed =
             BTreeMap::<String, Result<BTreeMap<usize, ModuleLine>, Box<DomainResult>>>::new();
         for (key, requested) in lines {
-            let Ok(source) = &located[&key] else {
+            let Ok(located_source) = &located[&key] else {
                 continue;
             };
+            let source = &located_source.source;
             let requested = requested.into_iter().collect::<Vec<_>>();
             let module = QualifiedAddress::parse(source.address())
                 .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))
@@ -2930,6 +2998,10 @@ impl CanonicalV13ReadService {
                         .map_err(|error| {
                             ViewError::detailed(RefusalDetail::SourceUnreadable, error)
                         })?;
+                    let authority = match &located_source.external_binding {
+                        Some(binding) => authority.with_external_point_binding(binding.clone()),
+                        None => authority,
+                    };
                     authority.module_lines(&module, &requested)
                 });
             let answer = match module {
@@ -2960,7 +3032,7 @@ impl CanonicalV13ReadService {
                     }
                 };
                 let source = match &located[&item.key()] {
-                    Ok(source) => source,
+                    Ok(source) => &source.source,
                     Err(refusal) => return batch_refusal(refusal),
                 };
                 let answer = match (item.line(), placed.get(&item.key())) {
@@ -3013,7 +3085,7 @@ impl CanonicalV13ReadService {
         deadline: ProviderDeadline,
         path: &str,
         cancellation: &CancellationToken,
-    ) -> Result<ResolvedSource, Box<DomainResult>> {
+    ) -> Result<LocatedSource, Box<DomainResult>> {
         let entry = self
             .find_builder
             .locate_path(layout, path, deadline, cancellation)
@@ -3028,7 +3100,7 @@ impl CanonicalV13ReadService {
         // Кандидаты на присоединённые файлы подтверждаются тем же читателем,
         // что и view: регистрацию владельца и точный ресурс нельзя вывести
         // только из правдоподобной раскладки.
-        if matches!(entry.kind(), "Module" | "Metadata")
+        if matches!(entry.kind(), "Module" | "Metadata" | "Definition")
             || entry
                 .placed_path()
                 .is_some_and(|path| path.ends_with("/Ext/Form.xml"))
@@ -3046,8 +3118,60 @@ impl CanonicalV13ReadService {
                         error,
                     ))
                 })?;
+            let (authority, external_binding) = if let Some(descriptor) = entry.owner_descriptor() {
+                let source = invocation
+                    .layout_read_source(address.source_set())
+                    .map_err(|message| {
+                        Box::new(error_result_detailed(
+                            Some(entry.at().to_owned()),
+                            RefusalDetail::SourceUnreadable,
+                            message,
+                        ))
+                    })?;
+                if matches!(
+                    source.source_kind(),
+                    unica_source_contract::SourceSetKind::ExternalProcessor
+                        | unica_source_contract::SourceSetKind::ExternalReport
+                ) {
+                    let name = address
+                        .segments()
+                        .first()
+                        .and_then(|owner| owner.name())
+                        .ok_or_else(|| {
+                            Box::new(error_result(
+                                Some(entry.at().to_owned()),
+                                RefusalCode::InvalidSource,
+                                "external target has no owner name",
+                            ))
+                        })?;
+                    let binding =
+                        unica_source_designer::external_artifact::ExternalArtifactBinding::new(
+                            source.source_kind(),
+                            name,
+                            std::path::Path::new(descriptor),
+                        )
+                        .map_err(|message| {
+                            Box::new(error_result(
+                                Some(entry.at().to_owned()),
+                                RefusalCode::InvalidSource,
+                                message,
+                            ))
+                        })?;
+                    (
+                        authority.with_external_point_binding(binding.clone()),
+                        Some(binding),
+                    )
+                } else {
+                    (authority, None)
+                }
+            } else {
+                (authority, None)
+            };
             return match Self::resolve_with_authority(&authority, &address, entry.placed_path()) {
-                Ok(source) if Some(source.path()) == entry.placed_path() => Ok(source),
+                Ok(source) if Some(source.path()) == entry.placed_path() => Ok(LocatedSource {
+                    source,
+                    external_binding,
+                }),
                 Ok(_) => Err(Box::new(error_result(
                     Some(entry.at().to_owned()),
                     RefusalCode::InvalidSource,
@@ -3059,12 +3183,15 @@ impl CanonicalV13ReadService {
                 ))),
             };
         }
-        Ok(ResolvedSource::new(
-            entry.at(),
-            entry.kind(),
-            entry.placed_path().expect("located path has a place"),
-            ResolvedLines::NotLineBased,
-        ))
+        Ok(LocatedSource {
+            source: ResolvedSource::new(
+                entry.at(),
+                entry.kind(),
+                entry.placed_path().expect("located path has a place"),
+                ResolvedLines::NotLineBased,
+            ),
+            external_binding: None,
+        })
     }
 
     fn resolve_address(
@@ -3172,6 +3299,23 @@ impl CanonicalV13ReadService {
                 Ok(entry) => entry,
                 Err(error) => return Some(find_build_error_result(Some(at), error)),
             };
+        let external = matches!(
+            source.source_kind(),
+            unica_source_contract::SourceSetKind::ExternalProcessor
+                | unica_source_contract::SourceSetKind::ExternalReport
+        );
+        if external
+            && entry.as_ref().is_none_or(|entry| {
+                entry.at() != at
+                    && QualifiedAddress::parse(entry.at())
+                        .ok()
+                        .and_then(|located| located.form_metadata_owner())
+                        .as_ref()
+                        != Some(address)
+            })
+        {
+            return None;
+        }
         let Some((kind, placed)) = entry.as_ref().and_then(|entry| {
             (entry.at() == at
                 || QualifiedAddress::parse(entry.at())
@@ -4068,6 +4212,15 @@ fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
     let mut result = error_result(at, code, error.to_string());
     result.next.extend(error.next().cloned());
     result
+        .diagnostics
+        .extend(error.diagnostics().iter().cloned());
+    // The stored answer fits the largest client; each client cuts it to its
+    // own budget when it is delivered.
+    unica_execution_contract::source_text_budget::fit_refusal_diagnostics(
+        &result,
+        unica_bootstrap::MAX_RESPONSE_BUDGET,
+    )
+    .into_owned()
 }
 
 /// Отказ подготовки staged-исходников называет нарушенное предусловие.
@@ -4451,7 +4604,8 @@ impl CanonicalV13ReadService {
             saved: &saved,
         };
         let provider = self.symbol_provider(invocation, &source_set);
-        let service = SymbolService::new(provider.as_deref(), &environment);
+        let service =
+            SymbolService::new(provider.as_deref(), &environment).with_names(&environment);
         // The provider gets the invocation's deadline, as MCP calls do: a
         // shorter editor budget would retire the shared analyzer session on
         // every slow answer until #2189 lets a deadline cancel without that.
@@ -5241,6 +5395,7 @@ pub(super) fn preflight_apply_operations(
         template_format,
         &|_| None,
         &unica_operations::recovery::no_member_lookup,
+        &|_| None,
     )
 }
 
@@ -5253,6 +5408,7 @@ pub(super) fn preflight_apply_operations_with(
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
     members: unica_operations::recovery::MemberPathLookup<'_>,
+    color: &dyn Fn(&QualifiedAddress) -> Option<unica_metadata::style_color::StyleItemColor>,
 ) -> Result<(), Box<DomainResult>> {
     let registry = crate::domain::apply::operation_registry();
     for (index, operation) in request.ops().iter().enumerate() {
@@ -5266,6 +5422,7 @@ pub(super) fn preflight_apply_operations_with(
                     source,
                     template_format,
                     form_item,
+                    color,
                 )));
             }
             return Err(Box::new(with_node_dictionary(
@@ -5321,11 +5478,14 @@ pub(super) fn preflight_apply_operations_with(
             if !redirect.listing && !admits_form_item_at(descriptor, &redirect.at, form_item) {
                 if let Some(target) = crate::domain::apply::operation_site(&redirect.at, source)
                     .and_then(|target| {
-                        descriptor.nearest_applicable_ancestor_with(
+                        descriptor.nearest_ancestor_with_observations(
                             &target,
                             registry.context(),
-                            template_format,
-                            form_item,
+                            &crate::domain::apply::observation_lookup_with_color(
+                                template_format,
+                                form_item,
+                                color,
+                            ),
                         )
                     })
                 {
@@ -5495,11 +5655,10 @@ pub(super) fn preflight_apply_operations_with(
             target_kind.as_str(),
             operation.at()
         );
-        let nearest = registry.nearest_applicable_ancestor_with(
+        let nearest = registry.nearest_ancestor_with_observations(
             operation.name(),
             &site,
-            template_format,
-            form_item,
+            &crate::domain::apply::observation_lookup_with_color(template_format, form_item, color),
         );
         let refusal = match nearest {
             Some((descriptor, target)) => with_operation_dictionary(
@@ -5572,15 +5731,15 @@ fn retired_operation_refusal(
     source: unica_source_contract::context::SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
+    color: &dyn Fn(&QualifiedAddress) -> Option<unica_metadata::style_color::StyleItemColor>,
 ) -> DomainResult {
     let location = Some(format!("ops[{index}].op"));
     let site = crate::domain::apply::operation_site(at, source);
     let target = site.as_ref().and_then(|site| {
-        retired.replacement_target(
+        retired.replacement_with_observations(
             site,
             crate::domain::apply::operation_registry().context(),
-            template_format,
-            form_item,
+            &crate::domain::apply::observation_lookup_with_color(template_format, form_item, color),
         )
     });
     let replacement = retired.descriptor();
@@ -9115,7 +9274,7 @@ mod tests {
                 <= crate::application::v13::view::PREFERRED_PAGE_BYTES
         );
         let mut enriched = data;
-        super::attach_can(
+        super::super::v13_read_modes::attach_can(
             &mut enriched,
             super::super::v13_read_modes::configuration_context(),
         );

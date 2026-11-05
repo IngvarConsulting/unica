@@ -539,6 +539,11 @@ mod tests {
         TerminalField(&'static str, Value),
         MissingTerminal,
         MalformedTerminal,
+        /// The terminal frame of a preview (`false`) or of a published apply
+        /// (`true`) exceeds the stream line limit, as the managed child reports it.
+        OversizedTerminal {
+            published: bool,
+        },
         AckWriteFailure,
         CancelAfterPublication,
         UnconfirmedRunBeforeReady,
@@ -671,6 +676,7 @@ mod tests {
                 self.decision(&response, &nonce, "selected").as_deref() == Some("continue");
             let mut stopped = response == ProcessLineReply::Stop;
             let mut published = false;
+            let mut line_error = None;
             if authorized && !preview {
                 if let Some(expected_target) = &self.materialize_on_apply {
                     assert_eq!(normalize_path_identity(expected_target).unwrap(), target);
@@ -736,6 +742,12 @@ mod tests {
             {
                 if published && matches!(&self.fault, Some(PublicationFault::MalformedTerminal)) {
                     stopped = on_line(3, b"not a JSON frame") == ProcessLineReply::Stop;
+                } else if matches!(&self.fault,
+                    Some(PublicationFault::OversizedTerminal { published: faulted }) if *faulted == published)
+                {
+                    // The managed child withholds the oversized line and stops the runner.
+                    line_error = Some((3, unica_process::STREAM_LINE_TOO_LONG_ERROR.to_string()));
+                    stopped = true;
                 } else {
                     let mut terminal = json!({"version":1,"nonce":nonce,"phase":"terminal",
                         "publication":if published {"published"} else {"not_published"},
@@ -762,7 +774,7 @@ mod tests {
                 timed_out: output.timed_out,
                 cancelled: output.cancelled,
                 stopped_by_consumer: stopped,
-                line_error: None,
+                line_error,
             })
         }
     }
@@ -2540,6 +2552,119 @@ mod tests {
                 "{name}: {result:?}"
             );
         }
+    }
+
+    fn assert_recovery_artifact(result: &DomainResult, workspace: &Path) -> PathBuf {
+        let path = result
+            .artifacts
+            .iter()
+            .find(|artifact| artifact["kind"] == "recovery")
+            .and_then(|artifact| artifact["path"].as_str())
+            .unwrap_or_else(|| panic!("the result must name its recovery directory: {result:?}"));
+        let recovery = workspace.join(path);
+        assert!(recovery.is_dir(), "{}", recovery.display());
+        recovery
+    }
+
+    fn dump_guards(root: &Path) -> Vec<String> {
+        fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".unica-dump-guard-"))
+            .collect()
+    }
+
+    #[test]
+    fn oversized_preview_frame_is_a_named_refusal_that_leaves_no_guard() {
+        let root = workspace();
+        let target = root.path().join("main");
+        write_valid_dump(&target, false);
+        fs::write(target.join("untracked.bsl"), "local work").unwrap();
+        let mut runner = SequenceRunner::new(vec![process(
+            envelope(root.path(), "main", "FULL", None, false),
+            true,
+        )]);
+        runner.fault = Some(PublicationFault::OversizedTerminal { published: false });
+        let result = run(
+            root.path(),
+            &prepared(root.path(), ExportMode::Full, None, None, true),
+            &runner,
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+        let message = result.diagnostics[0]["message"].as_str().unwrap();
+        assert!(
+            message.contains(&format!("{RUNNER_OUTPUT_LIMIT}-byte line limit"))
+                && message.contains("nothing was published")
+                && message.contains("exist nowhere else"),
+            "{message}"
+        );
+        assert!(result.changed.is_empty());
+        assert!(result.artifacts.is_empty(), "{result:?}");
+        assert!(
+            dump_guards(root.path()).is_empty(),
+            "{:?}",
+            dump_guards(root.path())
+        );
+        assert_eq!(
+            fs::read(target.join("untracked.bsl")).unwrap(),
+            b"local work"
+        );
+    }
+
+    #[test]
+    fn oversized_final_frame_after_publication_keeps_replaced_sources_recoverable() {
+        let root = workspace();
+        let target = root.path().join("main");
+        write_valid_dump(&target, false);
+        fs::write(target.join("replaced.bsl"), "old source").unwrap();
+        let mut runner = SequenceRunner::exporting(
+            vec![
+                process(envelope(root.path(), "main", "FULL", None, false), true),
+                process(envelope(root.path(), "main", "FULL", None, true), true),
+            ],
+            target.clone(),
+        );
+        runner.fault = Some(PublicationFault::OversizedTerminal { published: true });
+        let result = run(
+            root.path(),
+            &prepared(root.path(), ExportMode::Full, None, None, false),
+            &runner,
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert_eq!(
+            result.diagnostics[0]["code"], "invalid_result",
+            "{result:?}"
+        );
+        let message = result.diagnostics[0]["message"].as_str().unwrap();
+        assert!(
+            message.contains(&format!("{RUNNER_OUTPUT_LIMIT}-byte line limit"))
+                && message.contains("sources were published")
+                && message.contains("recovery"),
+            "{message}"
+        );
+        assert_eq!(
+            result.changed,
+            vec![json!({"path":"main","kind":"replaced"})]
+        );
+        assert!(target.join("Catalogs/Items.xml").is_file());
+        assert!(!target.join("replaced.bsl").exists());
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning["code"] == "sync_memory_unconfirmed"));
+        let private_root = assert_recovery_artifact(&result, root.path());
+        assert!(
+            unica_workspace::test_support::tree_snapshot(&private_root)
+                .values()
+                .any(|bytes| bytes == b"old source"),
+            "replaced sources must stay recoverable while the final frame is unread"
+        );
     }
 
     #[test]

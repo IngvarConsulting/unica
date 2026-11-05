@@ -154,6 +154,43 @@ pub fn valid_bsl_calls_remain_reusable_without_failure_snapshot() {
     ));
 }
 
+/// A call given up by its deadline is cancelled at the server, and the same
+/// process answers the next call: the session is not retired.
+pub fn an_abandoned_call_is_cancelled_at_the_server_and_keeps_the_session() {
+    let directory = tempfile::Builder::new()
+        .prefix("unica-private-stall-")
+        .tempdir()
+        .unwrap();
+    let mut session = controlled_session(directory.path(), "stall");
+    let pid = session.child.id();
+    let error = session
+        .call_with_failure_capture(
+            "search",
+            json!({}),
+            Duration::from_millis(200),
+            &CancellationToken::new(),
+        )
+        .unwrap_err();
+    assert!(error.starts_with("timeout:"), "{error}");
+    assert!(session.is_reusable());
+    assert!(session.failure_snapshot.is_none());
+    let result = session
+        .call_with_failure_capture(
+            "search",
+            json!({}),
+            Duration::from_secs(5),
+            &CancellationToken::new(),
+        )
+        .unwrap();
+    assert_eq!(result.result_text, "valid");
+    assert_eq!(session.child.id(), pid);
+    assert_eq!(
+        fs::read_to_string(directory.path().join("producer.route")).unwrap(),
+        "initialize\ninitialized\nactive\ncancelled\n"
+    );
+    session.invalidate();
+}
+
 pub fn ordinary_shared_transport_call_does_not_arm_bsl_capture() {
     let directory = tempfile::Builder::new()
         .prefix("unica-private-unarmed-")

@@ -130,8 +130,6 @@ pub enum RefusalCode {
     ProviderFailed,
     /// `invalid_result`
     InvalidResult,
-    /// `submit_response_lost`
-    SubmitResponseLost,
     /// `submit_not_delivered`
     SubmitNotDelivered,
 }
@@ -181,7 +179,6 @@ impl RefusalCode {
             Self::TaskProjectionFailed => "task_projection_failed",
             Self::ProviderFailed => "provider_failed",
             Self::InvalidResult => "invalid_result",
-            Self::SubmitResponseLost => "submit_response_lost",
             Self::SubmitNotDelivered => "submit_not_delivered",
         }
     }
@@ -238,9 +235,6 @@ impl RefusalCode {
             Self::TaskProjectionFailed => Outcome::DeadEnd,
             Self::ProviderFailed => Outcome::DeadEnd,
             Self::InvalidResult => Outcome::DeadEnd,
-            // Ответ на отправку потерян, но вызов мог стать заданием: ждать
-            // его по `taskId` из `next`, а не отправлять вызов заново.
-            Self::SubmitResponseLost => Outcome::GoElsewhere,
             // Вызов не дошёл до демона и уже не запустится: тот же вызов
             // можно повторить как есть.
             Self::SubmitNotDelivered => Outcome::RetryAsIs,
@@ -253,7 +247,7 @@ impl RefusalCode {
     }
 
     /// Весь словарь — для проверок полноты и порождения ведомостей.
-    pub const ALL: [Self; 43] = [
+    pub const ALL: [Self; 42] = [
         Self::ConcurrentChange,
         Self::SourceSelectionChanged,
         Self::DeadlineExceeded,
@@ -295,7 +289,6 @@ impl RefusalCode {
         Self::TaskProjectionFailed,
         Self::ProviderFailed,
         Self::InvalidResult,
-        Self::SubmitResponseLost,
         Self::SubmitNotDelivered,
     ];
 }

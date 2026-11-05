@@ -695,6 +695,42 @@ fn daemon_actor_registry_prunes_dead_entries_and_bounds_sequential_roots() {
 }
 
 #[test]
+fn an_open_editor_buffer_keeps_its_idle_actor() {
+    let root = temp_root("open-buffer-retention");
+    let source = root.join("src");
+    std::fs::create_dir_all(&source).unwrap();
+    let registry = idle_registry_for_test(Duration::ZERO);
+    let actor = registry
+        .get_or_create(&context(&root), [source_input("main", &source)], "p")
+        .unwrap();
+    let module = std::path::Path::new("CommonModules/Общий/Ext/Module.bsl");
+    actor
+        .documents()
+        .put(
+            "editor",
+            "main",
+            module,
+            crate::documents::DocumentText {
+                version: 1,
+                text: Arc::from("// буфер"),
+            },
+        )
+        .unwrap();
+    let weak = Arc::downgrade(&actor);
+    drop(actor);
+    assert!(registry.has_retained_work());
+    registry.evict_idle_warm_actors().unwrap();
+    let actor = weak
+        .upgrade()
+        .expect("an actor holding an open buffer must not be released while idle");
+    actor.documents().close_session("editor").unwrap();
+    drop(actor);
+    registry.evict_idle_warm_actors().unwrap();
+    assert!(weak.upgrade().is_none());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn daemon_actor_registry_admits_live_identities_and_releases_only_unowned_actors() {
     let parent = temp_root("live-admissions");
     let registry = registry_for_test();

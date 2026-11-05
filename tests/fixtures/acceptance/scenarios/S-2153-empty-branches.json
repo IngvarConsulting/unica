@@ -1,0 +1,164 @@
+{
+  "id": "S-2153-empty-branches",
+  "issue": 2153,
+  "area": "Навигация",
+  "task": "Отличить пустой вид от неподдержанного: корень перечисляет все виды метаданных профиля 8.3.27 в порядке дерева Конфигуратора, в том числе пустые со счётом 0, объект — все виды своих ChildObjects, а вида, которого у объекта не бывает, среди ветвей нет; пустая ветвь читается пустой коллекцией",
+  "workspace": "tests/fixtures/acceptance/workspace-event-source-order",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Subsystem",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:CommonModule",
+            "count": 1
+          }
+        },
+        {
+          "pointer": "/data/branches/23",
+          "eq": {
+            "at": "main:WebSocketClient",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/27",
+          "eq": {
+            "at": "main:Language",
+            "count": 1
+          }
+        },
+        {
+          "pointer": "/data/branches/28",
+          "eq": {
+            "at": "main:Constant",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/29",
+          "eq": {
+            "at": "main:Catalog",
+            "count": 3
+          }
+        },
+        {
+          "pointer": "/data/branches/30",
+          "eq": {
+            "at": "main:Document",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/45",
+          "eq": {
+            "at": "main:Task",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/46/at",
+          "eq": "main:Module"
+        },
+        {
+          "pointer": "/data/branches/47",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "documents": {
+          "pointer": "/data/branches/30/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.documents"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.ПримерА"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Catalog.ПримерА.Attribute",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/2",
+          "eq": {
+            "at": "main:Catalog.ПримерА.TabularSection",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/4",
+          "eq": {
+            "at": "main:Catalog.ПримерА.Command",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/6/at",
+          "eq": "main:Catalog.ПримерА.Relation"
+        }
+      ],
+      "captures": {
+        "commands": {
+          "pointer": "/data/branches/4/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.commands"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}

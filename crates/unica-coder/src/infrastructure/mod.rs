@@ -22,6 +22,8 @@ pub mod internal_adapters;
 pub(crate) mod event_sources;
 #[allow(dead_code)]
 pub(crate) mod logical_tree;
+#[allow(dead_code)]
+pub(crate) mod lsp_documents;
 pub(crate) mod metadata_kinds;
 pub(crate) mod metadata_operations;
 pub mod native_operations;
@@ -43,6 +45,7 @@ pub(crate) mod runtime_jobs_integration;
 mod runtime_preflight_integration;
 pub(crate) mod source_roots;
 // The topology provider is introduced before both public consumers migrate to it.
+pub(crate) mod name_index;
 #[allow(dead_code)]
 pub(crate) mod support_guard;
 #[allow(dead_code)]
@@ -109,3 +112,5 @@ mod meta_add_surface_tests;
 #[cfg(test)]
 mod meta_info_surface_tests;
 mod source_ids;
+
+pub(crate) mod external_artifact_inventory;

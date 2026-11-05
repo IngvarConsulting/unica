@@ -111,6 +111,11 @@ pub fn same_name(left: &str, right: &str) -> bool {
         .eq(right.chars().flat_map(char::to_lowercase))
 }
 
+/// The key a name is compared by: BSL does not tell letter case apart.
+pub fn name_key(name: &str) -> String {
+    name.chars().flat_map(char::to_lowercase).collect()
+}
+
 /// A token that names something: an identifier, or a keyword spelled as a
 /// member after a dot (`Запрос.Выполнить`).
 fn is_name(token: &SyntaxToken) -> bool {
@@ -197,6 +202,42 @@ fn path_root(token: &SyntaxToken) -> Option<SyntaxNode> {
 }
 
 impl ParsedModule<'_> {
+    /// The keys of every name the module's code spells, comments and string
+    /// literals aside: what a module must contain to refer to a name.
+    pub fn name_keys(&self) -> std::collections::HashSet<String> {
+        self.parsed
+            .syntax_node()
+            .descendants_with_tokens()
+            .filter_map(|element| element.into_token())
+            .filter(is_name)
+            .map(|token| name_key(token.text()))
+            .collect()
+    }
+
+    /// The path of every place the module's code spells the name `key` (a
+    /// [`name_key`]) at, each with its cursor on that name.
+    pub fn paths_naming(&self, key: &str) -> Vec<NamePath> {
+        self.parsed
+            .syntax_node()
+            .descendants_with_tokens()
+            .filter_map(|element| element.into_token())
+            .filter(|token| is_name(token) && same_name(token.text(), key))
+            .filter_map(|token| self.name_path_at(usize::from(token.text_range().start())))
+            .collect()
+    }
+
+    /// Whether a method or module variable is declared `Экспорт`.
+    pub fn is_exported(&self, symbol: &LocalSymbol) -> bool {
+        let Some(token) = self.ident_at(symbol.range.start) else {
+            return false;
+        };
+        token.parent().is_some_and(|declaration| {
+            declaration
+                .children_with_tokens()
+                .any(|element| element.kind() == SyntaxKind::KW_EXPORT)
+        })
+    }
+
     fn ident_at(&self, offset: usize) -> Option<SyntaxToken> {
         let offset = TextSize::try_from(offset).ok()?;
         let root = self.parsed.syntax_node();
@@ -589,6 +630,40 @@ mod tests {
             .unwrap();
         assert_eq!(variable.kind, LocalSymbolKind::ModuleVariable);
         assert_eq!(module.local_references(&variable).len(), 2);
+    }
+
+    #[test]
+    fn name_keys_ignore_case_comments_and_strings() {
+        let module = parse(
+            "// Скрытое\nПроцедура А()\n\tСПРАВОЧНИКИ.Валюты.Найти(\"Строка\");\nКонецПроцедуры\n",
+        );
+        let keys = module.name_keys();
+        for key in ["а", "справочники", "валюты", "найти"] {
+            assert!(keys.contains(key), "{key}: {keys:?}");
+        }
+        assert!(!keys.contains("скрытое"));
+        assert!(!keys.contains("строка"));
+        assert_eq!(super::name_key("ОбщийМОДУЛЬ"), "общиймодуль");
+    }
+
+    #[test]
+    fn paths_naming_a_name_and_exports_are_found() {
+        let text = "Перем Кэш Экспорт;\nПерем Свой;\nПроцедура А() Экспорт\n\tобщий.СДЕЛАТЬ(1);\n\tСделать();\nКонецПроцедуры\n";
+        let module = parse(text);
+        let paths = module.paths_naming(&super::name_key("Сделать"));
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].segments.len(), 2);
+        assert_eq!(paths[0].cursor, 1);
+        assert_eq!(paths[1].cursor, 0);
+        let exported = |name: &str| {
+            let symbol = module
+                .local_definition(name, text.len() - 1, false)
+                .unwrap();
+            module.is_exported(&symbol)
+        };
+        assert!(exported("Кэш"));
+        assert!(!exported("Свой"));
+        assert!(exported("А"));
     }
 
     #[test]

@@ -12,6 +12,7 @@ pub mod apply;
 pub mod cache;
 pub mod compile_transaction;
 mod deadline_lock;
+pub mod documents;
 pub mod path_policy;
 pub mod policies;
 #[allow(dead_code)]

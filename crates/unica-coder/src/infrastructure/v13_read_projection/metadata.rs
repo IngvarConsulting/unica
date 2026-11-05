@@ -27,14 +27,17 @@ pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "overridesCount",
     "overridesComplete",
     "overrides",
+    // Подсистемы объекта и корни его библиотек (ветвь `Relation`).
+    "subsystemMemberships",
+    "libraryRoots",
     // Поля, которые читатель не смог спроецировать (см. `metadata_payload`).
     "unreadable",
+    "wsdlDefinition",
 ];
 
 /// Скаляры корня объекта метаданных в его `props`.
 const ROOT_SCALAR_KEYS: &[&str] = &[
     "kind",
-    "synonym",
     "support",
     // Заимствование расширением: ключи есть только в наборе
     // расширения и только у заимствованного объекта, кроме
@@ -84,15 +87,18 @@ pub(super) fn project_metadata_for_source(
 ) -> Result<NodeViewData, ViewError> {
     let profile = source_kind
         .filter(|kind| *kind == unica_source_contract::SourceSetKind::Configuration)
-        .filter(|_| {
-            address
-                .segments()
-                .first()
-                .is_some_and(|part| part.kind() == NodeKind::Catalog)
-        })
-        .filter(|_| payload.get("kind").and_then(Value::as_str) == Some("Catalog"))
         .and_then(|_| payload.get("memberReadProfile"))
-        .and_then(|value| serde_json::from_value(value.clone()).ok());
+        .and_then(|value| {
+            serde_json::from_value::<unica_metadata::MetaMemberReadProfile>(value.clone()).ok()
+        })
+        .filter(|profile| {
+            let owner = profile.owner_kind().as_str();
+            payload.get("kind").and_then(Value::as_str) == Some(owner)
+                && address
+                    .segments()
+                    .first()
+                    .is_some_and(|part| part.kind().as_str() == owner)
+        });
     project_metadata(address, payload, suffix, profile)
 }
 
@@ -135,6 +141,31 @@ fn project_metadata(
         let mut limits = metadata_limits(payload);
         limits.extend(size_limits);
         props.extend(metadata_property_props(address, payload, &mut limits));
+        // Синоним — свойство платформы и публикуется под её именем, тем же,
+        // что принимает `props.set`. У видов, чей профиль не перечисляет
+        // его среди свойств, значение берётся из сведений читателя; если
+        // профиль его перечисляет, предел или порча уже сказаны там.
+        let profiled = payload
+            .get("properties")
+            .and_then(Value::as_array)
+            .is_some_and(|properties| {
+                properties
+                    .iter()
+                    .any(|property| property.get("key").and_then(Value::as_str) == Some("Synonym"))
+            });
+        if !profiled {
+            if let Some(synonym) = payload.get("synonym").filter(|value| value.is_string()) {
+                place_prop(
+                    &mut props,
+                    &mut limits,
+                    address,
+                    "Synonym",
+                    synonym,
+                    true,
+                    "metadata property Synonym",
+                );
+            }
+        }
         props.extend(metadata_detail_props(address, payload, &mut limits));
         // Счёт предопределённых элементов берётся из ответа читателя, а не из
         // длины страницы: при урезанной странице они расходятся, и ветвь
@@ -143,20 +174,51 @@ fn project_metadata(
             .get("predefinedItems")
             .and_then(|predefined| predefined.get("total"))
             .and_then(Value::as_u64);
+        // Виды `ChildObjects`, которые профиль платформы допускает у вида
+        // объекта, выдаются и пустыми (`count: 0`): «пусто» отличается от
+        // «вид не поддержан», и первый элемент можно создать (#2153).
+        let platform_kinds = match address.segments() {
+            [owner] => unica_source_designer::registration::platform_child_object_order(
+                owner.kind().as_str(),
+            )
+            .unwrap_or_default(),
+            _ => &[],
+        };
+        let addressing_issue = task_addressing_applies(address, payload)
+            .then(|| task_addressing_issue(payload))
+            .flatten();
+        if let Some(reason) = &addressing_issue {
+            limits.push(reason.clone());
+        }
         let mut branches = metadata_branch_kinds()
             .iter()
             .filter_map(|kind| {
-                let value = metadata_collection(payload, *kind)?;
+                if *kind == NodeKind::AddressingAttribute
+                    && (!task_addressing_applies(address, payload) || addressing_issue.is_some())
+                {
+                    return None;
+                }
+                let value = metadata_collection(payload, *kind);
                 let count = match (kind, predefined_total) {
                     (NodeKind::PredefinedItem, Some(total)) => {
                         usize::try_from(total).unwrap_or(usize::MAX)
                     }
-                    _ => value.as_array().map_or(0, Vec::len),
+                    _ => value.and_then(Value::as_array).map_or(0, Vec::len),
                 };
-                (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
+                let declared = platform_kinds.contains(&kind.as_str());
+                (count > 0 || declared)
+                    .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             })
             .collect::<Vec<_>>();
         let relations = metadata_relations(address, payload);
+        if payload.get("kind").and_then(Value::as_str) == Some("WSReference") {
+            if let Some(rows) = payload
+                .pointer("/wsdlDefinition/rows")
+                .and_then(Value::as_array)
+            {
+                branches.push(BranchRef::new(format!("{address}.Definition"), rows.len()));
+            }
+        }
         if matches!(address.segments(), [owner] if owner.kind() == NodeKind::ScheduledJob) {
             branches.push(BranchRef::new(format!("{address}.Schedule"), 1));
         }
@@ -265,6 +327,37 @@ fn project_metadata(
             metadata_relations(address, payload),
         )));
     }
+    if first.kind() == NodeKind::AddressingAttribute {
+        if !task_addressing_applies(address, payload) {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                "AddressingAttribute belongs only to a named Task",
+            ));
+        }
+        if let Some(reason) = task_addressing_issue(payload) {
+            return Err(ViewError::detailed(RefusalDetail::SourceUnreadable, reason));
+        }
+    }
+    if first.kind() == NodeKind::Definition
+        && first.name().is_none()
+        && suffix.len() == 1
+        && payload.get("kind").and_then(Value::as_str) == Some("WSReference")
+    {
+        let rows = payload
+            .pointer("/wsdlDefinition/rows")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "local WSDL observation is unavailable",
+                )
+            })?;
+        return Ok(NodeViewData::Collection(CollectionView::new(
+            NodeView::new(address.to_string(), "Definition", "Local WSDL", Map::new())
+                .with_limits(wsdl_limits(payload)),
+            rows.clone(),
+        )));
+    }
     // Непрочитанная коллекция приходит `null`; без этой проверки она читалась
     // бы как пустая.
     if metadata_collection(payload, first.kind()).is_none_or(Value::is_null) {
@@ -278,12 +371,22 @@ fn project_metadata(
             ));
         }
     }
-    let collection = metadata_collection(payload, first.kind()).ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!("metadata has no {} collection", first.kind().as_str()),
-        )
-    })?;
+    // Вид, который профиль выдаёт пустой ветвью, читается пустой коллекцией,
+    // даже если читатель не прислал для него массива (#2153).
+    let empty = Value::Array(Vec::new());
+    let declared = matches!(address.segments(), [owner] if
+        unica_source_designer::registration::platform_child_object_order(owner.kind().as_str())
+            .is_some_and(|kinds| kinds.contains(&first.kind().as_str())));
+    let collection = match metadata_collection(payload, first.kind()) {
+        Some(collection) => collection,
+        None if declared => &empty,
+        None => {
+            return Err(ViewError::new(
+                RefusalCode::NotFound,
+                format!("metadata has no {} collection", first.kind().as_str()),
+            ))
+        }
+    };
     if first.kind() == NodeKind::Characteristic {
         // Прикладного имени у характеристики нет: она названа парой источников,
         // а не словом. Адресовать в ней нечего, поэтому элементы остаются
@@ -387,7 +490,19 @@ fn project_metadata(
 fn metadata_limits(payload: &Value) -> Vec<String> {
     let mut limits = unreadable_limits(payload);
     limits.extend(metadata_missing_relation_limits(payload));
+    limits.extend(wsdl_limits(payload));
     limits
+}
+
+fn wsdl_limits(payload: &Value) -> Vec<String> {
+    payload
+        .pointer("/wsdlDefinition/limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
 }
 
 const METADATA_DETAIL_RELATIONS: &[(&str, &str, &str)] = &[
@@ -479,6 +594,7 @@ fn unreadable_limits(payload: &Value) -> Vec<String> {
 /// «нет такой коллекции», и агент счёл бы сервис пустым.
 fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
     let (prefix, property) = match kind {
+        NodeKind::AddressingAttribute => ("collections.addressingAttributes", None),
         NodeKind::PredefinedItem => ("predefinedItems", None),
         NodeKind::UrlTemplate => ("details.urlTemplates", None),
         NodeKind::Operation => ("details.operations", None),
@@ -509,6 +625,30 @@ fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
     (!reasons.is_empty()).then(|| reasons.join("; "))
 }
 
+fn task_addressing_applies(address: &QualifiedAddress, payload: &Value) -> bool {
+    address
+        .segments()
+        .first()
+        .is_some_and(|owner| owner.kind() == NodeKind::Task && owner.name().is_some())
+        && payload.get("kind").and_then(Value::as_str) == Some("Task")
+}
+
+// The optional native collection distinguishes an unreadable/absent container
+// from a proved empty collection. Never run the generic empty fallback for it.
+fn task_addressing_issue(payload: &Value) -> Option<String> {
+    if let Some(reason) = unreadable_collection(payload, NodeKind::AddressingAttribute) {
+        return Some(format!(
+            "metadata AddressingAttribute collection is unreadable: {reason}"
+        ));
+    }
+    if metadata_collection(payload, NodeKind::AddressingAttribute)
+        .is_none_or(|value| !value.is_array())
+    {
+        return Some("collections.addressingAttributes is unknown: Task ChildObjects is absent or unreadable".into());
+    }
+    None
+}
+
 fn unreadable_entries(payload: &Value) -> impl Iterator<Item = (&str, &str)> {
     payload
         .get("unreadable")
@@ -523,23 +663,29 @@ fn unreadable_entries(payload: &Value) -> impl Iterator<Item = (&str, &str)> {
         })
 }
 
+/// Ветви объекта в порядке дерева Конфигуратора: измерения, ресурсы,
+/// реквизиты, табличные части, значения, графы, перерасчёты, операции,
+/// шаблоны URL, затем формы, команды и макеты. Стандартные реквизиты и
+/// табличные части идут за своими видами; характеристики и предопределённые
+/// элементы, которых дерево не показывает, — в конце.
 fn metadata_branch_kinds() -> &'static [NodeKind] {
     &[
-        NodeKind::Attribute,
-        NodeKind::StandardAttribute,
-        NodeKind::TabularSection,
         NodeKind::Dimension,
         NodeKind::Resource,
-        NodeKind::Recalculation,
+        NodeKind::Attribute,
+        NodeKind::AddressingAttribute,
+        NodeKind::StandardAttribute,
+        NodeKind::TabularSection,
+        NodeKind::StandardTabularSection,
         NodeKind::EnumValue,
         NodeKind::Column,
-        NodeKind::Form,
-        NodeKind::Template,
-        NodeKind::Command,
-        NodeKind::UrlTemplate,
+        NodeKind::Recalculation,
         NodeKind::Operation,
+        NodeKind::UrlTemplate,
+        NodeKind::Form,
+        NodeKind::Command,
+        NodeKind::Template,
         NodeKind::Characteristic,
-        NodeKind::StandardTabularSection,
         NodeKind::PredefinedItem,
     ]
 }
@@ -549,6 +695,11 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
     let declarations = payload.get("declarations");
     match kind {
         NodeKind::Attribute => collections.get("attributes"),
+        NodeKind::AddressingAttribute
+            if payload.get("kind").and_then(Value::as_str) == Some("Task") =>
+        {
+            collections.get("addressingAttributes")
+        }
         NodeKind::StandardAttribute => declarations?.get("standardAttributes"),
         NodeKind::Characteristic => declarations?.get("characteristics"),
         NodeKind::StandardTabularSection => declarations?.get("standardTabularSections"),
@@ -675,6 +826,52 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
             "kind": "typeId",
             "typeId": type_id,
             "readOnly": true,
+        }));
+    }
+    // Подсистемы, в состав которых входит объект: `direct` у той, что
+    // перечисляет его, и не у её родителей. Корень библиотеки — признак
+    // соглашения стандартов разработки, а не платформы, поэтому элемент называет его источник
+    // и модуль, на котором он держится.
+    let subsystem_at = |name: &str| {
+        format!(
+            "{}:Subsystem.{}",
+            address.source_set(),
+            name.split('.').collect::<Vec<_>>().join(".Subsystem.")
+        )
+    };
+    for membership in payload
+        .get("subsystemMemberships")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(name) = membership.get("subsystem").and_then(Value::as_str) {
+            items.push(json!({
+                "relation": "subsystem",
+                "at": subsystem_at(name),
+                "kind": "Subsystem",
+                "direct": membership.get("direct"),
+            }));
+        }
+    }
+    for root in payload
+        .get("libraryRoots")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let (Some(name), Some(module)) = (
+            root.get("subsystem").and_then(Value::as_str),
+            root.get("module").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        items.push(json!({
+            "relation": "library",
+            "at": subsystem_at(name),
+            "kind": "Subsystem",
+            "source": "standardLibraryModule",
+            "module": format!("{}:{module}", address.source_set()),
         }));
     }
     items
@@ -930,12 +1127,14 @@ fn metadata_detail_props(
             }
         }
     }
+    // Тип корня — свойство платформы `Type`, под тем же именем его
+    // принимает запись.
     if let Some(value) = details.get("type") {
         place_prop(
             &mut props,
             limits,
             address,
-            "type",
+            "Type",
             value,
             false,
             "metadata type",
@@ -962,10 +1161,6 @@ fn metadata_property_props(
         ) else {
             continue;
         };
-        // Синоним узел уже назвал сам — заголовком и собственным `props`.
-        if key == "Synonym" {
-            continue;
-        }
         let subject = format!("metadata property {key}");
         place_prop(&mut props, limits, address, key, value, true, &subject);
     }

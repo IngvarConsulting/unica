@@ -283,6 +283,9 @@ pub fn apply_response_budget(
             return Cow::Owned(refused);
         }
     }
+    if !result.ok && result.diagnostics.len() > 1 {
+        return fit_refusal_diagnostics(result, budget);
+    }
     let over = |branch: &Value| {
         branch
             .get("bytes")
@@ -314,6 +317,60 @@ pub fn apply_response_budget(
     Cow::Owned(result)
 }
 
+/// Отказ с предметными диагностиками в бюджете клиента. Диагностики после
+/// первой идут по порядку, пока ответ помещается; если вошли не все,
+/// `data.diagnostics` называет их общий счёт и сколько показано. Первая
+/// диагностика — сам отказ — остаётся всегда (INV.WIRE.V13-REFUSAL-CHANNEL).
+pub fn fit_refusal_diagnostics(result: &DomainResult, budget: usize) -> Cow<'_, DomainResult> {
+    // A refusal is delivered with a bounded text mirror of its diagnostics
+    // and its recovery calls beside the structured answer.
+    let size = |result: &DomainResult| {
+        let structured = serde_json::to_vec(result).map_or(usize::MAX, |b| b.len());
+        let next = serde_json::to_vec(&result.next).map_or(usize::MAX, |b| b.len());
+        structured
+            .saturating_add(crate::result_delivery::MAX_ERROR_DIAGNOSTIC_TEXT_BYTES)
+            .saturating_add(next)
+            .saturating_add(ENVELOPE_RESERVE_BYTES)
+    };
+    if result.ok || result.diagnostics.len() <= 1 || size(result) <= budget {
+        return Cow::Borrowed(result);
+    }
+    // An answer cut once already, for the largest client, keeps its count.
+    let total = result
+        .data
+        .as_ref()
+        .and_then(|data| data.get("diagnostics"))
+        .and_then(|counted| counted.get("total"))
+        .and_then(Value::as_u64)
+        .and_then(|total| usize::try_from(total).ok())
+        .unwrap_or(result.diagnostics.len() - 1);
+    let shown = |count: usize| {
+        let mut fitted = result.clone();
+        fitted.diagnostics.truncate(count + 1);
+        let mut data = match fitted.data.take() {
+            Some(Value::Object(data)) => data,
+            _ => serde_json::Map::new(),
+        };
+        data.insert(
+            "diagnostics".to_owned(),
+            json!({"total": total, "shown": count}),
+        );
+        fitted.data = Some(Value::Object(data));
+        fitted
+    };
+    // The largest count that fits: the size grows with every diagnostic.
+    let (mut low, mut high) = (0, total);
+    while low < high {
+        let middle = (low + high).div_ceil(2);
+        if size(&shown(middle)) <= budget {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    Cow::Owned(shown(low))
+}
+
 /// Текст этого размера вместе с запасом на конверт помещается в бюджет.
 fn text_fits(bytes: u64, budget: usize) -> bool {
     bytes.saturating_add(ENVELOPE_RESERVE_BYTES as u64) <= budget as u64
@@ -322,6 +379,67 @@ fn text_fits(bytes: u64, budget: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2229: a refusal names every cause that fits the client's budget;
+    /// past it, the answer names how many there are and how many it shows,
+    /// and the refusal itself always stays.
+    #[test]
+    fn refusal_diagnostics_fill_the_budget_and_count_the_rest() {
+        let mut refused = DomainResult::canonical_rejection(
+            Some("ops[0].args.text".into()),
+            RefusalCode::BadValue,
+            "text makes the BSL module unparsable",
+        );
+        let cause = |line: usize| {
+            json!({
+                "code": "bsl-parse-error",
+                "severity": "error",
+                "message": "ожидается КонецЕсли",
+                "focus": {"kind": "sourceRange", "range": {
+                    "startLine": line, "startColumn": 0, "endLine": line, "endColumn": 1,
+                }},
+            })
+        };
+        refused.diagnostics.extend((0..200).map(cause));
+        // The text mirror of a refusal and its envelope come on top.
+        let size = |result: &DomainResult| {
+            serde_json::to_vec(result).unwrap().len()
+                + crate::result_delivery::MAX_ERROR_DIAGNOSTIC_TEXT_BYTES
+                + serde_json::to_vec(&result.next).unwrap().len()
+                + ENVELOPE_RESERVE_BYTES
+        };
+        let whole = size(&refused);
+
+        assert!(matches!(
+            apply_response_budget(&refused, whole, whole),
+            Cow::Borrowed(_)
+        ));
+
+        let budget = 12 * 1024;
+        let fitted = apply_response_budget(&refused, budget, whole).into_owned();
+        assert!(size(&fitted) <= budget);
+        assert_eq!(fitted.diagnostics[0], refused.diagnostics[0]);
+        let shown = fitted.diagnostics.len() - 1;
+        assert!(shown > 0 && shown < 200, "{shown}");
+        assert_eq!(fitted.diagnostics[1..], refused.diagnostics[1..=shown]);
+        assert_eq!(
+            fitted.data.as_ref().unwrap()["diagnostics"],
+            json!({"total": 200, "shown": shown})
+        );
+        let mut one_more = fitted.clone();
+        one_more
+            .diagnostics
+            .push(refused.diagnostics[shown + 1].clone());
+        assert!(size(&one_more) > budget, "as many as fit are shown");
+
+        let bare = apply_response_budget(&refused, 0, whole).into_owned();
+        assert_eq!(bare.diagnostics, refused.diagnostics[..1]);
+
+        // Cut again for a smaller client, the answer keeps the whole count.
+        let again = apply_response_budget(&fitted, 9 * 1024, whole).into_owned();
+        assert!(again.diagnostics.len() < fitted.diagnostics.len());
+        assert_eq!(again.data.as_ref().unwrap()["diagnostics"]["total"], 200);
+    }
     use crate::invocation::SourceTextReadHint;
     const MAX_SOURCE_TEXT_BYTES: usize = 73_728; // Explicit fixture limit, not production policy.
     fn body(text: &str, first: usize) -> DomainResult {

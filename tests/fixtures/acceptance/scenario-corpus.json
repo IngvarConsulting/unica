@@ -6175,7 +6175,7 @@
           "property": {
            "name": "КодСклада",
            "type": "xs:string",
-           "minOccurs": 0
+           "lowerBound": 0
           }
          }
         }
@@ -38181,8 +38181,8 @@
         "op": "field.set",
         "args": {
          "values": {
-          "field": "Количество",
-          "title": "Число версий"
+          "title": "Число версий",
+          "dataPath": "Количество"
          }
         }
        }
@@ -38191,7 +38191,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: `field.set` names its subject by address, not by `values.field`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.Наб",
+     "refusal": "bad_value: `field.set` names its subject by address, not by `values.dataPath`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.",
      "assertions": [
       {
        "pointer": "/next/0/args/at",
@@ -38677,7 +38677,7 @@
           "property": {
            "name": "Документ_Новый",
            "type": "xs:string",
-           "minOccurs": 0
+           "lowerBound": 0
           }
          }
         }
@@ -38715,7 +38715,7 @@
           "property": {
            "name": "Документ_Новый",
            "type": "xs:string",
-           "minOccurs": 0
+           "lowerBound": 0
           }
          }
         }
@@ -38875,8 +38875,8 @@
         "op": "field.set",
         "args": {
          "values": {
-          "field": "ТипОбъекта.Представление",
-          "title": "Тип объекта (представление)"
+          "title": "Тип объекта (представление)",
+          "dataPath": "ТипОбъекта.Представление"
          }
         }
        }
@@ -38885,7 +38885,7 @@
      "expect": [
       "refused"
      ],
-     "refusal": "bad_value: `field.set` names its subject by address, not by `values.field`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.Наб",
+     "refusal": "bad_value: `field.set` names its subject by address, not by `values.dataPath`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.",
      "assertions": [
       {
        "pointer": "/next/0/args/at",

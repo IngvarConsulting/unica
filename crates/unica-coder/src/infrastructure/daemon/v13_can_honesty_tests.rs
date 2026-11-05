@@ -1958,6 +1958,7 @@ fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
                 unica_operations::recovery::NamedLookup::Missing
             }
         },
+        &|_| None,
     )
     .expect_err("the dataSet argument is retired");
     let actual = refusal
@@ -2351,6 +2352,7 @@ fn retired_dcs_container_arguments_route_next_to_the_structure_item() {
             &|_| None,
             &|_| None,
             &lookup,
+            &|_| None,
         )
         .expect_err("a retired DCS argument refuses before planning");
         let case = format!("{op} at {at}");
@@ -2897,6 +2899,29 @@ fn a_contract_node_takes_a_page_size_like_any_single_node() {
         assert_eq!(limited.data, plain.data, "limit {limit}");
     }
     let continued = view(json!({"at": contract, "cursor": "opaque"}));
+    assert!(!continued.ok, "{continued:?}");
+    assert_eq!(
+        continued.diagnostics[0]["code"], "bad_value",
+        "{continued:?}"
+    );
+}
+
+/// #2182: a node property is one value; a page size changes nothing, and
+/// only a continuation stays refused.
+#[test]
+fn a_node_property_takes_a_page_size_like_any_single_node() {
+    let fixture = fixture("workspace-code");
+    let view = |args| invoke(&fixture.workspace, ToolIdentity::View, args);
+    let property = "main:Catalog.Пример.Props.CodeLength";
+    let plain = view(json!({"at": property}));
+    assert!(plain.ok, "{plain:?}");
+    assert_eq!(plain.data.as_ref().unwrap()["kind"], "Props", "{plain:?}");
+    for limit in [1, 50] {
+        let limited = view(json!({"at": property, "limit": limit}));
+        assert!(limited.ok, "limit {limit}: {limited:?}");
+        assert_eq!(limited.data, plain.data, "limit {limit}");
+    }
+    let continued = view(json!({"at": property, "cursor": "opaque"}));
     assert!(!continued.ok, "{continued:?}");
     assert_eq!(
         continued.diagnostics[0]["code"], "bad_value",

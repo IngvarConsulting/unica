@@ -1,0 +1,78 @@
+{
+ "id": "S-2229-code-text-syntax-errors",
+ "issue": 2229,
+ "area": "Код BSL",
+ "task": "Вставить метод без КонецЕсли: отказ называет текст вызова и место первой ошибки, все ошибки идут диагностиками с местом в модуле и в тексте, модуль не меняется",
+ "wire": [
+  {
+   "tool": "unica.view",
+   "args": {
+    "at": "main:CommonModule.GoogleПереводчик.Body"
+   },
+   "expect": [
+    "ok"
+   ],
+   "captures": {
+    "original": {
+     "file": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+     "kind": "sha256"
+    }
+   }
+  },
+  {
+   "tool": "unica.apply",
+   "args": {
+    "at": "main:CommonModule.GoogleПереводчик",
+    "ops": [
+     {
+      "op": "code.insert",
+      "args": {
+       "text": "Процедура Проверка()\n    Если Истина Тогда\n        Значение = 1;\nКонецПроцедуры\n"
+      }
+     }
+    ]
+   },
+   "expect": [
+    "refused"
+   ],
+   "refusal": "bad_value: text makes the BSL module unparsable: Ожидалось 'КонецЕсли', встречено КонецПроцедуры at line 237, column 1 (line 4 of text)",
+   "assertions": [
+    {
+     "pointer": "/diagnostics/0/code",
+     "eq": "bad_value"
+    },
+    {
+     "pointer": "/diagnostics/0/outcome",
+     "eq": "fixCall"
+    },
+    {
+     "pointer": "/at",
+     "eq": "ops[0].args.text"
+    },
+    {
+     "pointer": "/diagnostics/0/message",
+     "contains": "of text"
+    },
+    {
+     "pointer": "/diagnostics/1/code",
+     "eq": "bsl-parse-error"
+    },
+    {
+     "pointer": "/diagnostics/1/focus/kind",
+     "eq": "sourceRange"
+    },
+    {
+     "pointer": "/diagnostics/1/textRange/startColumn",
+     "notEq": null
+    }
+   ],
+   "fileAssertions": [
+    {
+     "kind": "sha256",
+     "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+     "eq": "$capture.original"
+    }
+   ]
+  }
+ ]
+}

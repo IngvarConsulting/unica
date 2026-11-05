@@ -626,13 +626,13 @@ fn publication_cleanup_retry_preserves_a_same_name_file_replacement() {
         publish, with_publish_failpoints, PublishCheckpoint,
     };
 
-    fn assert_hard_link_count_if_supported(path: &Path, expected: u64, message: &str) {
+    fn assert_hard_link_count(path: &Path, expected: u64, message: &str) {
         let file = fs::File::open(path).expect("published target must remain readable");
-        match hard_link_count(&file) {
-            Ok(actual) => assert_eq!(actual, expected, "{message}"),
-            Err(error) if error.kind() == ErrorKind::Unsupported => {}
-            Err(error) => panic!("failed to inspect published hard links: {error}"),
-        }
+        assert_eq!(
+            hard_link_count(&file).expect("supported platform must expose hard-link count"),
+            expected,
+            "{message}"
+        );
     }
 
     let root = temp_root("publication-cleanup-retry-identity-swap");
@@ -673,7 +673,7 @@ fn publication_cleanup_retry_preserves_a_same_name_file_replacement() {
     assert_eq!(fs::read(&warned_path).unwrap(), b"same-name retry decoy");
     assert_eq!(fs::read(&displaced).unwrap(), b"published bytes");
     assert_eq!(fs::read(&target).unwrap(), b"published bytes");
-    assert_hard_link_count_if_supported(
+    assert_hard_link_count(
         &target,
         2,
         "the committed target and displaced owned stage must both remain",
@@ -687,7 +687,7 @@ fn publication_cleanup_retry_preserves_a_same_name_file_replacement() {
     assert!(state.pending_artifact_cleanups.is_empty());
     assert!(!warned_path.exists());
     assert_eq!(fs::read(&target).unwrap(), b"published bytes");
-    assert_hard_link_count_if_supported(
+    assert_hard_link_count(
         &target,
         1,
         "successful retry must remove only the owned stage link",

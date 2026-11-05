@@ -1417,6 +1417,9 @@ pub(crate) struct DaemonServerConfig {
     pub(crate) capacity_observer:
         Arc<crate::infrastructure::capacity_observation::CapacityObserver>,
     invocation_service: Arc<dyn CanonicalInvocationService>,
+    /// The LSP service behind the daemon's LSP lane. It declares no
+    /// capability until a product service is composed here (#2171).
+    lsp_host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
     /// Overrides installed by tests and the contract harness. Production
     /// leaves every one of them empty; the fields exist unconditionally so
     /// the runtime reads one configuration whatever the build.
@@ -1449,6 +1452,7 @@ impl DaemonServerConfig {
             idle_grace,
             capacity_observer,
             invocation_service,
+            lsp_host: Arc::new(unica_daemon::lsp_lane::NoLspHost),
             invocation_clock: None,
             v5_epoch_clock: None,
             skip_v5_startup_reconciliation: false,
@@ -1470,6 +1474,15 @@ impl DaemonServerConfig {
         runtime: Arc<V5CanonicalInvocationRuntime>,
     ) -> Self {
         self.canonical_runtime = Some(runtime);
+        self
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_lsp_host_for_test(
+        mut self,
+        host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
+    ) -> Self {
+        self.lsp_host = host;
         self
     }
 
@@ -1623,6 +1636,7 @@ impl DaemonServerConfig {
             idle_grace: self.idle_grace,
             runtime,
             observation: CapacityObservation(self.capacity_observer),
+            lsp: self.lsp_host,
         }
     }
 }
@@ -4211,6 +4225,23 @@ pub(crate) mod actor_capacity_tests {
             Self::over(canonical, service)
         }
 
+        /// The same live daemon with an LSP service the test controls.
+        pub(crate) fn start_with_lsp_host(
+            service: Arc<dyn CanonicalInvocationService>,
+            lsp_host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
+        ) -> Self {
+            let canonical = Arc::new(V5CanonicalInvocationRuntime::new(
+                Arc::clone(&service),
+                Arc::new(TokioClock),
+            ));
+            Self::over_configured(
+                canonical,
+                service,
+                Some(Arc::new(AtomicBool::new(false))),
+                Some(lsp_host),
+            )
+        }
+
         fn over(
             canonical: Arc<V5CanonicalInvocationRuntime>,
             service: Arc<dyn CanonicalInvocationService>,
@@ -4223,15 +4254,27 @@ pub(crate) mod actor_capacity_tests {
             service: Arc<dyn CanonicalInvocationService>,
             owned_stop: Option<Arc<AtomicBool>>,
         ) -> Self {
+            Self::over_configured(canonical, service, owned_stop, None)
+        }
+
+        fn over_configured(
+            canonical: Arc<V5CanonicalInvocationRuntime>,
+            service: Arc<dyn CanonicalInvocationService>,
+            owned_stop: Option<Arc<AtomicBool>>,
+            lsp_host: Option<Arc<dyn unica_daemon::lsp_lane::LspHost>>,
+        ) -> Self {
             let state = tempfile::tempdir().unwrap();
             let state_root = std::fs::canonicalize(state.path()).unwrap();
-            let config = DaemonServerConfig::new(
+            let mut config = DaemonServerConfig::new(
                 state_root.clone(),
                 CoreIdentity::production_v5(),
                 LIVE_V5_IDLE_GRACE,
             )
             .with_invocation_service(service)
             .with_canonical_runtime_for_test(Arc::clone(&canonical));
+            if let Some(lsp_host) = lsp_host {
+                config = config.with_lsp_host_for_test(lsp_host);
+            }
             let thread = Self::spawn(config, owned_stop.clone());
             Self {
                 _state: state,
@@ -5497,6 +5540,29 @@ fn main() {
     }
 
     #[test]
+    fn canonical_view_bootstrap_does_not_claim_source_sets_in_an_empty_configuration() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(
+            workspace.path().join("v8project.yaml"),
+            "format: DESIGNER\n",
+        )
+        .unwrap();
+        let runtime = bootstrap_runtime();
+
+        let result = submit_bootstrap(&runtime, workspace.path(), serde_json::json!({}));
+
+        assert!(result.ok, "{result:?}");
+        assert_eq!(
+            result.summary,
+            "workspace configuration discovered; no source sets are attached and no infobase target is configured"
+        );
+        let data = result.data.as_ref().expect("bootstrap data");
+        assert_eq!(data["config"]["state"], "configured");
+        assert_eq!(data["sourceSets"], serde_json::json!([]));
+        assert_eq!(data["infobase"]["configured"], false);
+    }
+
+    #[test]
     fn canonical_view_bootstrap_recognizes_an_infobase_only_workspace() {
         let workspace = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -6359,12 +6425,20 @@ fn main() {
                 serde_json::json!({"at": at}),
             )
         };
-        let packages = view("main:Configuration").data.unwrap()["branches"][0]["at"]
-            .as_str()
+        // Ветвь и пакет выбираются по виду и имени: корень перечисляет и
+        // пустые виды (#2153), а коллекция идёт в порядке `ChildObjects`.
+        let packages = "main:XDTOPackage".to_owned();
+        assert!(view("main:Configuration").data.unwrap()["branches"]
+            .as_array()
             .unwrap()
-            .to_owned();
-        let node = view(&packages).data.unwrap()["items"][3]["at"]
-            .as_str()
+            .iter()
+            .any(|branch| branch["at"] == packages.as_str()));
+        let node = view(&packages).data.unwrap()["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["title"] == "Unsupported")
+            .and_then(|item| item["at"].as_str())
             .unwrap()
             .to_owned();
         let node_page = call(serde_json::json!({"at": node, "limit": 1}));
@@ -13327,14 +13401,14 @@ struct ActorLogicalReadLease {"#,
             assert!(viewed.ok, "{viewed:?}");
             let props = &viewed.data.as_ref().unwrap()["props"];
             assert!(
-                props.get("Type").is_none(),
+                props.get("type").is_none(),
                 "type has one public projection: {props}"
             );
             assert!(
-                props["type"].is_object(),
+                props["Type"].is_object(),
                 "type is nested JSON, not a string: {props}"
             );
-            props["type"].clone()
+            props["Type"].clone()
         };
         let assert_xml_type = |expected: &str| {
             let xml = std::fs::read_to_string(source.join("Constants/Enabled.xml")).unwrap();
@@ -14759,13 +14833,27 @@ struct ActorLogicalReadLease {"#,
         let helper = ask(None, "Помощник();", SymbolOperation::Definition);
         assert_eq!(helper["complete"], true);
         assert_eq!(helper["value"][0]["range"]["start"]["line"], 6);
+        // A procedure no other module sees is answered by the module alone.
         let references = ask(None, "Помощник();", SymbolOperation::References);
         assert_eq!(references["value"].as_array().unwrap().len(), 2);
+        assert_eq!(references["complete"], true);
+        // An exported one is looked for in other modules by the set's name
+        // index: built in the background, not ready on the first request.
+        let export = ask(None, "Run()", SymbolOperation::References);
+        assert_eq!(export["value"].as_array().unwrap().len(), 1);
         assert_eq!(
-            references["reasons"],
-            serde_json::json!([{"kind": "otherModules"}]),
-            "places in other modules are not answered by an editor request"
+            export["reasons"],
+            serde_json::json!([{"kind": "namesNotIndexed"}]),
         );
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let export = loop {
+            let answer = ask(None, "Run()", SymbolOperation::References);
+            if answer["complete"] == true || std::time::Instant::now() > deadline {
+                break answer;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        assert_eq!(export["complete"], true, "{export}");
         assert!(stub.0.lock().unwrap().is_empty(), "Unica answered alone");
 
         let external = ask(None, "Метод", SymbolOperation::Definition);
@@ -15660,6 +15748,22 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     pub(crate) fn logical_reads_run_without_deadline_tree_scans_or_mutation_lane_wait() {
+        assert_logical_read_admission(false);
+    }
+
+    #[test]
+    fn logical_read_admission_rejects_replaced_retained_root() {
+        if !unica_workspace::test_support::supports_retained_root_replacement_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform prevents replacement of a retained source root",
+            );
+            return;
+        }
+        assert_logical_read_admission(true);
+    }
+
+    fn assert_logical_read_admission(replace_retained_root: bool) {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         let sibling = workspace.path().join("dep");
@@ -16004,7 +16108,7 @@ struct ActorLogicalReadLease {"#,
             .unwrap();
         assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "cancelled");
-        if unica_workspace::test_support::supports_retained_root_replacement_test() {
+        if replace_retained_root {
             let remapped_execution = layout_execution();
             assert!(remapped_execution.layout_read_source("main").is_ok());
             std::fs::rename(&source, workspace.path().join("retained-src")).unwrap();

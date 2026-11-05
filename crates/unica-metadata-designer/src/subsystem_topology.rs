@@ -450,6 +450,12 @@ fn parse_content_reference(
     if let Ok(uuid) = Uuid::parse_str(raw) {
         return Ok(ContentReference::Uuid(uuid));
     }
+    // A nested subsystem in the content is written by its full platform path.
+    if let Some(path) = raw.strip_prefix("Subsystem.") {
+        if let Ok(address) = SubsystemAddress::from_names(path.split(".Subsystem.")) {
+            return Ok(ContentReference::Subsystem(address));
+        }
+    }
     Err(SubsystemTopologyError::new(format!(
         "registered subsystem `{logical_path}` has an invalid Content reference `{raw}`"
     )))

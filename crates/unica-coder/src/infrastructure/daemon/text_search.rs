@@ -24,26 +24,296 @@
 
 use super::super::super::v13_read_modes::SearchMatcher;
 use super::{
-    read_search_line_bounded, ActorReadSourceCapability, SearchHitOwners,
-    CANONICAL_SEARCH_MAX_DEPTH, CANONICAL_SEARCH_MAX_LINE_BYTES,
-    CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS,
+    read_search_line_bounded, ActorReadSourceCapability, CANONICAL_SEARCH_MAX_DEPTH,
+    CANONICAL_SEARCH_MAX_LINE_BYTES, CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS,
 };
+use crate::application::v13::view::ViewReadAuthority;
 use crate::infrastructure::event_sources::module_address_for_relative;
+use crate::infrastructure::v13_large_configuration::{RegistrationCache, RegistrationIndex};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use unica_adapter_lexical::lines::{
     holds_foreign_work_tree, inside_work_tree, stream_candidate_lines, CandidateCorpus,
     CandidateEnd, CandidatePattern,
 };
+use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_execution_contract::view_error::ViewError;
 use unica_navigation::result_store::SearchResume;
 use unica_process::runner::system_process_runner;
 use unica_process::StreamControl;
 use unica_refusal::RefusalCode;
 use unica_source_contract::read::{SourceDirectory, SourceEntry};
+use unica_source_contract::SourceSetKind;
 use unica_work_control::cancellation::CancellationToken;
+
+/// Invocation-local placement evidence. This value is not a read capability;
+/// the actor's retained source and its reader still own every observation.
+#[derive(Debug)]
+pub(in crate::infrastructure::daemon) struct ExternalSearchBinding {
+    pub binding: unica_source_designer::external_artifact::ExternalArtifactBinding,
+    pub stamp: unica_source_contract::read::FileStamp,
+}
+
+impl Clone for ExternalSearchBinding {
+    fn clone(&self) -> Self {
+        Self {
+            binding: self.binding.clone(),
+            stamp: self.stamp,
+        }
+    }
+}
+
+impl ExternalSearchBinding {
+    pub(in crate::infrastructure::daemon) fn validate(
+        &self,
+        source: &ActorReadSourceCapability,
+    ) -> Result<(), ViewError> {
+        let stamp = source
+            .retained_root()
+            .open_relative_regular_nofollow(self.binding.descriptor())
+            .and_then(|file| file.stamp())
+            .map_err(|error| ViewError::new(RefusalCode::ConcurrentChange, error.to_string()))?;
+        if stamp != self.stamp {
+            return Err(ViewError::new(
+                RefusalCode::ConcurrentChange,
+                "external owner descriptor changed during search",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Proves that the owner of a module address derived from a hit path is
+/// registered in this source set, so a hit names only a module `view` admits.
+/// Configuration and extension owners are checked against the source set's own
+/// `Configuration.xml` registrations, read once per revision through the
+/// retained root and shared with `view` by the registration cache; each owner
+/// is decided once per scan. An extension object that is neither its own nor
+/// borrowed is not registered there and stays unproven.
+pub(in crate::infrastructure::daemon) struct SearchHitOwners<'a> {
+    root: Arc<SourceDirectory>,
+    source_kind: SourceSetKind,
+    // The issuer supplies the retained root/kind/cache for one traversal.
+    // Collector supplies that same source borrow to each external proof.
+    external: std::collections::BTreeMap<std::path::PathBuf, ExternalSearchBinding>,
+    // Logical-address admission must also establish unique external names.
+    // One shared inventory per source scan (including a fallback scan), never
+    // one inventory per physical hit. Errors cannot publish a valid prefix.
+    external_inventory: Option<
+        Result<unica_source_designer::external_artifact::ExternalArtifactInventory, ViewError>,
+    >,
+    cache: &'a RegistrationCache,
+    index: Option<Option<Arc<RegistrationIndex>>>,
+    owners: std::collections::BTreeMap<(&'static str, String), bool>,
+}
+
+impl<'a> SearchHitOwners<'a> {
+    pub(super) fn new(
+        root: Arc<SourceDirectory>,
+        source_kind: SourceSetKind,
+        cache: &'a RegistrationCache,
+    ) -> Self {
+        Self {
+            root,
+            source_kind,
+            cache,
+            index: None,
+            owners: std::collections::BTreeMap::new(),
+            external: std::collections::BTreeMap::new(),
+            external_inventory: None,
+        }
+    }
+
+    /// Reuse the point locator's owner/child-registration proof. No full name
+    /// directory or second XML-name resolver is built by text search.
+    fn external_module(
+        &mut self,
+        source: &ActorReadSourceCapability,
+        relative: &std::path::Path,
+        admitted: Option<&unica_source_designer::external_artifact::ExternalArtifactBinding>,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<ExternalSearchBinding>, ViewError> {
+        use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
+        use unica_source_designer::external_artifact::ExternalArtifactBinding;
+        // Check the helper's physical context before any cached observation.
+        // The existing Collector/factory/publication chain owns actor identity.
+        if self.root.identity() != source.retained_root().identity()
+            || self.source_kind != source.source_kind()
+        {
+            return Err(ViewError::new(
+                RefusalCode::ConcurrentChange,
+                "search owner proof belongs to a different source context",
+            ));
+        }
+        if admitted.is_some_and(|binding| binding.logical_path(relative).is_none()) {
+            return Ok(None);
+        }
+        let layout = [LayoutFindSource::new(
+            source.source_set_name(),
+            self.source_kind,
+            &self.root,
+        )];
+        let entry = WorkspaceFindDirectoryBuilder::default()
+            .locate_path(
+                &layout,
+                &relative.to_string_lossy(),
+                source.deadline(),
+                cancellation,
+            )
+            .map_err(|error| match error.detail() {
+                Some(detail) => ViewError::detailed(detail, error.to_string()),
+                None => ViewError::new(error.code(), error.to_string()),
+            })?;
+        let Some(entry) = entry.filter(|entry| entry.kind() == "Module") else {
+            return Ok(None);
+        };
+        let at = QualifiedAddress::parse(entry.at())
+            .map_err(|error| ViewError::new(RefusalCode::InvalidSource, error.to_string()))?;
+        let Some(name) = at.segments().first().and_then(|part| part.name()) else {
+            return Ok(None);
+        };
+        let Some(descriptor) = entry.owner_descriptor() else {
+            return Ok(None);
+        };
+        let binding =
+            ExternalArtifactBinding::new(self.source_kind, name, std::path::Path::new(descriptor))
+                .map_err(|error| ViewError::new(RefusalCode::InvalidSource, error))?;
+        if admitted.is_some_and(|admitted| *admitted != binding) {
+            return Err(ViewError::new(
+                RefusalCode::ConcurrentChange,
+                "external search placement changed after admission",
+            ));
+        }
+        if admitted.is_none() {
+            let mut checkpoint = || {
+                if cancellation.is_cancelled() {
+                    Err(ViewError::new(
+                        RefusalCode::Cancelled,
+                        "external owner admission was cancelled",
+                    ))
+                } else if source.deadline().is_elapsed() {
+                    Err(ViewError::new(
+                        RefusalCode::DeadlineExceeded,
+                        "external owner admission deadline elapsed",
+                    ))
+                } else {
+                    Ok(())
+                }
+            };
+            checkpoint()?;
+            if self.external_inventory.is_none() {
+                self.external_inventory = Some(
+                    crate::infrastructure::external_artifact_inventory::read_inventory(
+                        &self.root,
+                        self.source_kind,
+                        &mut checkpoint,
+                    ),
+                );
+            }
+            checkpoint()?;
+            let inventory = self
+                .external_inventory
+                .as_ref()
+                .expect("external inventory observed")
+                .as_ref()
+                .map_err(Clone::clone)?;
+            if inventory.get(name) != Some(&binding) {
+                return Err(ViewError::new(
+                    RefusalCode::ConcurrentChange,
+                    "external logical owner differs from its physical placement",
+                ));
+            }
+        }
+        if let Some(proved) = self.external.get(binding.descriptor()) {
+            if proved.binding != binding {
+                return Err(ViewError::new(
+                    RefusalCode::ConcurrentChange,
+                    "external owner identity changed during search",
+                ));
+            }
+            proved.validate(source)?;
+            return Ok(Some(proved.clone()));
+        }
+        let stamp = self
+            .root
+            .open_relative_regular_nofollow(binding.descriptor())
+            .and_then(|file| file.stamp())
+            .map_err(|error| ViewError::new(RefusalCode::InvalidSource, error.to_string()))?;
+        let authority = source
+            .logical_view_read_authority(cancellation)
+            .map_err(|error| ViewError::new(RefusalCode::InvalidSource, error))?
+            .with_external_point_binding(binding.clone());
+        let owner = at.prefix(1);
+        let snapshot = authority.snapshot(&owner)?;
+        authority.validate_search_scope_owner(&owner, &snapshot)?;
+        let proved = ExternalSearchBinding { binding, stamp };
+        proved.validate(source)?;
+        self.external
+            .insert(proved.binding.descriptor().to_path_buf(), proved.clone());
+        Ok(Some(proved))
+    }
+
+    /// `Err` only for cancellation or an elapsed deadline; an unreadable
+    /// registration source leaves the owner unproven instead.
+    fn proves(
+        &mut self,
+        at: &QualifiedAddress,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<bool, ViewError> {
+        let interrupted = |error: &ViewError| {
+            matches!(
+                error.code(),
+                RefusalCode::Cancelled | RefusalCode::DeadlineExceeded
+            )
+        };
+        let Some(owner) = at.segments().first() else {
+            return Ok(false);
+        };
+        let configuration = matches!(
+            self.source_kind,
+            SourceSetKind::Configuration | SourceSetKind::Extension
+        );
+        // Application modules belong to the admitted Configuration itself.
+        if owner.kind() == NodeKind::Module {
+            return Ok(configuration);
+        }
+        let Some(name) = owner.name() else {
+            return Ok(false);
+        };
+        let key = (owner.kind().as_str(), name.to_owned());
+        if let Some(proved) = self.owners.get(&key) {
+            return Ok(*proved);
+        }
+        checkpoint()?;
+        let proved = if configuration {
+            if self.index.is_none() {
+                let built = self.cache.registrations(&self.root, checkpoint);
+                self.index = Some(match built {
+                    Ok(index) => Some(index),
+                    Err(error) if interrupted(&error) => return Err(error),
+                    Err(_) => None,
+                });
+            }
+            match self.index.as_ref().and_then(Option::as_ref) {
+                Some(index) => match index.contains(owner.kind().as_str(), name, checkpoint) {
+                    Ok(contains) => contains,
+                    Err(error) if interrupted(&error) => return Err(error),
+                    Err(_) => false,
+                },
+                None => false,
+            }
+        } else {
+            // External paths require the shared typed binding and point proof;
+            // a file named after the logical owner is not authority.
+            false
+        };
+        self.owners.insert(key, proved);
+        Ok(proved)
+    }
+}
 
 /// The share of the caller's remaining response budget one walk page may
 /// spend before it ends and hands the rest to its cursor.
@@ -209,6 +479,8 @@ pub(in crate::infrastructure::daemon) struct TextSource<'a> {
     pub(in crate::infrastructure::daemon) scope: String,
     /// Retained-relative subtree to read; `None` reads the whole root.
     pub(in crate::infrastructure::daemon) prefix: Option<String>,
+    pub(in crate::infrastructure::daemon) external_binding:
+        Option<unica_source_designer::external_artifact::ExternalArtifactBinding>,
     /// Retained-relative roots of nested source sets, read by their owner.
     pub(in crate::infrastructure::daemon) excluded: Vec<String>,
 }
@@ -355,12 +627,14 @@ impl TextTotals {
 /// The proven module of a file and the kind of its owner.
 #[derive(Debug, Clone)]
 struct ModuleOf {
+    external_binding: Option<ExternalSearchBinding>,
     at: String,
     kind: &'static str,
 }
 
 /// A collected match and the continuation right after it.
 pub(in crate::infrastructure::daemon) struct TextHit {
+    pub(in crate::infrastructure::daemon) external_binding: Option<ExternalSearchBinding>,
     pub(in crate::infrastructure::daemon) value: Value,
     pub(in crate::infrastructure::daemon) source_set: String,
     pub(in crate::infrastructure::daemon) next: (TextContinuation, String),
@@ -948,6 +1222,7 @@ struct Collector<'a> {
     scope: String,
     source: Option<&'a ActorReadSourceCapability>,
     owners: Option<SearchHitOwners<'a>>,
+    external_binding: Option<unica_source_designer::external_artifact::ExternalArtifactBinding>,
     // The traversal.
     current: Option<CurrentFile>,
     passed_digest: Option<String>,
@@ -992,6 +1267,7 @@ impl<'a> Collector<'a> {
             scope: String::new(),
             source: None,
             owners: None,
+            external_binding: None,
             current: None,
             passed_digest: match &request.continuation {
                 TextContinuation::Start => Some(String::new()),
@@ -1020,6 +1296,7 @@ impl<'a> Collector<'a> {
         self.scope = source.scope.clone();
         self.source = Some(source.source);
         self.owners = Some(source.source.search_hit_owners());
+        self.external_binding = source.external_binding.clone();
     }
 
     fn leave_file(&mut self) {
@@ -1045,7 +1322,39 @@ impl<'a> Collector<'a> {
         }) {
             return FileStep::Skip;
         }
-        let identity = digest(&[self.source_set.as_bytes(), path.as_bytes()]);
+        let physical_identity = digest(&[self.source_set.as_bytes(), path.as_bytes()]);
+        let source = self.source.expect("source entered");
+        let external_module = if matches!(
+            source.source_kind(),
+            unica_source_contract::SourceSetKind::ExternalProcessor
+                | unica_source_contract::SourceSetKind::ExternalReport
+        ) {
+            match self.external_module_of(relative) {
+                Ok(module) => Some(module),
+                Err(error) => {
+                    self.fatal = Some(error);
+                    return FileStep::Stop;
+                }
+            }
+        } else {
+            None
+        };
+        // Continuations retain their physical file. The proof of its logical
+        // owner must also survive, even when the module bytes are unchanged.
+        let identity = match external_module
+            .as_ref()
+            .and_then(|module| module.as_ref().ok())
+            .and_then(|module| module.external_binding.as_ref())
+        {
+            Some(proof) => digest(&[
+                &physical_identity,
+                proof.binding.kind().as_bytes(),
+                proof.binding.name().as_bytes(),
+                proof.binding.descriptor().as_os_str().as_encoded_bytes(),
+                format!("{:?}", proof.stamp).as_bytes(),
+            ]),
+            None => physical_identity,
+        };
         let key = resume_key(&self.source_set, &path);
         let mut passing = 0;
         if let TextContinuation::Resume(resume) = &self.request.continuation {
@@ -1081,10 +1390,10 @@ impl<'a> Collector<'a> {
         self.files_read += 1;
         let mut current = CurrentFile {
             key,
-            file_id: format!("bsl-{}", &hex(&identity)[..16]),
+            file_id: format!("bsl-{}", &hex(&physical_identity)[..16]),
             identity,
             relative: relative.to_path_buf(),
-            module: None,
+            module: external_module,
             matches: 0,
             chain: [0; 32],
             passing,
@@ -1144,6 +1453,7 @@ impl<'a> Collector<'a> {
                         .map_err(TextSearchError::Interrupted)?
                     {
                         Ok(ModuleOf {
+                            external_binding: None,
                             at: at.to_string(),
                             // The configuration's own modules belong to it.
                             kind: match at.segments()[0].kind() {
@@ -1159,6 +1469,59 @@ impl<'a> Collector<'a> {
         };
         current.module = Some(mapped.clone());
         Ok(mapped)
+    }
+
+    fn external_module_of(
+        &mut self,
+        relative: &Path,
+    ) -> Result<Result<ModuleOf, &'static str>, TextSearchError> {
+        let source = self.source.expect("source entered");
+        let proved = self
+            .owners
+            .as_mut()
+            .expect("source entered")
+            .external_module(
+                source,
+                relative,
+                self.external_binding.as_ref(),
+                self.cancellation,
+            );
+        let proof = match proved {
+            Ok(Some(proof)) => proof,
+            Ok(None) => return Ok(Err("outside_module_layout")),
+            Err(error)
+                if matches!(
+                    error.code(),
+                    RefusalCode::Cancelled
+                        | RefusalCode::DeadlineExceeded
+                        | RefusalCode::ConcurrentChange
+                ) =>
+            {
+                return Err(TextSearchError::Interrupted(error))
+            }
+            Err(_) => return Ok(Err("owner_unproven")),
+        };
+        let Some(logical) = proof.binding.logical_path(relative) else {
+            return Ok(Err("outside_module_layout"));
+        };
+        let Some(profile) =
+            crate::domain::source_capabilities::bsl_profile_for_source(source.source_profile())
+        else {
+            return Ok(Err("unsupported_source_profile"));
+        };
+        let Some(at) = module_address_for_relative(
+            source.source_set_name(),
+            source.source_kind(),
+            profile,
+            &logical,
+        ) else {
+            return Ok(Err("outside_module_layout"));
+        };
+        Ok(Ok(ModuleOf {
+            kind: at.segments()[0].kind().as_str(),
+            at: at.to_string(),
+            external_binding: Some(proof),
+        }))
     }
 
     /// Leaves the current file uncovered once and stops reading it.
@@ -1308,6 +1671,10 @@ impl<'a> Collector<'a> {
                 Self::walk_digest(&current.identity, &current.chain),
             );
             self.hits.push(TextHit {
+                external_binding: module
+                    .as_ref()
+                    .ok()
+                    .and_then(|module| module.external_binding.clone()),
                 value,
                 source_set: self.source_set.clone(),
                 next,
@@ -1342,5 +1709,95 @@ impl<'a> Collector<'a> {
             details: self.details,
             totals: self.totals,
         }
+    }
+}
+
+#[cfg(test)]
+mod proof_context_tests {
+    use super::*;
+    use unica_source_contract::{SourceFormat, SourceProfile};
+    use unica_work_control::provider_deadline::ProviderDeadline;
+    use unica_workspace::actor::WorkspaceSourceSetInput;
+
+    fn external_source() -> (tempfile::TempDir, ActorReadSourceCapability) {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path().join("src");
+        std::fs::create_dir_all(root.join("report-source/Ext")).unwrap();
+        std::fs::write(
+            root.join("report-source.xml"),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/fixtures/acceptance/workspace-external-alias/erf/report-source.xml"
+            )),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("report-source/Ext/ObjectModule.bsl"),
+            "Функция Probe() Экспорт\nВозврат 1;\nКонецФункции\n",
+        )
+        .unwrap();
+        let context = crate::infrastructure::workspace::discover_workspace(Some(
+            workspace.path().to_path_buf(),
+        ))
+        .unwrap();
+        let actor = crate::infrastructure::source_workspace::actor_registry()
+            .get_or_create(
+                &context,
+                [WorkspaceSourceSetInput::new(
+                    "main",
+                    &root,
+                    SourceSetKind::ExternalReport,
+                    SourceFormat::PlatformXml,
+                    SourceProfile::platform_xml_8_3_27_format_2_20(),
+                )],
+                "canonical-v0.13",
+            )
+            .unwrap();
+        let binding = actor.bind_provider_root("main", &root).unwrap();
+        let identity = format!(
+            "{}:{}",
+            actor.safe_identity_hash().unwrap().as_str(),
+            binding.source_set_name()
+        );
+        let source = super::super::actor_read_source_capability_for_test(
+            binding,
+            identity,
+            ProviderDeadline::no_deadline(),
+        );
+        (workspace, source)
+    }
+
+    #[test]
+    fn external_owner_proof_rejects_changed_root_and_kind_before_cached_placement() {
+        let (_workspace, source) = external_source();
+        let (_foreign_workspace, foreign) = external_source();
+        let relative = Path::new("report-source/Ext/ObjectModule.bsl");
+        let cancellation = CancellationToken::new();
+        let mut owners = source.search_hit_owners();
+        for _ in 0..2 {
+            assert!(owners
+                .external_module(&source, relative, None, &cancellation)
+                .unwrap()
+                .is_some());
+        }
+        // A helper reused with another root must not publish its earlier
+        // cached placement, even when both descriptors have the same name.
+        let original_root = Arc::clone(&owners.root);
+        owners.root = foreign.retained_root();
+        let error = owners
+            .external_module(&source, relative, None, &cancellation)
+            .unwrap_err();
+        assert_eq!(error.code(), RefusalCode::ConcurrentChange);
+        owners.root = original_root;
+        owners.source_kind = SourceSetKind::ExternalProcessor;
+        let error = owners
+            .external_module(&source, relative, None, &cancellation)
+            .unwrap_err();
+        assert_eq!(error.code(), RefusalCode::ConcurrentChange);
+        owners.source_kind = SourceSetKind::ExternalReport;
+        assert!(owners
+            .external_module(&source, relative, None, &cancellation)
+            .unwrap()
+            .is_some());
     }
 }

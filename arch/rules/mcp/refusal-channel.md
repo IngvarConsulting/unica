@@ -7,15 +7,20 @@ check:
   - crates/unica-execution-contract/src/invocation.rs::refusal_envelope::the_six_outcomes_are_spelled_as_published_on_the_wire
   - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_refusals_answer_one_diagnostics_channel_from_the_closed_code_set
   - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_temporary_named_root_validation_failure
+  - crates/unica-execution-contract/src/source_text_budget.rs::refusal_diagnostics_fill_the_budget_and_count_the_rest
 ---
 
 # Отказ передаётся через diagnostics с закрытым кодом и исходом
 
 Канонический вызов передаёт отказ через `diagnostics`: первый элемент
 содержит закрытый код и непустое сообщение. Второго кода в `data.code`
-нет. Предметные условия отказа задают владельцы гарантий, в том числе
-[сохранённого плана apply](../workspace/apply-revision-fence.md) и
-[режима run](run-operation-names.md).
+нет. За первым элементом могут идти предметные диагностики отказа, если
+владелец гарантии называет их причиной: у каждой свой код, сообщение
+и место. Код и исход отказа они не меняют, решение принимается по первому
+элементу. Предметные условия отказа задают владельцы гарантий, в том числе
+[сохранённого плана apply](../workspace/apply-revision-fence.md),
+[режима run](run-operation-names.md) и
+[текста правки модуля](../workspace/sources/code-text-syntax-errors.md).
 
 Пустой результат и файловый сбой поиска различаются по
 [правилу диагностики поиска](../analysis/search-io-diagnostic.md).

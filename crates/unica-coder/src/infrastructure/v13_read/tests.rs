@@ -1,14 +1,25 @@
 mod catalog_attribute_properties;
 mod catalog_attribute_tooltip;
 mod catalog_tabular_properties;
+mod common_module_synonym;
 mod dcs_parameter_expression;
+mod defined_type_reference;
+mod external_artifact_alias;
 mod form;
+mod form_command_properties;
 mod form_conditional_appearance;
+mod form_item_bindings;
 mod form_support;
+mod interface_reference_kind;
 mod job_schedule;
 mod metadata;
 mod metadata_declaration_diagnostics;
+mod numerator_read_profile;
+mod session_parameter_comment;
+mod structured_property_names;
 mod support;
+mod task_addressing;
+mod wsreference_definition;
 mod xdto_missing_target;
 
 use support::*;
@@ -75,7 +86,7 @@ fn styleitem_font_border_values_reach_flat_public_props() {
         let result = fixture
             .view_service()
             .view(ViewRequest::new(&format!("main:StyleItem.{name}")).unwrap());
-        assert!(result.ok, "{result:?}");
+        assert!(result.ok, "the call failed");
         let props = &result.data.as_ref().unwrap()["props"];
         for (key, value) in expected.as_object().unwrap() {
             assert_eq!(&props[key], value, "{name}.{key}");
@@ -115,11 +126,11 @@ fn styleitem_preserves_absent_false_and_damaged_overrides_independently() {
         let result = fixture
             .view_service()
             .view(ViewRequest::new("main:StyleItem.AbsoluteFont").unwrap());
-        assert!(result.ok, "{result:?}");
+        assert!(result.ok, "the call failed");
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["props"]["fontHeight"], 16);
         assert_eq!(data["props"]["Type"], "Font");
-        assert!(data["props"]["synonym"].is_string());
+        assert!(data["props"]["Synonym"].is_string());
         assert_eq!(
             data["props"].get("fontItalic"),
             expected_flag.map(serde_json::Value::Bool).as_ref()
@@ -165,11 +176,11 @@ fn styleitem_value_type_is_namespace_aware_and_damage_preserves_identity() {
         let result = fixture
             .view_service()
             .view(ViewRequest::new("main:StyleItem.AbsoluteFont").unwrap());
-        assert!(result.ok, "{result:?}");
+        assert!(result.ok, "the call failed");
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["props"].get("fontHeight").is_some(), visible, "{data}");
         assert_eq!(data["props"]["kind"], "StyleItem");
-        assert!(data["props"]["synonym"].is_string());
+        assert!(data["props"]["Synonym"].is_string());
         if !visible {
             assert!(!data["limits"].as_array().unwrap().is_empty());
         }
@@ -2455,11 +2466,7 @@ fn xdto_anonymous_property_view_returns_recursive_addresses_and_bounds() {
     let root = "main:XDTOPackage.EnterpriseData_1_17_3.Type.NestedExample.Property.Rows";
     let read = |at: &str| {
         let result = service.view(ViewRequest::new(at).unwrap());
-        assert!(
-            result.ok,
-            "{at}: {} {:?}",
-            result.summary, result.diagnostics
-        );
+        assert!(result.ok, "{at}: the call failed");
         result.data.unwrap()
     };
     let rows = read(root);
@@ -2505,7 +2512,7 @@ fn xdto_object_view_follows_local_base_to_inherited_property_without_flattening(
     let service = fixture.view_service();
     let result = service
         .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.Наследник").unwrap());
-    assert!(result.ok, "{result:?}");
+    assert!(result.ok, "the call failed");
     let data = result.data.unwrap();
     let base = data["props"]["baseAt"]
         .as_str()
@@ -2514,13 +2521,13 @@ fn xdto_object_view_follows_local_base_to_inherited_property_without_flattening(
     let qname = data["props"]["base"].clone();
     assert_eq!(qname["local"], "Основа");
     let inherited = service.view(ViewRequest::new(&format!("{base}.Property.Код")).unwrap());
-    assert!(inherited.ok, "{inherited:?}");
+    assert!(inherited.ok, "the call failed");
     let props = inherited.data.unwrap();
     let type_info = props["props"]["type"].clone();
     assert_eq!(type_info["local"], "string");
     let missing = service
         .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.НетОсновы").unwrap());
-    assert!(missing.ok, "{missing:?}");
+    assert!(missing.ok, "the call failed");
     assert!(missing.data.unwrap()["props"].get("baseAt").is_none());
     assert_eq!(fs::read_to_string(package).unwrap(), xml);
 }
@@ -2543,7 +2550,7 @@ fn xdto_object_view_follows_dotted_local_base_address() {
     let service = fixture.view_service();
     let result = service
         .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.Наследник").unwrap());
-    assert!(result.ok, "{result:?}");
+    assert!(result.ok, "the call failed");
     let data = result.data.unwrap();
     let base = data["props"]["baseAt"]
         .as_str()
@@ -2555,13 +2562,13 @@ fn xdto_object_view_follows_dotted_local_base_address() {
     let qname = data["props"]["base"].clone();
     assert_eq!(qname["local"], "Base.WithDot");
     let inherited = service.view(ViewRequest::new(&format!("{base}.Property.Код")).unwrap());
-    assert!(inherited.ok, "{inherited:?}");
+    assert!(inherited.ok, "the call failed");
     let props = inherited.data.unwrap();
     let type_info = props["props"]["type"].clone();
     assert_eq!(type_info["local"], "string");
     let missing = service
         .view(ViewRequest::new("main:XDTOPackage.EnterpriseData_1_17_3.Type.НетОсновы").unwrap());
-    assert!(missing.ok, "{missing:?}");
+    assert!(missing.ok, "the call failed");
     assert!(missing.data.unwrap()["props"].get("baseAt").is_none());
     assert_eq!(fs::read_to_string(package).unwrap(), xml);
 }
@@ -2592,7 +2599,7 @@ fn xdto_property_view_preserves_type_identity_and_explicit_and_effective_bounds(
             "main:XDTOPackage.EnterpriseData_1_17_3.Type.ClusterAdministrationInfo.Property.{name}"
         );
         let result = service.view(ViewRequest::new(&at).unwrap());
-        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        assert!(result.ok, "the call failed");
         let data = result.data.unwrap();
         let props = &data["props"];
         let type_info = props["type"].clone();
@@ -2633,7 +2640,7 @@ fn xdto_property_view_names_facts_that_exceed_the_compact_limit() {
     let result = fixture.view_service().view(ViewRequest::new(
         "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента.Property.Идентификаторы"
     ).unwrap());
-    assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+    assert!(result.ok, "the call failed");
     let data = result.data.unwrap();
     assert!(data["props"]["type"].is_object());
     assert!(data["props"].get("bounds").is_none());
@@ -2641,7 +2648,7 @@ fn xdto_property_view_names_facts_that_exceed_the_compact_limit() {
         data["limits"].as_array().unwrap().iter().any(|limit| limit
             .as_str()
             .is_some_and(|text| text.contains("bounds") && text.contains("2048"))),
-        "{data}"
+        "unexpected answer"
     );
     assert_eq!(fs::read_to_string(package).unwrap(), xml);
 }
@@ -5671,8 +5678,17 @@ fn named_external_descriptor_and_owner_evidence_preserve_chunk_cancellation() {
 
 #[test]
 fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
-    for evidence_read in [false, true] {
+    for (evidence_read, has_neighbour) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
         let (_workspace, source) = external_leaf_fixture(SourceSetKind::ExternalProcessor);
+        if has_neighbour {
+            fs::write(
+                source.join("Existing.xml"),
+                external_leaf_descriptor("ExternalDataProcessor", "Existing", 0),
+            )
+            .unwrap();
+        }
         let reader = external_leaf_read(&source, SourceSetKind::ExternalProcessor);
         let target = MetadataAddress::parse(
             PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -5692,10 +5708,22 @@ fn named_external_descriptor_distinguishes_missing_from_unreadable_source() {
         assert_eq!(missing.detail(), None);
         assert_eq!(
             missing.to_string(),
-            "metadata descriptor `Missing.xml` is absent"
+            "external owner `ExternalDataProcessor.Missing` is not registered"
         );
         assert_eq!(reader.metadata_descriptor_read_count(target.as_str()), 1);
 
+        // A successful positive lookup must not turn a later missing-name
+        // lookup into a cached proof of absence.
+        if has_neighbour {
+            let existing = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                "ExternalDataProcessor.Existing",
+            )
+            .unwrap();
+            reader
+                .external_metadata_payload(&existing, &mut || Ok(()))
+                .unwrap();
+        }
         fs::create_dir(source.join("Missing.xml")).unwrap();
         let unreadable = if evidence_read {
             reader
@@ -6677,7 +6705,7 @@ fn canonical_subsystem_check_validates_the_child_and_rejects_wrong_identity() {
         checked,
     )
     .unwrap();
-    assert!(checked.ok(), "{:?}", checked.diagnostics());
+    assert!(checked.ok(), "the call failed");
     fs::write(&path, original.replace("Orders", "Other")).unwrap();
     assert_eq!(
         fixture
@@ -6854,7 +6882,7 @@ fn tabular_sections_expose_source_standard_attributes_without_losing_applied_att
     let detail_at = standard[0]["at"].as_str().unwrap();
     assert_eq!(detail_at, format!("{at}.StandardAttribute.LineNumber"));
     let detail = service.view(ViewRequest::new(detail_at).unwrap());
-    assert!(detail.ok, "{detail:?}");
+    assert!(detail.ok, "the call failed");
     let data = detail.data.unwrap();
     assert_eq!(data["kind"], "StandardAttribute");
     // Пустые наблюдения (`empty`, `nil`, многоязычная строка без переводов)
@@ -6965,7 +6993,7 @@ fn tabular_standard_attribute_damage_is_local_and_not_an_empty_observation() {
         for name in ["Rows", "Healthy"] {
             let at = format!("main:Catalog.Items.TabularSection.{name}");
             let section = service.view(ViewRequest::new(&at).unwrap());
-            assert!(section.ok, "{variant} {name}: {section:?}");
+            assert!(section.ok, "{variant} {name}: the call failed");
             let data = section.data.as_ref().unwrap();
             let is_damaged = damaged && name == "Rows";
             assert_eq!(
@@ -6995,12 +7023,12 @@ fn tabular_standard_attribute_damage_is_local_and_not_an_empty_observation() {
             if name == "Healthy" || variant == "no-properties" {
                 let items = view_items(&collection);
                 assert_eq!(items.len(), 1);
-                assert!(detail.ok, "{variant}: {detail:?}");
+                assert!(detail.ok, "{variant}: the call failed");
                 assert_eq!(detail.data.as_ref().unwrap()["kind"], "StandardAttribute");
                 if variant == "no-properties" && name == "Rows" {
                     assert!(
                         detail.data.as_ref().unwrap().get("props").is_none(),
-                        "missing properties must not be invented: {detail:?}"
+                        "missing properties must not be invented"
                     );
                 }
             } else if variant == "empty" {
@@ -7011,7 +7039,10 @@ fn tabular_standard_attribute_damage_is_local_and_not_an_empty_observation() {
                 assert_eq!(detail.diagnostics[0]["code"], "not_found");
             } else {
                 for refused in [&collection, &detail] {
-                    assert!(!refused.ok, "{variant}: {refused:?}");
+                    assert!(
+                        !refused.ok,
+                        "{variant}: the call was expected to be refused"
+                    );
                     assert_eq!(refused.diagnostics[0]["detailCode"], "source_unreadable");
                     assert!(refused.diagnostics[0]["message"]
                         .as_str()
@@ -7047,7 +7078,7 @@ fn tabular_standard_attributes_preserve_profiled_member_facts_and_independent_li
         let service = fixture.view_service();
         let at = "main:Catalog.Items.TabularSection.Rows";
         let section = service.view(ViewRequest::new(at).unwrap());
-        assert!(section.ok, "{section:?}");
+        assert!(section.ok, "the call failed");
         let data = section.data.as_ref().unwrap();
         assert_eq!(data["props"]["LineNumberLength"], 5);
         if damaged_member {
@@ -7071,10 +7102,10 @@ fn tabular_standard_attributes_preserve_profiled_member_facts_and_independent_li
         let standard =
             service.view(ViewRequest::new(&format!("{at}.StandardAttribute.LineNumber")).unwrap());
         if damaged_standard {
-            assert!(!standard.ok, "{standard:?}");
+            assert!(!standard.ok, "the call was expected to be refused");
             assert_eq!(standard.diagnostics[0]["detailCode"], "source_unreadable");
         } else {
-            assert!(standard.ok, "{standard:?}");
+            assert!(standard.ok, "the call failed");
             assert_eq!(
                 standard.data.as_ref().unwrap()["props"]
                     .as_object()
@@ -7085,7 +7116,7 @@ fn tabular_standard_attributes_preserve_profiled_member_facts_and_independent_li
         }
         let healthy_at = "main:Catalog.Items.TabularSection.Healthy";
         let healthy = service.view(ViewRequest::new(healthy_at).unwrap());
-        assert!(healthy.ok, "{healthy:?}");
+        assert!(healthy.ok, "the call failed");
         let healthy_limits = healthy.data.as_ref().unwrap()["limits"].to_string();
         assert!(!healthy_limits.contains(".properties.Use"));
         assert!(!healthy_limits.contains(".standardAttributes"));
@@ -7208,7 +7239,7 @@ fn xdto_check_rejects_unreadable_sources_and_keeps_inherited_packages_opaque() {
         let result = fixture.read_authority().check_xdto(&at);
         assert!(
             result.is_err(),
-            "parse failures are not unsupported-node warnings: {result:?}"
+            "parse failures are not unsupported-node warnings"
         );
     }
     fs::write(&path, &body).unwrap();
@@ -7309,12 +7340,12 @@ fn subsystem_text_properties_preserve_presence_and_damage_at_every_depth() {
         for (path, at) in paths.into_iter().zip(["main:Subsystem.Sales", "main:Subsystem.Sales.Subsystem.Orders"]) {
             let before = fs::read(fixture.source.join(path)).unwrap();
             let result = service.view(ViewRequest::new(at).unwrap());
-            assert!(result.ok, "{fragment}: {result:?}");
+            assert!(result.ok, "{fragment}: the call failed");
             let data = result.data.as_ref().unwrap();
-            assert_eq!(data["props"]["comment"], json!(comment), "{at}: {fragment}");
-            assert_eq!(data["props"]["explanation"], json!(explanation), "{at}: {fragment}");
+            assert_eq!(data["props"]["Comment"], json!(comment), "{at}: {fragment}");
+            assert_eq!(data["props"]["Explanation"], json!(explanation), "{at}: {fragment}");
             let limits = data["limits"].to_string();
-            assert_eq!(limits.contains("properties."), damaged, "{at}: {fragment}: {limits}");
+            assert_eq!(limits.contains("properties."), damaged, "{at}: {fragment}: unexpected answer");
             for branch in ["Relation", "Subsystem", "Interface"] {
                 assert_eq!(view_branch_count(&result, &format!("{at}.{branch}")), Some(1), "{at}: {fragment}");
                 assert!(service.view(ViewRequest::new(&format!("{at}.{branch}")).unwrap()).ok);
@@ -7361,9 +7392,12 @@ fn common_template_empty_synonyms_have_no_value_like_other_metadata() {
         let result = fixture
             .view_service()
             .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
-        assert!(result.ok, "{synonym:?}: {result:?}");
+        assert!(result.ok, "{synonym:?}: the call failed");
         let data = result.data.unwrap();
-        assert!(data["props"]["synonym"].is_null(), "{synonym:?}: {data}");
+        assert!(
+            data["props"]["Synonym"].is_null(),
+            "an empty synonym publishes no Synonym value"
+        );
         assert_eq!(data["props"]["format"], "SpreadsheetDocument");
     }
 }
@@ -7387,14 +7421,17 @@ fn common_template_damaged_synonym_keeps_independent_template_facts() {
         write(&descriptor, &xml);
         let service = fixture.view_service();
         let result = service.view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
-        assert!(result.ok, "{synonym}: {result:?}");
+        assert!(result.ok, "{synonym}: the call failed");
         let data = result.data.unwrap();
         assert_eq!(data["title"], "Print");
-        assert!(data["props"]["synonym"].is_null(), "{synonym}: {data}");
+        assert!(
+            data["props"]["Synonym"].is_null(),
+            "a damaged synonym publishes no Synonym value"
+        );
         assert_eq!(data["props"]["format"], "SpreadsheetDocument");
         assert!(
             data["limits"].to_string().contains("properties.Synonym"),
-            "{synonym}: {data}"
+            "{synonym}: unexpected answer"
         );
         assert!(
             service
@@ -7412,22 +7449,22 @@ fn common_template_exposes_mxl_areas_body_and_parameters_through_public_view() {
     let service = fixture.view_service();
     let at = "main:CommonTemplate.Print";
     let template = service.view(ViewRequest::new(at).unwrap());
-    assert!(template.ok, "{template:?}");
+    assert!(template.ok, "the call failed");
     let data = template.data.unwrap();
     assert_eq!(data["props"]["format"], "SpreadsheetDocument");
-    assert_eq!(data["props"]["synonym"], "Общий Print");
+    assert_eq!(data["props"]["Synonym"], "Общий Print");
     assert!(data["branches"]
         .as_array()
         .unwrap()
         .contains(&json!({"at":format!("{at}.Area"),"count":2})));
     let area = service.view(ViewRequest::new(&format!("{at}.Area.A")).unwrap());
-    assert!(area.ok, "{area:?}");
+    assert!(area.ok, "the call failed");
     let body = service.view(ViewRequest::new(&format!("{at}.Area.A.Body")).unwrap());
-    assert!(body.ok, "{body:?}");
+    assert!(body.ok, "the call failed");
     assert_eq!(body.data.as_ref().unwrap()["items"][0]["text"], "Changed");
     let parameter =
         service.view(ViewRequest::new(&format!("{at}.Area.A.Parameter.Probe")).unwrap());
-    assert!(parameter.ok, "{parameter:?}");
+    assert!(parameter.ok, "the call failed");
 }
 
 #[test]
@@ -7471,7 +7508,7 @@ fn common_templates_share_mxl_and_dcs_readers_and_validation_inputs() {
             ))
             .unwrap(),
         );
-        assert!(a.ok && b.ok, "{suffix}: {a:?} / {b:?}");
+        assert!(a.ok && b.ok, "{suffix}: the call failed");
         let normalize = |data: &Option<serde_json::Value>| {
             serde_json::to_string(data)
                 .unwrap()
@@ -7548,7 +7585,7 @@ fn common_template_descriptor_and_registration_boundaries_fail_closed() {
         let view = fixture
             .view_service()
             .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
-        assert!(!view.ok, "{variant}: {view:?}");
+        assert!(!view.ok, "{variant}: the call was expected to be refused");
         assert_eq!(
             view.diagnostics[0]["code"], "provider_unavailable",
             "{variant}"
@@ -7568,14 +7605,14 @@ fn common_template_descriptor_and_registration_boundaries_fail_closed() {
         "main:CommonTemplate.Print.Area.A.Body",
     ] {
         let view = fixture.view_service().view(ViewRequest::new(at).unwrap());
-        assert!(!view.ok, "{at}: {view:?}");
+        assert!(!view.ok, "{at}: the call was expected to be refused");
         assert_eq!(view.diagnostics[0]["code"], "not_found");
     }
     fs::write(&config_path, config).unwrap();
     fs::remove_file(&descriptor).unwrap();
     for at in ["main:CommonTemplate.Print", "main:CommonTemplate"] {
         let view = fixture.view_service().view(ViewRequest::new(at).unwrap());
-        assert!(!view.ok, "{at}: {view:?}");
+        assert!(!view.ok, "{at}: the call was expected to be refused");
         assert_eq!(view.diagnostics[0]["code"], "provider_unavailable");
     }
 }
@@ -7587,16 +7624,16 @@ fn common_opaque_and_inherited_templates_do_not_open_a_body() {
     let html = fixture
         .view_service()
         .view(ViewRequest::new("main:CommonTemplate.Html").unwrap());
-    assert!(html.ok, "{html:?}");
+    assert!(html.ok, "the call failed");
     let data = html.data.unwrap();
     assert_eq!(data["props"]["format"], "HTMLDocument");
-    assert_eq!(data["props"]["synonym"], "Общий Html");
+    assert_eq!(data["props"]["Synonym"], "Общий Html");
     assert!(data.get("branches").is_none());
     for suffix in [".Area", ".DataSet", ".Parameter", ".Item", ".Area.A.Body"] {
         let view = fixture
             .view_service()
             .view(ViewRequest::new(&format!("main:CommonTemplate.Html{suffix}")).unwrap());
-        assert!(!view.ok, "{suffix}: {view:?}");
+        assert!(!view.ok, "{suffix}: the call was expected to be refused");
         assert_eq!(view.diagnostics[0]["code"], "not_found");
     }
     let descriptor = fixture.source.join("CommonTemplates/Print.xml");
@@ -7615,20 +7652,26 @@ fn common_opaque_and_inherited_templates_do_not_open_a_body() {
         let local = fixture
             .extension_view_service()
             .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
-        assert!(local.ok, "{format}: {local:?}");
+        assert!(local.ok, "{format}: the call failed");
         let data = local.data.unwrap();
         assert_eq!(data["props"]["format"], format);
         if format != "SpreadsheetDocument" {
-            assert!(data.get("branches").is_none(), "opaque {format}: {data:?}");
+            assert!(data.get("branches").is_none(), "opaque {format}");
         }
         fs::remove_file(&payload).unwrap();
         let view = fixture
             .extension_view_service()
             .view(ViewRequest::new("main:CommonTemplate.Print").unwrap());
-        assert!(view.ok, "{format}: {view:?}");
+        assert!(view.ok, "{format}: the call failed");
         let data = view.data.unwrap();
-        assert_eq!(data["props"]["content"], "inherited", "{format}: {data:?}");
-        assert!(data["props"]["format"].is_null(), "{format}: {data:?}");
+        assert_eq!(
+            data["props"]["content"], "inherited",
+            "{format}: unexpected answer"
+        );
+        assert!(
+            data["props"]["format"].is_null(),
+            "{format}: unexpected answer"
+        );
         assert!(data.get("branches").is_none());
     }
 }
@@ -7731,7 +7774,7 @@ fn xdto_restricted_value_view_returns_named_and_anonymous_facets() {
         let result = service.view(
             ViewRequest::new(&format!("main:XDTOPackage.EnterpriseData_1_17_3.{suffix}")).unwrap(),
         );
-        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        assert!(result.ok, "the call failed");
         let data = result.data.unwrap();
         let props = &data["props"];
         assert_eq!(props["facets"], facets);
@@ -7772,7 +7815,7 @@ fn xdto_restricted_value_view_reports_oversized_facets() {
         let result = service.view(
             ViewRequest::new(&format!("main:XDTOPackage.EnterpriseData_1_17_3.{suffix}")).unwrap(),
         );
-        assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
+        assert!(result.ok, "the call failed");
         let data = result.data.unwrap();
         assert!(data["props"].get("facets").is_none());
         assert!(data["limits"]
@@ -7782,4 +7825,88 @@ fn xdto_restricted_value_view_reports_oversized_facets() {
             .any(|v| v.as_str().is_some_and(|s| s.contains("facets"))));
     }
     assert_eq!(fs::read(&package).unwrap(), source.as_bytes());
+}
+
+#[test]
+fn an_open_buffer_is_read_in_place_of_its_module_file_and_the_file_is_untouched() {
+    use unica_workspace::documents::{DocumentOverlay, DocumentText};
+
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().canonicalize().unwrap();
+    let module = Path::new("CommonModules/Общий/Ext/Module.bsl");
+    fs::create_dir_all(workspace.as_path().join(module).parent().unwrap()).unwrap();
+    fs::write(workspace.as_path().join(module), "\u{feff}// диск\n").unwrap();
+    let target =
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Общий.Module")
+            .unwrap();
+    let absent =
+        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "CommonModule.Новый.Module")
+            .unwrap();
+    let overlay = DocumentOverlay::default();
+    for relative in [module, Path::new("CommonModules/Новый/Ext/Module.bsl")] {
+        overlay
+            .put(
+                "editor",
+                "main",
+                relative,
+                DocumentText {
+                    version: 3,
+                    text: Arc::from("\u{feff}// буфер\n// вторая\n"),
+                },
+            )
+            .unwrap();
+    }
+    let reader = |documents| {
+        let root =
+            Arc::new(unica_workspace::read::open_source_directory(workspace.as_path()).unwrap());
+        let reader =
+            ProviderReadAuthority::new("main", "actor-main", SourceSetKind::Configuration, root);
+        match documents {
+            Some(documents) => reader.with_documents(documents),
+            None => reader,
+        }
+    };
+
+    let editor = reader(Some(overlay.session_documents("editor", "main").unwrap()));
+    assert_eq!(
+        editor.module_source(&target).unwrap().as_deref(),
+        Some("// буфер\n// вторая\n")
+    );
+    assert!(editor.module_source_exists(&absent).unwrap());
+    assert_eq!(
+        editor.module_source(&absent).unwrap().as_deref(),
+        Some("// буфер\n// вторая\n")
+    );
+
+    // Every read of the module in this session sees the same buffer.
+    let lines = editor.module_line_count(&target, || Ok(())).unwrap();
+    assert_eq!(
+        lines,
+        reader(None)
+            .module_line_count(&target, || Ok(()))
+            .unwrap()
+            .map(|n| n + 1)
+    );
+
+    // Another session and an agent call read the disk.
+    for other in [
+        Some(overlay.session_documents("agent", "main").unwrap()),
+        None,
+    ] {
+        let other = reader(other);
+        assert_eq!(
+            other.module_source(&target).unwrap().as_deref(),
+            Some("// диск\n")
+        );
+        assert!(!other.module_source_exists(&absent).unwrap());
+    }
+    assert_eq!(
+        fs::read_to_string(workspace.as_path().join(module)).unwrap(),
+        "\u{feff}// диск\n"
+    );
+    assert!(!workspace
+        .as_path()
+        .join("CommonModules/Новый")
+        .join("Ext/Module.bsl")
+        .exists());
 }

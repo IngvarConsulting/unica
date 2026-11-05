@@ -1956,6 +1956,43 @@ fn staged_addressed_method_body_preserves_signature_neighbors_and_repeat() {
 }
 
 #[test]
+fn method_replacement_owns_supplied_documentation_and_repeats_without_duplicates() {
+    for eol in ["\n", "\r\n"] {
+        for bom in ["", "\u{feff}"] {
+            for (old, supplied, expected_doc) in [
+                ("// Old.\n// Old.\n", "// New.\n", "// New.\n"),
+                ("// Same.\n// Same.\n", "// Same.\n", "// Same.\n"),
+                ("", "// New.\n", "// New.\n"),
+                ("// Keep.\n", "", "// Keep.\n"),
+            ] {
+                let prefix =
+                    format!("{bom}// Module comment.\n\n#Region Methods\n#If Server Then\n");
+                let suffix =
+                    "#EndIf\n#EndRegion\n\n// Neighbor doc.\nProcedure Neighbor()\nEndProcedure\n";
+                let before = format!("{prefix}{old}&AtServer\nProcedure Base()\n    Value = 1;\nEndProcedure\n{suffix}").replace('\n', eol);
+                let input = format!(
+                    "{supplied}&AtServer\nProcedure Base()\n    Value = 2;\nEndProcedure\n"
+                );
+                let expected = format!("{prefix}{expected_doc}&AtServer\nProcedure Base()\n    Value = 2;\nEndProcedure\n{suffix}").replace('\n', eol);
+                let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    at: unica_address::address::QualifiedAddress::parse(
+                        "main:CommonModule.Sample.Method.Base",
+                    )
+                    .unwrap(),
+                    anchor: None,
+                    text: input,
+                });
+                let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+                assert_eq!(post.after, expected.as_bytes());
+                let repeat = plan_code_postimage(&post.after, &operation, 0).unwrap();
+                assert!(repeat.no_op);
+                assert_eq!(repeat.after, post.after);
+            }
+        }
+    }
+}
+
+#[test]
 fn method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop() {
     // `view …Method.Base.Body` отдаёт комментарий, директиву, объявление,
     // тело и окончание; тот же текст с правкой заменяет ровно этот участок.
@@ -2085,11 +2122,135 @@ fn method_text_that_does_not_parse_is_refused_as_the_input_text() {
     let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
         .expect_err("a broken method text must not reach the module");
     assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
+    assert_eq!(error.path(), Some("ops[0].args.text"));
+    // #2229: the refusal names the place of the error in the sent text.
+    assert!(error.to_string().contains("of text"), "{error}");
+    // The parser stops at `;` of `Value = 2;`; the method opens the module,
+    // so the text and the module agree on the place.
+    let first = &error.diagnostics()[0];
+    let place = json!({"startLine": 2, "startColumn": 13, "endLine": 2, "endColumn": 13});
+    assert_eq!(first["textRange"], place, "{first}");
+    assert_eq!(first["focus"]["range"], place, "{first}");
     assert!(
-        error.to_string().contains("text declares a method"),
+        error
+            .to_string()
+            .contains("at line 3, column 14 (line 3 of text)"),
         "{error}"
     );
-    assert!(!error.to_string().contains("patched BSL module"), "{error}");
+    assert_eq!(
+        fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+        before.as_bytes()
+    );
+    fixture.cleanup();
+}
+
+/// #2229: a text that breaks a parsing module is refused as the call's
+/// value, at its path; the message names the first error, and every error
+/// follows with its place in the module and in the sent text. Nothing is
+/// written.
+#[test]
+fn a_text_that_breaks_the_module_names_every_syntax_error_by_its_place() {
+    let before = "Procedure Base()\n    Value = 1;\nEndProcedure\n";
+    let fixture = staged_code_fixture("text-breaks-module", before.as_bytes());
+    let operation = parse_code_plan_operation(
+        "code.replace",
+        &json!({
+            "at": "main:CommonModule.Sample.Method.Base",
+            "text": "Procedure Base()\n    Если Value = 1 Тогда\n        Value = 2;\nEndProcedure"
+        }),
+        0,
+        fixture.binding.source_set_name(),
+    )
+    .unwrap();
+    let admission = staged_code_admission(&fixture, false);
+    let error = plan_admitted_code(&admission, &fixture.binding, &[operation])
+        .expect_err("a text without КонецЕсли must not reach the module");
+    assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{error}");
+    assert_eq!(error.path(), Some("ops[0].args.text"));
+    let message = error.to_string();
+    assert!(message.contains("at line "), "{message}");
+    assert!(message.contains("of text"), "{message}");
+    let diagnostics = error.diagnostics();
+    assert!(!diagnostics.is_empty(), "every error is named");
+    for diagnostic in diagnostics {
+        assert_eq!(diagnostic["code"], "bsl-parse-error", "{diagnostic}");
+        assert_eq!(diagnostic["severity"], "error", "{diagnostic}");
+        assert!(diagnostic["message"]
+            .as_str()
+            .is_some_and(|m| !m.is_empty()));
+        assert_eq!(diagnostic["focus"]["kind"], "sourceRange", "{diagnostic}");
+        let range = &diagnostic["focus"]["range"];
+        assert!(range["startLine"].as_u64().unwrap() <= 4, "{diagnostic}");
+    }
+    let first = &diagnostics[0];
+    let text = &first["textRange"];
+    assert!(
+        text.is_object(),
+        "the first error lies in the sent text: {first}"
+    );
+    assert_eq!(
+        first["focus"]["range"]["startLine"].as_u64(),
+        text["startLine"].as_u64(),
+        "the replaced method starts the module: {first}"
+    );
+    assert_eq!(
+        fs::read(fixture.source.join("CommonModules/Sample/Ext/Module.bsl")).unwrap(),
+        before.as_bytes()
+    );
+    fixture.cleanup();
+}
+
+/// #2229: an inserted method the planner separates from its neighbour with
+/// blank lines is still found in the module: its errors keep their place in
+/// the sent text.
+#[test]
+fn an_inserted_text_keeps_its_error_places_across_added_blank_lines() {
+    let before = "Procedure Base()\nEndProcedure\n";
+    let fixture = staged_code_fixture("insert-error-places", before.as_bytes());
+    let admission = staged_code_admission(&fixture, false);
+    let error = plan_admitted_code(
+        &admission,
+        &fixture.binding,
+        &[staged_insert(
+            "main:CommonModule.Sample",
+            "Procedure Added()\n    Value = (1;\nEndProcedure\n// Base docs.",
+            Some(CodeSelector::Method("Base".to_string())),
+            Some(CodePosition::Before),
+        )],
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{error}");
+    let first = &error.diagnostics()[0];
+    assert_eq!(first["textRange"]["startLine"], 1, "{first}");
+    assert_eq!(first["focus"]["range"]["startLine"], 1, "{first}");
+    fixture.cleanup();
+}
+
+/// #2229: a module that did not parse before the patch stays the source's/// #2229: a module that did not parse before the patch stays the source's
+/// fault, and names its errors the same way, without a place in the text.
+#[test]
+fn a_module_that_did_not_parse_names_its_errors_as_the_source() {
+    let before = "Procedure Base()\n    Если Истина Тогда\nEndProcedure\n";
+    let fixture = staged_code_fixture("module-does-not-parse", before.as_bytes());
+    let admission = staged_code_admission(&fixture, false);
+    let error = plan_admitted_code(
+        &admission,
+        &fixture.binding,
+        &[staged_insert(
+            "main:CommonModule.Sample",
+            "// Пометка.",
+            None,
+            None,
+        )],
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error}");
+    assert!(error.to_string().contains("at line "), "{error}");
+    assert!(!error.diagnostics().is_empty());
+    assert!(error
+        .diagnostics()
+        .iter()
+        .all(|diagnostic| diagnostic.get("textRange").is_none()));
     fixture.cleanup();
 }
 
@@ -3378,6 +3539,28 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
     }
     replaced_root.cleanup();
 
+    let generated = staged_code_fixture("guards-generated", b"Procedure Base()\nEndProcedure\n");
+    let mut staged = staged_code_admission(&generated, true)
+        .staged_state()
+        .unwrap();
+    assert_eq!(
+        staged
+            .read(Path::new(".build/unica/foreign"))
+            .unwrap_err()
+            .kind(),
+        ApplyStagingErrorKind::ContainmentIdentity
+    );
+    generated.cleanup();
+}
+
+#[test]
+fn staged_code_rejects_module_link() {
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
+        "Procedure Added()\nEndProcedure",
+        None,
+        None,
+    )];
     let linked = staged_code_fixture("guards-link", b"Procedure Base()\nEndProcedure\n");
     let link_admission = staged_code_admission(&linked, true);
     let module = linked.source.join("CommonModules/Sample/Ext/Module.bsl");
@@ -3385,7 +3568,16 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
         .source
         .join("CommonModules/Sample/Ext/RealModule.bsl");
     fs::rename(&module, &real).unwrap();
-    if create_file_link_fixture_for_test(&real, &module).unwrap() == FileLinkFixtureOutcome::Created
+    if !(create_file_link_fixture_for_test(&real, &module).unwrap()
+        == FileLinkFixtureOutcome::Created)
+    {
+        linked.cleanup();
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "staged code fixture needs file links",
+        );
+        return;
+    }
     {
         let error = plan_admitted_code(&link_admission, &linked.binding, &operation).unwrap_err();
         assert!(
@@ -3400,15 +3592,32 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
         );
     }
     linked.cleanup();
+}
 
+#[test]
+fn staged_code_rejects_support_marker_link() {
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
+        "Procedure Added()\nEndProcedure",
+        None,
+        None,
+    )];
     let linked_support =
         staged_code_fixture("guards-support-link", b"Procedure Base()\nEndProcedure\n");
     let support_admission = staged_code_admission(&linked_support, true);
     let real_support = linked_support.root.join("retained-support-marker.bin");
     fs::write(&real_support, b"short marker").unwrap();
     let support_marker = linked_support.source.join("Ext/ParentConfigurations.bin");
-    if create_file_link_fixture_for_test(&real_support, &support_marker).unwrap()
-        == FileLinkFixtureOutcome::Created
+    if !(create_file_link_fixture_for_test(&real_support, &support_marker).unwrap()
+        == FileLinkFixtureOutcome::Created)
+    {
+        linked_support.cleanup();
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "staged code fixture needs file links",
+        );
+        return;
+    }
     {
         let error = plan_admitted_code(&support_admission, &linked_support.binding, &operation)
             .unwrap_err();
@@ -3425,19 +3634,6 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
         assert!(!linked_support.root.join(".build/unica/state.json").exists());
     }
     linked_support.cleanup();
-
-    let generated = staged_code_fixture("guards-generated", b"Procedure Base()\nEndProcedure\n");
-    let mut staged = staged_code_admission(&generated, true)
-        .staged_state()
-        .unwrap();
-    assert_eq!(
-        staged
-            .read(Path::new(".build/unica/foreign"))
-            .unwrap_err()
-            .kind(),
-        ApplyStagingErrorKind::ContainmentIdentity
-    );
-    generated.cleanup();
 }
 
 #[test]
@@ -3643,7 +3839,9 @@ fn staged_code_v12_parity_rejects_malformed_postimage_and_owner_evidence() {
         )],
     )
     .unwrap_err();
-    assert_eq!(c1.kind(), ApplyPlanErrorKind::Postcondition);
+    // #2229: the sent text broke the module; the call is what to fix.
+    assert_eq!(c1.kind(), ApplyPlanErrorKind::BadValue);
+    assert_eq!(c1.path(), Some("ops[0].args.text"));
     malformed_v12.cleanup();
     malformed_c1.cleanup();
 
