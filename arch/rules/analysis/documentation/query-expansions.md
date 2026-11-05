@@ -1,7 +1,5 @@
 ---
 id: INV.APP.SEARCH-EXPANSIONS
-check:
-  - crates/unica-documentation-sources/src/documentation_retrieval.rs::expansions_can_add_a_match_for_an_unmatched_query
 ---
 
 # Дополнительные поисковые слова могут найти справку без прямого совпадения

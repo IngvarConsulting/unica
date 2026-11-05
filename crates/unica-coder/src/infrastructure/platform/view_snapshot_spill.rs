@@ -192,6 +192,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn snapshot_beyond_the_former_memory_quota_pages_exactly_from_disk() {
         let text = "я".repeat(512 * 1024);

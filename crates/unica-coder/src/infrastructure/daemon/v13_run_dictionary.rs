@@ -167,6 +167,7 @@ fn reject_run_operation(op: &str, message: impl Into<String>) -> DomainResult {
 #[cfg(test)]
 mod runner_one_tests {
     use super::*;
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
     fn development_cycle_admits_the_explicit_compatibility_subset() {
         for (op, args) in [
@@ -192,6 +193,7 @@ mod runner_one_tests {
     /// исполняет, а `upload` раннера по-прежнему применяет конфигурацию БД:
     /// словарь называет операции недоступными, а вызов получает типизированный
     /// отказ с разрывом до рабочего пространства и процесса.
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
     fn runner_015_refuses_upload_apply_and_reset_naming_the_gap() {
         let dictionary = run_dictionary_result();
@@ -223,6 +225,7 @@ mod runner_one_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
     fn runner_one_refuses_unsupported_semantics_and_old_names_before_admission() {
         for (op, args) in [
@@ -246,6 +249,7 @@ mod runner_one_tests {
             assert!(result.rev.is_none());
         }
     }
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
     fn runner_one_never_redirects_an_unsupported_infobase_to_origin() {
         let request = InvocationRequest::new(ToolIdentity::Run,json!({"op":"download","infobase":"production","args":{"state":"working","output":"x.cf"},"dryRun":true}),"/workspace-does-not-exist",7000).unwrap();
@@ -253,6 +257,7 @@ mod runner_one_tests {
         assert!(!result.ok);
         assert!(result.summary.contains("no fallback"));
     }
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
     fn limited_delete_and_known_operations_reach_their_typed_parsers() {
         for (op, args) in [

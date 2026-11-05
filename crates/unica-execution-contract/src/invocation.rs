@@ -495,6 +495,7 @@ mod tests {
         use super::super::*;
         use unica_refusal::{Outcome, RefusalCode, RefusalDetail};
 
+        /// rule: INV.WIRE.V13-REFUSAL-CHANNEL
         #[test]
         fn a_refusal_carries_code_outcome_and_message_and_nothing_else() {
             let result = DomainResult::canonical_rejection(
@@ -522,6 +523,7 @@ mod tests {
             assert_eq!(keys, vec!["code", "outcome", "message"]);
         }
 
+        /// rule: INV.WIRE.V13-REFUSAL-CHANNEL
         #[test]
         fn a_detail_overrides_the_default_outcome_of_its_code() {
             // Умолчание `provider_unavailable` — «нужен человек»; уточнение
@@ -541,6 +543,7 @@ mod tests {
             assert_eq!(diagnostic["outcome"], "fixSource");
         }
 
+        /// rule: INV.WIRE.V13-REFUSAL-CHANNEL
         #[test]
         fn every_code_answers_with_one_of_the_six_outcomes() {
             for code in RefusalCode::ALL {
@@ -556,6 +559,7 @@ mod tests {
             }
         }
 
+        /// rule: INV.WIRE.V13-REFUSAL-CHANNEL
         #[test]
         fn the_six_outcomes_are_spelled_as_published_on_the_wire() {
             assert_eq!(

@@ -189,6 +189,7 @@ fn assert_state(bytes: &[u8], property: &str) {
     );
 }
 
+/// rule: INV.SOURCE.CODE-BORROWED-MODULE-STATE
 #[test]
 fn borrowed_code_insert_and_replace_stage_module_state_atomically() {
     for replace in [false, true] {
@@ -220,6 +221,7 @@ fn borrowed_code_insert_and_replace_stage_module_state_atomically() {
     }
 }
 
+/// rule: INV.SOURCE.CODE-BORROWED-MODULE-STATE
 #[test]
 fn borrowed_code_direct_roles_and_common_command_use_their_property() {
     for (kind, directory, terminal) in [
@@ -283,6 +285,7 @@ fn borrowed_code_preview_is_write_free_and_repeat_keeps_one_state() {
     }
 }
 
+/// rule: INV.SOURCE.CODE-BORROWED-MODULE-STATE
 #[test]
 fn borrowed_code_publication_failure_restores_bsl_descriptor_cache_and_revision() {
     use unica_workspace::compile_transaction::{
@@ -353,6 +356,7 @@ fn code_does_not_mark_configuration_or_owned_extension_objects() {
     }
 }
 
+/// rule: INV.SOURCE.CODE-BORROWED-MODULE-STATE
 #[test]
 fn borrowed_code_rejects_malformed_property_state_children_before_staging() {
     for children in [
@@ -407,6 +411,7 @@ fn borrowed_code_repairs_missing_state_when_bsl_is_already_present() {
     assert_state(&fixture.descriptor_bytes(), "Module");
 }
 
+/// rule: INV.SOURCE.CODE-BORROWED-MODULE-STATE
 #[test]
 fn borrowed_code_nested_form_and_command_mark_the_child_descriptor() {
     for (kind, directory, role, module_tail, property) in [
@@ -488,6 +493,7 @@ fn borrowed_code_existing_state_is_byte_preserved_and_descriptor_races_refuse() 
     );
 }
 
+/// rule: INV.SOURCE.CODE-BORROWED-MODULE-STATE
 #[test]
 fn borrowed_code_root_modules_publish_configuration_state_and_events() {
     for role in [
@@ -551,6 +557,7 @@ fn borrowed_code_root_modules_publish_configuration_state_and_events() {
     }
 }
 
+/// rule: INV.SOURCE.CODE-BORROWED-MODULE-STATE
 #[test]
 fn borrowed_code_preserves_existing_state_across_xml_layouts_and_repeat() {
     for (existing, internal_info) in [

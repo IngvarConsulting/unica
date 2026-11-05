@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.EMPTY-APPLY-PUBLICATION
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/954
 ---
 

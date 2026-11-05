@@ -1,6 +1,5 @@
 ---
 id: INV.CACHE.RLM-GIT-BASELINE
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/917
 ---
 

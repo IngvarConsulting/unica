@@ -75,6 +75,7 @@ impl IdleDaemon {
     }
 }
 
+/// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
 #[test]
 fn idle_daemon_removes_its_own_endpoint_after_actual_process_exit() {
     let mut daemon = IdleDaemon::start();
@@ -88,6 +89,7 @@ fn idle_daemon_removes_its_own_endpoint_after_actual_process_exit() {
     );
 }
 
+/// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
 #[test]
 fn idle_daemon_preserves_same_pid_successor_on_the_original_file() {
     let mut daemon = IdleDaemon::start();
@@ -126,6 +128,7 @@ fn idle_daemon_preserves_same_pid_successor_on_the_original_file() {
     );
 }
 
+/// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
 #[test]
 fn idle_daemon_preserves_a_byte_identical_replacement_file() {
     let mut daemon = IdleDaemon::start();
@@ -208,11 +211,13 @@ pub(super) fn insecure_endpoint_is_refused(
     assert!(!endpoint.exists());
 }
 
+/// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
 #[test]
 fn frontend_refuses_an_insecure_daemon_endpoint_file() {
     insecure_endpoint_is_refused(false, endpoint_security::InsecureAccess::install);
 }
 
+/// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
 #[test]
 fn frontend_refuses_an_insecure_daemon_endpoint_directory() {
     insecure_endpoint_is_refused(true, endpoint_security::InsecureAccess::install);

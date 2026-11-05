@@ -2492,6 +2492,7 @@ mod tests {
         identities
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn medium_production_links_reserve_and_materialize_past_4096_and_reopen() {
         let root = tempfile::tempdir().unwrap();
@@ -2533,6 +2534,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn medium_real_snapshot_over_8mib_can_reopen_mutate() {
         let root = tempfile::tempdir().unwrap();
@@ -2565,6 +2567,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn inspection_cleans_links_staging_past_former_directory_bound() {
         let root = tempfile::tempdir().unwrap();
@@ -2597,6 +2600,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn reservation_consumes_task_store_slot_before_materialization_and_reopens_exactly() {
         let root = tempfile::tempdir().expect("temporary root");
@@ -2638,6 +2642,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_links_preserve_exact_cas_and_reopen_terminal_winner() {
         let root = tempfile::tempdir().unwrap();
@@ -2775,6 +2780,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn task_bound_terminal_and_retirement_transitions_are_exact_cas_and_reopen_stable() {
         let root = tempfile::tempdir().expect("temporary root");
@@ -3061,6 +3067,7 @@ mod tests {
         assert_eq!(reopened.catalog_snapshot(deadline()).unwrap().count(), 0);
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn corrupt_snapshot_preserves_verified_orphan_before_cleanup() {
         let root = tempfile::tempdir().unwrap();
@@ -3082,6 +3089,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn second_pass_refuses_replaced_link_staging_without_deleting_either_file() {
         let root = tempfile::tempdir().unwrap();
@@ -3110,6 +3118,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn second_pass_refuses_link_staging_symlink_and_preserves_external_bytes() {
         let root = tempfile::tempdir().unwrap();
@@ -3138,6 +3147,7 @@ mod tests {
             .is_symlink());
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn catalog_schema_rejects_duplicate_unknown_missing_and_trailing_fields() {
         let root = tempfile::tempdir().unwrap();
@@ -3239,6 +3249,7 @@ mod tests {
         assert_eq!(MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES, 1_024);
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn streaming_catalog_preserves_canonical_bytes_for_all_states_and_id_orders() {
         let mut catalog = StoreCatalog::default();
