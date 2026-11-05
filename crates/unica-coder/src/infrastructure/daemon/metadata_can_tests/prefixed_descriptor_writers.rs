@@ -101,7 +101,13 @@ fn relation_and_member_writers_keep_the_owner_prefix() {
     ];
     let run = |prefix: bool| {
         for file in &files {
-            let text = String::from_utf8(original[file].clone()).unwrap();
+            let mut text = String::from_utf8(original[file].clone()).unwrap();
+            // The member's Comment is absent, so attribute.set inserts it
+            // before the closing Properties of the member.
+            let members = text.find("<ChildObjects>").expect("members");
+            let comment = members + text[members..].find("<Comment/>").expect("member comment");
+            let line_start = text[..comment].rfind('\n').unwrap();
+            text.replace_range(line_start..comment + "<Comment/>".len(), "");
             let text = if prefix { prefixed(&text) } else { text };
             std::fs::write(fixture.source.join(file), text).unwrap();
         }
