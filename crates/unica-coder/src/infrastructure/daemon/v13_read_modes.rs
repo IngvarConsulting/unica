@@ -1,9 +1,10 @@
-use crate::domain::apply::OperationDescriptorExt;
-use crate::domain::apply::RetiredOperationExt;
 use serde_json::{json, Map, Value};
 use std::fmt;
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_forms::FormItemRole;
+use unica_metadata::style_color::StyleItemPropertiesObservation;
+type StyleItemPropertiesLookup<'a> =
+    &'a dyn Fn(&QualifiedAddress) -> Option<StyleItemPropertiesObservation>;
 use unica_refusal::RefusalCode;
 use unica_source_designer::layout::metadata_kind;
 use unica_templates::TemplateFormat;
@@ -136,7 +137,11 @@ fn inherited_node(data: &Map<String, Value>) -> bool {
 /// template, the format filter. `None` means the dictionary is not computed
 /// for this node: the answer then carries no `can`. A computed dictionary
 /// may be empty (`[]`): nothing applies at this node, which is an answer.
-fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Option<Vec<Value>> {
+fn computed_can_entries(
+    data: &Map<String, Value>,
+    context: CanContext,
+    color: StyleItemPropertiesLookup<'_>,
+) -> Option<Vec<Value>> {
     let (at, format, item) = node_site(data, context)?;
     let site = crate::domain::apply::operation_site(&at, context)?;
     // Содержимое заимствованного узла без своего файла принадлежит
@@ -147,7 +152,16 @@ fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Optio
         crate::domain::apply::operation_registry()
             .descriptors()
             .iter()
-            .filter(|descriptor| descriptor.applies_to_node(&site, format, item))
+            .filter(|descriptor| {
+                descriptor.applies_with_observations(
+                    &site,
+                    &crate::domain::apply::observation_lookup_with_style_properties(
+                        &|_| format,
+                        &|_| item,
+                        color,
+                    ),
+                )
+            })
             .filter(|descriptor| !inherited || descriptor.content_resource().is_none())
             .map(|descriptor| {
                 json!({
@@ -161,11 +175,19 @@ fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Optio
 
 /// Every `view` answer of a node with a computed dictionary carries `can`:
 /// what `apply` accepts here is part of the answer, not a separate question.
+#[cfg(test)]
 pub(super) fn attach_can(data: &mut Value, context: CanContext) {
+    attach_can_with_color(data, context, &|_| None);
+}
+pub(super) fn attach_can_with_color(
+    data: &mut Value,
+    context: CanContext,
+    color: StyleItemPropertiesLookup<'_>,
+) {
     let Some(node) = data.as_object_mut() else {
         return;
     };
-    if let Some(entries) = computed_can_entries(node, context) {
+    if let Some(entries) = computed_can_entries(node, context, color) {
         node.insert("can".to_string(), Value::Array(entries));
     }
 }
@@ -180,7 +202,7 @@ pub(super) fn operation_node(
     at: &str,
     context: CanContext,
 ) -> Result<Value, ReadModeError> {
-    operation_node_with(data, operation, at, context, &|_| None)
+    operation_node_with(data, operation, at, context, &|_| None, &|_| None)
 }
 
 /// The same with the role of an ancestor form item, read by the caller: a
@@ -192,6 +214,7 @@ pub(super) fn operation_node_with(
     at: &str,
     context: CanContext,
     ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    color: StyleItemPropertiesLookup<'_>,
 ) -> Result<Value, ReadModeError> {
     let data = data
         .as_object()
@@ -212,6 +235,7 @@ pub(super) fn operation_node_with(
             (format, item),
             inherited_node(data),
             ancestor_role,
+            color,
         ));
     };
     if inherited_node(data) && descriptor.content_resource().is_some() {
@@ -219,7 +243,14 @@ pub(super) fn operation_node_with(
             "operation `{operation}` writes content this borrowed node inherits from the parent; read the parent named by props.extends"
         )));
     }
-    if !descriptor.applies_to_node(&site, format, item) {
+    if !descriptor.applies_with_observations(
+        &site,
+        &crate::domain::apply::observation_lookup_with_style_properties(
+            &|_| format,
+            &|_| item,
+            color,
+        ),
+    ) {
         let kind = owner
             .segments()
             .last()
@@ -228,7 +259,14 @@ pub(super) fn operation_node_with(
             "operation `{operation}` does not apply to {kind}"
         )));
     }
-    let mut contract = descriptor.argument_contract_at(&site);
+    let mut contract = descriptor.argument_contract_at_with_observations(
+        &site,
+        &crate::domain::apply::observation_lookup_with_style_properties(
+            &|_| format,
+            &|_| item,
+            color,
+        ),
+    );
     // Командная панель принимает только кнопки: её контракт `item.add`
     // публикует один вид, как и отвечает писатель (#1447).
     let command_bar = data
@@ -269,6 +307,7 @@ fn retired_operation_contract(
     (format, item): (Option<TemplateFormat>, Option<FormItemRole>),
     inherited: bool,
     ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    color: StyleItemPropertiesLookup<'_>,
 ) -> ReadModeError {
     let Some(retired) = crate::domain::apply::retired_operation(operation) else {
         return ReadModeError::bad_value(format!(
@@ -297,7 +336,14 @@ fn retired_operation_contract(
             ancestor_role(at)
         }
     };
-    match retired.replacement_target(site, crate::domain::apply::operation_registry().context(), &format_of, &role_of) {
+    let observations =
+        crate::domain::apply::observation_lookup_with_style_properties(&format_of, &role_of, color);
+    let replacement = retired.replacement_with_observations(
+        site,
+        crate::domain::apply::operation_registry().context(),
+        &observations,
+    );
+    match replacement {
         Some(target) => {
             let contract = format!("{target}.Can.{}", retired.replacement());
             let mut error = ReadModeError::bad_value(format!(
@@ -413,16 +459,18 @@ mod operation_dictionary_tests {
         let context = super::configuration_context();
         let event = format!("{field}.Event.OnChange");
         let data = json!({"at": event, "kind": "Event"});
-        let error = super::operation_node_with(&data, "element.add", &event, context, &roles)
-            .expect_err("a retired operation has no contract");
+        let error =
+            super::operation_node_with(&data, "element.add", &event, context, &roles, &|_| None)
+                .expect_err("a retired operation has no contract");
         assert_eq!(
             error.next(),
             Some(format!("{form}.Item.Header.Can.item.add").as_str()),
             "{error}"
         );
         let data = json!({"at": bar, "kind": "Item", "props": {"tag": "[AutoCommandBar]"}});
-        let error = super::operation_node_with(&data, "element.remove", &bar, context, &roles)
-            .expect_err("a retired operation has no contract");
+        let error =
+            super::operation_node_with(&data, "element.remove", &bar, context, &roles, &|_| None)
+                .expect_err("a retired operation has no contract");
         assert_eq!(error.next(), None, "{error}");
         let data = json!({
             "at": form,
@@ -674,10 +722,13 @@ mod operation_dictionary_tests {
 pub(super) struct SearchScopeRoute {
     pub(super) prefix: Option<String>,
     pub(super) module: Option<QualifiedAddress>,
+    pub(super) external_binding:
+        Option<unica_source_designer::external_artifact::ExternalArtifactBinding>,
 }
 
 pub(super) fn search_scope_route(
     scope: &QualifiedAddress,
+    source_kind: unica_source_contract::SourceSetKind,
 ) -> Result<SearchScopeRoute, ReadModeError> {
     let Some(owner) = scope.segments().first() else {
         return Err(ReadModeError::bad_value(
@@ -697,6 +748,7 @@ pub(super) fn search_scope_route(
         return Ok(SearchScopeRoute {
             prefix: None,
             module,
+            external_binding: None,
         });
     }
     // The application modules of the configuration live in its own `Ext`.
@@ -704,6 +756,28 @@ pub(super) fn search_scope_route(
         return Ok(SearchScopeRoute {
             prefix: Some("Ext".to_string()),
             module,
+            external_binding: None,
+        });
+    }
+    // External placement is supplied by the admitted descriptor binding;
+    // a logical name alone cannot name a physical subtree.
+    let external_source = match owner.kind() {
+        NodeKind::ExternalReport => Some(unica_source_contract::SourceSetKind::ExternalReport),
+        NodeKind::ExternalDataProcessor => {
+            Some(unica_source_contract::SourceSetKind::ExternalProcessor)
+        }
+        _ => None,
+    };
+    if let Some(expected) = external_source {
+        if source_kind != expected {
+            return Err(ReadModeError::unsupported_scope(
+                "external search scope does not match the admitted source-set kind",
+            ));
+        }
+        return Ok(SearchScopeRoute {
+            prefix: None,
+            module,
+            external_binding: None,
         });
     }
     let layout = metadata_kind(owner.kind().as_str()).ok_or_else(|| {
@@ -720,6 +794,7 @@ pub(super) fn search_scope_route(
     Ok(SearchScopeRoute {
         prefix: Some(prefix),
         module,
+        external_binding: None,
     })
 }
 
@@ -729,8 +804,51 @@ mod tests {
     use unica_address::address::QualifiedAddress;
 
     #[test]
+    fn external_scopes_use_the_admitted_external_layout_only() {
+        use unica_source_contract::SourceSetKind;
+        for (kind, source_kind) in [
+            ("ExternalReport", SourceSetKind::ExternalReport),
+            ("ExternalDataProcessor", SourceSetKind::ExternalProcessor),
+        ] {
+            let branch = QualifiedAddress::parse(&format!("main:{kind}")).unwrap();
+            assert_eq!(
+                search_scope_route(&branch, source_kind).unwrap().prefix,
+                None
+            );
+            for suffix in ["", ".Module.Object", ".Form.Main.Module.Form"] {
+                let scope = QualifiedAddress::parse(&format!("main:{kind}.Item{suffix}")).unwrap();
+                let route = search_scope_route(&scope, source_kind).unwrap();
+                assert_eq!(
+                    route.prefix, None,
+                    "external placement requires a proven binding"
+                );
+                assert_eq!(route.module, (!suffix.is_empty()).then_some(scope.clone()));
+                for other in [
+                    SourceSetKind::Configuration,
+                    SourceSetKind::Extension,
+                    SourceSetKind::ExternalProcessor,
+                    SourceSetKind::ExternalReport,
+                ] {
+                    if other != source_kind {
+                        assert!(search_scope_route(&scope, other).is_err());
+                    }
+                }
+            }
+            let method =
+                QualifiedAddress::parse(&format!("main:{kind}.Item.Module.Object.Method.Run"))
+                    .unwrap();
+            assert!(search_scope_route(&method, source_kind).is_err());
+        }
+    }
+
+    #[test]
     fn logical_scope_maps_to_a_retained_relative_prefix_without_accepting_paths() {
-        let route = |at: &str| search_scope_route(&QualifiedAddress::parse(at).unwrap());
+        let route = |at: &str| {
+            search_scope_route(
+                &QualifiedAddress::parse(at).unwrap(),
+                unica_source_contract::SourceSetKind::Configuration,
+            )
+        };
         let root = route("main:Configuration").unwrap();
         assert_eq!((root.prefix, root.module), (None, None));
         assert_eq!(

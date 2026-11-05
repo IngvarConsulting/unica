@@ -71,8 +71,8 @@ BINARY = binary_path(REPO_ROOT)
 from tests.ci.form_runtime_diagnostics import WORKSPACE as FORM_RUNTIME_WORKSPACE
 
 from tests.ci.acceptance_profiles import (
-    DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
-    select_profile,
+    DIAGNOSTICS_WORKSPACE, SOURCE_WORKSPACES, SOURCE_WORKSPACE_PROFILES, SYMBOL_WORKSPACE, completed_delivery_call, isolated_environment,
+    prepare_source_workspace, select_profile, HOST_CONTEXT_MISSING_WORKSPACE, missing_host_context_environment,
 )
 
 from tests.ci.acceptance_pull_validation import WORKSPACE as PULL_VALIDATION_WORKSPACE
@@ -2185,6 +2185,14 @@ def packed_json_strings(value, path=""):
     return []
 
 
+def call_step(server, step, arguments, label, *, delivery=False):
+    if step.get("awaitTask"):
+        return completed_delivery_call(server, step["tool"], arguments, label, retry_pending_index=False)
+    if delivery:
+        return completed_delivery_call(server, step["tool"], arguments, label)
+    return server.call(step["tool"], arguments, label)
+
+
 def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cleanup=None):
     from concurrent.futures import ThreadPoolExecutor
     from tests.ci.private_provider_failure_evidence import before_call, emit_failure_evidence
@@ -2214,9 +2222,12 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
             initialize_vendor_source(workspace)
         if workspace_relative == FORMAT_WORKSPACE:
             derive_source_sets(REPO_ROOT / default_workspace / "src", workspace)
+        prepare_source_workspace(workspace, SOURCE_WORKSPACE_PROFILES.get(workspace_relative, {}))
         state = home / "state"
         state.mkdir()
         environment = isolated_environment(plugin, state) if plugin else None
+        if workspace_relative == HOST_CONTEXT_MISSING_WORKSPACE:
+            environment = missing_host_context_environment(environment)
         server_type = DeliveredAcceptanceServer if plugin else AcceptanceServer
         return server_type(workspace, state, corpus["protocolVersion"], environment)
 
@@ -2257,9 +2268,10 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                             arguments = form_arguments(
                                 server.input_schema(step["tool"]), arguments
                             )
-                        response = (completed_delivery_call(server, step["tool"], arguments, label)
-                                    if plugin or wanted == "tests/fixtures/acceptance/workspace-search-wide"
-                                    else server.call(step["tool"], arguments, label))
+                        response = call_step(
+                            server, step, arguments, label,
+                            delivery=bool(plugin) or wanted == "tests/fixtures/acceptance/workspace-search-wide",
+                        )
                     except (TimeoutError, OSError, ValueError) as error:
                         # The session is gone: record the step with the
                         # daemon's own words and continue on a fresh one.

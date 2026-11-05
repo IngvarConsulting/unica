@@ -1,0 +1,3 @@
+﻿<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:ui="http://v8.1c.ru/8.1/data/ui" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:future="urn:future" version="2.20">
+<StyleItem uuid="ca57d392-36c1-5750-895d-a149c96e9c44"><Properties><Name>AccentRgb</Name><Synonym/><Comment>keep</Comment><Type>Color</Type><Value xsi:type="ui:Color">#123456</Value></Properties></StyleItem>
+</MetaDataObject>
