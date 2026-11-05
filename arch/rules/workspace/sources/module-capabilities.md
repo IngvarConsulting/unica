@@ -1,6 +1,7 @@
 ---
 id: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/storage_form_module.rs::storage_forms_publish_only_form_modules_and_keep_registration_boundaries
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::module_capability_parents_expose_canonical_module_collections
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::production_authorities_reach_all_profile_module_capabilities_from_real_parent_inventories
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::websocket_client_source_view_is_an_explicit_provider_gap
@@ -25,7 +26,10 @@ HTTP, SOAP и сервис интеграции имеют разные роли
 Владелец объявляет одну ветвь `Module`; её счёт соответствует уникальным
 допустимым ролям. Через родительскую навигацию достижимы положительные
 возможности профиля конфигурации, внешней обработки и внешнего отчёта.
-Проверка проходит 25 предусмотренных фикстурой адресов через реальные
+Хранилище настроек допускает `Form.Module.Form`, сохраняя роль менеджера;
+вложенные команды хранилища не поддерживаются.
+
+Проверка проходит 26 предусмотренных фикстурой адресов через реальные
 полномочия чтения, а не только таблицу допустимых пар.
 
 Логические узлы `WebSocketClient` видимы, но чтение исходников его модуля

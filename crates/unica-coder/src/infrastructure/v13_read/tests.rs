@@ -16,6 +16,7 @@ mod metadata;
 mod metadata_declaration_diagnostics;
 mod numerator_read_profile;
 mod session_parameter_comment;
+mod storage_form_module;
 mod structured_property_names;
 mod support;
 mod task_addressing;
@@ -3282,7 +3283,7 @@ pub(crate) fn production_authorities_reach_all_profile_module_capabilities_from_
     .filter(|case| case.exists)
     .map(|case| case.at)
     .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(expected.len(), 25);
+    assert_eq!(expected.len(), 26);
 
     let index = ReaderReach::new(vec![("main", &main), ("epf", &epf), ("erf", &erf)]);
     for expected_at in expected {

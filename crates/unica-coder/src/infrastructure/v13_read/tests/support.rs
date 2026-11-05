@@ -750,6 +750,7 @@ impl RealReaderFixture {
                 .join("Documents/Заказ/Commands/ПровестиИЗакрыть/Ext/CommandModule.bsl"),
             "&AtClient\nProcedure CommandProcessing(CommandParameter, CommandExecuteParameters)\nEndProcedure\n",
         );
+        super::storage_form_module::install_storage_sources(self);
     }
 
     pub(super) fn install_accepted_profile_sources(&self) {
