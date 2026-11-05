@@ -9,6 +9,7 @@ use unica_source_contract::route::RouteClass;
 pub enum OperationApplicability {
     Form,
     FormAttribute,
+    FormProperties,
     FormEvent,
     FormItem,
     FormItemContainer,
@@ -20,6 +21,9 @@ impl OperationApplicability {
             Self::MetadataForms => "`Kind.Name` of a kind with forms",
             Self::Form => "`Kind.Name.Form.F`",
             Self::FormAttribute => "`Kind.Name.Form.F.Attribute.A` of an existing ValueTable",
+            Self::FormProperties => {
+                "`Kind.Name.Form.F` or `Kind.Name.Form.F.Attribute.A.Column.C` of a ValueTable"
+            }
             Self::FormItemContainer => "`Kind.Name.Form.F[.Item.I…]`",
             Self::FormItem => "`Kind.Name.Form.F.Item.I[.Item.J…]`",
             Self::FormEvent => "`Kind.Name.Form.F[.Item.I…].Event.E`",
@@ -30,6 +34,9 @@ impl OperationApplicability {
         match self {
             Self::MetadataForms => site.metadata_owner_with(MetaCollection::Forms),
             Self::FormAttribute => site.route() == RouteClass::Form && is_form_attribute(segments),
+            Self::FormProperties => {
+                site.route() == RouteClass::Form && (site.owned_form() || is_form_column(segments))
+            }
             Self::Form => site.route() == RouteClass::Form && site.owned_form(),
             Self::FormItemContainer => site.form_items(segments).is_some(),
             Self::FormItem => site
@@ -70,6 +77,15 @@ impl SiteExt for OperationSite<'_> {
             _ => None,
         }
     }
+}
+
+/// Exact data-column address; visual columns use Item and are a different profile.
+pub fn is_form_column(segments: &[AddressSegment]) -> bool {
+    matches!(segments, [owner, form, attribute, column]
+        if owner.name().is_some() && metadata_collection_matches(owner.kind(), MetaCollection::Forms)
+        && form.kind() == NodeKind::Form && form.name().is_some()
+        && attribute.kind() == NodeKind::Attribute && attribute.name().is_some()
+        && column.kind() == NodeKind::Column && column.name().is_some())
 }
 
 /// A data attribute of an owned form; an Item is a visual element.
