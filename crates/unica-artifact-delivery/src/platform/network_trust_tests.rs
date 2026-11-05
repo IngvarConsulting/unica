@@ -68,7 +68,7 @@ use std::process::{Command, Output};
 use unica_network::test_support::{ConnectProxy, TestRoot, TlsStand};
 
 #[cfg(target_os = "linux")]
-const CHILD: &str = "platform::network_trust_tests::network_trust_child_process";
+const CHILD: &str = "platform::medium_network_trust_tests::network_trust_child_process";
 
 #[cfg(target_os = "linux")]
 /// Переменные машины, которые изменили бы маршрут или хранилище в дочернем

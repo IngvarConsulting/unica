@@ -1,0 +1,927 @@
+{
+  "id": "S-1691-number-settings",
+  "issue": 1691,
+  "area": "Метаданные",
+  "task": "Изменить допустимую длину номера бизнес-процесса и задачи и все пять периодичностей бизнес-процесса, сохраняя исходные байты при возврате.",
+  "workspace": "tests/fixtures/acceptance/workspace-number-settings",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/NumberAllowedLength/enum",
+          "eq": [
+            "Variable",
+            "Fixed"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "0b8ebff2e61d9a50e5a6d58cd285bd434dd270b0315d91f5621c8c5e3a39bd5a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Approval",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberAllowedLength": "Variable"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "xml",
+          "select": "./{*}BusinessProcess/{*}Properties/{*}NumberAllowedLength",
+          "eq": [
+            "Variable"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberAllowedLength",
+          "eq": "Variable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Approval",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "xml",
+          "select": "./{*}BusinessProcess/{*}Properties/{*}NumberAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_2": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Approval",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "xml",
+          "select": "./{*}BusinessProcess/{*}Properties/{*}NumberAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        },
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "0b8ebff2e61d9a50e5a6d58cd285bd434dd270b0315d91f5621c8c5e3a39bd5a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.Work.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/NumberAllowedLength/enum",
+          "eq": [
+            "Variable",
+            "Fixed"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/Work.xml",
+          "kind": "sha256",
+          "eq": "bb63aa36178433b05018af88f36d3f151ce704738060f82dc33fe364253f8456"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.Work"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0": {
+          "kind": "sha256",
+          "file": "src/Tasks/Work.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.Work",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberAllowedLength": "Variable"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/Work.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/Work.xml",
+          "kind": "xml",
+          "select": "./{*}Task/{*}Properties/{*}NumberAllowedLength",
+          "eq": [
+            "Variable"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.Work"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberAllowedLength",
+          "eq": "Variable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.Work"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1": {
+          "kind": "sha256",
+          "file": "src/Tasks/Work.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.Work",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/Work.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/Work.xml",
+          "kind": "xml",
+          "select": "./{*}Task/{*}Properties/{*}NumberAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.Work"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.Work"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_2": {
+          "kind": "sha256",
+          "file": "src/Tasks/Work.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Task.Work",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberAllowedLength": "Fixed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/Work.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Tasks/Work.xml",
+          "kind": "xml",
+          "select": "./{*}Task/{*}Properties/{*}NumberAllowedLength",
+          "eq": [
+            "Fixed"
+          ]
+        },
+        {
+          "path": "src/Tasks/Work.xml",
+          "kind": "sha256",
+          "eq": "bb63aa36178433b05018af88f36d3f151ce704738060f82dc33fe364253f8456"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Task.Work"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberAllowedLength",
+          "eq": "Fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/NumberPeriodicity/enum",
+          "eq": [
+            "Day",
+            "Month",
+            "Nonperiodical",
+            "Quarter",
+            "Year"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "0b8ebff2e61d9a50e5a6d58cd285bd434dd270b0315d91f5621c8c5e3a39bd5a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_0": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Approval",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberPeriodicity": "Day"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "xml",
+          "select": "./{*}BusinessProcess/{*}Properties/{*}NumberPeriodicity",
+          "eq": [
+            "Day"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberPeriodicity",
+          "eq": "Day"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_1": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Approval",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberPeriodicity": "Month"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "xml",
+          "select": "./{*}BusinessProcess/{*}Properties/{*}NumberPeriodicity",
+          "eq": [
+            "Month"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberPeriodicity",
+          "eq": "Month"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_2": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Approval",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberPeriodicity": "Quarter"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "xml",
+          "select": "./{*}BusinessProcess/{*}Properties/{*}NumberPeriodicity",
+          "eq": [
+            "Quarter"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberPeriodicity",
+          "eq": "Quarter"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_3": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Approval",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberPeriodicity": "Year"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "xml",
+          "select": "./{*}BusinessProcess/{*}Properties/{*}NumberPeriodicity",
+          "eq": [
+            "Year"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberPeriodicity",
+          "eq": "Year"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_4": {
+          "kind": "sha256",
+          "file": "src/BusinessProcesses/Approval.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:BusinessProcess.Approval",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberPeriodicity": "Nonperiodical"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "xml",
+          "select": "./{*}BusinessProcess/{*}Properties/{*}NumberPeriodicity",
+          "eq": [
+            "Nonperiodical"
+          ]
+        },
+        {
+          "path": "src/BusinessProcesses/Approval.xml",
+          "kind": "sha256",
+          "eq": "0b8ebff2e61d9a50e5a6d58cd285bd434dd270b0315d91f5621c8c5e3a39bd5a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:BusinessProcess.Approval"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberPeriodicity",
+          "eq": "Nonperiodical"
+        }
+      ]
+    }
+  ]
+}

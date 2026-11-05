@@ -8,7 +8,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::retained_external_inventory_reads_malformed_tail_after_former_aggregate_bytes
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::retained_external_inventory_cancels_inside_a_large_descriptor_without_publishing_prefix
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::external_inventory_accepts_a_single_owner_descriptor_beyond_eight_mib
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::named_external_owner_view_has_no_hidden_eight_mib_descriptor_fallback
+  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::medium_named_external_owner_view_has_no_hidden_eight_mib_descriptor_fallback
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::external_inventory_retains_all_257_immediate_owners_and_the_last_named_view
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::external_inventory_does_not_limit_noise_before_a_valid_owner
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::external_inventory_rejects_malformed_and_non_utf8_late_tails_without_partial_rows

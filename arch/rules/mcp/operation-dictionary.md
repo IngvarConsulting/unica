@@ -20,16 +20,16 @@ check:
   - crates/unica-coder/src/infrastructure/daemon/server.rs::an_operation_address_outside_view_routes_next_to_view
   - crates/unica-coder/src/domain/apply.rs::applicability_follows_the_route_not_the_terminal_kind
   - crates/unica-coder/src/domain/apply.rs::a_misplaced_operation_names_the_nearest_node_where_it_applies
-  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::honest_can_on_the_main_corpus_workspace
-  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::honest_can_on_the_dcs_workspace
-  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::honest_can_on_the_mxl_workspace
-  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::honest_can_on_the_code_and_extension_workspace
-  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::honest_can_on_external_sources
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::medium_honest_can_on_the_main_corpus_workspace
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::medium_honest_can_on_the_dcs_workspace
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::medium_honest_can_on_the_mxl_workspace
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::medium_honest_can_on_the_code_and_extension_workspace
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::medium_honest_can_on_external_sources
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::fixture_coverage_reaches_every_route_class
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::a_misplaced_operation_routes_next_to_the_node_where_it_applies
   - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::without_an_executable_ancestor_the_refusal_names_the_address_shape
-  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::honest_can_on_the_predefined_workspace
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs::member_operation_contracts_and_the_planner_agree_on_structure
+  - crates/unica-coder/src/infrastructure/daemon/v13_can_honesty_tests.rs::medium_honest_can_on_the_predefined_workspace
+  - crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs::medium_member_operation_contracts_and_the_planner_agree_on_structure
   - crates/unica-coder/src/domain/operation_contract.rs::dcs_contract_defaults_aliases_and_roles_match_the_typed_boundary
   - crates/unica-coder/src/infrastructure/daemon/v13_read_modes.rs::operation_dictionary_tests::a_shared_operation_name_publishes_the_contract_of_the_addressed_node
   - crates/unica-coder/src/domain/operation_contract.rs::role_contracts_publish_the_entry_shape

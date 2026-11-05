@@ -67,6 +67,14 @@ pub trait FamilyOperation: Copy + fmt::Debug + Send + Sync + 'static {
         self.contract()
     }
 
+    fn contract_at_with_observation(
+        self,
+        site: &OperationSite<'_>,
+        _observation: Option<&Self::Observation>,
+    ) -> Option<OperationContract> {
+        self.contract_at(site)
+    }
+
     fn content_resource(self) -> Option<&'static str> {
         None
     }
@@ -130,6 +138,11 @@ trait ErasedOperation: Sync {
     fn writes_source(&self, source: SourceSetTraits) -> bool;
     fn contract(&self) -> Option<OperationContract>;
     fn contract_at(&self, site: &OperationSite<'_>) -> Option<OperationContract>;
+    fn contract_at_with_observations(
+        &self,
+        site: &OperationSite<'_>,
+        lookup: ObservationLookup<'_>,
+    ) -> Option<OperationContract>;
     fn content_resource(&self) -> Option<&'static str>;
     fn creator(&self) -> Option<&'static str>;
     fn retired_arguments(&self) -> &'static [RetiredArgument];
@@ -182,6 +195,18 @@ impl<O: FamilyOperation> ErasedOperation for TypedOperationBundle<O> {
     }
     fn contract_at(&self, site: &OperationSite<'_>) -> Option<OperationContract> {
         self.operation.contract_at(site)
+    }
+    fn contract_at_with_observations(
+        &self,
+        site: &OperationSite<'_>,
+        lookup: ObservationLookup<'_>,
+    ) -> Option<OperationContract> {
+        let observed = lookup(site.at(), self.observation_type());
+        let typed = match &observed {
+            Some(value) => Some(value.downcast_ref::<O::Observation>()?),
+            None => None,
+        };
+        self.operation.contract_at_with_observation(site, typed)
     }
     fn content_resource(&self) -> Option<&'static str> {
         self.operation.content_resource()
@@ -291,6 +316,14 @@ impl OperationDescriptor {
 
     pub fn writes_source(self, source: SourceSetTraits) -> bool {
         self.binding.writes_source(source)
+    }
+
+    pub fn argument_contract_at_with_observations(
+        self,
+        site: &OperationSite<'_>,
+        lookup: ObservationLookup<'_>,
+    ) -> Option<OperationContract> {
+        self.binding.contract_at_with_observations(site, lookup)
     }
 
     pub fn applies_at(self, site: &OperationSite<'_>) -> bool {
@@ -470,6 +503,17 @@ mod tests {
         fn matches(self, _: &OperationSite<'_>) -> bool {
             true
         }
+        fn contract_at(self, site: &OperationSite<'_>) -> Option<OperationContract> {
+            Some(OperationContract {
+                schema: serde_json::json!({"address":site.at().to_string()}),
+                target: "test form",
+                effect: "test",
+                notes: "test",
+                example_args: serde_json::json!({}),
+                help: "test",
+                format_validators: &[],
+            })
+        }
         fn needs_observation(self, _: Option<&OperationSite<'_>>) -> bool {
             true
         }
@@ -523,12 +567,45 @@ mod tests {
 
     #[test]
     fn wrong_form_observation_never_becomes_the_historically_permitted_missing_fact() {
+        use unica_source_contract::context::SourceSetTraits;
+        use unica_source_contract::{SourceProfile, SourceSetKind};
+        let at = QualifiedAddress::parse("main:CommonForm.Card").unwrap();
+        let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+        let source =
+            SourceSetTraits::from_profiles(SourceSetKind::Configuration, Some(profile), profile);
+        let site = OperationSite::from_route(
+            &at,
+            source,
+            unica_source_contract::route::RouteClass::Metadata,
+        );
         for operation in [FormOperation::Add, FormOperation::Remove] {
             let descriptor = match operation {
                 FormOperation::Add => OperationDescriptor::bind(&FORM_ADD),
                 FormOperation::Remove => OperationDescriptor::bind(&FORM_REMOVE),
             };
             assert!(descriptor.admits_context(&|_| None));
+            let expected = descriptor.argument_contract_at(&site).unwrap().schema;
+            assert_eq!(
+                descriptor
+                    .argument_contract_at_with_observations(&site, &|_, _| None)
+                    .unwrap()
+                    .schema,
+                expected
+            );
+            assert_eq!(
+                descriptor
+                    .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(
+                        FormItemRole
+                    )))
+                    .unwrap()
+                    .schema,
+                expected
+            );
+            assert!(descriptor
+                .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(
+                    TemplateFormat
+                )))
+                .is_none());
             assert!(!descriptor.admits_context(&|requested| {
                 assert!(requested.is::<FormItemRole>());
                 Some(Box::new(TemplateFormat))
