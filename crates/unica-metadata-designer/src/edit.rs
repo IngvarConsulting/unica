@@ -4207,6 +4207,7 @@ mod prefixed_property_writer_tests {
                 "A9",
                 "Constant.Probe",
                 "CommonModule.Probe.Handle",
+                "SettingsStorage.Probe",
             ]
             .into_iter()
             .filter(|value| *value != current.trim())
