@@ -276,12 +276,20 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_draft_pull_request_takes_no_runner_until_it_is_ready(self) -> None:
         self.assertIn("ready_for_review", triggers(self.release)["pull_request"]["types"])
         self.assertEqual(triggers(self.release)["merge_group"]["types"], ["checks_requested"])
-        for job_id in ("unica-ci", "pr-checks", "rust-os"):
+        for job_id in ("unica-ci", "pr-checks"):
             with self.subTest(job=job_id):
                 self.assertIn(
                     "!github.event.pull_request.draft",
                     normalized(job(self.release, job_id)["if"]),
                 )
+        self.assertEqual(
+            normalized(job(self.release, "rust-os")["if"]),
+            "${{ github.event_name != 'merge_group' && "
+            "!(github.event_name == 'push' && github.ref == 'refs/heads/main') && "
+            "(github.event_name != 'pull_request' || "
+            "(!github.event.pull_request.draft && "
+            "contains(github.event.pull_request.labels.*.name, 'ci:full'))) }}",
+        )
         # Очередь идёт своими джобами без оглядки на черновик.
         self.assertNotIn(
             "draft", normalized(job(self.release, "windows-clippy")["if"])

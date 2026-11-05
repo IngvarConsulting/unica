@@ -15,7 +15,7 @@ on:
   pull_request:
     # Смена меток не запускает основной workflow: новый suite без `Unica CI`
     # заменяет для ruleset успешный suite той же головы PR. Метка `ci:full`
-    # читается из снимка pull request при следующем push (`synchronize`).
+    # читается из снимка pull request при следующем запуске.
     # У черновика джобы пропускаются, перевод в готовый запускает полный прогон
     # (`ready_for_review`).
     types: [opened, synchronize, reopened, ready_for_review]
