@@ -188,6 +188,7 @@ mod medium_tests {
         cleanup(&context);
     }
 
+    /// rule: INV.SOURCE.DEFAULT-SET-SELECTION
     #[test]
     fn selects_the_sole_configuration() {
         let context = fixture(&[
@@ -204,6 +205,7 @@ mod medium_tests {
         cleanup(&context);
     }
 
+    /// rule: INV.SOURCE.DEFAULT-SET-SELECTION
     #[test]
     fn rejects_ambiguous_configurations_without_main() {
         let context = fixture(&[

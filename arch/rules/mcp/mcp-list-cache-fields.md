@@ -1,7 +1,5 @@
 ---
 id: CTR.WIRE.LIST-CACHE-FIELDS
-check:
-  - crates/unica-coder/src/interfaces/mcp.rs::modern_list_results_carry_required_cache_fields_and_legacy_stays_clean
 ---
 
 # Настройки кеширования списка инструментов зависят от версии MCP

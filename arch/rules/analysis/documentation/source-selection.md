@@ -1,10 +1,5 @@
 ---
 id: INV.SURFACE.DOCS-SOURCE-SELECTION
-check:
-  - crates/unica-coder/src/infrastructure/application_ports.rs::canonical_v13_docs_search_passes_the_scalar_source_kind_to_the_shared_registry
-  - crates/unica-coder/src/infrastructure/application_ports.rs::canonical_v13_docs_search_rejects_unknown_source_as_typed_unsupported_source
-  - crates/unica-coder/src/infrastructure/application_ports.rs::canonical_v13_docs_search_rejects_configuration_help_until_it_is_actor_safe
-  - crates/unica-coder/src/infrastructure/application_ports.rs::canonical_v13_docs_search_omits_unsafe_configuration_help_by_default
 ---
 
 # Поиск справки ограничивается выбранными источниками
