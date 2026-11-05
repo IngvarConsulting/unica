@@ -843,7 +843,7 @@ pub(crate) fn plan_xdto_batch_owned_for_test(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) mod medium_tests {
     use super::{
         apply_with_data, decode, info_with_data, model, parse_xdto_info_bytes,
         parse_xdto_plan_operation, plan_unindexed_xdto_batch, plan_xdto_batch_owned_for_test,

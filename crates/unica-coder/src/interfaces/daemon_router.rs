@@ -1274,7 +1274,7 @@ pub(in crate::interfaces) mod test_support {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::test_support::{
         completed, daemon_side_key, direct_receipt, FakeDaemon, LiveDaemon, ScriptedService, Step,
     };

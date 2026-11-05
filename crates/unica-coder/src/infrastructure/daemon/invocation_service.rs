@@ -1748,7 +1748,7 @@ mod registration_cache_tests {
     }
 
     #[test]
-    fn logical_read_retains_root_artifacts_across_calls_and_isolates_sources() {
+    fn medium_logical_read_retains_root_artifacts_across_calls_and_isolates_sources() {
         let workspace = tempfile::tempdir().unwrap();
         let xml = |name: &str| {
             format!(

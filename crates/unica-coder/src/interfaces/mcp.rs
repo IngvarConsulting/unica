@@ -1697,7 +1697,7 @@ impl Drop for InFlightGuard {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use crate::application::{ResultContract, ToolExecution};
     use crate::interfaces::daemon_router::remaining_invocation_budget;
@@ -8552,7 +8552,7 @@ mod tests {
         if std::env::var_os(CHILD).is_none() {
             let root = tempfile::tempdir().unwrap();
             let output = std::process::Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", "interfaces::mcp::tests::canonical_manual_cancellation_sole_engine_waiter_preserves_delivery_and_pinned_artifact", "--nocapture"])
+                .args(["--exact", "interfaces::mcp::medium_tests::canonical_manual_cancellation_sole_engine_waiter_preserves_delivery_and_pinned_artifact", "--nocapture"])
                 .env(CHILD, "1").env(ROOT, root.path()).output().unwrap();
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);

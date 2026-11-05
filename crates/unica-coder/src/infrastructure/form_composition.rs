@@ -1165,7 +1165,7 @@ struct FormEditSuccess {
 
 #[cfg(test)]
 #[path = "../../tests/platform/form_read_selector.rs"]
-pub(crate) mod form_read_selector_bridge_tests;
+pub(crate) mod medium_form_read_selector_bridge_tests;
 #[cfg(test)]
 #[path = "../../tests/platform/form_composition.rs"]
 pub(crate) mod tests;
