@@ -5,7 +5,7 @@ check:
   - crates/unica-project-health/tests/platform/project_health_layout.rs::project_config_past_eight_mib_keeps_its_exact_useful_root
   - crates/unica-project-health/tests/platform/project_health_layout.rs::project_config_past_eight_mib_rejects_malformed_tail_and_extra_document
   - crates/unica-project-health/tests/platform/project_health_layout.rs::source_layout_inspects_all_1025_declared_source_roots
-  - crates/unica-project-health/tests/platform/project_health_layout.rs::health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity
+  - crates/unica-project-health/tests/platform/project_health_layout.rs::medium_health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity
   - crates/unica-project-health/tests/platform/project_health_layout.rs::health_yaml_aliases_keep_exact_selected_values_and_real_name_ambiguity
   - crates/unica-project-health/tests/platform/project_health_layout.rs::health_yaml_many_selected_container_nodes_keep_the_useful_layout
   - crates/unica-project-health/tests/platform/project_health_layout.rs::health_yaml_aliased_root_key_keeps_the_useful_layout_after_many_selected_nodes

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use unica_roles::{RoleEditEffect, RoleEditEffectAction};
 use unica_source_designer::roots::{platform_xml_publication_policy, PlatformXmlPublicationPolicy};
 use unica_xml_format::text::{
-    resolve_line_ending, EolPolicy, LineEndingProfile, SourceTextSnapshot,
+    resolve_line_ending, EolPolicy, LineEnding, LineEndingProfile, SourceTextSnapshot,
 };
 
 pub fn decode_role_xml(raw: &[u8]) -> Result<(bool, String), String> {
@@ -434,7 +434,7 @@ pub fn right_insertion(
         ));
     }
     let closing_indent = text[line_start..close].trim_end_matches('\r');
-    let eol = role_source_eol(text)?;
+    let eol = role_source_eol(text, line_start)?;
     let right_indent = direct_rights
         .first()
         .map(|right| line_indent(text, right.range().start))
@@ -454,7 +454,7 @@ pub fn right_insertion(
     ))
 }
 
-fn role_source_eol(text: &str) -> Result<&'static str, String> {
+pub(crate) fn role_source_eol(text: &str, offset: usize) -> Result<&'static str, String> {
     let snapshot = SourceTextSnapshot::from_bytes(text.as_bytes())
         .map_err(|error| format!("unsupported_node: {error}"))?;
     let policy = if snapshot.line_endings() == LineEndingProfile::None {
@@ -462,7 +462,18 @@ fn role_source_eol(text: &str) -> Result<&'static str, String> {
     } else {
         EolPolicy::Preserve
     };
-    resolve_line_ending(policy, &snapshot, None)
+    // The preceding structural line owns the insertion layout. Newlines inside
+    // distant RLS text must not choose or invalidate this local format.
+    let bytes = text.as_bytes();
+    let local = bytes[..offset]
+        .iter()
+        .rposition(|byte| matches!(byte, b'\r' | b'\n'))
+        .map(|index| match bytes[index] {
+            b'\n' if index > 0 && bytes[index - 1] == b'\r' => LineEnding::CrLf,
+            b'\n' => LineEnding::Lf,
+            _ => LineEnding::Cr,
+        });
+    resolve_line_ending(policy, &snapshot, local)
         .map(|ending| ending.as_str())
         .map_err(|error| format!("unsupported_node: {error}"))
 }
@@ -484,9 +495,10 @@ fn lexical_role_prefix(text: &str, node: roxmltree::Node<'_, '_>) -> Result<Stri
         .unwrap_or_default())
 }
 
-fn line_indent(text: &str, offset: usize) -> String {
-    let start = text[..offset]
-        .rfind('\n')
+pub(crate) fn line_indent(text: &str, offset: usize) -> String {
+    let start = text.as_bytes()[..offset]
+        .iter()
+        .rposition(|byte| matches!(byte, b'\r' | b'\n'))
         .map(|index| index + 1)
         .unwrap_or(0);
     text[start..offset]

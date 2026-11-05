@@ -79,6 +79,40 @@ fn runtime() -> V5CanonicalInvocationRuntime {
 }
 
 #[test]
+fn settings_storage_defaults_keep_comment_and_slot_damage_independent() {
+    let f = Fixture::new();
+    let r = runtime();
+    f.replace(
+        "SettingsStorages/Store.xml",
+        "<Comment>first\nsecond</Comment>",
+        "<Comment><Future/></Comment>",
+    );
+    f.replace(
+        "SettingsStorages/Store.xml",
+        "<DefaultLoadForm/>",
+        "<DefaultLoadForm><Future/></DefaultLoadForm>",
+    );
+    let before = unica_workspace::test_support::tree_snapshot(&f.source);
+    let viewed = f.call(
+        &r,
+        ToolIdentity::View,
+        json!({"at":"main:SettingsStorage.Store"}),
+    );
+    assert!(viewed.ok, "{viewed:?}");
+    let data = viewed.data.unwrap();
+    assert!(data["props"].get("Comment").is_none(), "{data}");
+    assert!(data["props"].get("DefaultLoadForm").is_none(), "{data}");
+    assert_eq!(data["props"]["DefaultSaveForm"], "", "{data}");
+    let limits = data["limits"].to_string();
+    assert!(limits.contains("Comment"), "{data}");
+    assert!(limits.contains("DefaultLoadForm"), "{data}");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&f.source),
+        before
+    );
+}
+
+#[test]
 fn settings_storage_defaults_are_exposed_and_assign_existing_owned_forms() {
     let f = Fixture::new();
     let r = runtime();
@@ -89,13 +123,14 @@ fn settings_storage_defaults_are_exposed_and_assign_existing_owned_forms() {
     );
     assert!(view.ok, "{view:?}");
     let data = view.data.unwrap();
+    assert_eq!(data["props"]["Comment"], "first\nsecond", "{data}");
     let can = data["can"].as_array().unwrap();
     assert!(can.iter().any(|op| op["op"] == "form.set"));
+    assert!(can.iter().any(|op| op["op"] == "props.set"));
     for forbidden in [
         "form.add",
         "object.create",
         "object.remove",
-        "props.set",
         "attribute.add",
         "template.add",
     ] {
