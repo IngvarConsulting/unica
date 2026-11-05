@@ -1,0 +1,895 @@
+{
+  "id": "S-1682-common-picture-availability",
+  "name": "common-picture-independent-availability-flags",
+  "issue": 1682,
+  "area": "Метаданные",
+  "task": "Изменить независимо доступность общей картинки для выбора и оформления через сохранённый план; сохранить прочие свойства и ресурсы.",
+  "workspace": "tests/fixtures/acceptance/workspace-common-picture",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AvailabilityForChoice",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "file4": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe/Ext/Picture/Picture.png"
+        },
+        "file5": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe/Ext/Picture.xml"
+        },
+        "file6": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe.xml"
+        },
+        "file7": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        },
+        "file9": {
+          "kind": "sha256",
+          "file": "src/Languages/Русский.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonPicture.Probe.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AvailabilityForChoice": "false"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"boolean\"",
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AvailabilityForAppearance": 1
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"boolean\"",
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "no"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown field `Comment`",
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.file6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "pre0": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AvailabilityForChoice": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.pre0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AvailabilityForChoice",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "pre1": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AvailabilityForChoice": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.pre1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AvailabilityForChoice",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "pre2": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AvailabilityForAppearance": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.pre2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AvailabilityForChoice",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "pre3": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AvailabilityForAppearance": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.pre3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AvailabilityForChoice",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "pre4": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AvailabilityForChoice": true,
+                "AvailabilityForAppearance": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.pre4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AvailabilityForChoice",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "pre5": {
+          "kind": "sha256",
+          "file": "src/CommonPictures/Probe.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "AvailabilityForChoice": true,
+                "AvailabilityForAppearance": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.pre5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture/Picture.png",
+          "kind": "sha256",
+          "eq": "$capture.file4"
+        },
+        {
+          "path": "src/CommonPictures/Probe/Ext/Picture.xml",
+          "kind": "sha256",
+          "eq": "$capture.file5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.file7"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.file9"
+        },
+        {
+          "path": "src/CommonPictures/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.pre5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AvailabilityForChoice",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/AvailabilityForAppearance",
+          "eq": true
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
+	<CommonPicture uuid="16820000-0000-4000-8000-000000000001">
+		<Properties>
+			<Name>Probe</Name>
+			<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Картинка</v8:content></v8:item></Synonym>
+			<Comment>Keep &amp; verify</Comment>
+			<AvailabilityForChoice>false</AvailabilityForChoice>
+			<AvailabilityForAppearance>false</AvailabilityForAppearance>
+		</Properties>
+	</CommonPicture>
+</MetaDataObject>

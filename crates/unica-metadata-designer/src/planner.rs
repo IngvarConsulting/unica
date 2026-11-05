@@ -1395,6 +1395,30 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::CommonPicture(values) => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = std::path::Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".into()))?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if !root.registers("CommonPicture", name) {
+                return Err(invalid(
+                    "CommonPicture must be registered in Configuration.xml".into(),
+                ));
+            }
+            let text = crate::common_picture::patch(&source, name, values).map_err(invalid)?;
+            (NodeKind::CommonPicture, text)
+        }
         DescriptorPropertyChanges::WSReference(values) => {
             let invalid = |message: String| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
