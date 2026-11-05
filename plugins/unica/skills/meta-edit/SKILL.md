@@ -54,14 +54,53 @@ allowed-tools:
 операции (`argsSchema` подробного `can`). Общие прикладные правила — в
 [соглашениях по метаданным](../../references/platform/metadata-conventions.md).
 
+`props.set` изменяет только строковый `Comment` у существующих
+`CommonAttribute`, `FunctionalOptionsParameter`,
+`SessionParameter`, `FilterCriterion`, `SettingsStorage`, `CommonCommand`,
+`CommandGroup`, `CommonForm`, `CommonTemplate`, `CommonPicture`, `Language`,
+`IntegrationService`, `XDTOPackage`,
+`Sequence` и `Style`. Для общей формы адресуй дескриптор
+`main:CommonForm.<Имя>.Metadata`; остальные владельцы адресуются как
+`main:<Вид>.<Имя>`. Например, `{"values":{"Comment":"Назначение параметра"}}`;
+пустая строка очищает комментарий. Имя `comment` — допустимый псевдоним,
+одновременно оба написания не передаются. Отсутствующий, неоднозначный
+или составной `Comment` требует исправления исходного дескриптора.
+
+У `FunctionalOption` тот же `props.set` поддерживает строковый `Comment`,
+строковый `Location` и булев `PrivilegedGetMode`, в том числе в одном `values`.
+`Location` должен быть непустой ссылкой на существующую константу, реквизит
+или ресурс в том же наборе исходников. Стандартные реквизиты и измерения
+не подходят для хранилища.
+Изменение только `Comment` сохраняет остальные свойства без проверки хранилища;
+при переданном `Location` или `PrivilegedGetMode` хранилище проверяется.
+Пользуйся точным набором полей и псевдонимов из подробного `Can.props.set`.
+
+
+У `WSReference` строковый `Comment`/`comment` изменяется независимо от состояния
+`LocationURL`. В конфигурации можно также изменить существующий `LocationURL`
+или его псевдоним `locationURL`, в том числе вместе с комментарием. Пустая
+строка очищает переданное поле. Смешанная операция проверяет оба поля и
+регистрацию WS-ссылки до публикации; WSDL и соседние файлы сохраняются.
+В расширении доступен профиль только комментария.
+
+У `StyleItem` строковый `Comment`/`comment` изменяется независимо от типа и
+состояния Value. Для подтверждённого цвета подробный `Can.props.set` дополнительно
+объявляет `Value`: `#RRGGBB` или поддержанный цвет web/style. `Value` и комментарий
+можно передать вместе; изменение цвета сохраняет проверки Type, регистрации и
+формата, а ошибка любого поля отменяет всю операцию. Font/Border и неподдержанный
+Value не получают контракт записи цвета.
+
 Для существующего `DocumentNumerator` операция `props.set` меняет
-`NumberType`, `NumberLength`, `NumberAllowedLength`, `NumberPeriodicity`
-и `CheckUnique`. Имя, UUID и ссылки документов сохраняются. Числовой номер
+`NumberType`, `NumberLength`, `NumberAllowedLength`, `NumberPeriodicity`,
+`CheckUnique` и строковый `Comment`/`comment`, в том числе в одном
+`values`. Имя, UUID и ссылки документов сохраняются. Числовой номер
 допускает до 38 разрядов; сочетание типа и длины проверяется после всех
 операций пакета. Перенумерация данных информационной базы не выполняется.
 
-У существующей `Sequence` в конфигурации `props.set` меняет только
-`MoveBoundaryOnPosting`: `DontMove` или `Move`. Сначала прочитай
+У существующей `Sequence` в конфигурации `props.set` меняет
+`MoveBoundaryOnPosting` (`DontMove` или `Move`) и `Comment/comment`, отдельно
+или вместе. В расширении доступен только комментарий; его изменение не
+требует корректного режима границы. Сначала прочитай
 `<set>:Sequence.<Имя>.Can.props.set`, затем выполни preview и его сохранённый
 `executionToken`. UUID, имя, InternalInfo, Documents, измерения и модули
 сохраняются. Это декларативная настройка: проведение документов и фактическое

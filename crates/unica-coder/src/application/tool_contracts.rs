@@ -4184,47 +4184,71 @@ pub(crate) mod tests {
         );
     }
 
+    /// The compared form of a mutating tool's input schema: annotations
+    /// removed, keys sorted, one value per indented line. Snapshot files use
+    /// it so independent additions to one schema merge as separate lines.
     fn native_mutation_schema_signature(schema: &Value) -> String {
-        fn write_canonical(value: &Value, output: &mut Vec<u8>) {
-            match value {
-                Value::Array(items) => {
-                    output.push(b'[');
-                    for (index, item) in items.iter().enumerate() {
-                        if index != 0 {
-                            output.push(b',');
-                        }
-                        write_canonical(item, output);
-                    }
-                    output.push(b']');
-                }
-                Value::Object(object) => {
-                    output.push(b'{');
-                    let mut keys = object.keys().collect::<Vec<_>>();
-                    keys.sort_unstable();
-                    for (index, key) in keys.into_iter().enumerate() {
-                        if index != 0 {
-                            output.push(b',');
-                        }
-                        serde_json::to_writer(&mut *output, key).expect("schema key serializes");
-                        output.push(b':');
-                        write_canonical(&object[key], output);
-                    }
-                    output.push(b'}');
-                }
-                _ => serde_json::to_writer(output, value).expect("schema scalar serializes"),
-            }
-        }
-
-        let mut canonical = Vec::new();
         let mut contract = schema.clone();
         remove_schema_descriptions(&mut contract);
-        write_canonical(&contract, &mut canonical);
-        let mut hash = 0xcbf29ce484222325u64;
-        for byte in &canonical {
-            hash ^= u64::from(*byte);
-            hash = hash.wrapping_mul(0x100000001b3);
+        canonical_pretty_json(&contract)
+    }
+
+    /// The snapshot file of one tool: its operation and the compared schema.
+    fn native_mutation_snapshot(operation: &str, schema: &Value) -> String {
+        let mut contract = schema.clone();
+        remove_schema_descriptions(&mut contract);
+        canonical_pretty_json(&json!({"operation": operation, "inputSchema": contract}))
+    }
+
+    /// Deterministic pretty JSON: the workspace enables `preserve_order`, so
+    /// object keys are sorted here instead of relying on map order.
+    fn canonical_pretty_json(value: &Value) -> String {
+        fn pad(depth: usize, output: &mut String) {
+            for _ in 0..depth {
+                output.push_str("  ");
+            }
         }
-        format!("{}:{hash:016x}", canonical.len())
+        fn write(value: &Value, depth: usize, output: &mut String) {
+            match value {
+                Value::Array(items) if !items.is_empty() => {
+                    output.push_str("[\n");
+                    for (index, item) in items.iter().enumerate() {
+                        pad(depth + 1, output);
+                        write(item, depth + 1, output);
+                        if index + 1 != items.len() {
+                            output.push(',');
+                        }
+                        output.push('\n');
+                    }
+                    pad(depth, output);
+                    output.push(']');
+                }
+                Value::Object(object) if !object.is_empty() => {
+                    output.push_str("{\n");
+                    let mut keys = object.keys().collect::<Vec<_>>();
+                    keys.sort_unstable();
+                    for (index, key) in keys.iter().enumerate() {
+                        pad(depth + 1, output);
+                        output
+                            .push_str(&serde_json::to_string(key).expect("schema key serializes"));
+                        output.push_str(": ");
+                        write(&object[key.as_str()], depth + 1, output);
+                        if index + 1 != keys.len() {
+                            output.push(',');
+                        }
+                        output.push('\n');
+                    }
+                    pad(depth, output);
+                    output.push('}');
+                }
+                _ => output
+                    .push_str(&serde_json::to_string(value).expect("schema scalar serializes")),
+            }
+        }
+        let mut output = String::new();
+        write(value, 0, &mut output);
+        output.push('\n');
+        output
     }
 
     #[test]
@@ -4380,7 +4404,9 @@ pub(crate) mod tests {
     #[test]
     pub(crate) fn native_mutation_surface_has_exact_operations_and_schemas() {
         use std::collections::BTreeMap;
+        use std::path::{Path, PathBuf};
 
+        const UPDATE: &str = "UNICA_UPDATE_SCHEMA_SNAPSHOTS";
         let actual = tools()
             .into_iter()
             .filter(|tool| tool.execution.is_mutating())
@@ -4396,54 +4422,98 @@ pub(crate) mod tests {
                     ToolHandler::Metadata { operation } => format!("metadata:{operation:?}"),
                     _ => unreachable!(),
                 };
-                let schema = input_schema_for_tool(&tool);
-                let signature = native_mutation_schema_signature(&schema);
-                (tool.name, (operation, signature))
+                let snapshot = native_mutation_snapshot(&operation, &input_schema_for_tool(&tool));
+                (tool.name.to_string(), snapshot)
             })
             .collect::<BTreeMap<_, _>>();
-        fn entry(operation: &str, signature: &str) -> (String, String) {
-            (operation.to_string(), signature.to_string())
+        let directory =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/mutation-schemas");
+        let recorded = |directory: &Path| -> BTreeMap<String, (PathBuf, String)> {
+            let Ok(entries) = std::fs::read_dir(directory) else {
+                return BTreeMap::new();
+            };
+            entries
+                .map(|entry| entry.expect("snapshot entry is readable").path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .map(|path| {
+                    let name = path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .expect("snapshot name is UTF-8")
+                        .to_string();
+                    // A Windows checkout may convert the line endings.
+                    let text = std::fs::read_to_string(&path)
+                        .expect("snapshot is UTF-8")
+                        .replace("\r\n", "\n");
+                    (name, (path, text))
+                })
+                .collect()
+        };
+        if std::env::var(UPDATE).as_deref() == Ok("1") {
+            std::fs::create_dir_all(&directory).expect("create the snapshot directory");
+            for (name, (path, _)) in recorded(&directory) {
+                if !actual.contains_key(&name) {
+                    std::fs::remove_file(path).expect("remove a stale snapshot");
+                }
+            }
+            for (name, snapshot) in &actual {
+                // Thread id and clock keep parallel updates in one run apart.
+                let staged = directory.join(format!(
+                    ".{name}.{:?}.{}.json.tmp",
+                    std::thread::current().id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |elapsed| elapsed.as_nanos())
+                ));
+                std::fs::write(&staged, snapshot).expect("stage a snapshot");
+                std::fs::rename(&staged, directory.join(format!("{name}.json")))
+                    .expect("publish a snapshot");
+            }
         }
-        let expected = BTreeMap::from([
-            ("unica.cf.edit", entry("cf-edit", "3882:a5dd0d041f4db130")),
-            (
-                "unica.cfe.borrow",
-                entry("cfe-borrow", "3920:57db4508b59e7b97"),
-            ),
-            (
-                "unica.code.patch",
-                entry("code-patch", "1042:989b04365351871e"),
-            ),
-            (
-                "unica.form.compile",
-                entry("form-compile", "3869:2e8369c6b61d7d10"),
-            ),
-            (
-                "unica.form.edit",
-                entry("form-edit", "4418:9886aafe6b92f956"),
-            ),
-            (
-                "unica.interface.edit",
-                entry("interface-edit", "3894:ce6cfee05e0e66fb"),
-            ),
-            (
-                "unica.meta.add",
-                entry("metadata:Add", "31123:3d78f073912a4eeb"),
-            ),
-            (
-                "unica.meta.edit",
-                entry("metadata:Edit", "31743:ed7853e02cdea518"),
-            ),
-            (
-                "unica.role.edit",
-                entry("role-edit", "2037:bd64c73af768496a"),
-            ),
-            (
-                "unica.subsystem.edit",
-                entry("subsystem-edit", "3894:a2c477348a4d8161"),
-            ),
-        ]);
-        assert_eq!(actual, expected);
+        let recorded = recorded(&directory);
+        let mut problems = Vec::new();
+        for name in actual.keys().filter(|name| !recorded.contains_key(*name)) {
+            problems.push(format!("{name}: snapshot {name}.json is missing"));
+        }
+        for name in recorded.keys().filter(|name| !actual.contains_key(*name)) {
+            problems.push(format!(
+                "{name}: snapshot exists, but no mutating native tool has this name"
+            ));
+        }
+        for (name, snapshot) in &actual {
+            let Some((_, text)) = recorded.get(name) else {
+                continue;
+            };
+            if text == snapshot {
+                continue;
+            }
+            if text.trim_end() == snapshot.trim_end() {
+                problems.push(format!(
+                    "{name}: {name}.json differs only in its final line ending"
+                ));
+                continue;
+            }
+            let expected = text.lines().collect::<Vec<_>>();
+            let observed = snapshot.lines().collect::<Vec<_>>();
+            let line = expected
+                .iter()
+                .zip(&observed)
+                .position(|(left, right)| left != right)
+                .unwrap_or(expected.len().min(observed.len()));
+            problems.push(format!(
+                "{name}: schema differs from {name}.json at line {}\n  snapshot: {}\n  actual:   {}",
+                line + 1,
+                expected.get(line).unwrap_or(&"<end of file>"),
+                observed.get(line).unwrap_or(&"<end of file>"),
+            ));
+        }
+        assert!(
+            problems.is_empty(),
+            "mutating tool contract differs from tests/fixtures/mutation-schemas:\n{}\n\
+             If the change is intended, run `{UPDATE}=1 cargo test -p unica-coder --lib \
+             native_mutation_surface_has_exact_operations_and_schemas` and review the snapshot diff.",
+            problems.join("\n")
+        );
     }
 
     #[test]

@@ -21,6 +21,64 @@ fn fixture() -> Fixture {
 }
 
 #[test]
+fn sequence_boundary_mixed_comment_edit_preserves_intervening_line_endings() {
+    let fixture = fixture();
+    let path = fixture.source.join("Sequences/Target.xml");
+    let native = std::fs::read_to_string(&path).unwrap();
+    let source = native.replace("</Comment>\r\n", "</Comment>\n<!-- retain bare LF -->\n");
+    assert_ne!(source, native);
+    std::fs::write(&path, &source).unwrap();
+    let mut expected = tree_snapshot(&fixture.source);
+    let postimage = source
+        .replace("boundary fixture", "mixed &amp; value")
+        .replace(">DontMove<", ">Move<");
+    expected.insert(
+        PathBuf::from("Sequences/Target.xml"),
+        postimage.as_bytes().to_vec(),
+    );
+    fixture.preview_and_publish("main:Sequence.Target", json!([
+        {"op":"props.set","args":{"values":{"MoveBoundaryOnPosting":"Move","comment":"mixed & value"}}}
+    ]));
+    assert_eq!(tree_snapshot(&fixture.source), expected);
+}
+
+#[test]
+fn sequence_boundary_comment_only_ignores_missing_or_damaged_mode_and_mixed_changes_refuse() {
+    for kind in [SourceSetKind::Configuration, SourceSetKind::Extension] {
+        for mode in ["", "<MoveBoundaryOnPosting>Unknown</MoveBoundaryOnPosting>"] {
+            let fixture = Fixture::new(kind);
+            fixture.put("Sequence", "Sequences", mode, "");
+            let path = fixture.source.join("Sequences/Target.xml");
+            let before = std::fs::read_to_string(&path).unwrap();
+            fixture.preview_and_publish(
+                "main:Sequence.Target",
+                json!([
+                    {"op":"props.set","args":{"values":{"Comment":"independent"}}}
+                ]),
+            );
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                before.replace("<Comment/>", "<Comment>independent</Comment>")
+            );
+            let before = tree_snapshot(&fixture.source);
+            let request = request(
+                "main:Sequence.Target",
+                json!([
+                    {"op":"props.set","args":{"values":{"MoveBoundaryOnPosting":"Move","Comment":"must not publish"}}}
+                ]),
+            );
+            assert!(plan_hidden_v13_apply(
+                &request,
+                &fixture.binding,
+                &fixture.admission(&request)
+            )
+            .is_err());
+            assert_eq!(tree_snapshot(&fixture.source), before);
+        }
+    }
+}
+
+#[test]
 fn sequence_boundary_saved_apply_roundtrip_changes_only_the_scalar() {
     let fixture = fixture();
     let original = tree_snapshot(&fixture.source);

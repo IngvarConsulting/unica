@@ -557,7 +557,7 @@
           "eq": "$capture.neighbor4"
         }
       ],
-      "refusal": "bad_value: MoveBoundaryOnPosting is required"
+      "refusal": "bad_value: MoveBoundaryOnPosting or Comment is required"
     },
     {
       "tool": "unica.apply",

@@ -46,6 +46,7 @@ properties_operations!(
 pub enum PropertiesSite {
     Sequence,
     Metadata(MetadataKind),
+    CommentOnly(NodeKind),
     DocumentNumerator,
     FunctionalOption,
     Role,
@@ -96,10 +97,13 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension: true } => {
                         match self { $(Self::$field => $extension),+ }
                     }
-                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::StyleItem => false,
-                    PropertiesSite::WSReference => matches!(self, Self::LocationUrl),
-                    PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode),
-                    PropertiesSite::Sequence => matches!(self, Self::MoveBoundaryOnPosting),
+                    PropertiesSite::Metadata(_) => false,
+                    PropertiesSite::Sequence => matches!(self, Self::MoveBoundaryOnPosting | Self::Comment),
+                    PropertiesSite::DocumentNumerator => self == Self::Comment,
+                    PropertiesSite::CommentOnly(_) => self == Self::Comment,
+                    PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
+                    PropertiesSite::StyleItem => self == Self::Comment,
+                    PropertiesSite::WSReference => matches!(self, Self::LocationUrl | Self::Comment),
                 }
             }
         }
@@ -185,10 +189,15 @@ impl PropertiesSite {
             return Self::root_of(site.source().kind());
         }
         let profile = Self::from_address(site.at())?;
-        if matches!(profile, Self::WSReference | Self::Sequence)
+        if profile == Self::Sequence
             && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
         {
-            return None;
+            return Some(Self::CommentOnly(NodeKind::Sequence));
+        }
+        if profile == Self::WSReference
+            && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
+        {
+            return Some(Self::CommentOnly(NodeKind::WsReference));
         }
         Some(profile)
     }
@@ -212,6 +221,10 @@ impl PropertiesSite {
     /// the owner's write profile; a nested subsystem owns a descriptor of its
     /// own and the subsystem profile with it.
     pub fn from_address(at: &QualifiedAddress) -> Option<Self> {
+        if let Some(owner) = at.form_metadata_owner() {
+            return (owner.segments().len() == 1)
+                .then_some(Self::CommentOnly(NodeKind::CommonForm));
+        }
         if at.segments().len() > 1
             && at
                 .segments()
@@ -232,6 +245,19 @@ impl PropertiesSite {
             NodeKind::Role => Some(Self::Role),
             NodeKind::WsReference => Some(Self::WSReference),
             NodeKind::Subsystem => Some(Self::Subsystem),
+            NodeKind::CommonAttribute
+            | NodeKind::FunctionalOptionsParameter
+            | NodeKind::SessionParameter
+            | NodeKind::FilterCriterion
+            | NodeKind::SettingsStorage
+            | NodeKind::CommonCommand
+            | NodeKind::CommandGroup
+            | NodeKind::CommonTemplate
+            | NodeKind::CommonPicture
+            | NodeKind::Language
+            | NodeKind::IntegrationService
+            | NodeKind::XdtoPackage
+            | NodeKind::Style => Some(Self::CommentOnly(owner.kind())),
             kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
         }
     }
@@ -244,24 +270,44 @@ impl PropertiesSite {
     }
 
     fn values_schema(self) -> Value {
+        self.values_schema_with_style_capabilities(true, true)
+    }
+
+    fn values_schema_with_style_capabilities(self, comment: bool, color: bool) -> Value {
         let mut properties = Map::new();
         let mut groups = Vec::new();
+        if self == Self::StyleItem && color {
+            properties.insert(
+                "Value".into(),
+                crate::style_color::StyleItemColor::argument_schema(),
+            );
+        }
         match self {
-            Self::DocumentNumerator => return crate::document_numerator::values_schema(),
-            Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
-            Self::StyleItem => {
-                properties.insert(
-                    "Value".into(),
-                    crate::style_color::StyleItemColor::argument_schema(),
-                );
+            Self::DocumentNumerator => {
+                // The numerator's closed scalar profile plus the descriptor
+                // Comment that the Designer property palette also edits.
+                let mut values = crate::document_numerator::values_schema();
+                let names = DescriptorProperty::Comment.names();
+                for name in names {
+                    values["properties"][*name] = json!({"type":"string"});
+                }
+                values["not"] = json!({"anyOf":[{"required":names}]});
+                values["x-unica-alias-groups"] = json!([names]);
+                return values;
             }
+            Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
             Self::Sequence
-            | Self::FunctionalOption
+            | Self::StyleItem
             | Self::WSReference
+            | Self::FunctionalOption
             | Self::Role
             | Self::Subsystem
-            | Self::Configuration { .. } => {
+            | Self::Configuration { .. }
+            | Self::CommentOnly(_) => {
                 for field in self.descriptor_fields() {
+                    if self == Self::StyleItem && field == DescriptorProperty::Comment && !comment {
+                        continue;
+                    }
                     let schema = match field.kind() {
                         DescriptorPropertyKind::String => json!({"type":"string"}),
                         DescriptorPropertyKind::Boolean => json!({"type":"boolean"}),
@@ -303,17 +349,20 @@ impl PropertiesOperation {
             Self::Set => OperationContract {
                 schema: object(&[("values", site.values_schema())], &["values"]),
                 target: match site {
-                    PropertiesSite::Sequence => "An existing registered Sequence in a configuration source set, platform XML 2.20. Only its existing MoveBoundaryOnPosting property can change.",
-                    PropertiesSite::WSReference => "An existing registered WSReference in a configuration source set, platform XML 2.20. Only its existing LocationURL property can change.",
+                    PropertiesSite::Sequence => "An existing registered Sequence in a configuration source set, platform XML 2.20. Its Comment and existing MoveBoundaryOnPosting properties can change.",
+                    PropertiesSite::WSReference => "An existing registered WSReference in a configuration source set, platform XML 2.20. Its Comment and existing LocationURL properties can change.",
                     PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
+                    PropertiesSite::CommentOnly(NodeKind::CommonForm) => "The existing common form descriptor at `<set>:CommonForm.Name.Metadata`.",
+                    PropertiesSite::CommentOnly(_) => "The existing named root metadata descriptor at `<set>:Kind.Name`. This profile changes only Comment.",
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
                 notes: match site {
-                    PropertiesSite::WSReference => "LocationURL is an exact string; an empty string clears the existing field. Missing or damaged fields are refused. Editing preserves identity, registration and the local WSDL; it does not download WSDL/imports or generate a client. Preview writes nothing; publish only its execution token. Changes to the descriptor or configuration registration invalidate the saved plan.",
-                    PropertiesSite::StyleItem => "Only values.Value is accepted: #RRGGBB or an enumerated web/builtin style color. Empty, null and arbitrary XML are refused. Type, identity and bytes outside Value stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
+                    PropertiesSite::Sequence => "MoveBoundaryOnPosting is DontMove or Move; Comment/comment is an optional exact string. Comment-only edits do not validate the boundary mode. Mixed edits validate both fields before publication. Identity, InternalInfo, Documents, dimensions and modules stay. An equivalent value is a byte-preserving no-op. Preview writes nothing; execute only its saved executionToken.",
+                    PropertiesSite::WSReference => "LocationURL and optional Comment/comment are exact strings; an empty string clears the supplied field. Comment-only edits do not validate LocationURL; mixed edits validate both fields before publication. Missing or damaged fields are refused. Editing preserves identity, registration and the local WSDL; it does not download WSDL/imports or generate a client. Preview writes nothing; publish only its execution token. Changes to the descriptor or configuration registration invalidate the saved plan.",
+                    PropertiesSite::StyleItem => "Color Value and optional string Comment/comment are accepted: #RRGGBB or an enumerated web/builtin style color. Empty Value, null and arbitrary XML are refused; empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Type, identity and bytes outside supplied Value/Comment stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
@@ -326,7 +375,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::FunctionalOption | PropertiesSite::WSReference | PropertiesSite::StyleItem | PropertiesSite::Sequence => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Sequence | PropertiesSite::WSReference | PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -341,7 +390,7 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
     fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
         crate::recovery::RETIRED_ARGUMENTS
     }
-    type Observation = crate::style_color::StyleItemColor;
+    type Observation = crate::style_color::StyleItemPropertiesObservation;
     fn needs_observation(
         self,
         site: Option<&unica_source_contract::context::OperationSite<'_>>,
@@ -349,7 +398,7 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
         site.and_then(PropertiesSite::from_site) == Some(PropertiesSite::StyleItem)
     }
     fn admits_observation(self, observation: Option<&Self::Observation>) -> bool {
-        observation.is_some()
+        observation.is_some_and(|observed| observed.comment || observed.color.is_some())
     }
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Properties
@@ -379,6 +428,36 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
     ) -> Option<unica_operation_contract::OperationContract> {
         PropertiesSite::from_site(site).map(|profile| self.contract(profile))
     }
+
+    fn contract_at_with_observation(
+        self,
+        site: &unica_source_contract::context::OperationSite<'_>,
+        observation: Option<&Self::Observation>,
+    ) -> Option<OperationContract> {
+        let profile = PropertiesSite::from_site(site)?;
+        if profile != PropertiesSite::StyleItem {
+            return Some(self.contract(profile));
+        }
+        let observed = observation?;
+        if !observed.comment && observed.color.is_none() {
+            return None;
+        }
+        if observed.color.is_none() {
+            return Some(self.contract(PropertiesSite::CommentOnly(NodeKind::StyleItem)));
+        }
+        let mut contract = self.contract(profile);
+        contract.schema = object(
+            &[(
+                "values",
+                profile.values_schema_with_style_capabilities(observed.comment, true),
+            )],
+            &["values"],
+        );
+        if !observed.comment {
+            contract.notes = "Only Value is writable on this descriptor: #RRGGBB or an enumerated web/builtin style color. Comment has no confirmed write capability. Type, identity and bytes outside Value stay. The same semantic color is a byte-preserving no-op. Preview writes nothing; execute only its saved executionToken.";
+        }
+        Some(contract)
+    }
 }
 
 #[cfg(test)]
@@ -386,21 +465,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ws_reference_location_url_has_a_closed_existing_descriptor_contract() {
-        let address = QualifiedAddress::parse("main:WSReference.Probe").unwrap();
-        let site = PropertiesSite::from_address(&address)
-            .expect("an existing WSReference owns its LocationURL property profile");
-        let contract = PropertiesOperation::Set.contract(site);
-        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
-        assert!(oracle
-            .is_valid(&json!({"values":{"LocationURL":"https://example.invalid/?a=1&b=тест"}})));
-        for values in [
-            json!({"LocationURL":false}),
-            json!({"LocationURL":null}),
-            json!({"Name":"Other"}),
-            json!({"LocationURL":"one","locationURL":"two"}),
+    fn sequence_boundary_and_comment_profiles_preserve_configuration_and_extension_contracts() {
+        use unica_source_contract::context::{OperationSite, SourceSetTraits};
+        use unica_source_contract::{SourceProfile, SourceSetKind};
+        let at = QualifiedAddress::parse("main:Sequence.Sales").unwrap();
+        let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+        for (kind, boundary) in [
+            (SourceSetKind::Configuration, true),
+            (SourceSetKind::Extension, false),
         ] {
-            assert!(!oracle.is_valid(&json!({"values":values})), "{values}");
+            let traits = SourceSetTraits::from_profiles(kind, Some(profile), profile);
+            let operation_site = OperationSite::from_route(
+                &at,
+                traits,
+                unica_source_contract::route::RouteClass::Metadata,
+            );
+            let site = PropertiesSite::from_site(&operation_site).unwrap();
+            let schema = PropertiesOperation::Set.contract(site).schema;
+            let oracle = jsonschema::validator_for(&schema).unwrap();
+            for args in [
+                json!({"values":{"Comment":"only"}}),
+                json!({"values":{"comment":""}}),
+            ] {
+                assert!(oracle.is_valid(&args));
+                assert!(matches!(
+                    crate::property_input::decode_properties(
+                        PropertiesOperation::Set,
+                        site,
+                        &args,
+                        "args"
+                    )
+                    .unwrap(),
+                    crate::property_input::PropertiesIntent::CommentOnly {
+                        kind: NodeKind::Sequence,
+                        ..
+                    }
+                ));
+            }
+            for args in [
+                json!({"values":{"MoveBoundaryOnPosting":"Move","comment":"mixed"}}),
+                json!({"values":{"moveBoundaryOnPosting":"DontMove","Comment":"mixed"}}),
+            ] {
+                assert_eq!(oracle.is_valid(&args), boundary);
+                let decoded = crate::property_input::decode_properties(
+                    PropertiesOperation::Set,
+                    site,
+                    &args,
+                    "args",
+                );
+                assert_eq!(decoded.is_ok(), boundary);
+                if let Ok(crate::property_input::PropertiesIntent::Sequence(values)) = decoded {
+                    assert_eq!(values.comment.as_deref(), Some("mixed"));
+                    assert!(
+                        ["Move", "DontMove"].contains(&values.move_boundary_on_posting.as_str())
+                    );
+                }
+            }
+            assert!(!oracle.is_valid(
+                &json!({"values":{"Comment":"a","comment":"b","MoveBoundaryOnPosting":"Move"}})
+            ));
         }
     }
 
@@ -453,6 +576,254 @@ mod tests {
     }
 
     #[test]
+    fn ws_reference_location_url_has_a_closed_existing_descriptor_contract() {
+        let address = QualifiedAddress::parse("main:WSReference.Probe").unwrap();
+        let site = PropertiesSite::from_address(&address)
+            .expect("an existing WSReference owns its LocationURL property profile");
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        assert!(oracle
+            .is_valid(&json!({"values":{"LocationURL":"https://example.invalid/?a=1&b=тест"}})));
+        for values in [
+            json!({"LocationURL":false}),
+            json!({"LocationURL":null}),
+            json!({"Name":"Other"}),
+            json!({"LocationURL":"one","locationURL":"two"}),
+        ] {
+            assert!(!oracle.is_valid(&json!({"values":values})), "{values}");
+        }
+        for values in [
+            json!({"Comment":"only"}),
+            json!({"LocationURL":"", "comment":"mixed"}),
+        ] {
+            assert!(oracle.is_valid(&json!({"values":values})));
+            assert!(crate::property_input::decode_properties(
+                PropertiesOperation::Set,
+                site,
+                &json!({"values":values}),
+                "args"
+            )
+            .is_ok());
+        }
+        for values in [
+            json!({}),
+            json!({"Unknown":"x"}),
+            json!({"Comment":null}),
+            json!({"Comment":"x","comment":"x"}),
+        ] {
+            assert!(crate::property_input::decode_properties(
+                PropertiesOperation::Set,
+                site,
+                &json!({"values":values}),
+                "args"
+            )
+            .is_err());
+        }
+        use unica_source_contract::context::{OperationSite, SourceSetTraits};
+        use unica_source_contract::{SourceProfile, SourceSetKind};
+        let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+        let source =
+            SourceSetTraits::from_profiles(SourceSetKind::Extension, Some(profile), profile);
+        let operation_site = OperationSite::from_route(
+            &address,
+            source,
+            unica_source_contract::route::RouteClass::Metadata,
+        );
+        let extension = PropertiesSite::from_site(&operation_site).unwrap();
+        assert_eq!(
+            extension,
+            PropertiesSite::CommentOnly(NodeKind::WsReference)
+        );
+        let schema = PropertiesOperation::Set.contract(extension).schema;
+        assert_eq!(
+            schema["properties"]["values"]["properties"]
+                .as_object()
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn style_item_contract_uses_only_typed_color_evidence() {
+        use crate::style_color::{StyleItemColor, StyleItemPropertiesObservation};
+        use unica_operations::FamilyOperation;
+        use unica_source_contract::context::{OperationSite, SourceSetTraits};
+        use unica_source_contract::route::RouteClass;
+        use unica_source_contract::{SourceProfile, SourceSetKind};
+        let at = QualifiedAddress::parse("main:StyleItem.Accent").unwrap();
+        let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+        let source =
+            SourceSetTraits::from_profiles(SourceSetKind::Configuration, Some(profile), profile);
+        let site = OperationSite::from_route(&at, source, RouteClass::Metadata);
+        let descriptor = PropertiesOperation::Set.descriptor();
+        let plain = descriptor.argument_contract_at(&site).unwrap();
+        assert!(plain.schema["properties"]["values"]["properties"]
+            .get("Value")
+            .is_some());
+        assert!(descriptor
+            .argument_contract_at_with_observations(&site, &|_, _| None)
+            .is_none());
+        assert!(!descriptor.admits_node(&site, &|_, _| None));
+        assert!(descriptor
+            .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(String::new())))
+            .is_none());
+        let color = StyleItemColor::parse_argument("#123456").unwrap();
+        for observed in [
+            StyleItemPropertiesObservation {
+                comment: true,
+                color: None,
+            },
+            StyleItemPropertiesObservation {
+                comment: false,
+                color: Some(color),
+            },
+            StyleItemPropertiesObservation {
+                comment: true,
+                color: Some(color),
+            },
+        ] {
+            let lookup = |_: &QualifiedAddress, requested: unica_operations::ObservationType| {
+                assert!(requested.is::<StyleItemPropertiesObservation>());
+                Some(Box::new(observed) as Box<dyn std::any::Any>)
+            };
+            assert!(descriptor.admits_node(&site, &lookup));
+            let contract = descriptor
+                .argument_contract_at_with_observations(&site, &lookup)
+                .unwrap();
+            let fields = &contract.schema["properties"]["values"]["properties"];
+            assert_eq!(fields.get("Comment").is_some(), observed.comment);
+            assert_eq!(fields.get("comment").is_some(), observed.comment);
+            assert_eq!(fields.get("Value").is_some(), observed.color.is_some());
+            assert!(contract.normalize(&contract.example_args, "args").is_ok());
+            for values in [
+                json!({"Comment":""}),
+                json!({"comment":"text"}),
+                json!({"Value":"#123456"}),
+                json!({"Value":"#123456", "Comment":""}),
+            ] {
+                let args = json!({"values":values});
+                let expected = (!values.as_object().unwrap().keys().any(|key| key == "Value")
+                    || observed.color.is_some())
+                    && (!values.as_object().unwrap().keys().any(|key| key != "Value")
+                        || observed.comment);
+                assert_eq!(contract.normalize(&args, "args").is_ok(), expected);
+                assert!(crate::property_input::decode_properties(
+                    PropertiesOperation::Set,
+                    PropertiesSite::StyleItem,
+                    &args,
+                    "args"
+                )
+                .is_ok());
+            }
+        }
+        let empty = StyleItemPropertiesObservation {
+            comment: false,
+            color: None,
+        };
+        assert!(!descriptor.admits_node(&site, &|_, _| Some(Box::new(empty))));
+        assert!(descriptor
+            .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(empty)))
+            .is_none());
+        let at = QualifiedAddress::parse("main:Role.Reader").unwrap();
+        let site = OperationSite::from_route(&at, source, RouteClass::Metadata);
+        assert_eq!(
+            PropertiesOperation::Set.contract_at(&site).unwrap().schema,
+            descriptor
+                .argument_contract_at_with_observations(&site, &|_, _| Some(Box::new(empty)))
+                .unwrap()
+                .schema
+        );
+    }
+
+    #[test]
+    fn additional_root_comments_have_a_closed_string_only_profile() {
+        for kind in [
+            "CommonAttribute",
+            "FunctionalOptionsParameter",
+            "SessionParameter",
+            "FilterCriterion",
+            "SettingsStorage",
+            "CommonCommand",
+            "CommandGroup",
+            "CommonForm",
+            "CommonTemplate",
+            "CommonPicture",
+            "Language",
+            "IntegrationService",
+            "XDTOPackage",
+            "Sequence",
+            "Style",
+        ] {
+            let at = if kind == "CommonForm" {
+                format!("main:{kind}.Probe.Metadata")
+            } else {
+                format!("main:{kind}.Probe")
+            };
+            let site = PropertiesSite::from_address(&QualifiedAddress::parse(&at).unwrap())
+                .unwrap_or_else(|| panic!("missing comment profile for {at}"));
+            let schema = PropertiesOperation::Set.contract(site).schema;
+            let properties = schema["properties"]["values"]["properties"]
+                .as_object()
+                .unwrap();
+            assert_eq!(
+                properties.len(),
+                if kind == "Sequence" { 4 } else { 2 },
+                "{at}: {properties:?}"
+            );
+            for alias in ["Comment", "comment"] {
+                assert_eq!(properties[alias], json!({"type":"string"}));
+                assert!(
+                    crate::property_input::decode_properties(
+                        PropertiesOperation::Set,
+                        site,
+                        &json!({"values":{alias:"Текст & < >\n"}}),
+                        "args"
+                    )
+                    .is_ok(),
+                    "{at}"
+                );
+            }
+            for values in [
+                json!({"Name":"Renamed"}),
+                json!({"Synonym":"Label"}),
+                json!({"Comment":null}),
+                json!({"Comment":1}),
+                json!({"Comment":"A","comment":"A"}),
+                json!({"Unknown":"x"}),
+                json!({}),
+            ] {
+                assert!(
+                    crate::property_input::decode_properties(
+                        PropertiesOperation::Set,
+                        site,
+                        &json!({"values":values}),
+                        "args"
+                    )
+                    .is_err(),
+                    "{at}: {values}"
+                );
+            }
+        }
+        for at in [
+            "main:ExternalDataSource.Probe",
+            "main:Interface.Probe",
+            "main:CommonForm.Probe",
+            "main:CommonForm.Probe.Metadata.Body",
+            "main:CommonAttribute",
+            "main:CommonAttribute.Probe.Attribute.Child",
+        ] {
+            assert!(
+                QualifiedAddress::parse(at)
+                    .ok()
+                    .and_then(|at| PropertiesSite::from_address(&at))
+                    .is_none(),
+                "{at}"
+            );
+        }
+    }
+
+    #[test]
     fn functional_option_storage_properties_have_an_addressed_contract() {
         let at = QualifiedAddress::parse("main:FunctionalOption.UseGoods").unwrap();
         let site = PropertiesSite::from_address(&at).expect("FunctionalOption property profile");
@@ -461,6 +832,41 @@ mod tests {
         assert!(oracle.is_valid(
             &json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}})
         ));
+        assert_eq!(
+            contract.schema["properties"]["values"]["properties"]
+                .as_object()
+                .unwrap()
+                .len(),
+            6
+        );
+        for values in [
+            json!({"Comment":"Текст"}),
+            json!({"comment":"Текст", "Location":"Constant.UseGoods", "privilegedGetMode":false}),
+        ] {
+            assert!(oracle.is_valid(&json!({"values":values})), "{values}");
+            assert!(crate::property_input::decode_properties(
+                PropertiesOperation::Set,
+                site,
+                &json!({"values":values}),
+                "args"
+            )
+            .is_ok());
+        }
+        for values in [
+            json!({"Comment":false}),
+            json!({"Unknown":"x"}),
+            json!({"Synonym":"x"}),
+            json!({"Name":"x"}),
+            json!({"Comment":"A", "comment":"B", "Location":"Constant.UseGoods"}),
+        ] {
+            assert!(crate::property_input::decode_properties(
+                PropertiesOperation::Set,
+                site,
+                &json!({"values":values}),
+                "args"
+            )
+            .is_err());
+        }
         assert!(!oracle.is_valid(&json!({"values":{"PrivilegedGetMode":"true"}})));
         assert!(!oracle.is_valid(&json!({"values":{"Content":[]}})));
     }
@@ -498,7 +904,10 @@ mod tests {
             ("main:Subsystem.Sales", Some(PropertiesSite::Subsystem)),
             ("main:Configuration", None),
             ("main:Catalog", None),
-            ("main:CommonForm.Card.Metadata", None),
+            (
+                "main:CommonForm.Card.Metadata",
+                Some(PropertiesSite::CommentOnly(NodeKind::CommonForm)),
+            ),
             ("main:Catalog.Items.Attribute.Code", None),
             (
                 "main:Subsystem.Sales.Subsystem.Child",

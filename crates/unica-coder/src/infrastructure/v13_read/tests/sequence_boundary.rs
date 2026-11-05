@@ -24,6 +24,7 @@ fn sequence_boundary_view_preserves_absence_and_localizes_damage() {
         assert_eq!(node["props"].get("MoveBoundaryOnPosting").and_then(serde_json::Value::as_str), expected);
         assert_eq!(node["at"], "main:Sequence.Sales");
         assert_eq!(node["props"]["kind"], "Sequence");
+        assert_eq!(node["props"]["Comment"], "retained");
         assert_eq!(node.get("limits").is_some_and(|v| v.as_array().is_some_and(|items| items.iter().any(|s| s.as_str().is_some_and(|s| s.contains("MoveBoundaryOnPosting"))))), damaged);
         assert_eq!(fs::read(path).unwrap(), before);
     }
