@@ -201,6 +201,7 @@ fn the_catalog_of_an_installation() {
                 TypeName::Context(id) => built.type_by_id(id).unwrap().ru.clone(),
                 TypeName::Primitive(name) => name.clone(),
                 TypeName::Unresolved(name) => format!("?{name}"),
+                TypeName::Applied(applied) => format!("!{}.{}", applied.kind, applied.name),
             })
             .collect::<Vec<_>>()
     };
@@ -232,4 +233,84 @@ fn the_catalog_of_an_installation() {
     );
     assert_eq!(template.variants[0].params[0].ru, "Шаблон");
     assert_eq!(template.variants[0].params[0].en, "Template");
+}
+
+/// The applied seam (#2238, stage 2): an applied type keeps its facet through
+/// serialization and orders after the platform names, and a source of the
+/// configuration answers through the trait object inference holds.
+#[test]
+fn an_applied_type_round_trips_and_answers_through_the_seam() {
+    let manager = TypeName::Applied(AppliedType {
+        kind: "Catalog".into(),
+        name: "Валюты".into(),
+        facet: AppliedFacet::Manager,
+    });
+    let row = TypeName::Applied(AppliedType {
+        kind: "Document".into(),
+        name: "Заказ".into(),
+        facet: AppliedFacet::TabularSectionRow("Товары".into()),
+    });
+    for name in [&manager, &row] {
+        let json = serde_json::to_string(name).unwrap();
+        assert_eq!(
+            &serde_json::from_str::<TypeName>(&json).unwrap(),
+            name,
+            "{json}"
+        );
+    }
+    assert!(TypeName::Unresolved("Произвольный".into()) < manager);
+
+    struct Configuration;
+    impl AppliedTypes for Configuration {
+        fn global(&self, name: &str) -> Option<TypeRef> {
+            (name.to_lowercase() == "общегоназначения").then(|| TypeRef {
+                ty: TypeName::Applied(AppliedType {
+                    kind: "CommonModule".into(),
+                    name: "ОбщегоНазначения".into(),
+                    facet: AppliedFacet::Module,
+                }),
+                element: None,
+            })
+        }
+
+        fn members(&self, ty: &TypeName) -> Option<std::sync::Arc<AppliedMembers>> {
+            matches!(ty, TypeName::Context(id) if id.ends_with("/CatalogsManager")).then(|| {
+                std::sync::Arc::new(AppliedMembers {
+                    platform: None,
+                    properties: vec![AppliedProperty {
+                        property: Property {
+                            ru: "Валюты".into(),
+                            en: "Валюты".into(),
+                            types: vec![TypeRef {
+                                ty: TypeName::Applied(AppliedType {
+                                    kind: "Catalog".into(),
+                                    name: "Валюты".into(),
+                                    facet: AppliedFacet::Manager,
+                                }),
+                                element: None,
+                            }],
+                            read_only: true,
+                            contexts: Vec::new(),
+                        },
+                        at: Some("main:Catalog.Валюты".into()),
+                    }],
+                    methods: Vec::new(),
+                    element: None,
+                    partial: false,
+                })
+            })
+        }
+    }
+    let shared: std::sync::Arc<dyn AppliedTypes> = std::sync::Arc::new(Configuration);
+    std::thread::spawn(move || shared.global("общегоназначения"))
+        .join()
+        .unwrap()
+        .expect("a source is shared across threads");
+    let sources: [&dyn AppliedTypes; 2] = [&Configuration, &NoAppliedTypes];
+    assert!(sources[0].global("ОбщегоНазначения").is_some());
+    assert!(sources[1].global("ОбщегоНазначения").is_none());
+    let catalogs = TypeName::Context("objects/c/CatalogsManager".into());
+    let members = sources[0].members(&catalogs).unwrap();
+    assert_eq!(members.properties[0].property.types[0].ty, manager);
+    assert!(sources[1].members(&catalogs).is_none());
 }

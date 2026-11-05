@@ -35,11 +35,11 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/comment",
+          "pointer": "/data/props/Comment",
           "eq": ""
         },
         {
-          "pointer": "/data/props/explanation",
+          "pointer": "/data/props/Explanation",
           "eq": ""
         }
       ],
@@ -147,11 +147,11 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/comment",
+          "pointer": "/data/props/Comment",
           "eq": ""
         },
         {
-          "pointer": "/data/props/explanation",
+          "pointer": "/data/props/Explanation",
           "eq": ""
         }
       ],
@@ -185,11 +185,11 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/comment",
+          "pointer": "/data/props/Comment",
           "eq": "Комментарий"
         },
         {
-          "pointer": "/data/props/explanation",
+          "pointer": "/data/props/Explanation",
           "eq": "Пояснение"
         }
       ]
@@ -204,11 +204,11 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/comment",
+          "pointer": "/data/props/Comment",
           "eq": null
         },
         {
-          "pointer": "/data/props/explanation",
+          "pointer": "/data/props/Explanation",
           "eq": null
         }
       ]
@@ -223,11 +223,11 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/comment",
+          "pointer": "/data/props/Comment",
           "eq": null
         },
         {
-          "pointer": "/data/props/explanation",
+          "pointer": "/data/props/Explanation",
           "eq": null
         },
         {
