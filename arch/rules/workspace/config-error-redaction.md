@@ -1,6 +1,7 @@
 ---
 id: INV.SAFETY.CONFIG-ERROR-REDACTION
 check:
+  - crates/unica-coder/src/infrastructure/daemon/operational_snapshot_tests.rs::operational_diff_graph_sides_share_one_lazy_snapshot
   - crates/unica-coder/src/infrastructure/operational_config.rs::diagnostics_never_expose_absolute_paths_raw_toml_or_values
   - crates/unica-coder/src/infrastructure/operational_config.rs::read_errors_are_redacted_to_the_fixed_basename
   - crates/unica-coder/src/infrastructure/daemon/operational_snapshot_tests.rs::operational_graph_complete_fetch_keeps_one_snapshot_then_next_call_refreshes

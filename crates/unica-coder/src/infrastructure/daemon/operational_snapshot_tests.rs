@@ -89,7 +89,14 @@ impl CodeIntelligenceProvider for Provider {
         else {
             panic!("unexpected read")
         };
-        assert_eq!(id, "method/common/Handlers/Run");
+        assert!(
+            [
+                "method/common/Handlers/Run",
+                "method/common/Handlers/Peer00"
+            ]
+            .contains(&id.as_str()),
+            "{id}"
+        );
         self.record(*limit, deadline);
         let total = if *direction == CallGraphDirection::Callers {
             51
@@ -408,4 +415,64 @@ fn operational_invalid_load_stops_all_canonical_providers_and_redacts_values() {
 #[test]
 fn operational_cancellation_during_failed_load_wins_at_actor_publication() {
     invalid_load_matrix(true);
+}
+
+#[test]
+fn operational_diff_graph_sides_share_one_lazy_snapshot() {
+    let workspace = graph_fixture();
+    let root = std::fs::canonicalize(workspace.path()).unwrap();
+    write_settings(&root, OLD);
+    let loads = Arc::new(AtomicUsize::new(0));
+    let _observer = load_observer::install(
+        &root,
+        Arc::new({
+            let loads = loads.clone();
+            move |failed| {
+                assert!(!failed);
+                loads.fetch_add(1, Ordering::AcqRel);
+            }
+        }),
+    );
+    let provider = Provider::new(&root, ProviderRole::Symbol);
+    let _overrides = Overrides;
+    application_ports::CODE_INTELLIGENCE_PROVIDER_OVERRIDE
+        .with(|slot| *slot.borrow_mut() = Some(vec![provider.clone()]));
+    let runtime = bootstrap_runtime();
+    let method = "main:CommonModule.Handlers.Method.Run";
+    let plain = invoke(
+        &runtime,
+        &root,
+        ToolIdentity::Diff,
+        serde_json::json!({"left":method,"right":method}),
+        CancellationToken::new(),
+    );
+    assert!(plain.ok, "{plain:?}");
+    assert_eq!(loads.load(Ordering::Acquire), 0);
+    assert!(provider.calls.lock().unwrap().is_empty());
+    let args = serde_json::json!({"left":format!("{method}.Caller"),"right":"main:CommonModule.Handlers.Method.Peer00.Caller"});
+    for (index, budget) in [OLD, NEW].into_iter().enumerate() {
+        let result = invoke(
+            &runtime,
+            &root,
+            ToolIdentity::Diff,
+            args.clone(),
+            CancellationToken::new(),
+        );
+        assert!(result.ok, "{result:?}");
+        no_values(&result, &root);
+        let calls = provider.calls.lock().unwrap().clone();
+        assert!(
+            calls.len() >= 8,
+            "must execute both graph sides plus the full 51-neighbor fetch: {calls:?}"
+        );
+        assert_eq!(
+            loads.load(Ordering::Acquire),
+            index + 1,
+            "the sides of one public diff reloaded settings"
+        );
+        for (_, value) in calls {
+            budget_is(value, budget);
+        }
+        provider.calls.lock().unwrap().clear();
+    }
 }

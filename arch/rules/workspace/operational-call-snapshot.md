@@ -1,6 +1,7 @@
 ---
 id: INV.CONFIG.OPERATIONAL-CALL-SNAPSHOT
 check:
+  - crates/unica-coder/src/infrastructure/daemon/operational_snapshot_tests.rs::operational_diff_graph_sides_share_one_lazy_snapshot
   - crates/unica-coder/src/infrastructure/daemon/operational_snapshot_tests.rs::operational_graph_complete_fetch_keeps_one_snapshot_then_next_call_refreshes
   - crates/unica-coder/src/infrastructure/daemon/operational_snapshot_tests.rs::operational_search_keeps_loaded_budget_and_refreshes_next_call
   - crates/unica-coder/src/infrastructure/daemon/operational_snapshot_tests.rs::operational_bsl_check_holds_loaded_timeout_and_refreshes_next_call
@@ -21,6 +22,6 @@ check:
 
 Проверки проходят канонические search, BSL check и чтение графа через
 подготовку, исполнение и публикацию актора. Полное повторное чтение большого
-графа использует тот же снимок. Отдельная проверка настоящего MCP-сервера
+графа и обе стороны diff ветвей графа используют тот же ленивый снимок. Отдельная проверка настоящего MCP-сервера
 подтверждает, что создание сервера, initialize и полный tools/list не
 загружают настройки, даже если файл ошибочен или недоступен для чтения.
