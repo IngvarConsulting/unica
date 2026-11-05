@@ -25,6 +25,7 @@ pub enum MetaPropertyKey {
     CodeMask,
     CodeType,
     Correspondence,
+    CreateTaskInPrivilegedMode,
     DefaultPresentation,
     DependenceOnCalculationTypes,
     Description,
@@ -219,6 +220,7 @@ const CODE_ALLOWED_LENGTH_KINDS: &[MetadataKind] = &[
     MetadataKind::ExchangePlan,
 ];
 const CATALOG_KINDS: &[MetadataKind] = &[MetadataKind::Catalog];
+const BUSINESS_PROCESS_KINDS: &[MetadataKind] = &[MetadataKind::BusinessProcess];
 const DOCUMENT_KINDS: &[MetadataKind] = &[MetadataKind::Document];
 const INFORMATION_REGISTER_KINDS: &[MetadataKind] = &[MetadataKind::InformationRegister];
 const ACCUMULATION_REGISTER_KINDS: &[MetadataKind] = &[MetadataKind::AccumulationRegister];
@@ -639,6 +641,12 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         CALCULATION_REGISTER_PERIODICITY_VALUES,
     ),
     property(
+        "CreateTaskInPrivilegedMode",
+        MetaPropertyKey::CreateTaskInPrivilegedMode,
+        MetaPropertyValueKind::Boolean,
+        BUSINESS_PROCESS_KINDS,
+    ),
+    property(
         "PostInPrivilegedMode",
         MetaPropertyKey::PostInPrivilegedMode,
         MetaPropertyValueKind::Boolean,
@@ -965,6 +973,25 @@ mod tests {
                 kind.as_str()
             );
         }
+    }
+
+    #[test]
+    fn create_task_privileged_mode_is_boolean_and_business_process_only() {
+        for value in [false, true] {
+            assert_property_kind_matrix(
+                "CreateTaskInPrivilegedMode",
+                MetaPropertyValue::Boolean(value),
+                &[MetadataKind::BusinessProcess],
+            );
+        }
+        assert!(MetaPropertyChanges::convert(
+            MetadataKind::BusinessProcess,
+            vec![MetaPropertyInput::new(
+                "CreateTaskInPrivilegedMode",
+                MetaPropertyValue::String("true".into())
+            )],
+        )
+        .is_err());
     }
 
     #[test]
