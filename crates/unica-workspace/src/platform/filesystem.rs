@@ -2360,6 +2360,41 @@ pub(crate) fn open_absolute_directory_path_nofollow(path: &Path) -> io::Result<f
     Ok(current)
 }
 
+/// `root` with its existing ancestors canonicalized and the rest kept as
+/// given; the final component is never resolved here.
+#[cfg(unix)]
+pub(crate) fn resolve_ancestor_links(root: &Path) -> io::Result<PathBuf> {
+    let Some(name) = root.file_name() else {
+        return Ok(root.to_path_buf());
+    };
+    let mut pending = vec![name.to_os_string()];
+    let mut ancestor = root.parent();
+    while let Some(directory) = ancestor {
+        match fs::canonicalize(directory) {
+            Ok(mut resolved) => {
+                resolved.extend(pending.iter().rev());
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                // A missing `..` cannot be carried over without changing
+                // which directory the path names.
+                let Some(name) = directory.file_name() else {
+                    return Ok(root.to_path_buf());
+                };
+                pending.push(name.to_os_string());
+                ancestor = directory.parent();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(root.to_path_buf())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn resolve_ancestor_links(root: &Path) -> io::Result<PathBuf> {
+    Ok(root.to_path_buf())
+}
+
 /// Opens an absolute directory path component-by-component and creates only absent directory
 /// components relative to an already-retained parent. Existing links are never followed and no
 /// ambient write occurs before the parent descriptor is verified.
@@ -4461,8 +4496,12 @@ fn rename_open_child(
         .len()
         .checked_mul(size_of::<u16>())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
+    // NtSetInformationFile rejects a buffer shorter than the declared
+    // structure, whose trailing one-character name array is padded; a
+    // one-character name otherwise yields STATUS_INFO_LENGTH_MISMATCH.
     let information_length = offset_of!(RenameInformation, file_name)
         .checked_add(name_bytes)
+        .map(|length| length.max(size_of::<RenameInformation>()))
         .and_then(|length| u32::try_from(length).ok())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "child name is too long"))?;
     let word_count = (information_length as usize).div_ceil(size_of::<usize>());
@@ -6755,6 +6794,26 @@ mod tests {
     use std::io;
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn atomic_directory_publication_accepts_a_one_character_name() {
+        use super::RetainedDirectoryCapability;
+
+        let root = unique_temp_root("one-character-directory");
+        fs::create_dir_all(&root).unwrap();
+        let parent = RetainedDirectoryCapability::open(&fs::canonicalize(&root).unwrap()).unwrap();
+        parent
+            .create_directory_child_atomically(
+                std::ffi::OsStr::new(".private-a"),
+                std::ffi::OsStr::new("A"),
+            )
+            .unwrap();
+        assert!(root.join("A").is_dir());
+        assert!(!root.join(".private-a").exists());
+        drop(parent);
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[cfg(windows)]
     #[test]

@@ -6,9 +6,11 @@ mod dcs_parameter_expression;
 mod defined_type_reference;
 mod external_artifact_alias;
 mod form;
+mod form_command_properties;
 mod form_conditional_appearance;
 mod form_item_bindings;
 mod form_support;
+mod interface_reference_kind;
 mod job_schedule;
 mod metadata;
 mod metadata_declaration_diagnostics;
@@ -16,6 +18,8 @@ mod numerator_read_profile;
 mod session_parameter_comment;
 mod structured_property_names;
 mod support;
+mod task_addressing;
+mod wsreference_definition;
 mod xdto_missing_target;
 
 use support::*;
@@ -1854,11 +1858,8 @@ fn canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_marke
                     result.ok,
                     "{at}: view must succeed without a support marker"
                 );
-                let expected = if at == "main:Catalog.Items" {
-                    json!("supported")
-                } else {
-                    json!("notSupported")
-                };
+                // Без маркера поддержки у любого объекта одно состояние (#2158).
+                let expected = json!("notSupported");
                 assert_eq!(
                     result.data.as_ref().unwrap()["props"]["support"],
                     expected,
@@ -1885,6 +1886,32 @@ fn canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_marke
                 .unwrap()
                 .contains(fixture.source.to_str().unwrap()));
         }
+        // Коллекция обычной конфигурации читает корень вместе с его
+        // поддержкой: без маркера её члены не несут состояния, а нечитаемый
+        // маркер не выдаёт их свободными и отказывает, как карточка (#2158).
+        let collection = service.view(ViewRequest::new("main:Catalog").unwrap());
+        if marker_kind == "absent" {
+            let items = view_items(&collection);
+            assert!(!items.is_empty(), "collection lists its members");
+            for item in &items {
+                assert!(
+                    item["props"].get("support").is_none(),
+                    "{}: notSupported is not published",
+                    item["at"]
+                );
+            }
+            assert!(collection.data.as_ref().unwrap().get("limits").is_none());
+        } else {
+            assert!(!collection.ok, "{marker_kind}: collection must refuse");
+            assert!(
+                collection.data.is_none(),
+                "{marker_kind}: data must be absent"
+            );
+            assert_eq!(collection.diagnostics[0]["detailCode"], "source_unreadable");
+        }
+        assert!(!serde_json::to_string(&collection)
+            .unwrap()
+            .contains(fixture.source.to_str().unwrap()));
     }
 }
 

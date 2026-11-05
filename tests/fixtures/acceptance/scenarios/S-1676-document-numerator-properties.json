@@ -1,0 +1,421 @@
+{
+  "id": "S-1676-document-numerator-properties",
+  "issue": 1676,
+  "area": "Свойства нумератора документов",
+  "workspace": "tests/fixtures/acceptance/workspace-numerator-write",
+  "task": "Обнаружить пять свойств существующего нумератора, предварительно проверить и исполнить сохранённый план, прочитать результат и XML; сохранить UUID, имя и ссылки документов. Повтор не меняет байты, недопустимые значения не записываются.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentNumerator.Sales.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "original": {
+          "file": "src/DocumentNumerators/Sales.xml",
+          "kind": "sha256"
+        },
+        "neighbor0": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "neighbor1": {
+          "file": "src/Documents/Linked.xml",
+          "kind": "sha256"
+        },
+        "neighbor2": {
+          "file": "src/Languages/Русский.xml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/NumberType/enum",
+          "eq": [
+            "String",
+            "Number"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Name",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentNumerator.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberType": "Number",
+                "NumberLength": 9,
+                "NumberAllowedLength": "Variable",
+                "NumberPeriodicity": "Month",
+                "CheckUnique": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentNumerator/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}NumberType",
+          "eq": [
+            "Number"
+          ]
+        },
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentNumerator/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}NumberLength",
+          "eq": [
+            "9"
+          ]
+        },
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentNumerator/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}NumberAllowedLength",
+          "eq": [
+            "Variable"
+          ]
+        },
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentNumerator/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}NumberPeriodicity",
+          "eq": [
+            "Month"
+          ]
+        },
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentNumerator/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}CheckUnique",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentNumerator/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Sales"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        },
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}DocumentNumerator[@uuid=\"16760000-0000-4000-8000-000000000001\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Name",
+          "eq": [
+            "Sales"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentNumerator.Sales"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "edited": {
+          "file": "src/DocumentNumerators/Sales.xml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/props/NumberType",
+          "eq": "Number"
+        },
+        {
+          "pointer": "/data/props/NumberAllowedLength",
+          "eq": "Variable"
+        },
+        {
+          "pointer": "/data/props/NumberPeriodicity",
+          "eq": "Month"
+        },
+        {
+          "pointer": "/data/props/CheckUnique",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentNumerator.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberType": "Number",
+                "NumberLength": 9,
+                "NumberAllowedLength": "Variable",
+                "NumberPeriodicity": "Month",
+                "CheckUnique": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.edited"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.edited"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentNumerator.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "NumberLength": 39
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.edited"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        }
+      ],
+      "refusal": "bad_value: DocumentNumerator NumberLength for Number must not exceed 38 digits"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentNumerator.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CheckUnique": "false"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.edited"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        }
+      ],
+      "refusal": "bad_value: expected \"boolean\""
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentNumerator.Sales",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Name": "Renamed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/DocumentNumerators/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.edited"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor0"
+        },
+        {
+          "path": "src/Documents/Linked.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor1"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "$capture.neighbor2"
+        }
+      ],
+      "refusal": "bad_value: unknown field `Name`"
+    }
+  ]
+}

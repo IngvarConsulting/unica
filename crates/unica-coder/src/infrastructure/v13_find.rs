@@ -41,6 +41,7 @@ enum AttachedPathResource {
     Form,
     FormModule,
     RoleModule,
+    WsDefinition,
 }
 
 impl AttachedPathResource {
@@ -59,6 +60,7 @@ impl AttachedPathResource {
             };
         }
         match parts {
+            ["wsreferences", _, "ext", "wsdefinition.xml"] => Some(Self::WsDefinition),
             ["commonforms", _, "ext", "form.xml"] => Some(Self::Form),
             ["commonforms", _, "ext", "form", "module.bsl"] => Some(Self::FormModule),
             [_, _, "forms", _, "ext", "form.xml"] => Some(Self::Form),
@@ -874,13 +876,18 @@ impl WorkspaceFindDirectoryBuilder {
             return self.locate_role_module_path(source, tail, deadline, cancellation, located);
         }
         let (address_suffix, file_suffix, is_module) = match resource {
+            AttachedPathResource::WsDefinition => (".Definition", "/Ext/WSDefinition.xml", false),
             AttachedPathResource::Form => ("", "/Ext/Form.xml", false),
             AttachedPathResource::FormModule => (".Module.Form", "/Ext/Form/Module.bsl", true),
             AttachedPathResource::RoleModule => unreachable!("ветка обработана выше"),
         };
         let descriptor_parts = match source.kind {
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => 3,
-            _ if tail.first() == Some(&"commonforms") => 2,
+            _ if tail.first() == Some(&"commonforms")
+                || resource == AttachedPathResource::WsDefinition =>
+            {
+                2
+            }
             _ => 4,
         };
         let descriptor_query = format!("{}.xml", tail[..descriptor_parts].join("/"));
@@ -896,9 +903,13 @@ impl WorkspaceFindDirectoryBuilder {
         };
         let descriptor_address =
             QualifiedAddress::parse(owner.at()).map_err(|_| unsafe_layout_entry())?;
-        let form_address = descriptor_address
-            .form_metadata_owner()
-            .ok_or_else(unsafe_layout_entry)?;
+        let form_address = if resource == AttachedPathResource::WsDefinition {
+            descriptor_address
+        } else {
+            descriptor_address
+                .form_metadata_owner()
+                .ok_or_else(unsafe_layout_entry)?
+        };
         let at = format!("{form_address}{address_suffix}");
         let address = QualifiedAddress::parse(&at).map_err(|_| unsafe_layout_entry())?;
         if is_module
@@ -925,7 +936,13 @@ impl WorkspaceFindDirectoryBuilder {
         let descriptor_witness = owner.owner_descriptor().map(str::to_string);
         let mut document = FindDocument::new(
             at,
-            if is_module { "Module" } else { "Form" },
+            if is_module {
+                "Module"
+            } else if resource == AttachedPathResource::WsDefinition {
+                "Definition"
+            } else {
+                "Form"
+            },
             owner.at(),
             Vec::new(),
         )

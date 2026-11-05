@@ -3235,59 +3235,90 @@ fn main() {
 
     #[test]
     fn prepared_bsl_cancel_and_expire_before_start_preserve_the_registered_decision() {
-        for expire in [false, true] {
-            let server = WorkspaceAdmissionTestServer::start("prepared-control-before-start");
-            let id = "held-before-start";
-            let mut work = open_test_request(&server.record, prepared_begin(id));
-            assert!(matches!(read_prepared_reply(&mut work),
-                PreparedBslReply::Admitted { operation_id } if operation_id == id));
-            let token = server.token(id);
-            assert!(!token.is_cancelled());
-            let control = if expire {
-                ServiceRequestKind::Expire {
-                    operation_id: id.into(),
+        // Two admissible orders before Start, each fixed by an event:
+        // the handler finishes on the recorded stop without waiting for Start,
+        // or a Start already consumed by the held handler meets the stop.
+        // A Start written after the handler has finished is not a scenario:
+        // the closed reservation may reset it, which proves nothing.
+        for start_delivered in [false, true] {
+            for expire in [false, true] {
+                let mut server =
+                    WorkspaceAdmissionTestServer::start("prepared-control-before-start");
+                let gate = Arc::new((Mutex::new(false), Condvar::new()));
+                let (entered, start_received) = mpsc::channel();
+                if start_delivered {
+                    server.gates.push(gate.clone());
+                    server
+                        .runtime
+                        .test_set_prepared_start_received_hook(Some(Arc::new({
+                            let gate = gate.clone();
+                            move || {
+                                entered.send(()).unwrap();
+                                wait_admission_test_gate(&gate);
+                            }
+                        })));
                 }
-            } else {
-                ServiceRequestKind::Cancel {
-                    operation_id: id.into(),
+                let id = "held-before-start";
+                let mut work = open_test_request(&server.record, prepared_begin(id));
+                assert!(matches!(read_prepared_reply(&mut work),
+                    PreparedBslReply::Admitted { operation_id } if operation_id == id));
+                let token = server.token(id);
+                assert!(!token.is_cancelled());
+                if start_delivered {
+                    write_prepared_phase(
+                        &mut work,
+                        &server.record,
+                        ServiceRequestKind::BslMcpStart {
+                            operation_id: id.into(),
+                            deadline: BslOperationDeadline::Absent {},
+                        },
+                    );
+                    start_received
+                        .recv_timeout(Duration::from_secs(3))
+                        .expect("the handler consumed Start");
                 }
-            };
-            assert!(send_test_request(&server.record, control).ok);
-            assert!(token.is_cancelled());
-            write_prepared_phase(
-                &mut work,
-                &server.record,
-                ServiceRequestKind::BslMcpStart {
-                    operation_id: id.into(),
-                    deadline: BslOperationDeadline::Absent {},
-                },
-            );
-            let PreparedBslReply::Finished { response } = read_prepared_reply(&mut work) else {
-                panic!("a stopped reservation was admitted again");
-            };
-            assert!(!response.ok);
-            assert!(response.error.unwrap().starts_with(if expire {
-                "timeout:"
-            } else {
-                "cancelled:"
-            }));
-            assert!(
-                server.executor.started.lock().unwrap().is_empty(),
-                "late Start dispatched stopped work"
-            );
-            wait_operation_retired(&server.runtime, id);
-            assert!(
-                send_test_request(
-                    &server.record,
-                    ServiceRequestKind::RlmReady {
-                        operation_id: "success-neighbor".into(),
-                        args: json!({}),
-                        timeout_seconds: 5,
-                        timeout_nanos: 0,
+                let control = if expire {
+                    ServiceRequestKind::Expire {
+                        operation_id: id.into(),
                     }
-                )
-                .ok
-            );
+                } else {
+                    ServiceRequestKind::Cancel {
+                        operation_id: id.into(),
+                    }
+                };
+                assert!(send_test_request(&server.record, control).ok);
+                assert!(token.is_cancelled());
+                if start_delivered {
+                    *gate.0.lock().unwrap() = true;
+                    gate.1.notify_all();
+                }
+                let PreparedBslReply::Finished { response } = read_prepared_reply(&mut work) else {
+                    panic!("a stopped reservation was admitted again");
+                };
+                assert!(!response.ok);
+                let error = response.error.unwrap_or_default();
+                assert!(
+                    error.starts_with(if expire { "timeout:" } else { "cancelled:" }),
+                    "start_delivered={start_delivered}, expire={expire}: {error}"
+                );
+                assert!(
+                    server.executor.started.lock().unwrap().is_empty(),
+                    "Start dispatched stopped work"
+                );
+                wait_operation_retired(&server.runtime, id);
+                assert!(
+                    send_test_request(
+                        &server.record,
+                        ServiceRequestKind::RlmReady {
+                            operation_id: "success-neighbor".into(),
+                            args: json!({}),
+                            timeout_seconds: 5,
+                            timeout_nanos: 0,
+                        }
+                    )
+                    .ok
+                );
+            }
         }
     }
 

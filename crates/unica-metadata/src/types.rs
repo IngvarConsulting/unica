@@ -306,36 +306,44 @@ pub struct MetadataType {
 
 impl MetadataType {
     pub fn new(variants: Vec<MetadataTypeVariant>) -> Result<Self, MetaDiagnostic> {
-        if variants.is_empty() {
-            return Err(invalid_type(
-                "type.variants",
-                "type variants must not be empty",
-            ));
-        }
-        if variants.len() > 1
-            && variants
-                .iter()
-                .any(|variant| matches!(variant, MetadataTypeVariant::ValueStorage))
-        {
-            return Err(invalid_type(
-                "type.variants",
-                "ValueStorage must be the only type variant",
-            ));
-        }
-
-        let mut seen = HashSet::new();
-        for (index, variant) in variants.iter().enumerate() {
-            validate_variant(variant, index)?;
-            let identity = variant_identity(variant);
-            if !seen.insert(identity) {
-                return Err(invalid_type(
-                    format!("type.variants[{index}]"),
-                    "duplicate platform type variant",
-                ));
-            }
-        }
+        validate_type_variants(variants.iter().enumerate(), variants.len())?;
         Ok(Self { variants })
     }
+}
+
+/// Observed unions can contain read-only members outside the writer algebra.
+/// Their original count and indices still govern shared type invariants.
+pub(crate) fn validate_type_variants<'a>(
+    variants: impl Iterator<Item = (usize, &'a MetadataTypeVariant)> + Clone,
+    total_variant_count: usize,
+) -> Result<(), MetaDiagnostic> {
+    if total_variant_count == 0 {
+        return Err(invalid_type(
+            "type.variants",
+            "type variants must not be empty",
+        ));
+    }
+    if total_variant_count > 1
+        && variants
+            .clone()
+            .any(|(_, variant)| matches!(variant, MetadataTypeVariant::ValueStorage))
+    {
+        return Err(invalid_type(
+            "type.variants",
+            "ValueStorage must be the only type variant",
+        ));
+    }
+    let mut seen = HashSet::new();
+    for (index, variant) in variants {
+        validate_variant(variant, index)?;
+        if !seen.insert(variant_identity(variant)) {
+            return Err(invalid_type(
+                format!("type.variants[{index}]"),
+                "duplicate platform type variant",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn invalid_type(field: impl Into<String>, message: impl Into<String>) -> MetaDiagnostic {
@@ -752,5 +760,15 @@ mod tests {
             .expect_err("incomplete logical address must not be reparsed loosely");
         assert_eq!(diagnostic.code, MetaDiagnosticCode::InvalidArguments);
         assert_eq!(diagnostic.field.as_deref(), Some("metadataPath"));
+    }
+    #[test]
+    fn indexed_validation_keeps_the_original_observed_union_position() {
+        let bad = MetadataTypeVariant::Number {
+            digits: 39,
+            fraction: 0,
+            sign: NumberSign::Any,
+        };
+        let error = validate_type_variants([(1, &bad)].into_iter(), 2).unwrap_err();
+        assert_eq!(error.field.as_deref(), Some("type.variants[1]"));
     }
 }
