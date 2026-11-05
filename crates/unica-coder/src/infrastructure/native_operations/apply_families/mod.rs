@@ -1041,7 +1041,8 @@ pub(crate) fn staged_form_observation(
     if let Some(role) = staged_form_item_role(admission, binding, at) {
         return Some(unica_forms::FormObservation::Item(role));
     }
-    if !unica_forms::applicability::is_form_attribute(at.segments()) {
+    let column = unica_forms::applicability::is_form_column(at.segments());
+    if !column && !unica_forms::applicability::is_form_attribute(at.segments()) {
         return None;
     }
     let form = unica_address::address::QualifiedAddress {
@@ -1057,7 +1058,18 @@ pub(crate) fn staged_form_observation(
     if found.next().is_some() {
         return None;
     }
-    unica_forms::FormObservation::from_attribute_type(attribute.type_name.as_deref()?)
+    if !column {
+        return unica_forms::FormObservation::from_attribute_type(attribute.type_name.as_deref()?);
+    }
+    let mut columns = attribute
+        .columns
+        .iter()
+        .filter(|column| Some(column.name.as_str()) == at.segments()[3].name());
+    let column = columns.next()?;
+    if columns.next().is_some() {
+        return None;
+    }
+    unica_forms::FormObservation::from_column_parent_type(column.parent_type.as_deref()?)
 }
 
 /// Дерево элементов стадированной формы `Owner.X.Form.F`, как его читает

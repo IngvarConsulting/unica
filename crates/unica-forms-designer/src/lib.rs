@@ -17,4 +17,5 @@ pub mod event_patch;
 pub mod test_support;
 
 mod column_add;
+mod column_type;
 pub mod default_forms;
