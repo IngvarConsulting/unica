@@ -1,6 +1,7 @@
 mod entrypoint;
 #[cfg(test)]
-mod network_trust_tests;
+#[path = "network_trust_tests.rs"]
+mod medium_network_trust_tests;
 #[cfg(test)]
 mod process_integration_tests;
 mod target;

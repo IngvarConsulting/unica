@@ -896,7 +896,7 @@ fn reject_absent_runner(absence: RunnerAbsence) -> DomainResult {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use std::fs;
     use std::sync::Mutex;
