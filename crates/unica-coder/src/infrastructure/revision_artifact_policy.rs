@@ -228,6 +228,7 @@ fn has_legacy_content_extension(path: &Path) -> bool {
 pub(crate) mod tests {
     use super::*;
 
+    /// rule: CTR.SOURCE.REVISION-ARTIFACT-PROFILE
     #[test]
     pub(crate) fn platform_xml_revision_artifact_profile_is_closed() {
         let configuration = RevisionArtifactPolicy::from_source_profile(

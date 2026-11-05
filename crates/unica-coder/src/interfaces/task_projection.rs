@@ -311,6 +311,7 @@ mod tests {
         "09".repeat(32).parse().unwrap()
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn v5_native_projection_keeps_durable_time_ttl_and_maps_queued_to_working() {
         let (task_id, invocation_id, receipt_key_digest) = v5_common();
@@ -370,6 +371,7 @@ mod tests {
         );
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn v5_completed_task_embeds_the_exact_direct_call_result() {
         let result = DomainResult {
@@ -452,6 +454,7 @@ mod tests {
         assert!(recovery.get("data").is_none());
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn error_recovery_preserves_all_hints_beyond_the_diagnostic_text_budget() {
         let mut result = DomainResult::success("ambiguous operation target");
@@ -492,6 +495,7 @@ mod tests {
             .contains("privateSubjectData"));
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn error_recovery_that_exceeds_the_total_projection_limit_is_refused_whole() {
         use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
@@ -509,6 +513,7 @@ mod tests {
         );
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn medium_error_fallback_is_bounded_without_losing_structured_diagnostics() {
         use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
@@ -601,6 +606,7 @@ mod tests {
         }
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn error_without_diagnostics_still_has_readable_summary() {
         let mut result = DomainResult::success("operation failed");
@@ -643,6 +649,8 @@ mod tests {
         assert_ne!(first.digest(), edited.digest());
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn task_result_with_source_text_follows_the_client_budget() {
         let mut result = DomainResult::success("logical node text resolved");
@@ -746,6 +754,7 @@ mod tests {
         assert_eq!(serde_json::to_vec(&result).unwrap(), canonical_before);
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn source_text_result_is_an_envelope_then_raw_text_without_structured_content() {
         let text =
@@ -822,6 +831,7 @@ mod tests {
             .contains("sourceTextReadHint"));
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn v5_failed_and_cancelled_terminals_answer_only_the_closed_vocabulary() {
         use unica_execution::invocation_store_v5::V5SafeFailureReason;
