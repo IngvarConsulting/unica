@@ -1,6 +1,9 @@
 ---
 id: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 check:
+  - crates/unica-coder/src/infrastructure/v13_read/tests/subscription_handler.rs::subscription_relation_preserves_sources_and_adds_one_method_link
+  - crates/unica-coder/src/infrastructure/v13_read/tests/subscription_handler.rs::malformed_handlers_do_not_invent_links_and_missing_methods_refuse_on_follow
+  - crates/unica-coder/src/infrastructure/v13_read/tests/subscription_handler.rs::damaged_handler_xml_keeps_source_and_observation_limits
   - crates/unica-coder/src/infrastructure/v13_read/tests/metadata.rs::every_reference_of_an_object_answers_in_one_relation_branch
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::a_subsystem_shows_its_content_and_reads_registered_children_at_depth
   - crates/unica-metadata-integration-tests/tests/subsystem_topology.rs::memberships_name_the_listing_subsystem_its_ancestors_and_standard_library_roots
@@ -9,7 +12,7 @@ check:
 
 # Ссылки объекта собраны в одной ветви Relation
 
-Ссылки объекта метаданных на другие объекты возвращаются в ветви `Relation`.
+Ссылки объекта метаданных на другие объекты и методы возвращаются в ветви `Relation`.
 Каждый элемент содержит имя связи `relation`, логический адрес цели `at`
 и её вид `kind`. Владельцы, движения, основания и остальные виды ссылок
 различаются именем связи, а не отдельными ветвями. Состав подсистемы —
@@ -28,3 +31,10 @@ check:
 Цель читается по собственному адресу. Спуск внутрь элемента `Relation`
 завершается `not_found`. Класс объектов и пространство имён без адреса
 конкретного объекта в эту ветвь не входят.
+
+Подписка на событие возвращает единственную связь `handler` на `Method`
+общего модуля в своём наборе исходников. Значение `Handler` и связи `source`
+сохраняются. Пустая или повреждённая ссылка адреса не порождает; синтаксически
+корректная ссылка может вести к отсутствующему методу — его чтение отвечает
+`not_found`. Навигация не подтверждает корректность привязки: совместимость
+источников, события и обработчика проверяет [валидатор подписки](event-subscription-handler.md).

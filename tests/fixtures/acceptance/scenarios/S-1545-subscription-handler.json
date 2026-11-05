@@ -1,0 +1,392 @@
+{
+  "id": "S-1545-subscription-handler",
+  "issue": 1545,
+  "area": "Чтение метаданных",
+  "task": "Перейти от подписки через Relation к обработчику в её наборе исходников; сохранить source и Handler, отличить повреждённую и отсутствующую цель без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-subscription-handler",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Handler",
+          "eq": "CommonModule.EventHandlers.OnBeforeWrite"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:EventSubscription.CorpusEventSubscription.Relation",
+            "count": 3
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/relation",
+          "eq": "source"
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.ПримерВ"
+        },
+        {
+          "pointer": "/data/items/1/relation",
+          "eq": "source"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Catalog.ПримерА"
+        },
+        {
+          "pointer": "/data/items/2",
+          "eq": {
+            "relation": "handler",
+            "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite",
+            "kind": "Method"
+          }
+        }
+      ],
+      "captures": {
+        "handler": {
+          "pointer": "/data/items/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.handler"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonModule.EventHandlers.Method.OnBeforeWrite"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.EventHandlers.Method.OnBeforeWrite.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "contains": "Основная"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:EventSubscription.CorpusEventSubscription"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Handler",
+          "eq": "CommonModule.EventHandlers.OnBeforeWrite"
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "ext:EventSubscription.CorpusEventSubscription.Relation",
+            "count": 3
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:EventSubscription.CorpusEventSubscription.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/relation",
+          "eq": "source"
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "ext:Catalog.ПримерВ"
+        },
+        {
+          "pointer": "/data/items/1/relation",
+          "eq": "source"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "ext:Catalog.ПримерА"
+        },
+        {
+          "pointer": "/data/items/2",
+          "eq": {
+            "relation": "handler",
+            "at": "ext:CommonModule.EventHandlers.Method.OnBeforeWrite",
+            "kind": "Method"
+          }
+        }
+      ],
+      "captures": {
+        "extensionHandler": {
+          "pointer": "/data/items/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.extensionHandler"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "ext:CommonModule.EventHandlers.Method.OnBeforeWrite"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonModule.EventHandlers.Method.OnBeforeWrite.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "contains": "Расширение"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.Missing.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:CommonModule.EventHandlers.Method.Absent"
+        }
+      ],
+      "captures": {
+        "missing": {
+          "pointer": "/data/items/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.missing"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: method `Absent` was not found"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.Broken.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "noneMatches": {
+            "relation": "handler"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:EventSubscription.CorpusEventSubscription.Relation.OnBeforeWrite"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "README.md",
+          "eq": "236dfc79f84477efa99d33e20ece5106609bab84a8c5cc2f60f01dcd63d38a25"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/ПримерА.xml",
+          "eq": "f26e51844876d2c3de70bd83d5acc6569137f55247a6abc3d83647592e4f6a16"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/ПримерБ.xml",
+          "eq": "db40e98b5fdb2392ef77603baa92c627a293cce6d8d5ab750b0fc08165b760be"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/ПримерВ.xml",
+          "eq": "e441a16221cde8ce3962978b0096632bbdb56508f1539a087ad5ac3783d8accb"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "6d1bfdd5adf5b243e0bd73f92cfd1a8306e9fc7bfa0ed5151578b29ab337c7ba"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "2212ae44cd656a185b39404d6e4f7a8b87c18ab5ee63978718beaf5ec98521b1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "081f5fc23f8334711ee72b97f949365aa615eadbf76a3a74aa56e5745f58c7ff"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/EventSubscriptions/Broken.xml",
+          "eq": "960f1306ccf7a8c229280e7fbbf3c12618965b8db51294975ed37e7ede5882a9"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "eq": "255d65bde67a32cff4882cff20e9ad0f0d4501399c7b518ce1dee3228541555c"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/EventSubscriptions/Missing.xml",
+          "eq": "5193818663de1da7af0d76f6c89174cce7efe9c19eb03807393d076427afad8d"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "eq": "3cf6a7acfb531b89b4eb4d72d2172cc14146797f56640001a656a4a2650cb069"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "88209e814459d6f3a581e688b40caaea500a140c87382a0e2604f4901f3b71c0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/Catalogs/ПримерА.xml",
+          "eq": "1dc6b752d0f23b2af8417efb99278f0dc00d7002298fb2eed1f519a214bc9ff2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/Catalogs/ПримерБ.xml",
+          "eq": "c08c103f91743a6ea0d886a4d7acc0a93f6beae467a559772a5d505e10d5b59f"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/Catalogs/ПримерВ.xml",
+          "eq": "b17c45b4aaf6481ac678157a6a1262d0ab734413e7ac7aa0a56b3b2aa3e3eca0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "6b65a9c1c05d8c8be48654a38927a1b7dcb76ae4aa6be93f1bad8109465c5b29"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/CommonModules/EventHandlers.xml",
+          "eq": "ec87a3d93fa109b8c62e91e3801d46938d2b40fd4554b394cfce3fd346e7ba19"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/Configuration.xml",
+          "eq": "faed4a0f9f39fba87399c74ddf023afaa50c97d6a566d9312a2249e3c5b4eb69"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/EventSubscriptions/Broken.xml",
+          "eq": "07e41e4f2f77fb72c2b94bccab6a92d5866a1407322b6b0f306fbc97aaf6c43d"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/EventSubscriptions/CorpusEventSubscription.xml",
+          "eq": "163ff49a395ae90b63ec567a582dcd7b84bff68acd89e0d385a13df1f7743d0e"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/EventSubscriptions/Missing.xml",
+          "eq": "417dc4eb24e5c1fade77f6e97e1a97212487fd750a4d472e36ad9443b2b45dd7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/Ext/ClientApplicationInterface.xml",
+          "eq": "9eac7824d8a42c15fbfc7d855845f79bbe9b1609f89b8b3b433d88d7e1f75349"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/Languages/Русский.xml",
+          "eq": "7266166402d1c0df74f40614e7336ec8a21ca5e420a46e42b933d39caeda15f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "ad66bbc36bcab2877eae70d9b5eb5e9233f0d0c0018de56429b3c5f757236945"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: the relation branch lists targets; read the target at its own address"
+    }
+  ]
+}

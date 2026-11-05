@@ -17,6 +17,7 @@ mod metadata_declaration_diagnostics;
 mod numerator_read_profile;
 mod session_parameter_comment;
 mod structured_property_names;
+mod subscription_handler;
 mod support;
 mod task_addressing;
 mod wsreference_definition;

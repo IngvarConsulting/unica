@@ -1136,7 +1136,13 @@ fn every_reference_of_an_object_answers_in_one_relation_branch() {
     );
     assert_eq!(
         sources("main:EventSubscription.ПриЗаписи.Relation"),
-        [("source".to_string(), "main:Catalog.Items".to_string())]
+        [
+            ("source".to_string(), "main:Catalog.Items".to_string()),
+            (
+                "handler".to_string(),
+                "main:CommonModule.РеактивныйСервер.Method.ПриЗаписи".to_string()
+            ),
+        ]
     );
     // Пакет XDTO бывает ссылкой и бывает пространством имён; в ветвь попадает
     // только адресуемый вариант, и это названная граница, а не потеря.
