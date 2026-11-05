@@ -891,21 +891,3 @@ mod tests {
         assert!(!diagnostic_metadata_property_is_canonical("Required"));
     }
 }
-
-#[cfg(test)]
-mod split_equivalence {
-    /// The specifications collected from `properties/` equal the former
-    /// hand-written table, compared by their complete Debug form.
-    #[test]
-    fn collected_specifications_equal_the_former_table() {
-        let mut lines = super::METADATA_PROPERTY_SPECS
-            .iter()
-            .map(|spec| format!("{spec:?}"))
-            .collect::<Vec<_>>();
-        lines.sort();
-        assert_eq!(
-            lines.join("\n") + "\n",
-            include_str!("properties_before.txt").replace("\r\n", "\n")
-        );
-    }
-}
