@@ -1,0 +1,273 @@
+{
+  "id": "S-1860-role-local-eol",
+  "issue": 1860,
+  "area": "Роли и права",
+  "task": "Добавить право и запись в роль с BOM, CRLF-разметкой и LF внутри шаблона RLS, сохранив все нетронутые байты",
+  "workspace": "tests/fixtures/acceptance/workspace-role-local-eol",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.Reader"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:Role.Reader.Right"
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "rights": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rights"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Role.Reader.Right.Catalog_Existing"
+        }
+      ],
+      "captures": {
+        "entry": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.entry",
+        "ops": [
+          {
+            "op": "right.set",
+            "args": {
+              "values": {
+                "right": "Update",
+                "value": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Roles/Reader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "69db99258b4ddbe2c62b90bdc3bef0cf6f2f26e903d614fb7216f0ebd18858ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Roles/Reader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "b78a145053e5f26697ec492ed1930a6843c11f97cf31fa61c9b741bd95157e96"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.Reader",
+        "ops": [
+          {
+            "op": "right.add",
+            "args": {
+              "items": [
+                {
+                  "object": "Document.New",
+                  "rights": {
+                    "Read": true
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Roles/Reader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "b78a145053e5f26697ec492ed1930a6843c11f97cf31fa61c9b741bd95157e96"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/validated",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Roles/Reader/Ext/Rights.xml",
+          "kind": "sha256",
+          "eq": "d8441e6b17fbb8b35b4ee0c2fe14b15509d8462e39f6674c8ed461197a0f64d5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rights"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:Role.Reader.Right.Catalog_Existing",
+              "kind": "Right",
+              "title": "Existing",
+              "props": {
+                "allowedCount": 2,
+                "deniedCount": 0,
+                "objectKind": "Catalog"
+              }
+            },
+            {
+              "at": "main:Role.Reader.Right.Document_New",
+              "kind": "Right",
+              "title": "New",
+              "props": {
+                "allowedCount": 1,
+                "deniedCount": 0,
+                "objectKind": "Document"
+              }
+            }
+          ]
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Role.Reader"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Existing.xml",
+          "kind": "sha256",
+          "eq": "5d38546a26b0e58d395857f30a08b4c3f56266f6df5b1fcf77535b6e2d3ed899"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "77b56c4e0652508a8e5fa4cb034a180c39d8e94ab2471928818b252af0fefb92"
+        },
+        {
+          "path": "src/Documents/New.xml",
+          "kind": "sha256",
+          "eq": "25c1f33f1b2e1d7845c3089e022e650ccc1c33e770507934e4440d1e0be39508"
+        },
+        {
+          "path": "src/Roles/Reader.xml",
+          "kind": "sha256",
+          "eq": "23d9ed5f7371f9f14f649e5183359466dfad0d527ee9902ecaf631f558a826ad"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "role"
+      ]
+    }
+  ]
+}

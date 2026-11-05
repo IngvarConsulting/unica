@@ -67,7 +67,7 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
 
     #[test]

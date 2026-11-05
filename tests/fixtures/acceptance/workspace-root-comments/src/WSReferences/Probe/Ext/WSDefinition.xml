@@ -1,0 +1,288 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://schemas.xmlsoap.org/wsdl/"
+		xmlns:soap12bind="http://schemas.xmlsoap.org/wsdl/soap12/"
+		xmlns:soapbind="http://schemas.xmlsoap.org/wsdl/soap/"
+		xmlns:tns="http://file.api.update.onec.ru"
+		xmlns:wsp="http://schemas.xmlsoap.org/ws/2004/09/policy"
+		xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"
+		xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+		xmlns:xsd1="http://file.api.update.onec.ru"
+		name="UpdateFilesApiImplService"
+		targetNamespace="http://file.api.update.onec.ru">
+	<types>
+		<xs:schema xmlns:ns1="http://schemas.xmlsoap.org/soap/http"
+				xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/"
+				xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/"
+				xmlns:xs="http://www.w3.org/2001/XMLSchema"
+				attributeFormDefault="unqualified"
+				elementFormDefault="unqualified"
+				targetNamespace="http://file.api.update.onec.ru">
+			<xs:element name="getFilesForUpdateToLastVersion"
+					type="xsd1:getFilesForUpdateToLastVersion"/>
+			<xs:element name="getFilesForUpdateToLastVersionResponse"
+					type="xsd1:getFilesForUpdateToLastVersionResponse"/>
+			<xs:element name="getFilesForUpdateToVersion"
+					type="xsd1:getFilesForUpdateToVersion"/>
+			<xs:element name="getFilesForUpdateToVersionResponse"
+					type="xsd1:getFilesForUpdateToVersionResponse"/>
+			<xs:complexType name="getFilesForUpdateToLastVersion">
+				<xs:sequence>
+					<xs:element minOccurs="0"
+							name="login"
+							type="xs:string"/>
+					<xs:element minOccurs="0"
+							name="password"
+							type="xs:string"/>
+					<xs:element minOccurs="0"
+							name="configurationName"
+							type="xs:string"/>
+					<xs:element minOccurs="0"
+							name="currentVersion"
+							type="xs:string"/>
+					<xs:element minOccurs="0"
+							name="currentPlatformVersion"
+							type="xs:string"/>
+				</xs:sequence>
+			</xs:complexType>
+			<xs:complexType name="getFilesForUpdateToLastVersionResponse">
+				<xs:sequence>
+					<xs:element minOccurs="0"
+							name="return"
+							type="xsd1:fileListDto"/>
+				</xs:sequence>
+			</xs:complexType>
+			<xs:complexType name="fileListDto">
+				<xs:sequence>
+					<xs:element form="qualified"
+							maxOccurs="unbounded"
+							minOccurs="0"
+							name="fileDtoList"
+							nillable="true"
+							type="xsd1:fileDto"/>
+				</xs:sequence>
+			</xs:complexType>
+			<xs:complexType name="fileDto">
+				<xs:sequence/>
+				<xs:attribute name="url"
+						type="xs:string"
+						use="required"/>
+				<xs:attribute name="typeUniqueExchangeId"
+						type="xs:string"
+						use="required"/>
+			</xs:complexType>
+			<xs:complexType name="getFilesForUpdateToVersion">
+				<xs:sequence>
+					<xs:element minOccurs="0"
+							name="login"
+							type="xs:string"/>
+					<xs:element minOccurs="0"
+							name="password"
+							type="xs:string"/>
+					<xs:element minOccurs="0"
+							name="configurationName"
+							type="xs:string"/>
+					<xs:element minOccurs="0"
+							name="currentVersion"
+							type="xs:string"/>
+					<xs:element minOccurs="0"
+							name="updateToVersion"
+							type="xs:string"/>
+					<xs:element minOccurs="0"
+							name="currentPlatformVersion"
+							type="xs:string"/>
+				</xs:sequence>
+			</xs:complexType>
+			<xs:complexType name="getFilesForUpdateToVersionResponse">
+				<xs:sequence>
+					<xs:element minOccurs="0"
+							name="return"
+							type="xsd1:fileListDto"/>
+				</xs:sequence>
+			</xs:complexType>
+			<xs:element name="InternalServerErrorException"
+					type="xsd1:InternalServerErrorException"/>
+			<xs:complexType name="InternalServerErrorException">
+				<xs:sequence>
+					<xs:element minOccurs="0"
+							name="message"
+							type="xs:string"/>
+				</xs:sequence>
+			</xs:complexType>
+			<xs:element name="NoAccessToConfigurationException"
+					type="xsd1:NoAccessToConfigurationException"/>
+			<xs:complexType name="NoAccessToConfigurationException">
+				<xs:sequence>
+					<xs:element minOccurs="0"
+							name="message"
+							type="xs:string"/>
+				</xs:sequence>
+			</xs:complexType>
+			<xs:element name="NoVersionException"
+					type="xsd1:NoVersionException"/>
+			<xs:complexType name="NoVersionException">
+				<xs:sequence>
+					<xs:element minOccurs="0"
+							name="message"
+							type="xs:string"/>
+				</xs:sequence>
+			</xs:complexType>
+			<xs:element name="NoConfigurationException"
+					type="xsd1:NoConfigurationException"/>
+			<xs:complexType name="NoConfigurationException">
+				<xs:sequence>
+					<xs:element minOccurs="0"
+							name="message"
+							type="xs:string"/>
+				</xs:sequence>
+			</xs:complexType>
+			<xs:element name="IncorrectLoginOrPasswordException"
+					type="xsd1:IncorrectLoginOrPasswordException"/>
+			<xs:complexType name="IncorrectLoginOrPasswordException">
+				<xs:sequence>
+					<xs:element minOccurs="0"
+							name="message"
+							type="xs:string"/>
+				</xs:sequence>
+			</xs:complexType>
+		</xs:schema>
+	</types>
+	<message name="getFilesForUpdateToVersionResponse">
+		<part name="parameters"
+				element="tns:getFilesForUpdateToVersionResponse"/>
+	</message>
+	<message name="getFilesForUpdateToLastVersionResponse">
+		<part name="parameters"
+				element="tns:getFilesForUpdateToLastVersionResponse"/>
+	</message>
+	<message name="NoVersionException">
+		<part name="NoVersionException"
+				element="tns:NoVersionException"/>
+	</message>
+	<message name="InternalServerErrorException">
+		<part name="InternalServerErrorException"
+				element="tns:InternalServerErrorException"/>
+	</message>
+	<message name="getFilesForUpdateToLastVersion">
+		<part name="parameters"
+				element="tns:getFilesForUpdateToLastVersion"/>
+	</message>
+	<message name="IncorrectLoginOrPasswordException">
+		<part name="IncorrectLoginOrPasswordException"
+				element="tns:IncorrectLoginOrPasswordException"/>
+	</message>
+	<message name="NoAccessToConfigurationException">
+		<part name="NoAccessToConfigurationException"
+				element="tns:NoAccessToConfigurationException"/>
+	</message>
+	<message name="getFilesForUpdateToVersion">
+		<part name="parameters"
+				element="tns:getFilesForUpdateToVersion"/>
+	</message>
+	<message name="NoConfigurationException">
+		<part name="NoConfigurationException"
+				element="tns:NoConfigurationException"/>
+	</message>
+	<portType name="UpdateFilesApi">
+		<operation name="getFilesForUpdateToLastVersion">
+			<input name="getFilesForUpdateToLastVersion"
+					message="tns:getFilesForUpdateToLastVersion"/>
+			<output name="getFilesForUpdateToLastVersionResponse"
+					message="tns:getFilesForUpdateToLastVersionResponse"/>
+			<fault name="IncorrectLoginOrPasswordException"
+					message="tns:IncorrectLoginOrPasswordException"/>
+			<fault name="NoAccessToConfigurationException"
+					message="tns:NoAccessToConfigurationException"/>
+			<fault name="NoConfigurationException"
+					message="tns:NoConfigurationException"/>
+			<fault name="NoVersionException"
+					message="tns:NoVersionException"/>
+			<fault name="InternalServerErrorException"
+					message="tns:InternalServerErrorException"/>
+		</operation>
+		<operation name="getFilesForUpdateToVersion">
+			<input name="getFilesForUpdateToVersion"
+					message="tns:getFilesForUpdateToVersion"/>
+			<output name="getFilesForUpdateToVersionResponse"
+					message="tns:getFilesForUpdateToVersionResponse"/>
+			<fault name="IncorrectLoginOrPasswordException"
+					message="tns:IncorrectLoginOrPasswordException"/>
+			<fault name="NoAccessToConfigurationException"
+					message="tns:NoAccessToConfigurationException"/>
+			<fault name="NoConfigurationException"
+					message="tns:NoConfigurationException"/>
+			<fault name="NoVersionException"
+					message="tns:NoVersionException"/>
+			<fault name="InternalServerErrorException"
+					message="tns:InternalServerErrorException"/>
+		</operation>
+	</portType>
+	<binding name="UpdateFilesApiImplServiceSoapBinding"
+			type="tns:UpdateFilesApi">
+		<soapbind:binding style="document"
+				transport="http://schemas.xmlsoap.org/soap/http"/>
+		<operation name="getFilesForUpdateToLastVersion">
+			<soapbind:operation style="document"/>
+			<input>
+				<soapbind:body use="literal"/>
+			</input>
+			<output>
+				<soapbind:body use="literal"/>
+			</output>
+			<fault name="IncorrectLoginOrPasswordException">
+				<soapbind:fault name="IncorrectLoginOrPasswordException"
+						use="literal"/>
+			</fault>
+			<fault name="NoAccessToConfigurationException">
+				<soapbind:fault name="NoAccessToConfigurationException"
+						use="literal"/>
+			</fault>
+			<fault name="NoConfigurationException">
+				<soapbind:fault name="NoConfigurationException"
+						use="literal"/>
+			</fault>
+			<fault name="NoVersionException">
+				<soapbind:fault name="NoVersionException"
+						use="literal"/>
+			</fault>
+			<fault name="InternalServerErrorException">
+				<soapbind:fault name="InternalServerErrorException"
+						use="literal"/>
+			</fault>
+		</operation>
+		<operation name="getFilesForUpdateToVersion">
+			<soapbind:operation style="document"/>
+			<input>
+				<soapbind:body use="literal"/>
+			</input>
+			<output>
+				<soapbind:body use="literal"/>
+			</output>
+			<fault name="IncorrectLoginOrPasswordException">
+				<soapbind:fault name="IncorrectLoginOrPasswordException"
+						use="literal"/>
+			</fault>
+			<fault name="NoAccessToConfigurationException">
+				<soapbind:fault name="NoAccessToConfigurationException"
+						use="literal"/>
+			</fault>
+			<fault name="NoConfigurationException">
+				<soapbind:fault name="NoConfigurationException"
+						use="literal"/>
+			</fault>
+			<fault name="NoVersionException">
+				<soapbind:fault name="NoVersionException"
+						use="literal"/>
+			</fault>
+			<fault name="InternalServerErrorException">
+				<soapbind:fault name="InternalServerErrorException"
+						use="literal"/>
+			</fault>
+		</operation>
+	</binding>
+	<service name="UpdateFilesApiImplService">
+		<port name="UpdateFilesApiImplPort"
+				binding="tns:UpdateFilesApiImplServiceSoapBinding">
+			<soapbind:address location="https://update-api.1c.ru/ws/files"/>
+		</port>
+	</service>
+</definitions>
