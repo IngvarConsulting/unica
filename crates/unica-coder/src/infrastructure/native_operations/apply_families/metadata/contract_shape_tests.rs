@@ -84,7 +84,7 @@ fn expect_error(
 }
 
 #[test]
-fn all_twenty_one_member_shapes_match_the_productive_parser_without_source_writes() {
+fn medium_all_twenty_one_member_shapes_match_the_productive_parser_without_source_writes() {
     let fixture = MetadataFixture::new();
     let source = fixture._root.path().join("src");
     let before = tree_snapshot(&source);
@@ -185,7 +185,7 @@ fn all_twenty_one_member_shapes_match_the_productive_parser_without_source_write
 }
 
 #[test]
-fn nested_type_and_position_shapes_reach_each_typed_member_reader() {
+fn medium_nested_type_and_position_shapes_reach_each_typed_member_reader() {
     let fixture = MetadataFixture::new();
     let float_type = |raw: &str, field: &str| {
         let value: Value = serde_json::from_str(raw).unwrap();
@@ -334,7 +334,7 @@ fn nested_type_and_position_shapes_reach_each_typed_member_reader() {
 }
 
 #[test]
-fn fill_shape_uses_the_same_owner_and_tabular_context_as_the_productive_reader() {
+fn medium_fill_shape_uses_the_same_owner_and_tabular_context_as_the_productive_reader() {
     let fixture = MetadataFixture::new();
     for (family, owner, leaf, allowed) in [
         ("attribute", "Document.Order", "Attribute", true),

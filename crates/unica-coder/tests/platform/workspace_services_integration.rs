@@ -112,14 +112,14 @@ fn start_rlm_transport(
     )
 }
 
+#[path = "persistent_provider_cwd.rs"]
+mod medium_persistent_provider_cwd_native_tests;
+#[path = "../workspace_service_support/private_failure_tests.rs"]
+mod medium_private_failure_tests;
 #[path = "../workspace_service_support/persistent_provider_cwd_command_tests.rs"]
 mod persistent_provider_cwd_command_tests;
-#[path = "persistent_provider_cwd.rs"]
-mod persistent_provider_cwd_native_tests;
 #[path = "../workspace_service_support/persistent_provider_cwd_selection_tests.rs"]
 mod persistent_provider_cwd_selection_tests;
-#[path = "../workspace_service_support/private_failure_tests.rs"]
-mod private_failure_tests;
 macro_rules! assert_not_impl_production {
     ($type:ty: $trait:path) => {
         const _: fn() = || {
@@ -173,8 +173,11 @@ fn wait_for_record_with_connector(
     )
 }
 
+// Shared helpers keep their former name for the modules that import them.
 #[cfg(test)]
-mod tests {
+use medium_tests as tests;
+#[cfg(test)]
+mod medium_tests {
     use super::*;
     use std::fs;
     use std::path::Path;
@@ -9119,7 +9122,7 @@ fn main() {
         command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::startup_failure_child_fixture",
+                "infrastructure::workspace_services::medium_tests::startup_failure_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -9186,7 +9189,7 @@ fn main() {
         owned_command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "infrastructure::workspace_services::medium_tests::spawn_cleanup_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -9215,7 +9218,7 @@ fn main() {
         replaced_command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "infrastructure::workspace_services::medium_tests::spawn_cleanup_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -9252,7 +9255,7 @@ fn main() {
         command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::startup_failure_child_fixture",
+                "infrastructure::workspace_services::medium_tests::startup_failure_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -9314,7 +9317,7 @@ fn main() {
         command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "infrastructure::workspace_services::medium_tests::spawn_cleanup_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])

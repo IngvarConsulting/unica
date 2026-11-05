@@ -55,7 +55,7 @@ fn ack_crash_after_witness_row_before_generation_heals_and_compacts_on_reopen() 
         .join("receipts");
     let (key, _) = direct_terminal_identity_without_opening_store();
     run_ack_crash_child(
-        "receipt_store::tests::crash_process_tests::ack_crash_after_witness_row_before_generation_heals_and_compacts_on_reopen",
+        "receipt_store::tests::medium_crash_process_tests::ack_crash_after_witness_row_before_generation_heals_and_compacts_on_reopen",
         &receipts,
     );
     assert_eq!(
@@ -107,7 +107,7 @@ fn ack_generation_is_published_while_the_durable_witness_is_still_visible() {
         .join("receipts");
     let (key, _) = direct_terminal_identity_without_opening_store();
     run_ack_crash_child(
-        "receipt_store::tests::crash_process_tests::ack_generation_is_published_while_the_durable_witness_is_still_visible",
+        "receipt_store::tests::medium_crash_process_tests::ack_generation_is_published_while_the_durable_witness_is_still_visible",
         &receipts,
     );
     assert!(
@@ -165,7 +165,7 @@ fn ack_crash_after_compact_row_rename_reopens_the_same_tombstone() {
         .join("receipts");
     let (key, terminal_digest) = direct_terminal_identity_without_opening_store();
     run_ack_crash_child(
-        "receipt_store::tests::crash_process_tests::ack_crash_after_compact_row_rename_reopens_the_same_tombstone",
+        "receipt_store::tests::medium_crash_process_tests::ack_crash_after_compact_row_rename_reopens_the_same_tombstone",
         &receipts,
     );
     assert_eq!(
