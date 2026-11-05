@@ -1,8 +1,5 @@
 ---
 id: INV.APP.PROVIDER-PRIVATE-STATE
-check:
-  - crates/unica-coder/src/infrastructure/daemon/opaque_rlm_analysis_tests.rs::canonical_analysis_uses_supported_mcp_with_opaque_format_a
-  - crates/unica-coder/src/infrastructure/daemon/opaque_rlm_analysis_tests.rs::canonical_analysis_uses_supported_mcp_with_opaque_format_b
 ---
 
 # Формат индекса поставщика не становится форматом данных Unica

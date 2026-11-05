@@ -1,7 +1,5 @@
 ---
 id: INV.APP.NEW-INVOCATION-IDENTITY
-check:
-  - crates/unica-coder/src/interfaces/daemon_router.rs::live_daemon_executes_once_and_compacts_the_acknowledged_receipt_to_a_tombstone
 ---
 
 # Каждый новый вызов получает собственные идентификаторы

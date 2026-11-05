@@ -115,6 +115,7 @@ async fn complete_catalog(client: &mut McpClient, native: bool) {
     );
 }
 
+/// rule: INV.WIRE.ENGINE-FREE-HANDSHAKE
 #[tokio::test]
 async fn engine_free_mcp_construction_and_discovery_with_cold_engines() {
     const CHILD_ROOT: &str = "UNICA_ENGINE_FREE_966_CHILD_ROOT";

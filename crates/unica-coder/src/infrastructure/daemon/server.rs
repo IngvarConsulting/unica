@@ -2193,6 +2193,8 @@ pub(crate) mod medium_actor_capacity_tests {
     /// по-прежнему исполняется — значит, ревизия, которой он связан, та же.
     /// Для команд состав сравнивается в пределах одной группы: команда
     /// соседней группы того же файла — чужая.
+    /// rule: INV.SOURCE.COMMAND-INTERFACE-TARGET
+    /// rule: INV.SOURCE.INTERFACE-ORDER-MEMBERSHIP
     #[test]
     fn canonical_interface_order_permutes_stored_composition_and_refuses_any_other_without_writing()
     {
@@ -2344,6 +2346,7 @@ pub(crate) mod medium_actor_capacity_tests {
 
     /// Правка порядка одной группы трогает только её команды: порядок второй
     /// группы, остальные секции, видимость и размещение остаются байт в байт.
+    /// rule: INV.SOURCE.COMMAND-INTERFACE-SECTION-ISOLATION
     #[test]
     fn canonical_command_order_of_one_group_keeps_other_groups_and_sections() {
         let workspace = interface_order_workspace();
@@ -2525,6 +2528,7 @@ pub(crate) mod medium_actor_capacity_tests {
     /// разделы интерфейса — подсистемы верхнего уровня, включённые в него, —
     /// и создаёт файл в форме выгрузки 8.3.27. Чужое имя, раздел вне
     /// интерфейса и повтор отклоняются без записи.
+    /// rule: INV.SOURCE.INTERFACE-ORDER-MEMBERSHIP
     #[test]
     fn canonical_first_subsystem_order_creates_root_interface_from_sections() {
         let runtime =
@@ -2676,6 +2680,7 @@ pub(crate) mod medium_actor_capacity_tests {
     /// с исходным байт в байт, кроме значения одной команды, для порядков —
     /// всё вне своей секции. Ролевое значение видимости переживает правку
     /// общего.
+    /// rule: INV.SOURCE.COMMAND-INTERFACE-SECTION-ISOLATION
     #[test]
     fn canonical_each_interface_operation_changes_only_its_own_section_and_items() {
         let workspace = interface_order_workspace();
@@ -2778,6 +2783,8 @@ pub(crate) mod medium_actor_capacity_tests {
     /// Адрес интерфейса несёт всю цепочку владельцев: правка вложенной
     /// подсистемы не уходит в одноимённую корневую. Неподдержанная цель и
     /// чужой маршрут отказывают, а не выбирают другой интерфейс.
+    /// rule: INV.SOURCE.COMMAND-INTERFACE-SECTION-ISOLATION
+    /// rule: INV.SOURCE.COMMAND-INTERFACE-TARGET
     #[test]
     fn canonical_interface_edits_reach_exactly_the_nested_owner_and_refuse_foreign_targets() {
         let workspace = interface_order_workspace();
@@ -2926,6 +2933,7 @@ pub(crate) mod medium_actor_capacity_tests {
     /// Предпросмотр ничего не пишет, а план связан с ревизией исходников:
     /// если после него состав группы изменился, исполнение отказывает
     /// и оставляет файл таким, каким его сделала сторонняя правка.
+    /// rule: INV.SOURCE.INTERFACE-ORDER-MEMBERSHIP
     #[test]
     fn canonical_interface_order_plan_is_refused_after_the_composition_changes() {
         let workspace = interface_order_workspace();
@@ -2981,6 +2989,7 @@ pub(crate) mod medium_actor_capacity_tests {
     /// Группа — узел адреса: порядок команд правит только группу, которую
     /// интерфейс объявляет, как её видит чтение. Неизвестная группа отвечает
     /// `not_found` без записи, а не заводится порядком.
+    /// rule: INV.SOURCE.COMMAND-INTERFACE-TARGET
     #[test]
     fn canonical_command_order_refuses_an_undeclared_group_without_writing() {
         let workspace = interface_order_workspace();
@@ -3433,6 +3442,7 @@ pub(crate) mod medium_actor_capacity_tests {
         }
     }
 
+    /// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
     #[test]
     fn canonical_dcs_check_accepts_external_report_processor_and_configuration() {
         for kind in ["ExternalReport", "ExternalDataProcessor", "Report"] {
@@ -3454,6 +3464,7 @@ pub(crate) mod medium_actor_capacity_tests {
         }
     }
 
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
     #[test]
     fn canonical_template_read_warns_while_writes_keep_the_exact_owner_profile() {
         for kind in ["Report", "ExternalReport", "ExternalDataProcessor"] {
@@ -3557,6 +3568,7 @@ pub(crate) mod medium_actor_capacity_tests {
         }
     }
 
+    /// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
     #[test]
     fn canonical_dcs_check_external_semantics_and_owner_isolation() {
         for kind in ["ExternalReport", "ExternalDataProcessor"] {
@@ -3617,6 +3629,7 @@ pub(crate) mod medium_actor_capacity_tests {
         }
     }
 
+    /// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
     #[test]
     fn canonical_dcs_check_refuses_unregistered_or_mismatched_external_template() {
         for case in ["unregistered", "wrong-name", "wrong-kind", "missing"] {
@@ -3671,6 +3684,7 @@ pub(crate) mod medium_actor_capacity_tests {
         }
     }
 
+    /// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
     #[test]
     fn canonical_dcs_check_refuses_linked_external_payload() {
         use unica_workspace::test_support::{
@@ -3919,6 +3933,7 @@ pub(crate) mod medium_actor_capacity_tests {
         }
     }
 
+    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
     fn canonical_130_fresh_leases_share_one_payload_without_skipping_full_reads() {
         use crate::infrastructure::daemon::v13_service::{
@@ -4057,6 +4072,7 @@ pub(crate) mod medium_actor_capacity_tests {
         assert_eq!(service.retained_view_usage_for_test(), usage);
     }
 
+    /// rule: INV.APP.DEFERRED-READ
     #[test]
     fn canonical_change_beyond_first_page_keeps_old_payload_and_allocates_a_new_full_payload() {
         use crate::infrastructure::daemon::v13_service::CanonicalV13ReadService;
@@ -4546,6 +4562,7 @@ pub(crate) mod medium_actor_capacity_tests {
         ));
     }
 
+    /// rule: INV.ANALYSIS.CALL-GRAPH-ON-DEMAND
     #[test]
     fn canonical_selected_engine_routes_request_delivery_before_provider_start() {
         const CHILD: &str = "UNICA_RUN_DELIVERY_TEST_CHILD";
@@ -4752,6 +4769,8 @@ pub(crate) mod medium_actor_capacity_tests {
     /// `provider_unavailable` с уточнением `provider_absent` и одинаковыми
     /// полями движка в `data` — и когда файла нет, и когда его контрольная
     /// сумма не совпала с манифестом.
+    /// rule: INV.ANALYSIS.CALL-GRAPH-ON-DEMAND
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn every_route_refuses_a_missing_engine_with_one_typed_refusal() {
         const CHILD: &str = "UNICA_MISSING_ENGINE_ROUTES_CHILD";
@@ -5604,6 +5623,7 @@ fn main() {
         assert_eq!(data["infobase"]["configured"], false);
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn canonical_view_bootstrap_recognizes_an_infobase_only_workspace() {
         let workspace = tempfile::tempdir().unwrap();
@@ -5666,6 +5686,7 @@ fn main() {
         assert_eq!(verdict_data["diagnostics"], serde_json::json!([]));
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     pub(crate) fn canonical_view_without_at_bootstraps_an_empty_workspace() {
         let workspace = tempfile::tempdir().unwrap();
@@ -5735,6 +5756,7 @@ fn main() {
         );
     }
 
+    /// rule: INV.SOURCE.PORTABLE-GIT
     #[test]
     pub(crate) fn canonical_view_bootstrap_separates_source_and_repository_readiness() {
         let workspace = tempfile::tempdir().unwrap();
@@ -5836,6 +5858,8 @@ fn main() {
     /// `workspace actor admission failed`: ни кода из закрытого словаря, ни
     /// причины, ни продолжения. Причина известна ровно в точке отказа — вторым
     /// обходом снаружи её пришлось бы восстанавливать по уже другому дереву.
+    /// rule: INV.SOURCE.MULTI-FORMAT-WORKSPACE
+    /// rule: INV.WIRE.ADMISSION-NAMES-ITS-CAUSE
     #[test]
     pub(crate) fn canonical_admission_names_why_no_source_set_was_admitted() {
         fn routes(result: &DomainResult) -> Vec<&str> {
@@ -5965,6 +5989,7 @@ fn main() {
         );
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn canonical_view_bootstrap_does_not_offer_an_unparseable_logical_address() {
         for (source_type, root_kind, root_file) in [
@@ -6046,6 +6071,7 @@ fn main() {
         }));
     }
 
+    /// rule: INV.SURFACE.WORKSPACE-BOOTSTRAP
     #[test]
     fn canonical_view_bootstrap_does_not_hide_an_invalid_project_config() {
         let workspace = tempfile::tempdir().unwrap();
@@ -6060,6 +6086,7 @@ fn main() {
         assert!(result.next.is_empty(), "{result:?}");
     }
 
+    /// rule: INV.SURFACE.WORKSPACE-BOOTSTRAP
     #[test]
     fn canonical_view_bootstrap_classifies_wrong_kind_project_config_as_invalid() {
         let workspace = tempfile::tempdir().unwrap();
@@ -6073,6 +6100,7 @@ fn main() {
         assert_eq!(result.diagnostics[0]["code"], "invalid_state");
     }
 
+    /// rule: INV.SURFACE.WORKSPACE-BOOTSTRAP
     #[test]
     fn canonical_view_bootstrap_classifies_broken_project_config_link_as_invalid() {
         use unica_workspace::test_support::{
@@ -6101,6 +6129,7 @@ fn main() {
         assert_eq!(result.diagnostics[0]["code"], "invalid_state");
     }
 
+    /// rule: INV.SURFACE.WORKSPACE-BOOTSTRAP
     #[test]
     fn canonical_view_bootstrap_repairs_a_valid_config_without_source_sets() {
         let workspace = tempfile::tempdir().unwrap();
@@ -6128,6 +6157,7 @@ fn main() {
         );
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn canonical_view_bootstrap_does_not_equate_git_presence_with_repository_readiness() {
         let workspace = tempfile::tempdir().unwrap();
@@ -6248,6 +6278,7 @@ fn main() {
     /// encoded size. Every page carries the whole verdict and the number of
     /// groups; the walk returns every group once, in the first answer's order,
     /// and a continuation reads the saved verdict without inspecting again.
+    /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
     #[test]
     fn root_check_pages_its_groups_by_count_and_bytes_with_the_whole_verdict() {
         use unica_project_health::inspection::health_inspection_probe::inspections_for_test;
@@ -6318,6 +6349,7 @@ fn main() {
     /// #1119 (9c): a root check cursor answers only its own question. A forged
     /// cursor, another workspace or another limit refuse it; an empty cursor
     /// opens page one, and a limit over 50 is refused.
+    /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
     #[test]
     fn root_check_cursor_answers_only_the_question_that_issued_it() {
         let workspace = root_check_groups_fixture(3);
@@ -6389,6 +6421,7 @@ fn main() {
     /// A cursor whose verdict that store does not hold — as after a daemon
     /// restart — is refused, never answered as a complete page; a verdict the
     /// store cannot hold is refused before any cursor is promised.
+    /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
     #[test]
     fn a_root_check_cursor_without_its_saved_verdict_is_refused() {
         let workspace = root_check_groups_fixture(3);
@@ -6516,6 +6549,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
     #[test]
     fn canonical_view_bootstrap_leaves_project_health_to_the_root_check() {
         use unica_process::runner::process_launch_probe::launches_under_for_test;
@@ -8000,6 +8034,7 @@ fn main() {
         source
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
     #[test]
     pub(crate) fn actor_read_source_capability_is_sealed_after_binding() {
         let source = include_str!("invocation_service.rs");
@@ -9519,6 +9554,7 @@ struct ActorLogicalReadLease {"#,
         (workspace, actor, capability)
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
     #[test]
     fn actor_read_authority_builder_rejects_actor_bound_unsupported_profile() {
         let (_workspace, _actor, capability) = actor_issued_read_capability(
@@ -9537,6 +9573,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
     #[test]
     fn actor_read_authority_builder_preserves_actor_bound_source_kind() {
         let (_workspace, _actor, capability) = actor_issued_read_capability(
@@ -9555,6 +9592,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
     #[test]
     fn actor_read_authority_builder_preserves_non_replenishing_deadline() {
         let started = Instant::now();
@@ -9579,6 +9617,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
     #[test]
     pub(crate) fn provider_binding_and_actor_bound_invocation_cannot_substitute_kind_or_profile() {
         let workspace = tempfile::tempdir().unwrap();
@@ -10444,6 +10483,7 @@ struct ActorLogicalReadLease {"#,
     /// Pages walk the whole difference once, in order; the cursor answers
     /// only the same pair and page size and keeps the pair the first page
     /// read; nothing is published.
+    /// rule: INV.WIRE.DIFF-REVISION-BOUND-PAGES
     #[test]
     fn diff_pages_continue_the_saved_pair_on_the_canonical_route() {
         let (_state, workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
@@ -10600,6 +10640,7 @@ struct ActorLogicalReadLease {"#,
 
     /// #977: nodes of different kinds are not compared, and an unreadable
     /// side is a refusal, never an empty node.
+    /// rule: INV.WIRE.DIFF-REVISION-BOUND-PAGES
     #[test]
     fn diff_refuses_incomparable_kinds_and_an_unreadable_side() {
         let (_state, _workspace, runtime, workspace_hint) = empty_cursor_and_diff_fixture();
@@ -10635,6 +10676,9 @@ struct ActorLogicalReadLease {"#,
     /// неизвестного аргумента, но `next` ведёт к адресу, который заменил то,
     /// что фильтр делал: к контракту операции `<узел>.Can.<op>`, к самому
     /// узлу с его `can`, к сравнению без фильтра.
+    /// rule: INV.ANALYSIS.CALL-GRAPH-ON-DEMAND
+    /// rule: INV.SOURCE.LOGICAL-QUESTION-COMPLETENESS
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn a_retired_read_filter_routes_next_to_the_address_that_replaced_it() {
         let request =
@@ -10726,6 +10770,7 @@ struct ActorLogicalReadLease {"#,
     /// Адрес операции словаря читает только `view`: `check`, `resolve`,
     /// `apply` (в том числе адрес внутри операции) и область `search`
     /// отвечают одним отказом с переходом к этому чтению.
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn an_operation_address_outside_view_routes_next_to_view() {
         let can = "main:Catalog.Валюты.Can.attribute.add";
@@ -10803,6 +10848,8 @@ struct ActorLogicalReadLease {"#,
     /// saved apply plan has its own conflict code instead of `provider_unavailable`;
     /// and an admitted logical scope without a source subtree is an empty
     /// result rather than a refusal or a raw OS error.
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
+    /// rule: INV.WIRE.V13-REFUSAL-CHANNEL
     #[test]
     fn canonical_refusals_answer_one_diagnostics_channel_from_the_closed_code_set() {
         const CLOSED_REFUSAL_CODES: &[&str] = &[
@@ -11198,6 +11245,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-IDENTITY
     #[test]
     pub(crate) fn subsequent_daemon_invocation_after_same_root_kind_change_gets_new_actor_identity()
     {
@@ -11329,6 +11377,7 @@ struct ActorLogicalReadLease {"#,
         workspace
     }
 
+    /// rule: INV.SOURCE.BORROWED-OBJECT-PARENT-ADDRESS
     #[test]
     fn borrowing_view_resolves_registered_parent_and_preserves_unresolved_extension_facts() {
         for (case, expected) in [
@@ -11368,6 +11417,8 @@ struct ActorLogicalReadLease {"#,
         }
     }
 
+    /// rule: INV.SOURCE.BORROWED-OBJECT-PARENT-ADDRESS
+    /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
     #[test]
     fn borrowing_view_bounds_override_props_for_metadata_and_specialized_readers() {
         for (kind, directory) in [("Catalog", "Catalogs"), ("CommonModule", "CommonModules")] {
@@ -11435,6 +11486,7 @@ struct ActorLogicalReadLease {"#,
         }
     }
 
+    /// rule: INV.SOURCE.BORROWED-OBJECT-REFRESH
     #[test]
     fn canonical_object_borrow_previews_publishes_and_rejects_changed_parent_revision() {
         let workspace = borrowing_view_fixture("normal");
@@ -11583,6 +11635,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.SOURCE.BORROWED-OBJECT-PARENT-ADDRESS
     #[test]
     fn borrowing_view_publishes_saved_parent_facts_and_new_read_rechecks_parent() {
         let workspace = borrowing_view_fixture("normal");
@@ -11649,6 +11702,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.APP.SOURCE-SELECTION-FOR-READ
     #[test]
     pub(crate) fn view_find_admitted_snapshot_may_finish_after_map_change() {
         let (workspace, source) = source_selection_read_fixture();
@@ -11952,6 +12006,7 @@ struct ActorLogicalReadLease {"#,
     /// The canonical removal reports its cache impact in the same result:
     /// preview and publication both carry the cache mode, the event and the
     /// invalidation lists, so no second call is needed to learn what moved.
+    /// rule: INV.CACHE.REPORTED-EFFECTS
     #[test]
     fn canonical_object_remove_reports_typed_cache_impact_in_preview_and_publication() {
         let workspace = tempfile::tempdir().unwrap();
@@ -12029,6 +12084,8 @@ struct ActorLogicalReadLease {"#,
         assert_cache_impact(&published, "published");
     }
 
+    /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
+    /// rule: INV.WIRE.APPLY-REQUIRES-THE-FENCE
     #[test]
     fn saved_apply_token_survives_eight_other_workspace_profiles_and_replays_exactly() {
         let workspace = subsystem_picture_workspace("", true);
@@ -12101,6 +12158,10 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
+    /// rule: INV.WIRE.ADMISSION-NAMES-ITS-CAUSE
+    /// rule: INV.WIRE.APPLY-REQUIRES-THE-FENCE
+    /// rule: INV.WIRE.V13-REFUSAL-CHANNEL
     #[test]
     fn saved_apply_token_survives_temporary_named_root_validation_failure() {
         let workspace = subsystem_picture_workspace("", true);
@@ -12218,16 +12279,20 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.WIRE.APPLY-REQUIRES-THE-FENCE
     #[test]
     fn saved_apply_plan_survives_former_three_hundred_second_expiry() {
         saved_apply_survives_retention_age(Duration::from_secs(301));
     }
 
+    /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
+    /// rule: INV.WIRE.APPLY-REQUIRES-THE-FENCE
     #[test]
     fn saved_apply_plan_survives_former_six_hundred_second_actor_idle_window() {
         saved_apply_survives_retention_age(Duration::from_secs(601));
     }
 
+    /// rule: INV.WIRE.APPLY-REQUIRES-THE-FENCE
     #[test]
     fn saved_apply_refusal_replays_after_former_actor_idle_window_without_replanning() {
         use unica_workspace::actor::with_actor_retention_time_for_test;
@@ -12379,6 +12444,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
     #[test]
     fn saved_apply_token_survives_idle_cleanup_before_live_invocation_creates_plan() {
         saved_apply_token_survives_cleanup_before_live_invocation_creates_plan(
@@ -12386,6 +12452,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
     #[test]
     fn saved_apply_token_survives_warm_release_before_live_invocation_creates_plan() {
         saved_apply_token_survives_cleanup_before_live_invocation_creates_plan(
@@ -12512,16 +12579,19 @@ struct ActorLogicalReadLease {"#,
         drop(retained_lease);
     }
 
+    /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
     #[test]
     fn running_unowned_index_work_survives_last_call_and_actor_idle_window() {
         index_work_survives_last_call_and_actor_idle_window(false, None);
     }
 
+    /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
     #[test]
     fn completed_leased_index_work_survives_last_call_and_actor_idle_window() {
         index_work_survives_last_call_and_actor_idle_window(true, None);
     }
 
+    /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
     #[test]
     fn running_index_work_survives_idle_cleanup_before_live_invocation_creates_work() {
         index_work_survives_last_call_and_actor_idle_window(
@@ -12530,6 +12600,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
     #[test]
     fn running_index_work_survives_warm_release_before_live_invocation_creates_work() {
         index_work_survives_last_call_and_actor_idle_window(
@@ -12538,6 +12609,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.WIRE.APPLY-REQUIRES-THE-FENCE
     #[test]
     fn saved_apply_more_than_256_plans_keep_earlier_tokens_without_writes() {
         let workspace = subsystem_picture_workspace("", true);
@@ -12590,6 +12662,7 @@ struct ActorLogicalReadLease {"#,
     /// оба применения проходили, и запись первого агента исчезала без единой
     /// диагностики — потерянное обновление в чистом виде. Пример на один план
     /// такого не показывает, поэтому сценарий строится на двух.
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn conflicting_preview_plans_cannot_both_publish() {
         let workspace = tempfile::tempdir().unwrap();
@@ -12919,6 +12992,7 @@ struct ActorLogicalReadLease {"#,
         }
     }
 
+    /// rule: INV.WIRE.COMMON-MODULE-ORDINARY-CLIENT
     #[test]
     fn canonical_apply_view_round_trip_common_module_ordinary_client() {
         let workspace = tempfile::tempdir().unwrap();
@@ -13567,6 +13641,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.CACHE.INDEX-PREVIEW-WRITE-FREE
     #[test]
     fn public_metadata_apply_preview_is_index_write_free_and_matches_real_plan() {
         let workspace = tempfile::tempdir().unwrap();
@@ -13866,6 +13941,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-IDENTITY
     #[test]
     pub(crate) fn v13_daemon_rejects_unproved_edt_invalid_or_empty_platform_fallback() {
         let empty = tempfile::tempdir().unwrap();
@@ -13934,6 +14010,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
     #[test]
     fn logical_read_of_one_object_opens_only_its_own_files() {
         assert_logical_read_files_do_not_grow_with_unrelated_objects(false);
@@ -13941,6 +14018,7 @@ struct ActorLogicalReadLease {"#,
 
     /// The configuration root proves only `Configuration.xml`: it opens no
     /// object descriptor and lists no collection, however many are registered.
+    /// rule: INV.SOURCE.LOGICAL-READER-PARITY
     #[test]
     fn configuration_root_view_opens_no_object_descriptor() {
         let (workspace, source) = source_selection_read_fixture();
@@ -13974,6 +14052,7 @@ struct ActorLogicalReadLease {"#,
 
     /// The streamed root of a `Configuration.xml` above 8 MiB proves only the
     /// file itself, like the ordinary root.
+    /// rule: INV.SOURCE.LOGICAL-READER-PARITY
     #[test]
     fn streamed_configuration_root_view_opens_no_object_descriptor() {
         let (workspace, source) = source_selection_read_fixture();
@@ -14010,6 +14089,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
     #[test]
     fn borrowed_logical_read_admits_and_publishes_without_unrelated_objects() {
         assert_logical_read_files_do_not_grow_with_unrelated_objects(true);
@@ -14176,6 +14256,7 @@ struct ActorLogicalReadLease {"#,
     /// of a module body and an `apply` preview reach their providers through
     /// the daemon's real admission and invocation service without any
     /// operation deadline.
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn default_operation_paths_reach_providers_without_a_deadline() {
         let workspace =
@@ -14267,6 +14348,7 @@ struct ActorLogicalReadLease {"#,
     /// The saved-plan adapter carries the existing cutoff into real actor
     /// publication. A finite cutoff must not become a fresh relative budget,
     /// and an elapsed finite cutoff must not become absence or consume the plan.
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn saved_apply_adapter_preserves_the_existing_cutoff_and_absence() {
         use unica_work_control::operation_deadline::OperationDeadline;
@@ -14383,6 +14465,7 @@ struct ActorLogicalReadLease {"#,
     /// workspace the caller may repeat; an invariant failure at the
     /// execution boundary stays an internal failure, and neither carries the
     /// boundary's text.
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
     fn execution_boundary_names_a_changed_workspace_only_for_a_lost_binding() {
         use super::invocation_service::ExecutionBoundaryError;
@@ -14416,6 +14499,7 @@ struct ActorLogicalReadLease {"#,
     /// names the engine, what happened to it and how to recover, through the
     /// daemon's real admission and invocation service. An absent engine is
     /// `provider_absent`; the engine's own text never reaches the answer.
+    /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
     #[test]
     fn module_check_names_why_the_analyzer_gave_no_result() {
         use unica_adapter_bsl_analyzer::adapter::AnalyzerRunFailureKind;
@@ -14503,6 +14587,8 @@ struct ActorLogicalReadLease {"#,
     /// объекта целиком; файл внутри объекта без логического адреса — путём
     /// с причиной и владельцем; находка модуля объекту не принадлежит.
     /// Анализатор модулей такой цели не объявляет, и без подмены шага нет.
+    /// rule: INV.APP.DIAGNOSTIC-FOCUS
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn object_check_shows_the_metadata_focus_chain_of_a_provider_finding() {
         use unica_diagnostics::model::{
@@ -14737,6 +14823,7 @@ struct ActorLogicalReadLease {"#,
     /// которого тест подменяет без изменения службы. Ответ называет места
     /// адресами Unica и не несёт путей поставщика; изменённый буфер
     /// отвечает своим текстом, а ответ поставщика помечен `stale`.
+    /// rule: INV.LSP.PROVIDER-HIDDEN
     #[test]
     fn symbol_port_answers_in_unica_places_with_a_substituted_provider() {
         use std::sync::Mutex;
@@ -15027,6 +15114,7 @@ struct ActorLogicalReadLease {"#,
     /// retryable `working` delivery state, not with an analysis verdict. The
     /// delivery is already in flight, so this call joins it as a follower and
     /// returns at once.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn module_check_answers_working_while_the_analyzer_is_being_delivered() {
         const CHILD: &str = "UNICA_CHECK_DELIVERY_WORKING_CHILD";
@@ -15226,6 +15314,8 @@ struct ActorLogicalReadLease {"#,
     /// Граф вызовов читается только адресом ветви. Обычное чтение метода
     /// называет ветви `Caller` и `Callee` без счёта и анализатор не спрашивает;
     /// секции `callGraph` нет; чтение ветви спрашивает граф в обоих направлениях.
+    /// rule: INV.ANALYSIS.CALL-GRAPH-ON-DEMAND
+    /// rule: INV.SOURCE.CALL-GRAPH-STATE-IS-NAMED
     #[test]
     fn method_view_names_call_graph_branches_without_asking_the_analyzer() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15396,6 +15486,7 @@ struct ActorLogicalReadLease {"#,
             "each branch read asks both directions"
         );
     }
+    /// rule: INV.APP.DEFERRED-READ
     #[test]
     fn saved_call_graph_pages_survive_deleted_owner_without_analyzer_reads() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15571,6 +15662,7 @@ struct ActorLogicalReadLease {"#,
     /// через настоящую службу вызова повторяемым состоянием поставки
     /// `working`, а не графом. Поставка уже идёт, поэтому чтение ветви
     /// присоединяется к ней ведомым и возвращается сразу.
+    /// rule: INV.ANALYSIS.CALL-GRAPH-ON-DEMAND
     #[test]
     fn call_graph_branch_answers_working_while_the_analyzer_is_being_delivered() {
         const CHILD: &str = "UNICA_CALL_GRAPH_DELIVERY_WORKING_CHILD";
@@ -15788,6 +15880,8 @@ struct ActorLogicalReadLease {"#,
         }
     }
 
+    /// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
+    /// rule: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
     #[test]
     pub(crate) fn logical_reads_run_without_deadline_tree_scans_or_mutation_lane_wait() {
         assert_logical_read_admission(false);
@@ -16255,6 +16349,7 @@ struct ActorLogicalReadLease {"#,
         accepted
     }
 
+    /// rule: INV.WIRE.VIEW-INPUT-REFUSAL
     #[test]
     pub(crate) fn review_invalid_logical_address_reaches_typed_bad_value_result() {
         let result = execute_rejected_hidden_v13_view_address("not-qualified");
@@ -16263,6 +16358,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(result.diagnostics[0]["code"], "bad_value");
     }
 
+    /// rule: INV.WIRE.VIEW-INPUT-REFUSAL
     #[test]
     pub(crate) fn valid_unknown_source_reaches_typed_provider_unavailable_without_scanning() {
         let result = execute_rejected_hidden_v13_view_address("missing:Catalog.Items");
@@ -16271,6 +16367,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(result.diagnostics[0]["code"], "provider_unavailable");
     }
 
+    /// rule: INV.WIRE.VIEW-INPUT-REFUSAL
     #[test]
     pub(crate) fn zero_fence_view_rejection_accepts_only_the_exact_canonical_envelope() {
         let mut accepted = Vec::new();
@@ -16656,6 +16753,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(runtime.workspace_actors.entry_len_for_test().unwrap(), 0);
     }
 
+    /// rule: INV.WIRE.RUN-NAMES-ARE-LAYER-AND-DIRECTION
     #[test]
     fn v5_run_dictionary_returns_directly_before_workspace_actor_admission() {
         let workspace = tempfile::tempdir().expect("temporary empty workspace");
@@ -16728,6 +16826,7 @@ struct ActorLogicalReadLease {"#,
         assert_eq!(preparations.load(Ordering::SeqCst), 0);
     }
 
+    /// rule: INV.WIRE.RUN-NAMES-ARE-LAYER-AND-DIRECTION
     #[test]
     fn v5_run_rejects_if_rev_before_workspace_or_provider_admission() {
         let workspace = tempfile::tempdir().unwrap();
@@ -16771,6 +16870,7 @@ struct ActorLogicalReadLease {"#,
         assert!(!workspace.path().join(".build").exists());
     }
 
+    /// rule: INV.RUNTIME.V13-INFOBASE-EXPORTS
     #[test]
     fn v5_infobase_exports_prepare_before_source_admission_and_run_without_a_revision_gate() {
         let workspace = tempfile::tempdir().expect("temporary infobase workspace");
@@ -16847,6 +16947,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn v5_client_run_binds_before_source_admission_without_a_revision_gate() {
         // Вариант А развилки A-1 (#871): терминальная операция запускается
@@ -16959,6 +17060,7 @@ struct ActorLogicalReadLease {"#,
     /// и `reset` (#1246): операции остаются в словаре недоступными, и вызов получает
     /// типизированный отказ при bind — до рабочего пространства, PlatformXml и
     /// раннера.
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
     fn v5_unavailable_runner_operations_are_refused_at_bind_without_a_runner() {
         let workspace = tempfile::tempdir().unwrap();
@@ -17003,21 +17105,25 @@ struct ActorLogicalReadLease {"#,
         assert!(runtime.workspace_actors.entry_len_for_test().unwrap() == 0);
     }
 
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
     fn v5_infobase_create_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("infobase.create");
     }
 
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
     fn v5_source_import_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("push");
     }
 
+    /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
     #[test]
     fn v5_source_export_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         assert_development_cycle_admission("pull");
     }
 
+    /// rule: INV.WIRE.ARTIFACT-BUILD-PUBLISHES-INSIDE-THE-WORKSPACE
     #[test]
     fn v5_artifact_build_prepares_before_source_admission_and_runs_without_a_revision_gate() {
         let workspace = tempfile::tempdir().expect("temporary make workspace");
@@ -17089,6 +17195,7 @@ struct ActorLogicalReadLease {"#,
         );
     }
 
+    /// rule: INV.SURFACE.DOCS-BEFORE-ADMISSION
     #[test]
     fn v5_documentation_answers_before_source_admission_without_an_actor_lease() {
         // Каталог без `v8project.yaml` и без корней 1С — тот, из которого
@@ -17454,6 +17561,7 @@ fn main() {
         .unwrap();
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[test]
     fn mutating_runner_cancel_keeps_the_factual_receipt_over_the_v5_daemon_wire() {
         let root = tempfile::tempdir().unwrap();
@@ -17574,6 +17682,7 @@ fn main() {
         daemon.finish(owner);
     }
 
+    /// rule: CTR.APP.EXACT-SHARED-DELIVERY
     #[test]
     fn daemon_shared_delivery_releases_request_admission_before_wait_and_shares_across_worktrees() {
         let workspace_parent = tempfile::tempdir().unwrap();
@@ -17678,6 +17787,7 @@ fn main() {
         daemon.finish(owner);
     }
 
+    /// rule: INV.APP.EXACT-LONG-WORK-OWNERSHIP
     #[test]
     fn daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership() {
         let provider_key = ProviderHostKey::new(
@@ -17820,6 +17930,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.APP.EXACT-LONG-WORK-OWNERSHIP
     #[test]
     fn daemon_index_work_separates_worktrees_and_build_generations() {
         // Distinct actor identities intentionally cannot join one Index key.
@@ -17947,6 +18058,7 @@ fn main() {
         daemon.finish(owner);
     }
 
+    /// rule: INV.APP.EXACT-LONG-WORK-OWNERSHIP
     #[test]
     fn daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication() {
         let parent = tempfile::tempdir().unwrap();
@@ -18046,6 +18158,7 @@ fn main() {
         );
     }
 
+    /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
     #[test]
     fn default_actor_registry_admits_sixty_five_profiles_and_retains_exact_live_owners() {
         let workspace_parent = tempfile::tempdir().unwrap();
@@ -18404,6 +18517,7 @@ fn main() {
         daemon.finish(owner);
     }
 
+    /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
     #[test]
     fn daemon_workspace_actor_admission_is_concurrent_and_fail_closed() {
         live_actor_admission_reuses_alias_and_accepts_distinct_roots();
@@ -18543,6 +18657,7 @@ fn main() {
             .is_none());
     }
 
+    /// rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     #[test]
     fn canonical_whole_graphical_template_removal_preserves_the_exact_neighbor_and_replays() {
         // Both are existing canonical address forms. This also detects an owner-top
@@ -18753,6 +18868,7 @@ fn main() {
         OWN_REMOVAL_AT,
         "missing-wrapper"
     );
+    // rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     own_removal_refusal_case!(
         canonical_whole_graphical_template_removal_refuses_missing_wrapper_at_owner,
         OWN_REMOVAL_OWNER_AT,
@@ -18803,6 +18919,7 @@ fn main() {
         OWN_REMOVAL_AT,
         "old-body-version"
     );
+    // rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     own_removal_refusal_case!(
         canonical_whole_graphical_template_removal_refuses_old_body_version_at_owner,
         OWN_REMOVAL_OWNER_AT,
@@ -18857,6 +18974,7 @@ fn main() {
         "invalid-wrapper-uuid"
     );
 
+    /// rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     #[test]
     fn canonical_whole_graphical_template_removal_refuses_changed_payload_membership_and_owner() {
         for case in [
@@ -19015,6 +19133,7 @@ fn main() {
         OWN_REMOVAL_AT,
         false
     );
+    // rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     active_document_payload_absence_case!(
         canonical_template_removal_active_document_absent_payload_root_at_owner,
         OWN_REMOVAL_OWNER_AT,
@@ -19089,6 +19208,7 @@ fn main() {
         assert_eq!(result.diagnostics[0]["outcome"], "fixSource");
     }
 
+    /// rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     #[test]
     fn canonical_borrowed_template_without_type_removes_only_local_registration_and_descriptor() {
         for top_at in [BORROWED_REMOVAL_AT, BORROWED_REMOVAL_OWNER_AT] {
@@ -19151,6 +19271,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     #[test]
     fn canonical_borrowed_sole_template_without_payload_takes_its_empty_collection() {
         // Without the borrowed neighbor the selected descriptor is the last
@@ -19222,6 +19343,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     #[test]
     fn canonical_borrowed_template_saved_absence_refuses_new_empty_payload_root() {
         for top_at in [BORROWED_REMOVAL_AT, BORROWED_REMOVAL_OWNER_AT] {
@@ -19306,6 +19428,7 @@ fn main() {
         false,
         BORROWED_REMOVAL_AT
     );
+    // rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     borrowed_removal_marker_case!(
         canonical_borrowed_template_foreign_owner_parent_at_owner,
         BORROWED_REMOVAL_OWNER,
@@ -19574,6 +19697,7 @@ fn main() {
         "compact-shadow-comment",
         OWN_REMOVAL_AT
     );
+    // rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     template_removal_owner_case!(
         canonical_template_removal_owner_compact_shadow_comment_at_owner,
         "compact-shadow-comment",
@@ -19610,6 +19734,7 @@ fn main() {
         OWN_REMOVAL_OWNER_AT
     );
 
+    /// rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
     #[test]
     fn canonical_dcs_template_removal_clears_only_the_real_reference_and_replays() {
         const TEMPLATE_AT: &str = "cf:Report.F05Report.Template.F05Schema";
@@ -19894,6 +20019,7 @@ mod medium_finite_deadline_guard {
             || relative.contains("receipt_scenario_v5")
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn production_operation_paths_start_no_new_finite_deadline() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

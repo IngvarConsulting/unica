@@ -308,12 +308,14 @@ mod darwin_acl {
     }
 }
 
+/// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
 #[cfg(target_os = "macos")]
 #[test]
 fn frontend_refuses_an_insecure_acl_even_with_private_posix_mode() {
     super::endpoint_ownership::insecure_endpoint_is_refused(false, InsecureAccess::install_acl);
 }
 
+/// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
 #[cfg(target_os = "macos")]
 #[test]
 fn frontend_refuses_an_insecure_directory_acl_even_with_private_posix_mode() {

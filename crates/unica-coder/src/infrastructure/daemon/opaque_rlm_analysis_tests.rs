@@ -1,9 +1,11 @@
 use super::*;
 
+/// rule: INV.APP.PROVIDER-PRIVATE-STATE
 #[test]
 fn canonical_analysis_uses_supported_mcp_with_opaque_format_a() {
     check_opaque_format(0);
 }
+/// rule: INV.APP.PROVIDER-PRIVATE-STATE
 #[test]
 fn canonical_analysis_uses_supported_mcp_with_opaque_format_b() {
     check_opaque_format(1);

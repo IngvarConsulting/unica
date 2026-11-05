@@ -1,6 +1,5 @@
 ---
 id: INV.WIRE.ROUTABLE-ARGUMENTS
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/983
 ---
 
