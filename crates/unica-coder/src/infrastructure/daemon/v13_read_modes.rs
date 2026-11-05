@@ -465,6 +465,7 @@ mod operation_dictionary_tests {
         }
     }
 
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn a_shared_operation_name_publishes_the_contract_of_the_addressed_node() {
         use unica_forms::operations::FormOperation;
@@ -525,6 +526,7 @@ mod operation_dictionary_tests {
     /// добавить, пропускается; автоматическую командную панель не подменяет
     /// её таблица; у заимствованного узла с содержимым родителя `next`
     /// ведёт к словарю узла, а не к контракту, который там не исполним.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_retired_operation_route_follows_roles_and_inherited_content() {
         use unica_address::address::QualifiedAddress;
@@ -568,6 +570,7 @@ mod operation_dictionary_tests {
     /// Контракт снятой операции не читается: отказ называет заменившую,
     /// а `next` ведёт к её контракту на ближайшем узле, где она исполнима
     /// (#1465). Неизвестное имя по-прежнему ведёт к словарю узла.
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_retired_operation_contract_names_its_replacement() {
         let form = "cf:Catalog.Items.Form.Choice";
@@ -616,6 +619,7 @@ mod operation_dictionary_tests {
         }
     }
 
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn detailed_dcs_can_publishes_structured_operands_and_refuses_retired_schema_input() {
         let data = json!({"at":"cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query","kind":"Query"});
@@ -678,6 +682,7 @@ mod operation_dictionary_tests {
         }
     }
 
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn every_node_answer_carries_its_dictionary_and_keeps_its_own_slots() {
         let projected = can_of(json!({
@@ -732,6 +737,7 @@ mod operation_dictionary_tests {
             .any(|entry| entry == &json!({"op":"dataSet.set","args":"values"})));
     }
 
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn a_node_without_a_computed_dictionary_has_no_can_and_its_operation_is_refused() {
         let module = can_of(json!({
@@ -779,6 +785,7 @@ mod operation_dictionary_tests {
 
     /// `diff` сравнивает исходники: словарь вычисляется из реестра и места
     /// узла и из сравнения уходит, а данные узла остаются.
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn diff_compares_source_backed_data_without_the_computed_dictionary() {
         let mut data = can_of(json!({
@@ -986,6 +993,7 @@ mod inherited_can_tests {
     /// #1381: словарь заимствованного узла без своего файла — и в каждом
     /// ответе `view`, и по адресу `.Can.<op>` — не предлагает операций,
     /// которые пишут унаследованное содержимое; описание объекта пишется.
+    /// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
     #[test]
     fn inherited_node_can_hides_content_writers() {
         let own = json!({"at":"ext:Role.R","kind":"Role","title":"R","props":{}});

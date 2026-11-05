@@ -953,6 +953,7 @@ mod tests {
     /// конфига. Каталог проекции поэтому постоянный и один на рабочую копию:
     /// повтор пишет туда же, лишний местный слой убирается, а команда без
     /// проекции убирает сам каталог, и владельцем становится рабочая копия.
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn the_projection_directory_is_stable_per_working_copy() {
         let root = workspace(
@@ -1001,6 +1002,7 @@ mod tests {
 
     /// Кеш, вынесенный `UNICA_CACHE_DIR`, общий для рабочих копий: каталог
     /// проекции в нём ключуется корнем рабочей копии и в корень не пишется.
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn a_moved_cache_keys_the_projection_by_the_working_copy() {
         let cache = PathBuf::from("/cache");
@@ -1022,6 +1024,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn projection_preserves_overlay_paths_and_writes_private_files() {
         let (root, base, local) = projected(
@@ -1056,6 +1059,7 @@ mod tests {
         assert!(base.get("basePath").is_none());
     }
 
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn legacy_infobase_in_the_project_file_merges_with_the_local_infobases() {
         let (root, base, local) = projected(
@@ -1073,6 +1077,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn infobase_without_a_local_layer_moves_into_a_private_local_layer() {
         let (root, base, local) = projected("infobase: {connection: 'File=ib'}\n", None);
@@ -1145,6 +1150,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn target_config_is_projected_without_losing_origin_or_provider_meaning() {
         // Абсолютный путь на любой ОС: `/abs/sales` под Windows относителен.
@@ -1194,6 +1200,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn an_edt_cli_location_is_kept_relative_to_the_workspace() {
         let (root, base, _) = projected(
@@ -1206,6 +1213,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn a_config_the_runner_reads_itself_is_passed_through_unchanged() {
         let root = workspace(
@@ -1220,6 +1228,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn execution_timeout_is_refused_before_the_runner_starts_in_either_layer() {
         for (base, local, file) in [
@@ -1248,6 +1257,7 @@ mod tests {
     /// Раннер 0.15 отклоняет порог частичной загрузки по имени. Unica
     /// отвечает до запуска раннера, в обоих слоях и в прежней секции `build`,
     /// и тогда, когда проекция не нужна и раннер читал бы файлы сам.
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn partial_load_threshold_is_refused_before_the_runner_starts() {
         for (base, local, section, file) in [
@@ -1285,6 +1295,7 @@ mod tests {
     /// Вид базы `origin` читается так же, как его читает раннер: секции обоих
     /// слоёв сливаются (местный побеждает), `standalone` — автономный сервер,
     /// строка с `File=` — файловая база, иначе кластер.
+    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
     fn the_origin_kind_follows_the_merged_infobase_section() {
         for (base, local, kind) in [
@@ -1353,6 +1364,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn unrepresentable_configuration_is_rejected_not_discarded() {
         for (base, local) in [
@@ -1380,6 +1392,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn mixing_spellings_across_layers_is_allowed() {
         let (_, base, local) = projected(

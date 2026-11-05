@@ -1,6 +1,5 @@
 ---
 id: INV.WIRE.CF-IMPORT-KEEPS-ITS-SOURCE-INTACT
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/1246
 ---
 
