@@ -81,4 +81,5 @@ pub mod extension;
 
 mod source_contracts;
 
+pub mod language_code;
 pub mod style_color;

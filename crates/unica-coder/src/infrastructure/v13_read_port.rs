@@ -1228,6 +1228,22 @@ impl ProviderReadAuthority {
                 ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
             })?;
         }
+        if evidence.artifact_kind() == "Language" {
+            match unica_metadata_designer::language_code::read_code(&descriptor) {
+                Ok(code) => {
+                    payload["properties"] = json!([{
+                        "key": "LanguageCode",
+                        "value": unica_metadata::MetaObservedPropertyValue::Text { value: code },
+                    }]);
+                }
+                Err(message) => {
+                    payload["unreadable"] = json!([{
+                        "field": "properties.LanguageCode",
+                        "message": message,
+                    }]);
+                }
+            }
+        }
         if evidence.artifact_kind() == "DocumentNumerator" {
             match unica_metadata_designer::numerator_read::read(&descriptor) {
                 Ok(facts) => {
