@@ -1460,6 +1460,36 @@ FROM Source WHERE Code &gt; 0</QueryText><DynamicDataRead>false</DynamicDataRead
 }
 
 #[test]
+fn dynamic_list_empty_main_table_stays_null_in_collection_and_detail() {
+    let fixture = dynamic_list_fixture(
+        r#"<Settings xsi:type="DynamicList"><MainTable/><KeyType>Auto</KeyType></Settings>"#,
+    );
+    let service = fixture.view_service();
+    let at = "main:Report.ParityReport.Form.MainForm.Attribute.Rows";
+    let detail = service.view(ViewRequest::new(at).unwrap());
+    assert!(detail.ok);
+    let collection =
+        service.view(ViewRequest::new("main:Report.ParityReport.Form.MainForm.Attribute").unwrap());
+    assert!(collection.ok);
+    let collection = collection.data.unwrap();
+    let row = collection["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["at"] == at)
+        .cloned()
+        .unwrap();
+    for node in [detail.data.unwrap(), row] {
+        assert_eq!(
+            node["props"].get("mainTable"),
+            Some(&serde_json::Value::Null),
+            "empty MainTable names no table"
+        );
+        assert_eq!(node["props"]["keyFieldsApplicable"], true);
+    }
+}
+
+#[test]
 fn dynamic_list_missing_and_inapplicable_settings_remain_explicit() {
     let fixture = dynamic_list_fixture("");
     let view = fixture
