@@ -166,6 +166,7 @@ fn assert_legacy_warnings(data: &Value) {
     );
 }
 
+/// rule: INV.SOURCE.KNOWN-DEFECT-REPAIR
 #[test]
 fn canonical_check_warns_about_legacy_inline_form_and_template_without_writes() {
     for existing_cache in [false, true] {
@@ -246,6 +247,7 @@ fn canonical_check_keeps_malformed_form_payload_an_error_with_legacy_registratio
 /// Any edit of the owner registers its legacy inline forms and templates by
 /// name (#1370): the preview names them in a warning, the publication writes
 /// the references, the inline command stays and check is quiet afterwards.
+/// rule: INV.SOURCE.KNOWN-DEFECT-REPAIR
 #[test]
 fn an_owner_edit_registers_legacy_inline_forms_and_templates_by_name() {
     for ops in [
@@ -301,6 +303,7 @@ fn an_owner_edit_registers_legacy_inline_forms_and_templates_by_name() {
     }
 }
 
+/// rule: INV.SOURCE.KNOWN-DEFECT-REPAIR
 #[test]
 fn an_edit_outside_the_owner_description_keeps_legacy_inline_registrations() {
     let fixture = Fixture::new(false);

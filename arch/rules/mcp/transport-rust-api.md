@@ -1,7 +1,5 @@
 ---
 id: INV.WIRE.SDK-MODULE-EXPORTS
-check:
-  - tests/ci/test_product_contracts.py::ProductContractTests.test_rmcp_module_preserves_legacy_public_exports_only
 ---
 
 # Транспортный модуль сохраняет публичный Rust API

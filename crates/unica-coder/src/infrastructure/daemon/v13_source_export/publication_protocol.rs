@@ -785,6 +785,7 @@ mod tests {
         }
     }
 
+    /// rule: CTR.RUNTIME.FULL-EXPORT-DIAGNOSTICS
     #[test]
     fn validation_projection_excludes_untrusted_text_and_keeps_uncertain_publication() {
         let root = Path::new("/private/workspace-marker");

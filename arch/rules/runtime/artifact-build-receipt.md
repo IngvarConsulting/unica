@@ -1,16 +1,5 @@
 ---
 id: INV.WIRE.ARTIFACT-BUILD-PUBLISHES-INSIDE-THE-WORKSPACE
-check:
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_artifact_build_prepares_before_source_admission_and_runs_without_a_revision_gate
-  - crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs::arguments_are_closed_and_each_refusal_names_the_fix
-  - crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs::preview_refuses_another_output_kind_or_set_and_a_published_preview
-  - crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs::apply_without_prior_preview_returns_an_independent_file_receipt
-  - crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs::apply_refuses_a_missing_or_empty_artifact
-  - crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs::external_build_publishes_one_verified_file_and_preserves_neighbors
-  - crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs::external_preview_names_owner_and_configuration_without_creating_output
-  - crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs::external_invalid_builds_and_cancellation_preserve_previous_output
-  - crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs::external_cancellation_after_publication_lock_never_commits
-  - crates/unica-coder/src/infrastructure/daemon/v13_artifact_build.rs::external_prerequisites_and_ambiguity_are_refused_before_dispatch
 ---
 
 # Сборка подтверждает файл внутри рабочего пространства

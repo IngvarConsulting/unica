@@ -219,6 +219,7 @@ mod tests {
 
     /// Ссылка с именем каталога состояния — не каталог: уборка её не открывает
     /// и не удаляет то, на что она указывает.
+    /// rule: INV.RUNTIME.DAEMON-STATE-COLLECTION
     #[test]
     fn a_link_named_like_a_state_is_neither_followed_nor_removed() {
         let (_guard, root) = root();
@@ -242,6 +243,7 @@ mod tests {
     }
 
     /// Каталог, исчезнувший между листингом и открытием, не воссоздаётся.
+    /// rule: INV.RUNTIME.DAEMON-STATE-COLLECTION
     #[test]
     fn inspecting_a_vanished_state_does_not_recreate_it() {
         let (_guard, root) = root();
