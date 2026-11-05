@@ -448,15 +448,17 @@ pub(crate) fn observation_lookup<'a>(
 
 /// The same registry observations with the closed Color profile owned by
 /// metadata. The caller obtains it from retained descriptor bytes.
-pub(crate) fn observation_lookup_with_color<'a>(
+pub(crate) fn observation_lookup_with_style_properties<'a>(
     template: &'a dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     item: &'a dyn Fn(&QualifiedAddress) -> Option<FormObservation>,
-    color: &'a dyn Fn(&QualifiedAddress) -> Option<unica_metadata::style_color::StyleItemColor>,
+    color: &'a dyn Fn(
+        &QualifiedAddress,
+    ) -> Option<unica_metadata::style_color::StyleItemPropertiesObservation>,
 ) -> impl Fn(&QualifiedAddress, unica_operations::ObservationType) -> Option<Box<dyn std::any::Any>> + 'a
 {
     let ordinary = observation_lookup(template, item);
     move |at, requested| {
-        if requested.is::<unica_metadata::style_color::StyleItemColor>() {
+        if requested.is::<unica_metadata::style_color::StyleItemPropertiesObservation>() {
             color(at).map(|value| Box::new(value) as Box<dyn std::any::Any>)
         } else {
             ordinary(at, requested)
@@ -807,11 +809,19 @@ mod tests {
         ] {
             let at = address(raw);
             let site = operation_site(&at, traits).unwrap();
-            assert!(registry.copyable_skeletons(&site).is_empty(), "{raw}");
+            let comment_descriptor = raw == "main:CommonForm.Main.Metadata";
+            assert_eq!(
+                registry.copyable_skeletons(&site).len(),
+                usize::from(comment_descriptor),
+                "{raw}"
+            );
             for operation in registry.descriptors() {
-                assert!(
-                    !operation.applies_at(&site),
-                    "{} must not write through {raw}",
+                assert_eq!(
+                    operation.applies_at(&site),
+                    comment_descriptor
+                        && operation.operation::<PropertiesOperation>()
+                            == Some(PropertiesOperation::Set),
+                    "{} applicability at {raw}",
                     operation.name()
                 );
             }

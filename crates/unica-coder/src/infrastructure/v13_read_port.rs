@@ -1267,8 +1267,15 @@ impl ProviderReadAuthority {
                 }
             }
         }
-        if evidence.artifact_kind() == "SessionParameter" {
-            match unica_metadata_designer::session_parameter_comment::read_comment(&descriptor) {
+        if evidence.artifact_kind() == "StyleItem" {
+            unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
+                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
+        }
+        {
+            match unica_metadata_designer::descriptor_comment::read_comment(
+                &descriptor,
+                evidence.artifact_kind(),
+            ) {
                 Ok(Some(comment)) => {
                     let property = json!({
                         "key": "Comment",
@@ -1282,16 +1289,17 @@ impl ProviderReadAuthority {
                 }
                 Ok(None) => {}
                 Err(message) => {
-                    payload["unreadable"] = json!([{
+                    let finding = json!({
                         "field": "properties.Comment",
                         "message": message,
-                    }]);
+                    });
+                    if let Some(unreadable) = payload["unreadable"].as_array_mut() {
+                        unreadable.push(finding);
+                    } else {
+                        payload["unreadable"] = json!([finding]);
+                    }
                 }
             }
-        }
-        if evidence.artifact_kind() == "StyleItem" {
-            unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
-                .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
         }
         Ok(payload)
     }
@@ -1445,8 +1453,19 @@ impl ProviderReadAuthority {
                         }
                     }
                 })?;
-        serde_json::to_value(data)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
+        let mut payload = serde_json::to_value(data)
+            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
+        if type_name.is_none() {
+            match unica_metadata_designer::descriptor_comment::read_comment(
+                &descriptor,
+                "XDTOPackage",
+            ) {
+                Ok(Some(comment)) => payload["Comment"] = json!(comment),
+                Ok(None) => {}
+                Err(message) => payload["commentError"] = json!(message),
+            }
+        }
+        Ok(payload)
     }
 
     pub(crate) fn subsystem_payload(

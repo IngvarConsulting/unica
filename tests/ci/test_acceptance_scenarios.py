@@ -2211,6 +2211,14 @@ def packed_json_strings(value, path=""):
     return []
 
 
+def call_step(server, step, arguments, label, *, delivery=False):
+    if step.get("awaitTask"):
+        return completed_delivery_call(server, step["tool"], arguments, label, retry_pending_index=False)
+    if delivery:
+        return completed_delivery_call(server, step["tool"], arguments, label)
+    return server.call(step["tool"], arguments, label)
+
+
 def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cleanup=None):
     from concurrent.futures import ThreadPoolExecutor
     from tests.ci.private_provider_failure_evidence import before_call, emit_failure_evidence
@@ -2286,9 +2294,10 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                             arguments = form_arguments(
                                 server.input_schema(step["tool"]), arguments
                             )
-                        response = (completed_delivery_call(server, step["tool"], arguments, label)
-                                    if plugin or wanted == "tests/fixtures/acceptance/workspace-search-wide"
-                                    else server.call(step["tool"], arguments, label))
+                        response = call_step(
+                            server, step, arguments, label,
+                            delivery=bool(plugin) or wanted == "tests/fixtures/acceptance/workspace-search-wide",
+                        )
                     except (TimeoutError, OSError, ValueError) as error:
                         # The session is gone: record the step with the
                         # daemon's own words and continue on a fresh one.

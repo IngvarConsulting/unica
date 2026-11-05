@@ -2,7 +2,7 @@
   "id": "S-1681-style-color-write",
   "issue": 1681,
   "area": "Элементы стиля",
-  "task": "Обнаружить Color writer, изменить RGB/web/style через preview и token, сохранить Type/соседей/BOM/EOL, не публиковать запись Font/opaque/повреждённого Value.",
+  "task": "Обнаружить Color writer, изменить RGB/web/style через preview и token, сохранить Type/соседей/BOM/EOL, не публиковать Value для Font/opaque/повреждённого цвета; сохранять их независимый Comment-only контракт.",
   "workspace": "tests/fixtures/acceptance/workspace-style-color-write",
   "wire": [
     {
@@ -437,16 +437,21 @@
     {
       "tool": "unica.view",
       "args": {
-        "at": "main:StyleItem.Font"
+        "at": "main:StyleItem.Font.Can.props.set"
       },
       "expect": [
         "ok"
       ],
       "assertions": [
         {
-          "pointer": "/data/can",
-          "noneMatches": {
-            "op": "props.set"
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties",
+          "eq": {
+            "Comment": {
+              "type": "string"
+            },
+            "comment": {
+              "type": "string"
+            }
           }
         }
       ]
@@ -454,16 +459,21 @@
     {
       "tool": "unica.view",
       "args": {
-        "at": "main:StyleItem.Opaque"
+        "at": "main:StyleItem.Opaque.Can.props.set"
       },
       "expect": [
         "ok"
       ],
       "assertions": [
         {
-          "pointer": "/data/can",
-          "noneMatches": {
-            "op": "props.set"
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties",
+          "eq": {
+            "Comment": {
+              "type": "string"
+            },
+            "comment": {
+              "type": "string"
+            }
           }
         }
       ]
@@ -471,16 +481,21 @@
     {
       "tool": "unica.view",
       "args": {
-        "at": "main:StyleItem.Malformed"
+        "at": "main:StyleItem.Malformed.Can.props.set"
       },
       "expect": [
         "ok"
       ],
       "assertions": [
         {
-          "pointer": "/data/can",
-          "noneMatches": {
-            "op": "props.set"
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties",
+          "eq": {
+            "Comment": {
+              "type": "string"
+            },
+            "comment": {
+              "type": "string"
+            }
           }
         }
       ]

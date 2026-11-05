@@ -72,6 +72,9 @@ MEASURED_MEDIUM_CASES = (
         "unica_project_health",
         "inspection::layout::tests::health_source_layout_keeps_all_defaulted_rows_and_their_real_ambiguity",
     ),
+    # Full public preview/publication matrices over the 19 root descriptors.
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::root_comments::root_comments_preview_publish_read_and_repeat_preserve_native_companions"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::root_comments::root_comment_refusals_and_late_batch_failure_do_not_publish_any_file"),
     # Библиотечные проверки от 3 с в ворота `pr`: PR-прогон 39649205116,
     # ubuntu, 21.10.2026. Вместе ~150 с из ~330 с суммарного (не настенного)
     # времени тестов PR; настенная фаза исполнения тогда шла 92 с.
