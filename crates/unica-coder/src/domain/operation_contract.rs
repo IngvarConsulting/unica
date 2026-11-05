@@ -100,7 +100,13 @@ mod tests {
             unica_metadata::MetadataKind::ALL
                 .iter()
                 .copied()
-                .map(PropertiesSite::Metadata),
+                .flat_map(|kind| {
+                    [
+                        unica_source_contract::SourceSetKind::Configuration,
+                        unica_source_contract::SourceSetKind::Extension,
+                    ]
+                    .map(|source_kind| PropertiesSite::Metadata { kind, source_kind })
+                }),
         );
         for site in sites {
             let contract = PropertiesOperation::Set.contract(site);
