@@ -1,12 +1,6 @@
-#[path = "metadata_can_tests/functional_option.rs"]
-mod functional_option;
-#[path = "metadata_can_tests/property_name_parity.rs"]
-mod property_name_parity;
-#[path = "metadata_can_tests/search_input.rs"]
-mod search_input;
-
-#[path = "metadata_can_tests/root_type_properties.rs"]
-mod root_type_properties;
+// Submodules are the files of `metadata_can_tests/`; build.rs declares
+// them, so a new test file needs no registration here.
+include!(concat!(env!("OUT_DIR"), "/metadata_can_tests_modules.rs"));
 
 use super::actor_capacity_tests::direct_v5;
 use super::*;

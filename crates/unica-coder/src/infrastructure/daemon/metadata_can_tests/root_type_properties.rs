@@ -27,7 +27,9 @@ fn canonical_root_type_profiles_read_publish_and_preserve_other_bytes() {
             &contract["props"]["contract"]["argsSchema"]["properties"]["values"]["properties"];
         assert!(fields.get("Type").is_some(), "{at}: {contract}");
         if *kind != "DefinedType" {
-            assert_eq!(fields.as_object().unwrap().len(), 1);
+            assert_eq!(fields.as_object().unwrap().len(), 3);
+            assert!(fields.get("Comment").is_some());
+            assert!(fields.get("comment").is_some());
         } else {
             assert!(fields.get("Synonym").is_some());
             assert!(fields.get("Comment").is_some());
@@ -117,10 +119,17 @@ fn canonical_root_type_profiles_refuse_invalid_inputs_and_neighbor_writes() {
             refused_without_writes(&runtime, &fixture, type_request(&at, metadata_type));
         }
         if *kind != "DefinedType" {
+            let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+            let comment = call(&runtime, &fixture, ToolIdentity::Apply,
+                json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"Comment":"independent comment"}}}]}));
+            assert!(comment.ok, "{comment:?}");
+            assert_eq!(unica_workspace::test_support::tree_snapshot(&fixture.source), before);
+            refused_without_writes(&runtime, &fixture,
+                json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"Comment":"mixed", "Type":{"variants":[{"kind":"boolean"}]}}}}]}));
             refused_without_writes(
                 &runtime,
                 &fixture,
-                json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"Comment":"outside Type-only profile"}}}]}),
+                json!({"at":at,"ops":[{"op":"props.set","args":{"values":{"Synonym":"outside this profile"}}}]}),
             );
         }
     }

@@ -9,7 +9,7 @@ fn root_type_profiles_advertise_type_without_granting_neighboring_properties() {
         "DefinedType",
     ] {
         let at = QualifiedAddress::parse(&format!("main:{kind}.Existing")).unwrap();
-        let site = PropertiesSite::from_address(&at)
+        let site = PropertiesSite::from_address(&at, SourceSetKind::Configuration)
             .unwrap_or_else(|| panic!("{kind} must have an existing-object Type profile"));
         let contract = PropertiesOperation::Set.contract(site);
         let properties = contract
@@ -21,10 +21,14 @@ fn root_type_profiles_advertise_type_without_granting_neighboring_properties() {
             assert!(properties.get("Synonym").is_some());
             assert!(properties.get("Comment").is_some());
         } else {
-            assert_eq!(properties.as_object().unwrap().len(), 1, "{kind}");
+            assert_eq!(properties.as_object().unwrap().len(), 3, "{kind}");
+            for name in ["Comment", "comment"] {
+                assert_eq!(properties[name], json!({"type":"string"}));
+            }
         }
         assert!(PropertiesSite::from_address(
-            &QualifiedAddress::parse(&format!("main:{kind}")).unwrap()
+            &QualifiedAddress::parse(&format!("main:{kind}")).unwrap(),
+            SourceSetKind::Configuration
         )
         .is_none());
     }
@@ -40,6 +44,7 @@ fn root_type_profiles_decode_the_existing_closed_type_vocabulary() {
     ] {
         let site = PropertiesSite::from_address(
             &QualifiedAddress::parse(&format!("main:{kind}.Existing")).unwrap(),
+            SourceSetKind::Configuration,
         )
         .unwrap_or_else(|| panic!("{kind} must have a Type profile"));
         for variant in [
@@ -68,6 +73,7 @@ fn root_type_profiles_refuse_unknown_read_only_and_invalid_qualified_values() {
     ] {
         let site = PropertiesSite::from_address(
             &QualifiedAddress::parse(&format!("main:{kind}.Existing")).unwrap(),
+            SourceSetKind::Configuration,
         )
         .unwrap();
         for values in [

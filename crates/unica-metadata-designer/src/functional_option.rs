@@ -193,6 +193,7 @@ mod tests {
     #[test]
     fn patch_rejects_ambiguous_and_non_scalar_properties() {
         let changes = FunctionalOptionPropertyChanges {
+            comment: None,
             location: None,
             privileged_get_mode: Some(true),
         };
@@ -216,6 +217,7 @@ mod tests {
             source("").replace("false", "true")
         );
         let unchanged = FunctionalOptionPropertyChanges {
+            comment: None,
             location: Some("Constant.Before".into()),
             privileged_get_mode: Some(false),
         };
@@ -232,6 +234,7 @@ mod tests {
             &format!("<m:PrivilegedGetMode xmlns:m=\"{MD}\">false</m:PrivilegedGetMode>"),
         );
         let changes = FunctionalOptionPropertyChanges {
+            comment: None,
             location: None,
             privileged_get_mode: Some(true),
         };
