@@ -14,10 +14,6 @@
 объявление. Unix-only проверка не требуется в Windows inventory, но её точный
 терм остаётся в общем фильтре для Linux и macOS.
 
-Тот же проход пишет профиль `queue-platform`: тесты модулей, чьи файлы лежат
-в платформенных каталогах правила INV.PLATFORM.OS-BEHIND-FACADE. Его очередь
-исполняет на macOS вместо полного набора.
-
 `--write` переписывает выражение в `.config/nextest.toml` между метками, беря
 имена тестов из `cargo nextest list --message-format json` (нужен `cargo`);
 страж размера в `tests/ci` читает то же выражение без `cargo` и проверяет, что
@@ -29,7 +25,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import re
@@ -50,10 +45,7 @@ MEDIUM_CONSTRUCTS = re.compile(
 BLOCKS = {
     "pr": ("# >>> размер medium (ворота pr): пишет scripts/ci/size-filters.py --write", "# <<< размер medium (ворота pr)"),
     "deadline": ("# >>> размер medium (срок): пишет scripts/ci/size-filters.py --write", "# <<< размер medium (срок)"),
-    "platform": ("# >>> платформа (очередь macOS): пишет scripts/ci/size-filters.py --write", "# <<< платформа (очередь macOS)"),
 }
-# Тест в исходнике: `#[test]`, `#[tokio::test]`, они же с аргументами.
-TEST_ATTRIBUTE_IN_SOURCE = re.compile(r"#\[\s*(?:[A-Za-z0-9_]+\s*::\s*)*test\s*[\](]")
 TERM = re.compile(r"test\(/\^([A-Za-z0-9_:]+)::")
 
 
@@ -235,115 +227,6 @@ def source_modules(root: Path) -> dict[str, dict[tuple[str, ...], tuple[bool, Pa
     return found
 
 
-def platform_facade_roots(root: Path) -> tuple[str, ...]:
-    """Закрытый набор владельцев правила INV.PLATFORM.OS-BEHIND-FACADE — из его стража."""
-    spec = importlib.util.spec_from_file_location("rust_platform_boundary", root / "scripts" / "ci" / "check-rust-platform-boundary.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.PLATFORM_FACADE_ROOTS
-
-
-def is_platform_source(root: Path, path: Path) -> bool:
-    relative = path.resolve().relative_to(root.resolve()).as_posix()
-    parts = relative.split("/")
-    return (any(relative.startswith(prefix) for prefix in platform_facade_roots(root))
-            or (len(parts) >= 5 and parts[0] == "crates" and parts[2] == "tests" and parts[3] == "platform"))
-
-
-def test_targets(crate: Path) -> tuple[str, dict[str, Path]]:
-    """Интеграционные цели пакета по правилам Cargo: автообнаружение и `[[test]]`."""
-    manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
-    package = manifest["package"]["name"]
-    targets: dict[str, Path] = {}
-    if manifest["package"].get("autotests", True) and (crate / "tests").is_dir():
-        targets.update({path.stem: path for path in sorted((crate / "tests").glob("*.rs"))})
-        targets.update({path.parent.name: path for path in sorted((crate / "tests").glob("*/main.rs"))})
-    for target in manifest.get("test", []):
-        targets[target["name"]] = crate / target.get("path", f"tests/{target['name']}.rs")
-    return package, targets
-
-
-def bin_targets(crate: Path, package: str) -> dict[str, Path]:
-    """Бинарные цели пакета по правилам Cargo: `src/main.rs`, `src/bin/*` и `[[bin]]`."""
-    manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
-    targets: dict[str, Path] = {}
-    if manifest["package"].get("autobins", True):
-        if (crate / "src" / "main.rs").is_file():
-            targets[package] = crate / "src" / "main.rs"
-        targets.update({path.stem: path for path in sorted((crate / "src" / "bin").glob("*.rs"))})
-        targets.update({path.parent.name: path for path in sorted((crate / "src" / "bin").glob("*/main.rs"))})
-    for target in manifest.get("bin", []):
-        targets[target["name"]] = crate / target.get("path", f"src/bin/{target['name']}.rs")
-    return targets
-
-
-def test_items(source: bytes) -> tuple[set[str], set[str]]:
-    """Встроенные модули с тестами и тесты верхнего уровня одного файла.
-
-    Файл `include!` разбирается на одну глубину: его `mod x;` и вложенные
-    `include!` не прослеживаются; сегодня таких нет.
-    """
-    named, _ = inline_test_modules(source)
-    tree = Parser(Language(tree_sitter_rust.language())).parse(source)
-    children = tree.root_node.named_children
-    top_level = set()
-    for index, child in enumerate(children):
-        if child.type != "function_item":
-            continue
-        back = index - 1
-        while back >= 0 and children[back].type in ("attribute_item", "line_comment", "block_comment"):
-            node = children[back]
-            if node.type == "attribute_item" and TEST_ATTRIBUTE.fullmatch(re.sub(r"\s+", "", node.text.decode())):
-                top_level.add(child.child_by_field_name("name").text.decode())
-            back -= 1
-    return named, top_level
-
-
-def platform_terms(root: Path) -> list[str]:
-    """Тесты платформенных фасадов: модули, чей файл лежит в каталоге фасада.
-
-    Выбор структурный, как у правила границы: верхний модуль на платформенном
-    файле забирает всё своё поддерево, если в нём есть хоть один тест. Тесты
-    под `cfg` другой ОС тоже называются — генератор не зависит от хоста.
-    """
-    terms = set()
-
-    def collect(binary: str, files: dict[tuple[str, ...], Path], includes: list[tuple[tuple[str, ...], Path]]) -> None:
-        platform = {logical for logical, path in files.items() if is_platform_source(root, path)}
-        # `include!` вставляет платформенный файл в чужой модуль: выбор — его
-        # собственные тесты, по точному имени или встроенному модулю.
-        for logical, path in includes:
-            if not path.is_file() or not is_platform_source(root, path) or any(logical[:n] in platform for n in range(len(logical) + 1)):
-                continue
-            prefix = "".join(f"{part}::" for part in logical)
-            named, top_level_names = test_items(path.read_bytes())
-            for name in sorted(named):
-                terms.add(f"({binary} & test(/^{re.escape(prefix + name)}::/))")
-            for name in sorted(top_level_names):
-                terms.add(f"({binary} & test(/^{re.escape(prefix + name)}$/))")
-        for logical in platform:
-            if any(logical[:n] in platform for n in range(len(logical))):
-                continue
-            subtree = [path for other, path in files.items() if other[:len(logical)] == logical]
-            if not any(TEST_ATTRIBUTE_IN_SOURCE.search(path.read_text(encoding="utf-8")) for path in subtree):
-                continue
-            prefix = "::".join(logical)
-            terms.add(f"({binary} & test(/^{re.escape(prefix)}::/))" if prefix else f"({binary})")
-
-    for crate in sorted((root / "crates").iterdir()):
-        if not (crate / "Cargo.toml").is_file():
-            continue
-        package, targets = test_targets(crate)
-        roots = [(f"binary({crate.name.replace('-', '_')})", crate / "src" / "lib.rs")]
-        roots += [(f"binary_id({package}::bin/{name})", path) for name, path in bin_targets(crate, package).items()]
-        roots += [(f"binary_id({package}::{name})", path) for name, path in sorted(targets.items())]
-        for binary, path in roots:
-            if path.is_file():
-                includes: list[tuple[tuple[str, ...], Path]] = []
-                collect(binary, module_files(path, includes=includes), includes)
-    return sorted(terms)
-
-
 def flagged_modules(root: Path) -> list[tuple[str, str, Path]]:
     """(крейт, модуль, файл) файлов дерева с процессом или сокетом.
 
@@ -454,11 +337,9 @@ def render(terms: list[str]) -> str:
     return "\n    | ".join(lines)
 
 
-def blocks(terms: list[str], large: str, platform: list[str]) -> dict[str, str]:
+def blocks(terms: list[str], large: str) -> dict[str, str]:
     body = render(terms)
-    platform_body = "\n    | ".join(platform)
     return {
-        "platform": f"default-filter = \'\'\'(\n{platform_body}\n) & not (\n{large}\n)\'\'\'",
         "pr": f"default-filter = \'\'\'not (\n{body}\n) & not (\n{large}\n)\'\'\'",
         "deadline": (
             "[[profile.default.overrides]]\n"
@@ -471,7 +352,7 @@ def blocks(terms: list[str], large: str, platform: list[str]) -> dict[str, str]:
 def write(root: Path, terms: list[str]) -> None:
     text = NEXTEST_TOML.read_text(encoding="utf-8")
     large = tomllib.loads(text)["profile"]["large"]["default-filter"].strip()
-    for name, body in blocks(terms, large, platform_terms(root)).items():
+    for name, body in blocks(terms, large).items():
         begin, end = BLOCKS[name]
         start, stop = text.index(begin), text.index(end) + len(end)
         text = text[:start] + f"{begin}\n{body}\n{end}" + text[stop:]

@@ -335,8 +335,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch'", condition(delivery))
         self.assertIn("startsWith(github.ref, 'refs/tags/')", condition(delivery))
 
-    def test_a_queue_entry_occupies_linux_macos_and_a_windows_lint_runner(self) -> None:
-        """Запись очереди — `Unica CI` на Linux, джоба macOS и Clippy Windows; PR — только Linux."""
+    def test_a_queue_entry_occupies_linux_and_a_windows_lint_runner(self) -> None:
+        """Запись очереди — `Unica CI` на Linux и Clippy Windows, джоба macOS её не ждёт; PR — только Linux."""
         validation = {job_id: found for job_id, found in jobs(self.release).items()
                       if job_id not in ("build-tools", "package-thin", "p0-release-proof", "probe-thin-bootstrap",
                                         "release-assessment", "publish-release-assets", "smoke-thin-plugin",
@@ -631,11 +631,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertLess(steps(checks).index(step_by_id(checks, "python")), steps(checks).index(step_by_id(checks, "clippy")))
         self.assertIs(steps_using(checks, "Swatinem/rust-cache")[0]["with"]["save-if"], False)
         self.assertIn("--all-targets --all-features --message-format=json -- -D warnings", CLIPPY_SCRIPT.read_text(encoding="utf-8"))
-        # Очередь с одними платформенными каталогами линтует macOS ночью и на
-        # теге, остальные контуры — сразу.
+        # Джоба другой ОС линтует везде, где идёт: очереди в ней нет.
         os_clippy = step_by_id(other, "clippy")
         self.assertEqual([os_clippy], [step for step in steps(other) if "cargo clippy" in step.get("run", "")])
-        self.assertIn("env.GATE_PROFILE != 'queue'", condition(os_clippy))
+        self.assertIn("github.event_name != 'merge_group'", other["if"])
         self.assertIn("rust_required == 'true'", condition(os_clippy))
         self.assertIn("--workspace --all-targets --all-features --locked -- -D warnings", os_clippy["run"])
         self.assertNotIn("continue-on-error", os_clippy)
@@ -650,7 +649,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertLess(order.index(cache), order.index(clippy))
         self.assertLess(order.index(clippy), order.index(build))
         self.assertIn("!cancelled()", condition(clippy))
-        self.assertIn("env.GATE_PROFILE != 'queue'", condition(clippy))
         # Всё после Clippy идёт и после его отказа: оба сигнала — в одном прогоне.
         for step in (build, plan_upload, run):
             with self.subTest(step=step.get("id") or step["with"]["name"]):
@@ -1088,16 +1086,18 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.profile", normalized(self.release["env"]["GATE_PROFILE"]))
         gate, platforms = job(self.release, "unica-ci"), job(self.release, "rust-os")
         self.assertEqual(gate["outputs"]["runners"], "${{ steps.runners.outputs.runners }}")
-        # Две полосы: pull request — ubuntu, обе ОС — в очереди, на push
-        # и по кнопке; ci:full возвращает macOS на следующем прогоне pull request.
+        # Две полосы: pull request и очередь — ubuntu, обе ОС — на push и по
+        # кнопке; ci:full возвращает macOS на следующем прогоне pull request.
+        # Очередь macOS не ждёт (решение владельца, 05.11.2026).
         runners = step_by_id(gate, "runners")
         self.assertIn('runners=["ubuntu-latest", "macos-15", "windows-latest"]', runners["run"])
         self.assertIn('runners=["ubuntu-latest"]', runners["run"])
         self.assertIn('runners=["ubuntu-latest", "macos-15"]', runners["run"])
         self.assertEqual(
             normalized(runners["env"]["FULL_MATRIX"]),
-            "${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}",
+            "${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}",
         )
+        self.assertIn("github.event_name != 'merge_group'", normalized(platforms["if"]))
         self.assertIn("inputs.profile == 'large'", normalized(platforms["strategy"]["matrix"]["runner"]))
         self.assertIn("windows-latest", normalized(platforms["strategy"]["matrix"]["runner"]))
         for found in (gate, platforms):

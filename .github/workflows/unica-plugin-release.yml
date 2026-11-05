@@ -48,9 +48,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # Запись очереди занимает три раннера: эту Linux-джобу, джобу macOS
-  # (`rust-os`) и лёгкую `Clippy (windows-latest)`. На тарифе с 20
-  # одновременными джобами, из них 5 macOS, так пачка записей не ждёт раннеров.
+  # Запись очереди занимает два раннера: эту Linux-джобу и лёгкую
+  # `Clippy (windows-latest)`. macOS в очереди нет: 04.11.2026 восемь записей
+  # подряд не получили раннер macos-15, около 3,5 часа простоя; полный macOS
+  # идёт ночью, в `main`, в релизе и в pull request с меткой `ci:full`.
   # Всё, что раньше шло отдельными джобами, — маршрут, guards, сборки, тесты,
   # Clippy, Python, сверка инвентаря и итог — идёт здесь подряд в одном каталоге
   # `target`: архивы полос не покидают джобу, продукт для Python собирается из
@@ -124,17 +125,17 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      # Раннеры прогона. Pull request идёт только на Linux; метка `ci:full`,
-      # прочитанная при старте прогона, добавляет macOS. Очередь, push в
-      # ветку и кнопка — Linux и macOS; в очереди macOS исполняет только
-      # платформенные каталоги (профиль nextest `queue-platform`). Тесты
+      # Раннеры прогона. Pull request и очередь идут только на Linux: запись
+      # очереди не ждёт раннера macOS (решение владельца, 05.11.2026). Метка
+      # `ci:full`, прочитанная при старте прогона, добавляет pull request
+      # полный macOS. Push в ветку и кнопка — Linux и полный macOS. Тесты
       # Windows — только в ночном ярусе `large`, и там его красная джоба
       # красит прогон, как любая другая ОС. Clippy под Windows очередь и кнопка
       # `main` исполняют отдельной джобой `Clippy (windows-latest)`.
       - id: runners
         env:
           PROFILE: ${{ github.event_name == 'workflow_dispatch' && inputs.profile || '' }}
-          FULL_MATRIX: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}
+          FULL_MATRIX: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
         run: |
           if [ "$PROFILE" = "large" ]; then
             echo 'runners=["ubuntu-latest", "macos-15", "windows-latest"]' >> "$GITHUB_OUTPUT"
@@ -475,7 +476,7 @@ jobs:
   # которая ждёт исход её шагов по jobs API (`lint-job`, `pr-python`). Python
   # small продукту не нужен, поэтому он идёт здесь, параллельно сборке и
   # medium. Только pull request: очередь и ветки исполняют всё внутри
-  # `Unica CI` и держат три раннера на запись: Linux, macOS и Clippy Windows.
+  # `Unica CI`; запись очереди держит Linux и Clippy Windows.
   pr-checks:
     name: Lint and Python
     if: ${{ github.event_name == 'pull_request' }}
@@ -584,10 +585,10 @@ jobs:
           sarif_file: .build/clippy.sarif
           category: clippy-ubuntu-latest
 
-  # Остальные раннеры прогона. Очередь — macOS с платформенными каталогами
-  # (`queue-platform`); push в релизную ветку, кнопка, тег и ночь — полный
-  # macOS с Clippy, ночью ещё Windows. Pull request —
-  # только с меткой `ci:full`. Push в `main` её не запускает: ключ
+  # Остальные раннеры прогона. Push в релизную ветку, кнопка, тег и ночь —
+  # полный macOS с Clippy, ночью ещё Windows. Pull request — только с
+  # меткой `ci:full`. Очередь её не запускает: запись не ждёт раннера macOS
+  # (решение владельца, 05.11.2026). Push в `main` тоже: ключ
   # зависимостей macOS пишет ночь, а прогоны берут ближайший по префиксу.
   # Маршрут джоба считает тем же классификатором; расхождение с маршрутом
   # `Unica CI` сверка видит как пропавшую конфигурацию, а `os-job.json`
@@ -598,7 +599,7 @@ jobs:
     permissions:
       contents: read
       actions: write
-    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
+    if: ${{ github.event_name != 'merge_group' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
     # Без `continue-on-error`: красная Windows-джоба красит ночной прогон
@@ -679,11 +680,10 @@ jobs:
       # Полный контур линтует и эту ОС: ветки `cfg` по ОС. Clippy идёт первым:
       # его отказ виден в логе через минуты, а не после всех тестов. Сборка
       # и тесты идут и после красного Clippy (`!cancelled()`), так что оба
-      # сигнала приходят в одном прогоне. Очередь с одними платформенными
-      # каталогами линтует macOS ночью и на теге, Windows — отдельной джобой.
+      # сигнала приходят в одном прогоне.
       - name: Clippy
         id: clippy
-        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' && env.GATE_PROFILE != 'queue' }}
+        if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - id: rust-build
         if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
