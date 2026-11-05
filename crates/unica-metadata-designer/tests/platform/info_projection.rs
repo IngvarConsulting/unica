@@ -2012,3 +2012,201 @@ fn bare_text_of_a_localized_standard_attribute_property_is_refused_for_every_own
         }
     }
 }
+
+#[test]
+fn defined_type_observes_object_and_reference_as_distinct_read_only_members() {
+    let xml = r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:core="http://v8.1c.ru/8.1/data/core" xmlns:configuration="http://v8.1c.ru/8.1/data/enterprise/current-config"><Type><core:Type>configuration:CatalogObject.Items</core:Type><core:Type>configuration:CatalogRef.Items</core:Type></Type></Properties>"#;
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let observed =
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).unwrap();
+    let value = serde_json::to_value(observed).unwrap();
+    assert_eq!(value["mutationCapability"], "readOnly");
+    assert_eq!(
+        value["variants"],
+        serde_json::json!([
+            {"kind": "object", "metadataPath": "Catalog.Items"},
+            {"kind": "reference", "metadataPath": "Catalog.Items"}
+        ])
+    );
+}
+
+#[test]
+fn defined_type_object_members_keep_malformed_and_unmodelled_compositions_distinct() {
+    let wrap = |body: &str| {
+        format!(
+            r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type>{body}</Type></Properties>"#
+        )
+    };
+    for body in [
+        "<v8:Type>cfg:CatalogObject.Items.Form.Main</v8:Type>",
+        "<v8:Type>unknown:CatalogObject.Items</v8:Type>",
+        "<v8:Type>cfg:CatalogObject.Items</v8:Type><v8:Type>cfg:CatalogObject.Items</v8:Type>",
+        "<v8:Type>cfg:CatalogObject.Items</v8:Type><v8:Type>xs:decimal</v8:Type><v8:NumberQualifiers><v8:Digits>39</v8:Digits><v8:FractionDigits>40</v8:FractionDigits><v8:AllowedSign>Any</v8:AllowedSign></v8:NumberQualifiers>",
+    ] {
+        let xml = wrap(body);
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let properties = document.root_element();
+        assert!(crate::info_projection::parse_observed_metadata_type_node(properties).is_err(), "{body}");
+        assert!(!crate::info_projection::observed_type_is_strict_but_unmodelled(properties), "{body}");
+    }
+    for (tag, name) in [("TypeSet", "CatalogObject"), ("Type", "FutureOpaque.Items")] {
+        let xml = wrap(&format!(
+            "<v8:Type>cfg:CatalogObject.Items</v8:Type><v8:{tag}>cfg:{name}</v8:{tag}>"
+        ));
+        let document = roxmltree::Document::parse(&xml).unwrap();
+        let target =
+            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "DefinedType.Source").unwrap();
+        let mut diagnostics = Vec::new();
+        let details = crate::info_projection::project_meta_info_details(
+            MetadataKind::DefinedType,
+            Some(document.root_element()),
+            None,
+            &target,
+            &mut diagnostics,
+        );
+        let value = serde_json::to_value(details).unwrap();
+        assert!(value["details"]["type"].is_null());
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, MetaDiagnosticCode::ValidationWarning);
+        assert!(diagnostics[0].message.contains(&format!(
+            "{tag} QName {{http://v8.1c.ru/8.1/data/enterprise/current-config}}{name}"
+        )));
+        assert!(diagnostics[0].message.contains("incomplete"));
+    }
+}
+
+#[test]
+fn constant_exchange_plan_family_is_read_only_without_a_metadata_address() {
+    let xml = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/platform_8_3_27/meta_info/edge/constant-exchange-plan-family.xml"
+    ));
+    let details = project(xml, MetadataKind::Constant, "Constant.ГлавныйУзел");
+    assert_eq!(
+        details["type"],
+        serde_json::json!({
+            "variants":[{"kind":"referenceFamily", "typeName":"ExchangePlanRef", "namespaceUri":"http://v8.1c.ru/8.1/data/enterprise/current-config"}],
+            "mutationCapability":"readOnly"
+        })
+    );
+}
+
+fn parse_reference_family_control(
+    fragment: &str,
+) -> (
+    Result<unica_metadata::ObservedMetadataType, unica_metadata::MetaDiagnostic>,
+    bool,
+) {
+    let xml = format!(
+        r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:alias="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:bad="urn:foreign"><Type>{fragment}</Type></Properties>"#
+    );
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    (
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()),
+        crate::info_projection::observed_type_is_strict_but_unmodelled(document.root_element()),
+    )
+}
+
+#[test]
+fn exchange_plan_reference_family_admission_is_qname_exact_and_preserves_concrete_controls() {
+    use unica_metadata::MetadataMutationCapability;
+    let (family, unmodelled) =
+        parse_reference_family_control("<v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet>");
+    let family = family.unwrap();
+    assert!(!unmodelled);
+    assert_eq!(
+        family,
+        parse_reference_family_control("<v8:TypeSet>alias:ExchangePlanRef</v8:TypeSet>")
+            .0
+            .unwrap()
+    );
+    for invalid in [
+        "<v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet><v8:TypeSet>alias:ExchangePlanRef</v8:TypeSet>",
+        "<v8:Type>cfg:ExchangePlanRef</v8:Type>",
+        "<v8:TypeSet>bad:ExchangePlanRef</v8:TypeSet>",
+        "<v8:TypeSet>unbound:ExchangePlanRef</v8:TypeSet>",
+        "<v8:TypeSet>cfg:ExchangePlanRef:broken</v8:TypeSet>",
+        "<v8:TypeSet>cfg:ExchangePlanRef.Node</v8:TypeSet>",
+        "<v8:TypeSet><Nested>cfg:ExchangePlanRef</Nested></v8:TypeSet>",
+    ] {
+        assert!(parse_reference_family_control(invalid).0.is_err(), "{invalid}");
+    }
+    let (unknown, unmodelled) =
+        parse_reference_family_control("<v8:TypeSet>cfg:CatalogRef</v8:TypeSet>");
+    assert!(unknown.is_err());
+    assert!(unmodelled);
+    let named = parse_reference_family_control("<v8:Type>cfg:ExchangePlanRef.Node</v8:Type>")
+        .0
+        .unwrap();
+    assert_eq!(
+        named.mutation_capability,
+        MetadataMutationCapability::Editable
+    );
+    assert_eq!(
+        serde_json::to_value(&named.variants[0]).unwrap(),
+        serde_json::json!({"kind":"reference", "metadataPath":"ExchangePlan.Node"})
+    );
+    let union = parse_reference_family_control(
+        "<v8:Type>cfg:ExchangePlanRef.Node</v8:Type><v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet>",
+    )
+    .0
+    .unwrap();
+    assert_eq!(
+        union.mutation_capability,
+        MetadataMutationCapability::ReadOnly
+    );
+    assert_eq!(union.variants[0], named.variants[0]);
+    assert_eq!(union.variants[1], family.variants[0]);
+    for name in [
+        "ВидКартыСерверЛояльности",
+        "ЕдиницаИзмеренияКилограммИС",
+        "ЕдиницаИзмеренияЛитрИС",
+        "ПрофильБезопасностиИнформационнойБазы",
+    ] {
+        let observed = parse_reference_family_control(&format!(
+            "<v8:TypeSet>cfg:DefinedType.{name}</v8:TypeSet>"
+        ))
+        .0
+        .unwrap();
+        assert_eq!(
+            observed.mutation_capability,
+            MetadataMutationCapability::Editable
+        );
+        assert_eq!(
+            serde_json::to_value(&observed.variants[0]).unwrap(),
+            serde_json::json!({"kind":"definedType", "metadataPath":format!("DefinedType.{name}")})
+        );
+    }
+}
+
+#[test]
+fn defined_type_observes_record_set_and_nested_type_without_losing_scalar_members() {
+    let xml = r#"<Properties xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:xs="http://www.w3.org/2001/XMLSchema"><Type><v8:Type>cfg:InformationRegisterRecordSet.Facts</v8:Type><v8:Type>xs:boolean</v8:Type><v8:TypeSet>cfg:DefinedType.Other</v8:TypeSet></Type></Properties>"#;
+    let document = roxmltree::Document::parse(xml).unwrap();
+    let observed =
+        crate::info_projection::parse_observed_metadata_type_node(document.root_element()).unwrap();
+    let value = serde_json::to_value(observed).unwrap();
+    assert_eq!(value["mutationCapability"], "readOnly");
+    assert_eq!(
+        value["variants"],
+        serde_json::json!([
+            {"kind": "recordSet", "metadataPath": "InformationRegister.Facts"},
+            {"kind": "boolean"},
+            {"kind": "definedType", "metadataPath": "DefinedType.Other"}
+        ])
+    );
+}
+
+#[test]
+fn reference_family_never_downgrades_malformed_qualifiers_or_value_storage_composition() {
+    for primitive in [
+        "<v8:Type>xs:decimal</v8:Type><v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet><v8:NumberQualifiers><v8:Digits>39</v8:Digits><v8:FractionDigits>0</v8:FractionDigits><v8:AllowedSign>Any</v8:AllowedSign></v8:NumberQualifiers>",
+        "<v8:Type>xs:string</v8:Type><v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet><v8:StringQualifiers><v8:Length>0</v8:Length><v8:AllowedLength>Fixed</v8:AllowedLength></v8:StringQualifiers>",
+        "<v8:Type>xs:string</v8:Type><v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet><v8:StringQualifiers><v8:Length>1025</v8:Length><v8:AllowedLength>Variable</v8:AllowedLength></v8:StringQualifiers>",
+        "<v8:Type>v8:ValueStorage</v8:Type><v8:TypeSet>cfg:ExchangePlanRef</v8:TypeSet>",
+    ] {
+        let (observed, unmodelled) = parse_reference_family_control(primitive);
+        assert!(observed.is_err(), "{primitive}");
+        assert!(!unmodelled, "invalid composition must remain an error: {primitive}");
+    }
+}

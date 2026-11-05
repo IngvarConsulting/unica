@@ -19,6 +19,9 @@ fn operation(name: &str, value: bool) -> MetaEditOperation {
             indexing: None,
             deny_incomplete_values: None,
             base_dimension: Some(value),
+            main_filter: None,
+            master: None,
+            type_reduction_mode: None,
         }],
     }
 }

@@ -843,7 +843,7 @@ fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
     // механизмом, каким отвечает тип реквизита (#2031).
     let constant = service.view(ViewRequest::new("main:Constant.MainCurrency").unwrap());
     assert!(constant.ok, "{:?}", refusal_codes(&constant));
-    let ty = &constant.data.as_ref().unwrap()["props"]["type"];
+    let ty = &constant.data.as_ref().unwrap()["props"]["Type"];
     assert!(ty.is_object(), "constant type arrives as nested JSON");
     assert_eq!(ty["variants"][0]["kind"], json!("string"));
 }

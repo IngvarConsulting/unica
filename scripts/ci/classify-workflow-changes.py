@@ -103,8 +103,6 @@ CI_CONTRACT_PATHS = {
     "scripts/ci/resolve-line.py",
     "tests/ci/test_nightly_lines.py",
     "tests/ci/test_resolve_line.py",
-    "scripts/ci/size-filters.py",
-    "tests/ci/test_size_guard.py",
     "tests/ci/test_python_sizes.py",
     "tests/ci/test_research_policy.py",
     "tests/ci/test_allure_results.py",
@@ -444,7 +442,7 @@ def write_scope_skip(scope: EventScope, out: Path, runners: list[str], *, profil
     """Record a routing decision, never a plan or a successful test execution."""
     # Windows — у лёгкой джобы `Clippy (windows-latest)` очереди: она тоже
     # маршрутизирует себя и при docs-only пишет пометку, которую не выгружает.
-    operating_systems = {"ubuntu-latest": "Linux", "macos-14": "macOS", "windows-latest": "Windows"}
+    operating_systems = {"ubuntu-latest": "Linux", "macos-15": "macOS", "windows-latest": "Windows"}
     if profile not in {"pr", "queue"} or not line or not scope.docs_only:
         raise ValueError("a documentation skip requires a PR/queue profile and a line")
     if not runners or len(set(runners)) != len(runners) or any(runner not in operating_systems for runner in runners):

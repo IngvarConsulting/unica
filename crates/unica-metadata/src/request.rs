@@ -805,6 +805,7 @@ pub fn parse_element_input(
                 .map(|value| parse_position(value, field))
                 .transpose()
         })?,
+        deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
         template_type: reader.read("templateType", |object, key, field| {
             object
                 .get(key)
@@ -818,6 +819,8 @@ pub fn parse_element_input(
                 .transpose()
         })?,
         indexing: reader.read("indexing", optional_string_at)?,
+        master: reader.read("master", optional_bool_at)?,
+        main_filter: reader.read("mainFilter", optional_bool_at)?,
     })
 }
 pub fn parse_element_update(
@@ -832,8 +835,11 @@ pub fn parse_element_update(
     reader.reject_unknown()?;
     Ok(MetaElementUpdateInput {
         indexing: reader.read("indexing", optional_string_at)?,
+        master: reader.read("master", optional_bool_at)?,
+        main_filter: reader.read("mainFilter", optional_bool_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
         base_dimension: reader.read("baseDimension", optional_bool_at)?,
+        type_reduction_mode: reader.read("typeReductionMode", optional_string_at)?,
         name: reader.read("name", required_string_at)?,
         new_name: reader.read("newName", optional_string_at)?,
         synonym: reader.read("synonym", optional_string_at)?,
@@ -1114,9 +1120,20 @@ pub fn parse_event_source(value: &Value, field: &str) -> Result<MetaEventSource,
     let Some(shape) =
         ArgumentShape::new(metadata_event_source_input_schema()).variant("kind", &kind)
     else {
+        let supported = metadata_event_source_input_schema()["oneOf"]
+            .as_array()
+            .expect("the event source schema is a closed union")
+            .iter()
+            .map(|variant| {
+                variant["properties"]["kind"]["enum"][0]
+                    .as_str()
+                    .expect("each event source variant has one kind")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(invalid(
             format!("{field}.kind"),
-            format!("unsupported event source kind `{kind}`"),
+            format!("unsupported event source kind `{kind}`; use {supported}; example: {{\"kind\":\"object\",\"metadataPath\":\"Document.Order\"}}"),
         ));
     };
     let reader = MetadataArgumentReader {
@@ -1850,6 +1867,70 @@ mod base_dimension_tests {
         for value in [false, true] {
             assert!(super::parse_element_update(
                 &serde_json::json!({"name":"Item", "baseDimension":value}),
+                "elements[0]"
+            )
+            .is_ok());
+        }
+    }
+}
+
+#[cfg(test)]
+mod dimension_flags_tests {
+    use super::*;
+    #[test]
+    fn dimension_flags_decode_explicit_false() {
+        let omitted = parse_element_input(&json!({"name":"Item"}), "elements[0]", false).unwrap();
+        assert_eq!(
+            (
+                omitted.master,
+                omitted.main_filter,
+                omitted.deny_incomplete_values
+            ),
+            (None, None, None)
+        );
+        let value =
+            json!({"name":"Item","master":false,"mainFilter":false,"denyIncompleteValues":false});
+        assert!(parse_element_input(&value, "elements[0]", false).is_ok());
+        assert!(parse_element_update(&value, "elements[0]").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod dimension_flag_invalid_tests {
+    use super::*;
+    #[test]
+    fn dimension_flags_reject_non_booleans_and_aliases() {
+        for key in [
+            "master",
+            "mainFilter",
+            "denyIncompleteValues",
+            "Master",
+            "MainFilter",
+            "DenyIncompleteValues",
+        ] {
+            for bad in [json!("false"), json!(0), json!(null)] {
+                let mut value = json!({"name":"Item"});
+                value[key] = bad;
+                assert!(
+                    parse_element_input(&value, "elements[0]", false).is_err(),
+                    "{value}"
+                );
+                assert!(
+                    parse_element_update(&value, "elements[0]").is_err(),
+                    "{value}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod reduction_tests {
+    #[test]
+    fn type_reduction_update_accepts_deny_and_transform_values() {
+        for value in ["Deny", "TransformValues"] {
+            assert!(super::parse_element_update(
+                &serde_json::json!({"name":"Item", "typeReductionMode":value}),
                 "elements[0]"
             )
             .is_ok());
