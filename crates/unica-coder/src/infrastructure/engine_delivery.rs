@@ -285,6 +285,7 @@ mod tests {
 
     /// #549: неудачная доставка, после которой движка нет, — тот же отказ «нет
     /// движка» с полями на шаге `delivery`; срок доставки остаётся своим кодом.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn a_failed_engine_delivery_carries_the_missing_engine_fields() {
         let plugin_root = plugin_root_with_tool("delivery-fields");
@@ -326,6 +327,7 @@ mod tests {
     /// Первая доставка движка за антивирусом: ОС не доверяет подменённому
     /// корню. Ответ называет вероятную причину и что исправить, а не
     /// «проверьте сеть и повторите» — повтор здесь не поможет.
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn an_untrusted_certificate_reaches_the_caller_as_its_own_class_with_the_cure() {
         use unica_artifact_delivery::{Downloader, HttpDownloader, SilentDownload};
@@ -444,6 +446,7 @@ mod tests {
         std::fs::remove_dir_all(&plugin_root).ok();
     }
 
+    /// rule: CTR.APP.EXACT-SHARED-DELIVERY
     #[test]
     fn delivery_boundary_rejects_non_delivery_key_mismatched_identity_and_relative_root() {
         let desk = desk();

@@ -600,6 +600,7 @@ fn template_removal_preview(
     preview.data.unwrap()["executionToken"].clone()
 }
 
+/// rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
 #[test]
 fn canonical_template_remove_deletes_its_payload_directories_and_only_its_collection() {
     for foreign_entry in [false, true] {
@@ -681,6 +682,7 @@ fn canonical_template_remove_deletes_its_payload_directories_and_only_its_collec
     }
 }
 
+/// rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
 #[test]
 fn canonical_template_remove_rejects_a_late_entry_in_its_payload_without_deleting_it() {
     for late_file in [false, true] {
@@ -748,6 +750,7 @@ fn canonical_template_remove_rejects_a_late_entry_in_its_emptied_collection() {
     }
 }
 
+/// rule: INV.SOURCE.WHOLE-TEMPLATE-REMOVAL
 #[test]
 fn canonical_template_remove_restores_its_directories_on_each_publication_failure() {
     use unica_workspace::compile_transaction::{

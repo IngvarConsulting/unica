@@ -396,6 +396,7 @@ mod tests {
         )
     }
 
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[test]
     fn compatibility_contracts_are_exact_and_teach_bounded_wait() {
         let contracts = compatibility_tool_contracts();
@@ -443,6 +444,7 @@ mod tests {
         );
     }
 
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[test]
     fn compatibility_parser_accepts_only_canonical_ids_and_wait_zero_through_7000() {
         let task_id = "f741d562-9d42-4a4f-a626-fcd5c3fb9bc4";
@@ -483,6 +485,7 @@ mod tests {
         assert!(parse_task_tool_call("unica.check", &Map::new()).is_none());
     }
 
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[test]
     fn compatibility_receipt_is_closed_and_terminal_result_reuses_domain_json() {
         let working = project_task_snapshot(
@@ -559,6 +562,7 @@ mod tests {
         );
     }
 
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[test]
     fn late_cancel_request_is_visible_in_task_state_without_changing_subject_result() {
         let mut state = snapshot(InvocationStatus::Working);

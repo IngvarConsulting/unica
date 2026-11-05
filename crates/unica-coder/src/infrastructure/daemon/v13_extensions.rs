@@ -658,6 +658,7 @@ mod tests {
         }
         json!({"ok":true,"command":"extensions","data":data})
     }
+    /// rule: INV.RUNTIME.EXTENSION-OPERATIONS
     #[test]
     fn delete_preview_explicitly_names_the_extension_data_loss() {
         let root = tempfile::tempdir().unwrap();
@@ -672,6 +673,8 @@ mod tests {
         assert_eq!(result.data.unwrap()["plan"]["deletesExtensionData"], true);
     }
 
+    /// rule: INV.RUNTIME.EXTENSION-OPERATIONS
+    /// rule: INV.RUNTIME.EXTENSION-RESULT
     #[test]
     fn all_extension_operations_preview_then_apply_with_a_provider_receipt() {
         for op in [Operation::List, Operation::Delete, Operation::Activate] {
@@ -720,6 +723,7 @@ mod tests {
             assert!(!serde_json::to_string(&result).unwrap().contains("PRIVATE"));
         }
     }
+    /// rule: INV.RUNTIME.EXTENSION-OPERATIONS
     #[test]
     fn extension_execution_uses_current_arguments_config_and_runner() {
         for change in ["args", "config", "local", "version"] {
@@ -769,6 +773,7 @@ mod tests {
                 .any(|pair| pair == ["--active", active]));
         }
     }
+    /// rule: INV.RUNTIME.EXTENSION-RESULT
     #[test]
     fn extension_contract_rejects_wrong_subject_action_and_false_execution_claims() {
         let root = tempfile::tempdir().unwrap();
@@ -805,6 +810,7 @@ mod tests {
         wrong["data"]["extensions"][0]["name_prefix"] = json!(42);
         assert!(p.validate(&wrong, false).is_err());
     }
+    /// rule: INV.RUNTIME.EXTENSION-RESULT
     #[test]
     fn installed_prefix_keeps_known_value_empty_value_and_unknown_distinct() {
         for (prefix, available) in [
@@ -863,6 +869,7 @@ mod tests {
             assert_eq!(data["extensions"].as_array().unwrap().len(), prefixes.len());
         }
     }
+    /// rule: INV.RUNTIME.EXTENSION-OPERATIONS
     #[test]
     fn extension_arguments_are_closed_and_execution_requires_a_boolean_mode() {
         let root = tempfile::tempdir().unwrap();
@@ -898,6 +905,7 @@ mod tests {
             assert!(PreparedExtensions::parse(&req, Operation::List).is_err());
         }
     }
+    /// rule: INV.RUNTIME.EXTENSION-OPERATIONS
     #[test]
     fn extension_execution_uses_its_current_workspace() {
         let first = tempfile::tempdir().unwrap();
@@ -1016,6 +1024,7 @@ mod tests {
     /// Живые конверты раннера 0.14.0: изменение расширения в базе другой
     /// рабочей копии идёт с предупреждением раннера; ответ называет его своим
     /// предупреждением и выходом к своей базе.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
     #[test]
     fn captured_extension_change_in_the_infobase_of_another_copy_names_it() {
         let root = tempfile::tempdir().unwrap();
@@ -1137,6 +1146,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[test]
     fn only_mutating_extension_calls_detach_from_cancellation() {
         for operation in [Operation::List, Operation::Delete, Operation::Activate] {

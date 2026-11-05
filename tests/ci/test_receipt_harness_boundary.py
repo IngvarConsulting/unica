@@ -112,7 +112,10 @@ class ReceiptHarnessBoundaryTests(unittest.TestCase):
             self.assertIn("contracts/rogue/mod.rs", result.stdout)
 
     def test_live_tree_keeps_the_harness_observing(self) -> None:
-        """Живое дерево: диспетчер не пишет, писатели только у владельцев."""
+        """Живое дерево: диспетчер не пишет, писатели только у владельцев.
+
+        rule: INV.APP.RECEIPT-SCENARIO-EVIDENCE
+        """
         result = run_guard(REPO_ROOT)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 

@@ -151,6 +151,7 @@ fn job_schedule_present_damage_never_becomes_absence_or_erases_declarations() {
     }
 }
 
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 #[test]
 fn job_schedule_does_not_read_foreign_owners_or_cancelled_sources() {
     let fixture = RealReaderFixture::new();

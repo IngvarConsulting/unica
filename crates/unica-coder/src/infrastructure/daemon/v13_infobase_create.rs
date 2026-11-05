@@ -776,6 +776,7 @@ mod tests {
         assert_eq!(runner.call_count(), 0);
     }
 
+    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
     fn preview_plans_the_infobase_without_creating_anything_or_naming_its_path() {
         let root = workspace();
@@ -809,6 +810,7 @@ mod tests {
             .ends_with("--json-message infobase create --dry-run"));
     }
 
+    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
     fn an_existing_infobase_is_refused_at_preview_and_points_to_import() {
         let root = workspace();
@@ -826,6 +828,7 @@ mod tests {
         assert!(result.rev.is_none());
     }
 
+    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
     fn a_project_that_needs_an_edt_workspace_is_refused() {
         let root = workspace();
@@ -842,6 +845,7 @@ mod tests {
             .contains("Designer projects only"));
     }
 
+    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
     fn apply_without_prior_preview_creates_and_confirms_the_provider_receipt() {
         let root = workspace();
@@ -875,6 +879,7 @@ mod tests {
         assert!(!encoded.contains("1cv8"), "platform path leaked: {encoded}");
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[test]
     fn cancellation_after_create_keeps_the_confirmation_probe_and_receipt() {
         struct CancelAfterMutationRunner {
@@ -918,6 +923,7 @@ mod tests {
         assert!(!calls[2].cancellation.is_cancelled());
     }
 
+    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
     fn apply_refuses_an_infobase_created_elsewhere() {
         let root = workspace();
@@ -936,6 +942,7 @@ mod tests {
             .contains("not created by this call"));
     }
 
+    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
     fn apply_refuses_a_receipt_that_still_plans_to_create() {
         let root = workspace();
@@ -983,6 +990,7 @@ mod tests {
     /// повторное превью отказывает на существующей базе — это и есть квитанция.
     /// Ответ называет загруженный набор, не называет путь базы и платформы и
     /// не обещает защиту поколения: она — свойство `push`, а не создания.
+    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
     fn captured_runner_015_create_is_confirmed_by_its_repeated_preview() {
         let root = workspace_with_main("File=build/ib");
@@ -1026,6 +1034,7 @@ mod tests {
     /// в превью. Для `infobase.create` это не правка вызова (аргументов нет), а
     /// состояние: превью отказывает `invalid_state`, применение, на котором база
     /// появилась после превью, — `concurrent_change`.
+    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
     fn captured_existing_infobase_refusal_is_a_state_not_a_call_error() {
         let root = workspace_with_main("File=build/ib");
@@ -1065,6 +1074,7 @@ mod tests {
     }
 
     /// База в кластере создаётся пустой: ответ не обещает загрузку исходников.
+    /// rule: INV.WIRE.INFOBASE-CREATE-ONLY-CREATES-AN-ABSENT-ONE
     #[test]
     fn a_cluster_infobase_is_created_without_sources() {
         let root = workspace_with_main("Srvr=srv;Ref=demo");

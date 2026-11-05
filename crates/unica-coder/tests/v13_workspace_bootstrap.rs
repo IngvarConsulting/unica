@@ -557,6 +557,7 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
 // Исключение из отключённого яруса: живой процесс — единственное место, где
 // видно, что снятая операция снята и на проводе. Внутрипроцессной замены
 // этому доказательству нет.
+/// rule: INV.SURFACE.WORKSPACE-BOOTSTRAP
 #[test]
 fn canonical_stdio_hands_the_project_file_recipe_without_an_initialize_operation() {
     let root = tempfile::tempdir().expect("workspace recipe integration root");
@@ -642,6 +643,7 @@ fn canonical_stdio_hands_the_project_file_recipe_without_an_initialize_operation
 
 // Исключение из отключённого яруса: живой процесс — единственное место, где
 // видно, как рекомендация ведёт себя на смешанных форматах.
+/// rule: INV.SURFACE.WORKSPACE-BOOTSTRAP
 #[test]
 fn canonical_stdio_names_mixed_source_formats_instead_of_recommending_a_project_file() {
     let root = tempfile::tempdir().expect("mixed source recipe integration root");
