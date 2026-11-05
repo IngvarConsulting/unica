@@ -235,10 +235,11 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// A capability comes from the same retained owner proof as its value,
     /// never from a truncated property projection or a guessed object name.
-    pub(crate) fn style_item_color_observation(
+    pub(crate) fn style_item_properties_observation(
         &self,
         at: &QualifiedAddress,
-    ) -> Result<Option<unica_metadata::style_color::StyleItemColor>, ViewError> {
+    ) -> Result<Option<unica_metadata::style_color::StyleItemPropertiesObservation>, ViewError>
+    {
         let [owner] = at.segments() else {
             return Ok(None);
         };
@@ -265,24 +266,30 @@ impl<'a> LogicalViewReadAuthority<'a> {
         )
         .is_some()
         {
-            return Ok(None);
+            return Ok(Some(
+                unica_metadata::style_color::StyleItemPropertiesObservation {
+                    comment: false,
+                    color: None,
+                },
+            ));
         }
         let raw = self.read.metadata_descriptor(target)?;
         self.read_checkpoint()?;
-        let Ok(text) = std::str::from_utf8(&raw) else {
-            return Ok(None);
-        };
+        let text = std::str::from_utf8(&raw).map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
         let relative = unica_source_designer::layout::metadata_descriptor_relative(
             target,
             self.read.source_set_kind(),
         )
         .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
         let observed =
-            unica_metadata_designer::style_color::StyleColorImage::parse(text, name, &relative)
-                .ok()
-                .map(|image| image.color());
+            unica_metadata_designer::style_color::observe_properties(text, name, &relative)
+                .map_err(|error| {
+                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+                })?;
         self.read_checkpoint()?;
-        Ok(observed)
+        Ok(Some(observed))
     }
 
     pub(crate) fn object_borrowing(
@@ -1424,10 +1431,20 @@ impl<'a> LogicalViewReadAuthority<'a> {
             let facts = self.read.common_template_facts(target)?;
             let mut payload = self.read.identity_metadata_payload(target)?;
             payload["synonym"] = json!(facts.synonym);
-            payload["properties"] =
-                json!([{"key":"TemplateType", "value":facts.template_type.descriptor_value()}]);
+            let property =
+                json!({"key":"TemplateType", "value":facts.template_type.descriptor_value()});
+            if let Some(properties) = payload["properties"].as_array_mut() {
+                properties.push(property);
+            } else {
+                payload["properties"] = json!([property]);
+            }
             if let Some(message) = facts.unreadable_synonym {
-                payload["unreadable"] = json!([{"field":"properties.Synonym", "message":message}]);
+                let finding = json!({"field":"properties.Synonym", "message":message});
+                if let Some(unreadable) = payload["unreadable"].as_array_mut() {
+                    unreadable.push(finding);
+                } else {
+                    payload["unreadable"] = json!([finding]);
+                }
             }
             return Ok(payload);
         }
@@ -1437,6 +1454,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let read = self
             .read
             .metadata_local(target, &mut || self.read_checkpoint())?;
+        let support_state = read.support_state;
         let local = read.info;
         for (kind, children) in [
             (NodeKind::Form, &local.collections.forms),
@@ -1459,7 +1477,8 @@ impl<'a> LogicalViewReadAuthority<'a> {
         payload.insert("synonym".to_string(), json!(local.synonym));
         insert_serialized(&mut payload, "kind", &local.kind)?;
         insert_serialized(&mut payload, "details", &local.details)?;
-        insert_serialized(&mut payload, "support", &local.support)?;
+        // Карточка и элемент коллекции говорят одним словарём состояний (#2158).
+        insert_serialized(&mut payload, "support", &support_state)?;
         insert_serialized(&mut payload, "properties", &local.properties)?;
         if let Some(profile) = local.member_read_profile {
             insert_serialized(&mut payload, "memberReadProfile", &profile)?;
@@ -2128,6 +2147,62 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(())
     }
 
+    /// Состояние поддержки членов коллекции вида по `uuid` их уже доказанных
+    /// дескрипторов. Без маркера поддержки ничего не добавляется; член, чьё
+    /// состояние прочитать нельзя, называется в `limits`, а не выдаётся
+    /// «не на поддержке».
+    fn member_support<'name>(
+        &self,
+        source_set: &str,
+        kind: NodeKind,
+        names: impl Iterator<Item = &'name str>,
+        admitted: &ViewSourceSnapshot,
+    ) -> Result<crate::infrastructure::v13_read_projection::MemberSupport, ViewError> {
+        use unica_metadata::support_state::ObjectSupportState;
+        let mut support = crate::infrastructure::v13_read_projection::MemberSupport::default();
+        if kind == NodeKind::WebSocketClient {
+            return Ok(support);
+        }
+        let marker = match self.read.support_marker(&mut || self.read_checkpoint()) {
+            Ok(Some(marker)) => marker,
+            Ok(None) => return Ok(support),
+            // Нечитаемый маркер называется в `limits`; отмена, срок и
+            // отравленный кеш остаются ошибкой вызова.
+            Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => {
+                support
+                    .limits
+                    .push(format!("support of the members is unknown: {error}"));
+                return Ok(support);
+            }
+            Err(error) => return Err(error),
+        };
+        for name in names {
+            let owner = MetadataAddress::parse(
+                PLATFORM_XML_8_3_27_FORMAT_2_20,
+                &format!("{}.{name}", kind.as_str()),
+            )
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+            let evidence = self.owner_evidence(&owner, admitted)?;
+            match crate::infrastructure::v13_read_port::object_support_by_uuid(
+                &marker,
+                evidence.artifact_uuid(),
+            ) {
+                Ok(ObjectSupportState::NotSupported) => {}
+                Ok(state) => {
+                    support.states.insert(name.to_string(), json!(state));
+                }
+                Err(error) => support.limits.push(format!(
+                    "support of `{}:{}` is unknown: {error}",
+                    source_set,
+                    owner.as_str()
+                )),
+            }
+        }
+        Ok(support)
+    }
+
     fn owner_evidence(
         &self,
         target: &MetadataAddress,
@@ -2538,9 +2613,16 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                         self.verify_registered_owner(&owner, admitted)?;
                     }
                 }
+                let support = self.member_support(
+                    route.at().source_set(),
+                    branch_kind,
+                    names.iter().map(String::as_str),
+                    admitted,
+                )?;
                 crate::infrastructure::v13_read_projection::project_registered_metadata_branch_names(
                     route.at(),
                     &names,
+                    support,
                 )?
             } else {
                 let payload = self.configuration_payload(admitted)?;
@@ -2570,9 +2652,21 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                         self.verify_registered_owner(&owner, admitted)?;
                     }
                 }
+                let names = payload
+                    .get("registeredObjects")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter(|item| {
+                        item.get("kind").and_then(Value::as_str) == Some(branch_kind.as_str())
+                    })
+                    .filter_map(|item| item.get("name").and_then(Value::as_str));
+                let support =
+                    self.member_support(route.at().source_set(), branch_kind, names, admitted)?;
                 crate::infrastructure::v13_read_projection::project_registered_metadata_branch(
                     route.at(),
                     payload.as_ref(),
+                    support,
                 )?
             }
         } else if route.reader() == LogicalReader::Form {

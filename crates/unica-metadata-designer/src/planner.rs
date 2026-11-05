@@ -108,6 +108,42 @@ pub fn validate_final_object_integrity(
     Ok(())
 }
 
+/// All addressed numerator edits are checked after every family has staged
+/// its contribution, including equivalent edits that stage no changed file.
+pub fn validate_final_numerators<'a>(
+    staged: &mut ApplyProposal<'_>,
+    operations: impl IntoIterator<Item = (usize, &'a MetadataPlanOperation)>,
+) -> Result<(), ApplyPlanError> {
+    let mut targets = std::collections::BTreeMap::new();
+    for (index, operation) in operations {
+        if let MetadataPlanKind::DescriptorProperties {
+            relative,
+            name,
+            changes: DescriptorPropertyChanges::DocumentNumerator(_),
+        } = &operation.kind
+        {
+            targets.insert(relative, (name, index));
+        }
+    }
+    for (relative, (name, index)) in targets {
+        let path = format!("ops[{index}].args.values");
+        let bytes = staged
+            .read(relative)
+            .map_err(|error| ApplyPlanError::staging(error, path.clone()))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "DocumentNumerator descriptor was not found",
+                )
+                .at_path(path.clone())
+            })?;
+        crate::numerator_write::validate(&bytes, name).map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(path)
+        })?;
+    }
+    Ok(())
+}
+
 /// The source classes and the event a subscription descriptor binds.
 fn event_subscription_binding(
     bytes: &[u8],
@@ -414,6 +450,14 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
         crate::report_variants_storage::guard_assignment(
+            staged,
+            authority.source_kind(),
+            target,
+            &preimage,
+            edit,
+            op_index,
+        )?;
+        crate::edit_type::guard(
             staged,
             authority.source_kind(),
             target,
@@ -1403,6 +1447,84 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::CommentOnly { kind, comment } => {
+            let root_path = std::path::Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::NotFound,
+                        "configuration descriptor was not found",
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, error.message)
+                    .at_path(at_path.clone())
+            })?;
+            if !root.registers(kind.as_str(), name) {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "metadata owner is not registered",
+                )
+                .at_path(at_path.clone()));
+            }
+            let text = crate::descriptor_comment::set_comment(&source, *kind, name, comment)
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?;
+            (*kind, text)
+        }
+        DescriptorPropertyChanges::DocumentNumerator(changes) => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".to_string()))?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if !root.registers("DocumentNumerator", name) {
+                return Err(invalid(format!(
+                    "DocumentNumerator `{name}` is not registered in Configuration.xml"
+                )));
+            }
+            // Comment goes through the shared descriptor Comment writer; the
+            // numerator scalars are then patched on that image.
+            let commented = changes
+                .comment
+                .as_deref()
+                .map(|comment| {
+                    crate::descriptor_comment::set_comment(
+                        &source,
+                        NodeKind::DocumentNumerator,
+                        name,
+                        comment,
+                    )
+                })
+                .transpose()
+                .map_err(invalid)?;
+            let base = commented.as_deref().unwrap_or(&source);
+            let text = crate::numerator_write::patch(base, name, changes).map_err(|message| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            })?;
+            (NodeKind::DocumentNumerator, text)
+        }
         DescriptorPropertyChanges::WSReference(values) => {
             let invalid = |message: String| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
@@ -1434,9 +1556,16 @@ fn stage_descriptor_properties(
             }
             let text = crate::ws_reference::patch_location_url(&source, name, &values.location_url)
                 .map_err(invalid)?;
+            let text = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(&text, NodeKind::WsReference, name, comment)
+                    .map_err(invalid)?
+            } else {
+                text
+            };
             (NodeKind::WsReference, text)
         }
-        DescriptorPropertyChanges::StyleItem(color) => {
+        DescriptorPropertyChanges::StyleItem(values) => {
+            let color = &values.color;
             let root_relative = Path::new("Configuration.xml");
             let root = staged
                 .read(root_relative)
@@ -1476,6 +1605,20 @@ fn stage_descriptor_properties(
                 )
                 .at_path(at_path.clone()));
             }
+            let postimage = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(
+                    &postimage,
+                    NodeKind::StyleItem,
+                    name,
+                    comment,
+                )
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?
+            } else {
+                postimage
+            };
             (NodeKind::StyleItem, postimage)
         }
         DescriptorPropertyChanges::FunctionalOption(values) => {
@@ -1494,6 +1637,20 @@ fn stage_descriptor_properties(
                         .at_path(format!("ops[{op_index}].args.values.Location"))
                 },
             )?;
+            let text = if let Some(comment) = &values.comment {
+                crate::descriptor_comment::set_comment(
+                    &text,
+                    NodeKind::FunctionalOption,
+                    name,
+                    comment,
+                )
+                .map_err(|message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(at_path.clone())
+                })?
+            } else {
+                text
+            };
             (NodeKind::FunctionalOption, text)
         }
         DescriptorPropertyChanges::Role(unica_metadata::property_input::RolePropertyChanges {
@@ -1657,11 +1814,23 @@ fn stage_descriptor_properties(
             (NodeKind::Configuration, text)
         }
     };
-    let postimage = unica_source_designer::registration::preserve_descriptor_image(
-        &preimage,
-        &source,
-        &postimage_text,
-    );
+    let postimage = if matches!(
+        changes,
+        DescriptorPropertyChanges::CommentOnly { .. }
+            | DescriptorPropertyChanges::StyleItem(_)
+            | DescriptorPropertyChanges::WSReference(_)
+    ) || matches!(changes, DescriptorPropertyChanges::FunctionalOption(values) if values.comment.is_some())
+    {
+        let mut image = preimage[..preimage.len() - source.len()].to_vec();
+        image.extend_from_slice(postimage_text.as_bytes());
+        image
+    } else {
+        unica_source_designer::registration::preserve_descriptor_image(
+            &preimage,
+            &source,
+            &postimage_text,
+        )
+    };
     if postimage == preimage {
         return Ok(());
     }

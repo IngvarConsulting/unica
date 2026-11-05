@@ -463,24 +463,29 @@ impl CanonicalV13ReadService {
                 &admission, &binding, container, name,
             )
         };
-        let form_item = |item: &QualifiedAddress| {
-            crate::infrastructure::native_operations::apply_families::staged_form_item_role(
+        let form_observation = |item: &QualifiedAddress| {
+            crate::infrastructure::native_operations::apply_families::staged_form_observation(
                 &admission, &binding, item,
             )
         };
         let color = |at: &QualifiedAddress| {
-            crate::infrastructure::native_operations::apply_families::staged_style_item_color(
+            crate::infrastructure::native_operations::apply_families::staged_style_item_properties_hint(
                 &admission, &binding, at,
             )
         };
-        if let Err(refusal) = preflight_apply_operations_with(
+        if let Err(refusal) = preflight_apply_operations_observed(
             &request,
             traits,
             &template_format,
-            &form_item,
+            &form_observation,
             &member_path,
             &color,
         ) {
+            return *refusal;
+        }
+        if let Err(refusal) =
+            validate_style_item_apply_capabilities(&request, traits, &admission, &binding)
+        {
             return *refusal;
         }
         admission.bind_request_identity(
@@ -1003,7 +1008,7 @@ impl CanonicalV13ReadService {
                 source
                     .logical_view_read_authority(cancellation)
                     .map_err(|message| ViewError::detailed(RefusalDetail::ProviderAbsent, message))?
-                    .style_item_color_observation(&address)?
+                    .style_item_properties_observation(&address)?
             } else {
                 None
             };
@@ -5373,6 +5378,88 @@ fn unreadable_target_format_refusal(
     ))
 }
 
+// Syntax is checked for the whole requested StyleItem batch before reading
+// descriptor state. The family decoder and bound descriptor own both shapes.
+fn validate_style_item_apply_capabilities(
+    request: &crate::domain::apply::ApplyRequest,
+    source: unica_source_contract::context::SourceSetTraits,
+    admission: &unica_workspace::actor::ApplyAdmission,
+    binding: &unica_workspace::actor::ProviderRootBinding,
+) -> Result<(), Box<DomainResult>> {
+    use unica_metadata::descriptor_operations::{PropertiesOperation, PropertiesSite};
+    let registry = crate::domain::apply::operation_registry();
+    let mut checked = Vec::new();
+    for (index, operation) in request.ops().iter().enumerate() {
+        let Some(site) = crate::domain::apply::operation_site(operation.at(), source) else {
+            continue;
+        };
+        let Some(descriptor) = registry.lookup_at(operation.name(), &site) else {
+            continue;
+        };
+        if descriptor.operation::<PropertiesOperation>() != Some(PropertiesOperation::Set)
+            || PropertiesSite::from_site(&site) != Some(PropertiesSite::StyleItem)
+        {
+            continue;
+        }
+        let mut payload = operation.args().clone();
+        payload.remove("at");
+        let payload = Value::Object(payload);
+        let intent = unica_metadata::property_input::decode_properties(
+            PropertiesOperation::Set,
+            PropertiesSite::StyleItem,
+            &payload,
+            &format!("ops[{index}].args"),
+        )
+        .map_err(|error| {
+            Box::new(error_result(
+                Some(error.path),
+                RefusalCode::BadValue,
+                error.message,
+            ))
+        })?;
+        checked.push((index, operation, descriptor, intent, payload));
+    }
+    for (index, operation, descriptor, intent, payload) in checked {
+        let observed =
+            crate::infrastructure::native_operations::apply_families::staged_style_item_properties(
+                admission,
+                binding,
+                operation.at(),
+                Some(&intent),
+            )
+            .map_err(|error| Box::new(apply_plan_error_result(&error)))?;
+        let site = crate::domain::apply::operation_site(operation.at(), source)
+            .expect("checked operation site");
+        let lookup = |at: &QualifiedAddress| if at == operation.at() { observed } else { None };
+        let contract = descriptor
+            .argument_contract_at_with_observations(
+                &site,
+                &crate::domain::apply::observation_lookup_with_style_properties(
+                    &|_| None,
+                    &|_| None,
+                    &lookup,
+                ),
+            )
+            .ok_or_else(|| {
+                Box::new(error_result(
+                    Some(format!("ops[{index}].at")),
+                    RefusalCode::InvalidState,
+                    "no writable property capability is confirmed for this descriptor",
+                ))
+            })?;
+        contract
+            .normalize(&payload, &format!("ops[{index}].args"))
+            .map_err(|error| {
+                Box::new(error_result(
+                    Some(error.path),
+                    RefusalCode::BadValue,
+                    error.message,
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 /// Предварительная проверка `apply`: каждая операция есть в реестре, набор
 /// исходников её семейство пишет, а сама она исполнима на своём узле.
 ///
@@ -5408,8 +5495,33 @@ pub(super) fn preflight_apply_operations_with(
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
     members: unica_operations::recovery::MemberPathLookup<'_>,
-    color: &dyn Fn(&QualifiedAddress) -> Option<unica_metadata::style_color::StyleItemColor>,
+    color: &dyn Fn(
+        &QualifiedAddress,
+    ) -> Option<unica_metadata::style_color::StyleItemPropertiesObservation>,
 ) -> Result<(), Box<DomainResult>> {
+    preflight_apply_operations_observed(
+        request,
+        source,
+        template_format,
+        &|at| form_item(at).map(unica_forms::FormObservation::Item),
+        members,
+        color,
+    )
+}
+
+pub(super) fn preflight_apply_operations_observed(
+    request: &crate::domain::apply::ApplyRequest,
+    source: unica_source_contract::context::SourceSetTraits,
+    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    form_observation: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormObservation>,
+    members: unica_operations::recovery::MemberPathLookup<'_>,
+    color: &dyn Fn(
+        &QualifiedAddress,
+    ) -> Option<unica_metadata::style_color::StyleItemPropertiesObservation>,
+) -> Result<(), Box<DomainResult>> {
+    let form_item = &|at: &QualifiedAddress| {
+        form_observation(at).and_then(unica_forms::FormObservation::item_role)
+    };
     let registry = crate::domain::apply::operation_registry();
     for (index, operation) in request.ops().iter().enumerate() {
         let Some(descriptor) = registry.lookup(operation.name()) else {
@@ -5481,9 +5593,9 @@ pub(super) fn preflight_apply_operations_with(
                         descriptor.nearest_ancestor_with_observations(
                             &target,
                             registry.context(),
-                            &crate::domain::apply::observation_lookup_with_color(
+                            &crate::domain::apply::observation_lookup_with_style_properties(
                                 template_format,
-                                form_item,
+                                form_observation,
                                 color,
                             ),
                         )
@@ -5624,10 +5736,16 @@ pub(super) fn preflight_apply_operations_with(
             }
             return Err(Box::new(refusal));
         }
-        // Роль элемента формы — фильтр поверх места: в поле элемент не
-        // добавить, автоматическую панель отдельно не удалить.
+        // Наблюдаемые факты формы сужают структурную применимость:
+        // роль элемента и тип реквизита проверяет само семейство.
         if descriptor.applies_at(&site)
-            && admits_form_item_at(descriptor, operation.at(), form_item)
+            && (!descriptor
+                .observation_type()
+                .is::<unica_forms::FormObservation>()
+                || descriptor.applies_with_observations(
+                    &site,
+                    &crate::domain::apply::observation_lookup(template_format, form_observation),
+                ))
         {
             continue;
         }
@@ -5658,7 +5776,11 @@ pub(super) fn preflight_apply_operations_with(
         let nearest = registry.nearest_ancestor_with_observations(
             operation.name(),
             &site,
-            &crate::domain::apply::observation_lookup_with_color(template_format, form_item, color),
+            &crate::domain::apply::observation_lookup_with_style_properties(
+                template_format,
+                form_observation,
+                color,
+            ),
         );
         let refusal = match nearest {
             Some((descriptor, target)) => with_operation_dictionary(
@@ -5731,7 +5853,9 @@ fn retired_operation_refusal(
     source: unica_source_contract::context::SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
-    color: &dyn Fn(&QualifiedAddress) -> Option<unica_metadata::style_color::StyleItemColor>,
+    color: &dyn Fn(
+        &QualifiedAddress,
+    ) -> Option<unica_metadata::style_color::StyleItemPropertiesObservation>,
 ) -> DomainResult {
     let location = Some(format!("ops[{index}].op"));
     let site = crate::domain::apply::operation_site(at, source);
@@ -5739,7 +5863,11 @@ fn retired_operation_refusal(
         retired.replacement_with_observations(
             site,
             crate::domain::apply::operation_registry().context(),
-            &crate::domain::apply::observation_lookup_with_color(template_format, form_item, color),
+            &crate::domain::apply::observation_lookup_with_style_properties(
+                template_format,
+                &|at| form_item(at).map(unica_forms::FormObservation::Item),
+                color,
+            ),
         )
     });
     let replacement = retired.descriptor();
@@ -6063,7 +6191,7 @@ fn view_error_result(
 }
 
 #[cfg(test)]
-mod plan_detail_key_tests {
+mod medium_plan_detail_key_tests {
     use super::{plan_detail_key_errors, PLAN_DETAIL_KEYS};
     use unica_source_contract::proposal::PlanDetailKey;
 
@@ -6091,7 +6219,7 @@ mod plan_detail_key_tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::TextEngine;
     use serde_json::json;
     use std::path::PathBuf;

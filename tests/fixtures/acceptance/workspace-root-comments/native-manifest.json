@@ -1,0 +1,133 @@
+{
+  "platform": "8.3.27.2074",
+  "format": "2.20",
+  "owners": [
+    [
+      "CommonAttribute",
+      "Probe",
+      "CommonAttributes"
+    ],
+    [
+      "FunctionalOption",
+      "Probe",
+      "FunctionalOptions"
+    ],
+    [
+      "FunctionalOptionsParameter",
+      "Probe",
+      "FunctionalOptionsParameters"
+    ],
+    [
+      "SessionParameter",
+      "SessionProbe",
+      "SessionParameters"
+    ],
+    [
+      "FilterCriterion",
+      "Probe",
+      "FilterCriteria"
+    ],
+    [
+      "SettingsStorage",
+      "Probe",
+      "SettingsStorages"
+    ],
+    [
+      "CommonCommand",
+      "Probe",
+      "CommonCommands"
+    ],
+    [
+      "CommandGroup",
+      "Probe",
+      "CommandGroups"
+    ],
+    [
+      "CommonForm",
+      "Probe",
+      "CommonForms"
+    ],
+    [
+      "CommonTemplate",
+      "Probe",
+      "CommonTemplates"
+    ],
+    [
+      "CommonPicture",
+      "Probe",
+      "CommonPictures"
+    ],
+    [
+      "Language",
+      "Русский",
+      "Languages"
+    ],
+    [
+      "IntegrationService",
+      "Probe",
+      "IntegrationServices"
+    ],
+    [
+      "DocumentNumerator",
+      "Probe",
+      "DocumentNumerators"
+    ],
+    [
+      "WSReference",
+      "Probe",
+      "WSReferences"
+    ],
+    [
+      "XDTOPackage",
+      "Probe",
+      "XDTOPackages"
+    ],
+    [
+      "StyleItem",
+      "Probe",
+      "StyleItems"
+    ],
+    [
+      "Sequence",
+      "Probe",
+      "Sequences"
+    ],
+    [
+      "Style",
+      "Probe",
+      "Styles"
+    ]
+  ],
+  "files": {
+    "Catalogs/Support.xml": "3f8f5990fa0914c636e6b09f18367e47f5ecc507a1c2bb98903f464ac677ef02",
+    "CommandGroups/Probe.xml": "68a8d95852d3a90822a1fd686a48cfe7fb9742ffa5f9aa8049b58009bd99a664",
+    "CommonAttributes/Probe.xml": "5de4ef9c1d8e97ba65703fac1f0f0bc4f3d30abea1185771243b5e00910a40de",
+    "CommonCommands/Probe.xml": "2102d07a7a4169cba2bc0f3e8313e4d8d49ead2891ea2491bfde09974bf9cbbb",
+    "CommonForms/Probe.xml": "683f1b04b8385002c82920effd83b7466e7ce8ecfd717fc046a13cc4f071c168",
+    "CommonPictures/Probe/Ext/Picture/Picture.png": "e3cb8aea871c327d806d0b8218038043d854304ae6950bb831acfe289aecc076",
+    "CommonPictures/Probe/Ext/Picture.xml": "933ebb965082718a51b186e0be0de25b70e04d35e62366246b782aa4a519429e",
+    "CommonPictures/Probe.xml": "4d4212b52fedb1ad198b09c7a793ea7f0dc52c75f99b5b8a2f7d92d501671168",
+    "CommonTemplates/Probe/Ext/Template.bin": "77f706eb0cbe24d58618728ab06b66441d2c84ebd7d8972d479bf7ba8e22d01f",
+    "CommonTemplates/Probe.xml": "bb935cbf478fccb4db3a21fe342cf439d6511b9582010e075de16da2b072a674",
+    "ConfigDumpInfo.xml": "60e6a42a0ba4b0441d93807983d01bf567bdf171114c381b6e26dbbb149882d4",
+    "Configuration.xml": "1f124b370cecfbc47bc3b5c7424e3f6bc8ec086c897fde76ffe47bef92a08727",
+    "Constants/Support.xml": "83ae8badf677ef2bad5067960527f87cc6d1244dcf8e82d02f9f625d993a3514",
+    "DocumentNumerators/Probe.xml": "3dc91df685ba1456e4122a9cd5fd4f72a226c4478abed7a2bc79678f5e301bad",
+    "Documents/Support.xml": "dfdfef3f74753658fd8bcf565bb9d243a7bdd34b3314655fb6942cd1a57a6174",
+    "Ext/ClientApplicationInterface.xml": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8",
+    "FilterCriteria/Probe.xml": "d1207682f2a7077acbf3f39182c2607a9ad37c0145388daf6df32ff81eb137d6",
+    "FunctionalOptions/Probe.xml": "1de244d3a63920d36981e5e0701af146ccdb5a2597851a23d0b7719527a2a22a",
+    "FunctionalOptionsParameters/Probe.xml": "82b123429381a8f480e509068a04ce34d34a0407a115e268d5117a6852772250",
+    "IntegrationServices/Probe.xml": "637ee6cff5e44dfaaabea33ed9afc12456b904affffb06c69c5a17cfc0ccc3c3",
+    "Languages/Русский.xml": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250",
+    "Sequences/Probe.xml": "2cb594eb4b3c59f8e26ca832ae1d25aef348ae5cbec396447222baeafad0b3eb",
+    "SessionParameters/SessionProbe.xml": "c3d298901950d0afbf634b61aaf3b5583e650958bedf611e61c76a3648abdfdc",
+    "SettingsStorages/Probe.xml": "607faeade534beba27c6c175f284baa2239a33aa83e51b3d1b03f08d46d45b26",
+    "StyleItems/Probe.xml": "201d22551e7f5b3db679aee07d7f0a08c14169bd91bcf50fe175d7a0733e23a4",
+    "Styles/Probe.xml": "610ce827dce3fa428523182b86f371d2c46469f4132a2df86029aed0a8aab393",
+    "WSReferences/Probe/Ext/WSDefinition.xml": "931d54e0a6e1daefd18813935744314d223824445f6f14b36f4c771c7aba386a",
+    "WSReferences/Probe.xml": "06310b3caff94157df3ac46a86869eaf248cdedeb5b5ec9c8a704b82f5373195",
+    "XDTOPackages/Probe/Ext/Package.bin": "61516e07164968f63823cf39146ef0ce95c1988542e121f0eb71b3a276d2fc7a",
+    "XDTOPackages/Probe.xml": "078afd3a9328b48b08fef5589c2a1167941754d5cde42b72bb2b1918293fff67"
+  }
+}

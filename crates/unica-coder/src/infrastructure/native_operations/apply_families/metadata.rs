@@ -70,6 +70,9 @@ mod tests {
     mod report_variants_storage_tests {
         include!("metadata/report_variants_storage_tests.rs");
     }
+    mod numerator_tests {
+        include!("metadata/numerator_tests.rs");
+    }
     mod contract_shape_tests {
         include!("metadata/contract_shape_tests.rs");
     }
@@ -234,6 +237,59 @@ mod tests {
         );
         assert_eq!(AddressedFields::None.caller_field("elements[0].name"), None);
         assert_eq!(AddressedFields::Items.caller_field("names[0]"), None);
+    }
+
+    fn code_series_plan(
+        raw: &str,
+    ) -> Result<unica_workspace::apply::ApplyStagedState, super::ApplyPlanError> {
+        let config =
+            RU_CONFIGURATION_XML.replace("<Document>Order</Document>", "<Catalog>Sales</Catalog>");
+        let owner = format!("<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><Catalog uuid=\"11111111-1111-4111-8111-111111111111\"><Properties><Name>Sales</Name>{raw}</Properties><ChildObjects/></Catalog></MetaDataObject>");
+        let fixture = MetadataFixture::with_files(&[
+            ("Configuration.xml", &config),
+            ("Catalogs/Sales.xml", &owner),
+        ]);
+        let operation = fixture.parse(
+            "props.set",
+            json!({"at":"main:Catalog.Sales","values":{"CodeSeries":"WholeCatalog"}}),
+            0,
+        );
+        let admission = fixture.admission();
+        let authority = admission
+            .metadata_planning_authority(&fixture.binding)
+            .unwrap();
+        let result = plan_metadata_batch_owned_for_test(
+            admission.staged_state().unwrap(),
+            authority,
+            &[operation],
+        );
+        assert_eq!(
+            std::fs::read_to_string(fixture.binding.source_root().join("Catalogs/Sales.xml"))
+                .unwrap(),
+            owner
+        );
+        result.map(|(staged, _)| staged)
+    }
+
+    #[test]
+    fn canonical_code_series_equivalent_assignment_has_no_planned_writes() {
+        for raw in [
+            "<CodeSeries>Whole&#67;atalog</CodeSeries>",
+            "<CodeSeries>Whole<!-- keep -->Catalog</CodeSeries>",
+            "<md:CodeSeries xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\">WholeCatalog</md:CodeSeries>",
+        ] {
+            assert!(code_series_plan(raw).unwrap().planned_changes().is_empty(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn canonical_code_series_rejects_foreign_and_attributed_source_leaves() {
+        for raw in [
+            "<f:CodeSeries xmlns:f=\"urn:foreign\">WholeCatalog</f:CodeSeries>",
+            "<CodeSeries extra=\"damaged\">WholeCatalog</CodeSeries>",
+        ] {
+            assert!(code_series_plan(raw).is_err(), "{raw}");
+        }
     }
     #[test]
     fn metadata_parser_rejects_unknown_and_misplaced_fields_at_the_exact_operation_path() {
@@ -1844,7 +1900,7 @@ mod tests {
     /// владельца. Перекрёстные правила полей (значение заполнения требует
     /// тип) схема не выражает — такие образцы здесь не берутся.
     #[test]
-    fn member_operation_contracts_and_the_planner_agree_on_structure() {
+    fn medium_member_operation_contracts_and_the_planner_agree_on_structure() {
         use unica_address::address::QualifiedAddress;
         use unica_bsl::profile::PlatformProfile;
         use unica_metadata::{metadata_collection_spec, MetaCollection};
@@ -3506,66 +3562,90 @@ mod tests {
 
     #[test]
     fn command_lifecycle_refuses_links_at_the_source_or_destination_module_route() {
+        assert_command_module_link_refusal(true, false);
+    }
+
+    #[test]
+    fn command_lifecycle_refuses_links_at_the_source_or_destination_module_route_destination_file()
+    {
+        assert_command_module_link_refusal(false, false);
+    }
+
+    #[test]
+    fn command_lifecycle_refuses_links_at_the_source_or_destination_module_route_source_directory()
+    {
+        assert_command_module_link_refusal(true, true);
+    }
+
+    #[test]
+    fn command_lifecycle_refuses_links_at_the_source_or_destination_module_route_destination_directory(
+    ) {
+        assert_command_module_link_refusal(false, true);
+    }
+
+    fn assert_command_module_link_refusal(source: bool, directory: bool) {
         use unica_workspace::test_support::{
             create_directory_link_fixture_for_test, create_file_link_fixture_for_test,
             FileLinkFixtureOutcome,
         };
-        for (source, directory) in [(true, false), (false, false), (true, true), (false, true)] {
-            let fixture = command_fixture();
-            let original = fixture.disk_bytes();
-            let outside = tempfile::tempdir().unwrap();
-            let foreign = outside.path().join("CommandModule.bsl");
-            std::fs::write(&foreign, b"foreign module").unwrap();
-            let name = if source { "Refresh" } else { "Updated" };
-            let ext = fixture
-                .binding
-                .source_root()
-                .join(format!("Documents/Order/Commands/{name}/Ext"));
-            if source {
-                if directory {
-                    std::fs::rename(&ext, ext.with_file_name("ExtSaved")).unwrap();
-                } else {
-                    std::fs::remove_file(ext.join("CommandModule.bsl")).unwrap();
-                }
+        let fixture = command_fixture();
+        let original = fixture.disk_bytes();
+        let outside = tempfile::tempdir().unwrap();
+        let foreign = outside.path().join("CommandModule.bsl");
+        std::fs::write(&foreign, b"foreign module").unwrap();
+        let name = if source { "Refresh" } else { "Updated" };
+        let ext = fixture
+            .binding
+            .source_root()
+            .join(format!("Documents/Order/Commands/{name}/Ext"));
+        if source {
+            if directory {
+                std::fs::rename(&ext, ext.with_file_name("ExtSaved")).unwrap();
             } else {
-                std::fs::create_dir_all(ext.parent().unwrap()).unwrap();
-                if !directory {
-                    std::fs::create_dir(&ext).unwrap();
-                }
+                std::fs::remove_file(ext.join("CommandModule.bsl")).unwrap();
             }
-            let outcome = if directory {
-                create_directory_link_fixture_for_test(outside.path(), &ext)
-            } else {
-                create_file_link_fixture_for_test(&foreign, ext.join("CommandModule.bsl"))
+        } else {
+            std::fs::create_dir_all(ext.parent().unwrap()).unwrap();
+            if !directory {
+                std::fs::create_dir(&ext).unwrap();
             }
-            .unwrap();
-            if outcome != FileLinkFixtureOutcome::Created {
-                continue;
-            }
-            let error = plan_all(&fixture, &[("command.set", json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}))]).unwrap_err();
-            use unica_source_contract::proposal::ApplyStagingErrorKind;
-            assert!(
-                matches!(
-                    error.kind(),
-                    ApplyPlanErrorKind::Staging(
-                        ApplyStagingErrorKind::ContainmentIdentity
-                            | ApplyStagingErrorKind::UnsupportedProvider
-                    )
-                ),
-                "{source}, {directory}: {error}"
-            );
-            assert!(error.to_string().contains("link"), "{error}");
-            assert_eq!(
-                error.path(),
-                Some(if source {
-                    "ops[0].args.at"
-                } else {
-                    "ops[0].args.values.newName"
-                })
-            );
-            assert_eq!(fixture.disk_bytes(), original);
-            assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign module");
         }
+        let outcome = if directory {
+            create_directory_link_fixture_for_test(outside.path(), &ext)
+        } else {
+            create_file_link_fixture_for_test(&foreign, ext.join("CommandModule.bsl"))
+        }
+        .unwrap();
+        if outcome != FileLinkFixtureOutcome::Created {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "command module link fixture is unavailable",
+            );
+            return;
+        }
+        let error = plan_all(&fixture, &[("command.set", json!({"at": "main:Document.Order.Command.Refresh", "values": {"newName": "Updated"}}))]).unwrap_err();
+        use unica_source_contract::proposal::ApplyStagingErrorKind;
+        assert!(
+            matches!(
+                error.kind(),
+                ApplyPlanErrorKind::Staging(
+                    ApplyStagingErrorKind::ContainmentIdentity
+                        | ApplyStagingErrorKind::UnsupportedProvider
+                )
+            ),
+            "{source}, {directory}: {error}"
+        );
+        assert!(error.to_string().contains("link"), "{error}");
+        assert_eq!(
+            error.path(),
+            Some(if source {
+                "ops[0].args.at"
+            } else {
+                "ops[0].args.values.newName"
+            })
+        );
+        assert_eq!(fixture.disk_bytes(), original);
+        assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign module");
     }
 
     const KINDS_ENUM_XML: &str = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20">

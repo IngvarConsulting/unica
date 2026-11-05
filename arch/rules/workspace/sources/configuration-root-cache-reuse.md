@@ -9,7 +9,7 @@ check:
   - crates/unica-coder/src/infrastructure/v13_large_configuration.rs::a_poisoned_slot_is_emptied_and_reused
   - crates/unica-coder/src/infrastructure/v13_large_configuration.rs::a_poisoned_retained_index_is_rebuilt
   - crates/unica-coder/src/infrastructure/v13_read/tests.rs::replaced_support_marker_never_reaches_a_retained_root_with_the_old_state
-  - crates/unica-coder/src/infrastructure/daemon/invocation_service.rs::logical_read_retains_root_artifacts_across_calls_and_isolates_sources
+  - crates/unica-coder/src/infrastructure/daemon/invocation_service.rs::medium_logical_read_retains_root_artifacts_across_calls_and_isolates_sources
 ---
 
 # Повторное чтение конфигурации использует только неизменившиеся артефакты

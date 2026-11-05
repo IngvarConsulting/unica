@@ -879,6 +879,13 @@ ChildObjects: `Form` (формы), `Command` (команды).
 | `NumberPeriodicity` | enum | Периодичность: `Nonperiodical` / `Year` / `Quarter` / `Month` / `Day` |
 | `CheckUnique` | `xs:boolean` | Контроль уникальности |
 
+Для существующего `DocumentNumerator.Name` публичный `props.set` принимает
+ровно эти пять свойств. `NumberLength` передаётся целым числом от 0 до
+4294967295; для `NumberType = Number` итоговая длина не превышает 38.
+Сочетание проверяется по итоговому образу всего пакета. Повтор эквивалентного
+изменения сохраняет байты. Имя, UUID, другие свойства и ссылки `Numerator`
+документов не меняются; данные документов информационной базы не перенумеровываются.
+
 ### 6.13. IntegrationService — сервис интеграции
 
 Каталог: `IntegrationServices/`. Файлы: `<Имя>.xml` + `<Имя>/Ext/Module.bsl`.
