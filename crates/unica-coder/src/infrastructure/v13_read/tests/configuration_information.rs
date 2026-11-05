@@ -92,7 +92,7 @@ fn configuration_information_reaches_both_public_read_routes_without_writes() {
 }
 
 #[test]
-fn configuration_information_damage_is_local_and_absence_is_not_a_default() {
+fn medium_configuration_information_damage_is_local_and_absence_is_not_a_default() {
     for large in [false, true] {
         for (extra, damaged) in [
             ("", false),

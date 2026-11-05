@@ -958,18 +958,9 @@ impl InformationCapture {
     }
 }
 
-fn parse_configuration_owner(
-    mut file: impl Read + Seek,
-    checkpoint: &dyn Fn() -> Result<(), ViewError>,
-    collect_information: bool,
-) -> Result<RootState, ViewError> {
-    skip_leading_boms(&mut file, checkpoint)?;
-    let checkpoint_failure = Rc::new(RefCell::new(None));
-    let checked = CheckedRead {
-        file,
-        checkpoint,
-        failure: Rc::clone(&checkpoint_failure),
-    };
+/// One parser policy for complete registration reads and the lexical root
+/// header observation; no default token-size ceiling becomes a write limit.
+fn configuration_parser_config() -> ParserConfig {
     let mut config = ParserConfig::new()
         .coalesce_characters(false)
         .ignore_comments(false);
@@ -987,7 +978,96 @@ fn parse_configuration_owner(
     // treats an XML declaration's encoding as syntax, not as an instruction to
     // reinterpret those bytes. Keep the same behavior for streamed bytes.
     config.ignore_invalid_encoding_declarations = true;
-    let mut parser = config.create_reader(BufReader::new(checked));
+    config
+}
+
+/// Observe only the opening root after the caller has proved the complete
+/// Configuration owner. XML events identify the header; roxmltree supplies
+/// its raw attribute span, so entity-equivalent versions stay distinguishable.
+/// The existing streamed owner proof still validates the complete tail.
+pub(crate) fn read_configuration_root_version_literal(
+    mut file: impl Read + Seek,
+    checkpoint: &dyn Fn() -> Result<(), ViewError>,
+) -> Result<Option<String>, ViewError> {
+    skip_leading_boms(&mut file, checkpoint)?;
+    let failure = Rc::new(RefCell::new(None));
+    let checked = CheckedRead {
+        file,
+        checkpoint,
+        failure: Rc::clone(&failure),
+    };
+    let capture = RootHeaderRead {
+        inner: BufReader::new(checked),
+        bytes: Vec::new(),
+    };
+    let mut parser = configuration_parser_config().create_reader(capture);
+    loop {
+        checkpoint()?;
+        let event = parser.next().map_err(|error| {
+            failure.borrow_mut().take().unwrap_or_else(|| {
+                source_unreadable(&format!("Configuration header parse error: {error}"))
+            })
+        })?;
+        match event {
+            XmlEvent::StartElement { name, .. } => {
+                if name.namespace.as_deref() != Some(MD_NS) || name.local_name != "MetaDataObject" {
+                    return Err(source_unreadable("Configuration owner has the wrong root"));
+                }
+                let qualified = name.prefix.as_ref().map_or_else(
+                    || name.local_name.clone(),
+                    |prefix| format!("{prefix}:{}", name.local_name),
+                );
+                let header = std::str::from_utf8(&parser.source().bytes)
+                    .map_err(|error| source_unreadable(&error.to_string()))?;
+                let complete = format!("{header}</{qualified}>");
+                let document = roxmltree::Document::parse(&complete)
+                    .map_err(|error| source_unreadable(&error.to_string()))?;
+                return Ok(unica_source_designer::roots::root_version_literal(
+                    &complete,
+                    document.root_element(),
+                ));
+            }
+            XmlEvent::Doctype { .. } => {
+                return Err(source_unreadable(
+                    "Configuration.xml has an unsupported DOCTYPE",
+                ))
+            }
+            XmlEvent::EndDocument => {
+                return Err(source_unreadable("Configuration.xml has no root"))
+            }
+            _ => {}
+        }
+    }
+}
+
+// Capture above BufReader: parser character reads retain only the consumed
+// header, while buffering and cancellation still operate on ordinary chunks.
+struct RootHeaderRead<R> {
+    inner: R,
+    bytes: Vec<u8>,
+}
+impl<R: Read> Read for RootHeaderRead<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        self.bytes.try_reserve(count).map_err(io::Error::other)?;
+        self.bytes.extend_from_slice(&buffer[..count]);
+        Ok(count)
+    }
+}
+
+fn parse_configuration_owner(
+    mut file: impl Read + Seek,
+    checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    collect_information: bool,
+) -> Result<RootState, ViewError> {
+    skip_leading_boms(&mut file, checkpoint)?;
+    let checkpoint_failure = Rc::new(RefCell::new(None));
+    let checked = CheckedRead {
+        file,
+        checkpoint,
+        failure: Rc::clone(&checkpoint_failure),
+    };
+    let mut parser = configuration_parser_config().create_reader(BufReader::new(checked));
     let mut state = RootState::new();
     let mut information = collect_information.then(InformationCapture::default);
     loop {
@@ -2127,5 +2207,72 @@ mod tests {
             state.properties.get("Comment").map(String::as_str),
             Some("")
         );
+    }
+}
+
+#[cfg(test)]
+mod root_version_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn parent_version_keeps_literal_spelling_and_ignores_prolog_lookalikes() {
+        for version in ["2.20", "2.21", "2.&#50;0", "2.20 "] {
+            let header=format!("<?xml version='1.0'?><!-- version='wrong' --><cfg:MetaDataObject xmlns:cfg='{MD_NS}' note='>' version='{version}'>");
+            assert_eq!(
+                read_configuration_root_version_literal(Cursor::new(header.into_bytes()), &|| Ok(
+                    ()
+                ))
+                .unwrap(),
+                Some(version.to_string())
+            );
+        }
+        let header = format!("<MetaDataObject xmlns='{MD_NS}'>");
+        assert_eq!(
+            read_configuration_root_version_literal(Cursor::new(header.into_bytes()), &|| Ok(()))
+                .unwrap(),
+            None
+        );
+    }
+
+    struct HeaderOnly(Cursor<Vec<u8>>);
+    impl Read for HeaderOnly {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            if self.0.position() == self.0.get_ref().len() as u64 {
+                return Err(io::Error::other(
+                    "the full owner body was already proved; do not parse it again",
+                ));
+            }
+            self.0.read(bytes)
+        }
+    }
+    impl Seek for HeaderOnly {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.0.seek(position)
+        }
+    }
+
+    #[test]
+    fn lexical_version_probe_stops_before_parsing_the_owner_body() {
+        let header=format!("\u{feff}<?xml version='1.0'?><!-- Юникод & raw comment --><m:MetaDataObject xmlns:m='{MD_NS}' version='2.20'>");
+        let source = HeaderOnly(Cursor::new(header.into_bytes()));
+        assert_eq!(
+            read_configuration_root_version_literal(source, &|| Ok(())).unwrap(),
+            Some("2.20".into())
+        );
+    }
+
+    #[test]
+    fn lexical_version_probe_preserves_checkpoint_refusal() {
+        let source =
+            Cursor::new(format!("<MetaDataObject xmlns='{MD_NS}' version='2.20'>").into_bytes());
+        let error = read_configuration_root_version_literal(source, &|| {
+            Err(ViewError::new(
+                unica_refusal::RefusalCode::Cancelled,
+                "cancelled header observation",
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(error.code(), unica_refusal::RefusalCode::Cancelled);
     }
 }

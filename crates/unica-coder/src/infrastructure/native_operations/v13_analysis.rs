@@ -375,7 +375,7 @@ pub(crate) fn unavailable_dependency() -> NativeCheckOutcome {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         node_facts, validate, validate_with_availability, validator_selector, ValidatorAvailability,
     };
