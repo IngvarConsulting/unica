@@ -729,6 +729,7 @@ mod tests {
                         master: None,
                         main_filter: None,
                         type_reduction_mode: None,
+                        choice: Default::default(),
                     }],
                 },
             )

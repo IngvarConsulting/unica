@@ -69,6 +69,14 @@ pub fn validate_final_object_integrity(
         let Ok(kind) = MetadataKind::parse(directory.tag) else {
             continue;
         };
+        let original = staged.original_image(relative).map(|bytes| bytes.to_vec());
+        crate::member_choice::validate_references(
+            staged,
+            bytes,
+            source_kind,
+            None,
+            original.as_deref(),
+        )?;
         if kind == MetadataKind::EventSubscription
             && relative
                 .extension()
@@ -140,6 +148,50 @@ pub fn validate_final_numerators<'a>(
         crate::numerator_write::validate(&bytes, name).map_err(|message| {
             ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(path)
         })?;
+    }
+    Ok(())
+}
+
+/// Explicit field form assignments, including no-ops, observe the completed
+/// proposal so later resource removal cannot leave a dangling reference.
+pub fn validate_final_member_choices<'a>(
+    staged: &mut ApplyProposal<'_>,
+    source_kind: SourceSetKind,
+    operations: impl IntoIterator<Item = (usize, &'a MetadataPlanOperation)>,
+) -> Result<(), ApplyPlanError> {
+    for (index, operation) in operations {
+        let MetadataPlanKind::Edit {
+            target,
+            operation: edit,
+            ..
+        } = &operation.kind
+        else {
+            continue;
+        };
+        if !matches!(edit, MetaEditOperation::Update { elements, .. } if elements.iter().any(|element|element.choice.0.iter().any(|(property,_)|*property == unica_metadata::MemberChoiceProperty::Form)))
+        {
+            continue;
+        }
+        let path = format!("ops[{index}].args.values.choiceForm");
+        let relative = metadata_descriptor_relative(target, source_kind).map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message).at_path(&path)
+        })?;
+        let bytes = staged
+            .read(&relative)
+            .map_err(|error| ApplyPlanError::staging(error, &path))?
+            .ok_or_else(|| {
+                ApplyPlanError::new(ApplyPlanErrorKind::NotFound, "field owner is unavailable")
+                    .at_path(&path)
+            })?;
+        let original = staged.original_image(&relative).map(|bytes| bytes.to_vec());
+        crate::member_choice::validate_references(
+            staged,
+            &bytes,
+            source_kind,
+            Some(edit),
+            original.as_deref(),
+        )
+        .map_err(|error| error.at_path(path))?;
     }
     Ok(())
 }

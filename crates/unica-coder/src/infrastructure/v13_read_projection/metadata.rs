@@ -1071,6 +1071,39 @@ fn metadata_item_node(
             |(profile, context)| member_properties::project(address, profile, context, item),
         );
     props.extend(member_props);
+    if matches!(
+        kind,
+        NodeKind::Attribute | NodeKind::Dimension | NodeKind::Resource
+    ) {
+        for property in unica_metadata::MemberChoiceProperty::ALL {
+            let matching = item
+                .get("properties")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|value| value["name"].as_str() == Some(property.xml_name()))
+                .collect::<Vec<_>>();
+            if let [value] = matching.as_slice() {
+                if let Ok(unica_metadata::MetaObservedProperty {
+                    value: unica_metadata::MetaObservedPropertyValue::Text { value },
+                    ..
+                }) = serde_json::from_value((*value).clone())
+                {
+                    if property.accepts(&value) {
+                        place_prop(
+                            &mut props,
+                            &mut limits,
+                            address,
+                            property.xml_name(),
+                            &Value::String(value),
+                            true,
+                            property.xml_name(),
+                        );
+                    }
+                }
+            }
+        }
+    }
     limits.extend(member_limits);
     NodeView::new(
         address.to_string(),

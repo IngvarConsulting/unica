@@ -834,6 +834,18 @@ pub fn parse_element_update(
         MetadataArgumentReader::new(object, metadata_element_input_schema(true, false), field);
     reader.reject_unknown()?;
     Ok(MetaElementUpdateInput {
+        choice: crate::MemberChoiceChanges(
+            crate::MemberChoiceProperty::ALL
+                .iter()
+                .filter_map(
+                    |property| match reader.read(property.argument(), optional_string_at) {
+                        Ok(Some(value)) => Some(Ok((*property, value))),
+                        Ok(None) => None,
+                        Err(error) => Some(Err(error)),
+                    },
+                )
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
         indexing: reader.read("indexing", optional_string_at)?,
         master: reader.read("master", optional_bool_at)?,
         main_filter: reader.read("mainFilter", optional_bool_at)?,
@@ -863,6 +875,20 @@ pub fn parse_element_update(
                 .transpose()
         })?,
     })
+}
+
+#[cfg(test)]
+mod member_choice_regression {
+    #[test]
+    fn existing_member_choice_settings_decode_through_productive_parser() {
+        let input = super::parse_element_update(
+            &serde_json::json!({"name":"Product", "choiceFoldersAndItems":"FoldersAndItems",
+                "choiceForm":"Catalog.Products.Form.Choice", "choiceHistoryOnInput":"DontUse",
+                "quickChoice":"Use", "createOnInput":"DontUse"}),
+            "element",
+        );
+        assert!(input.is_ok(), "{input:?}");
+    }
 }
 pub fn parse_position(value: &Value, field: &str) -> Result<MetaPosition, MetaDiagnostic> {
     let object = value

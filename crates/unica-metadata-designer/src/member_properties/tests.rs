@@ -180,6 +180,26 @@ fn catalog_tabular_native_context_does_not_propagate_to_header_or_column_attribu
 
 #[test]
 fn reduction_profile_reads_three_values_and_keeps_missing_and_damaged_facts_local() {
+    fn assert_choice_facts(dimension: &unica_metadata::MetaElementData) {
+        for (name, expected) in [
+            ("ChoiceFoldersAndItems", "Items"),
+            ("ChoiceForm", ""),
+            ("ChoiceHistoryOnInput", "Auto"),
+            ("QuickChoice", "Auto"),
+            ("CreateOnInput", "Auto"),
+        ] {
+            let found = dimension
+                .properties
+                .iter()
+                .filter(|p| p.name == name)
+                .collect::<Vec<_>>();
+            assert_eq!(found.len(), 1);
+            assert_eq!(
+                serde_json::to_value(&found[0].value).unwrap(),
+                json!({"kind":"text","value":expected})
+            );
+        }
+    }
     let native = include_str!("../../../../tests/fixtures/acceptance/workspace-register-dimensions/src/InformationRegisters/Цены.xml");
     let original = "<TypeReductionMode>TransformValues</TypeReductionMode>";
     for value in ["TransformValues", "Deny", "DeleteData"] {
@@ -193,7 +213,8 @@ fn reduction_profile_reads_three_values_and_keeps_missing_and_damaged_facts_loca
             Some(SourceSetKind::Configuration),
         );
         let dimension = &info.collections.dimensions[0];
-        assert_eq!(dimension.properties.len(), 1);
+        assert_eq!(dimension.properties.len(), 6);
+        assert_choice_facts(dimension);
         assert_eq!(dimension.properties[0].name, "TypeReductionMode");
         assert_eq!(
             serde_json::to_value(&dimension.properties[0].value).unwrap(),
@@ -213,7 +234,13 @@ fn reduction_profile_reads_three_values_and_keeps_missing_and_damaged_facts_loca
             "InformationRegister.Цены",
             Some(SourceSetKind::Configuration),
         );
-        assert!(info.collections.dimensions[0].properties.is_empty());
+        let dimension = &info.collections.dimensions[0];
+        assert_eq!(dimension.properties.len(), 5);
+        assert_choice_facts(dimension);
+        assert!(!dimension
+            .properties
+            .iter()
+            .any(|p| p.name == "TypeReductionMode"));
         assert!(info.collections.dimensions[0].r#type.is_some());
         let diagnostic = info.diagnostics.iter().any(|d| {
             d.field.as_deref() == Some("collections.dimensions[0].properties.TypeReductionMode")
@@ -228,6 +255,12 @@ fn reduction_profile_reads_three_values_and_keeps_missing_and_damaged_facts_loca
     ] {
         let info = read(native, "InformationRegister.Цены", kind);
         assert!(info.member_read_profile.is_none());
-        assert!(info.collections.dimensions[0].properties.is_empty());
+        let dimension = &info.collections.dimensions[0];
+        assert_eq!(dimension.properties.len(), 5);
+        assert_choice_facts(dimension);
+        assert!(!dimension
+            .properties
+            .iter()
+            .any(|p| p.name == "TypeReductionMode"));
     }
 }

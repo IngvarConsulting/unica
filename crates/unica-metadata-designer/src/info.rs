@@ -551,10 +551,28 @@ pub fn typed_element(
         |profile| super::member_properties::observe(node, profile, field, target, diagnostics),
     );
     incomplete |= !property_limits.is_empty();
-    let property_limits = own_limits.into_iter().chain(property_limits).collect();
+    let property_limits: Vec<_> = own_limits.into_iter().chain(property_limits).collect();
+    let (choice_properties, choice_limits) = if matches!(
+        node.tag_name().name(),
+        "Attribute" | "Dimension" | "Resource"
+    ) {
+        crate::member_choice::observe(properties)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    for message in &choice_limits {
+        diagnostics.push(
+            MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+                .with_metadata_path(target.clone())
+                .with_field(format!("{field}.choice")),
+        );
+    }
+    incomplete |= !choice_limits.is_empty();
+    let property_limits = property_limits.into_iter().chain(choice_limits).collect();
     let properties_readback = properties_readback
         .into_iter()
         .chain(profile_properties)
+        .chain(choice_properties)
         .collect();
     Some(MetaElementData {
         name,
