@@ -67,6 +67,9 @@ pub(crate) fn plan_metadata_batch_owned_for_test(
 
 #[cfg(test)]
 mod tests {
+    mod language_code_tests {
+        include!("metadata/language_code_tests.rs");
+    }
     mod numerator_tests {
         include!("metadata/numerator_tests.rs");
     }
@@ -1897,7 +1900,7 @@ mod tests {
     /// владельца. Перекрёстные правила полей (значение заполнения требует
     /// тип) схема не выражает — такие образцы здесь не берутся.
     #[test]
-    fn member_operation_contracts_and_the_planner_agree_on_structure() {
+    fn medium_member_operation_contracts_and_the_planner_agree_on_structure() {
         use unica_address::address::QualifiedAddress;
         use unica_bsl::profile::PlatformProfile;
         use unica_metadata::{metadata_collection_spec, MetaCollection};
