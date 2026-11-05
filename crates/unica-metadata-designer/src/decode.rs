@@ -88,7 +88,14 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
-    CommentOnly { kind: NodeKind, comment: String },
+    LanguageCode {
+        code: String,
+        comment: Option<String>,
+    },
+    CommentOnly {
+        kind: NodeKind,
+        comment: String,
+    },
     DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
     StyleItem(unica_metadata::property_input::StyleItemPropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
@@ -1081,12 +1088,20 @@ pub fn parse_properties(
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
-    let site = if site == PropertiesSite::WSReference
-        && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
-    {
-        PropertiesSite::CommentOnly(NodeKind::WsReference)
-    } else {
-        site
+    // An extension adopts WS references and languages; only their own
+    // Comment belongs to the extension.
+    let site = match site {
+        PropertiesSite::WSReference
+            if binding.source_kind != unica_source_contract::SourceSetKind::Configuration =>
+        {
+            PropertiesSite::CommentOnly(NodeKind::WsReference)
+        }
+        PropertiesSite::Language
+            if binding.source_kind != unica_source_contract::SourceSetKind::Configuration =>
+        {
+            PropertiesSite::CommentOnly(NodeKind::Language)
+        }
+        site => site,
     };
     // ApplyRequest has already resolved the operation address. It is an
     // internal carrier key, not part of the published property arguments.
@@ -1135,6 +1150,10 @@ pub fn parse_properties(
                 addressed: None,
             });
         }
+        unica_metadata::property_input::PropertiesIntent::LanguageCode { code, comment } => (
+            "Languages",
+            DescriptorPropertyChanges::LanguageCode { code, comment },
+        ),
         unica_metadata::property_input::PropertiesIntent::WSReference(values) => {
             crate::ws_reference::validate_location_url(&values.location_url).map_err(
                 |message| {
@@ -1226,7 +1245,6 @@ pub fn parse_attribute_add(
     };
     let items = required_array(args, "items", op_index)?.to_vec();
     let mut legacy = json!({"op": "add", "collection": "attributes", "elements": items});
-    let in_section = section.is_some();
     if let Some(section) = section {
         legacy["scope"] = json!({"tabularSection": section});
     }
@@ -1243,12 +1261,7 @@ pub fn parse_attribute_add(
         },
         op_index,
     )?;
-    // Табличная часть названа адресом: её отсутствие — «не найден» по `at`.
-    Ok(if in_section {
-        addressed_edit(edit, AddressedFields::Items)
-    } else {
-        edit
-    })
+    Ok(addressed_edit(edit, AddressedFields::Items))
 }
 pub fn parse_attribute_set(
     args: &Map<String, Value>,
@@ -1401,6 +1414,7 @@ pub fn parse_member_add(
         },
         op_index,
     )
+    .map(|edit| addressed_edit(edit, AddressedFields::Items))
 }
 #[derive(Debug, Clone, Copy)]
 pub enum AddressedMemberChange {
