@@ -4457,10 +4457,13 @@ pub(crate) mod tests {
                 }
             }
             for (name, snapshot) in &actual {
+                // Thread id and clock keep parallel updates in one run apart.
                 let staged = directory.join(format!(
-                    ".{name}.{}.{:?}.json.tmp",
-                    std::process::id(),
-                    std::thread::current().id()
+                    ".{name}.{:?}.{}.json.tmp",
+                    std::thread::current().id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |elapsed| elapsed.as_nanos())
                 ));
                 std::fs::write(&staged, snapshot).expect("stage a snapshot");
                 std::fs::rename(&staged, directory.join(format!("{name}.json")))
