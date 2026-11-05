@@ -469,11 +469,13 @@ fn root_inspection_survives_response_cutoff(tool: V5ToolIdentity) {
     );
 }
 
+/// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
 #[test]
 fn root_view_keeps_the_same_task_and_daemon_past_the_former_deadlines() {
     root_inspection_survives_response_cutoff(V5ToolIdentity::View);
 }
 
+/// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
 #[test]
 fn root_check_completes_the_whole_inspection_in_its_task() {
     root_inspection_survives_response_cutoff(V5ToolIdentity::Check);
@@ -482,6 +484,7 @@ fn root_check_completes_the_whole_inspection_in_its_task() {
 /// #1119 (9c): a root check page is the same whether the daemon answers
 /// directly or hands the call to a Task, and a cursor from either path
 /// continues on the other. Each page is one call; the Task stores that page.
+/// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
 #[test]
 fn root_check_pages_are_the_same_through_a_task_and_a_direct_call() {
     let state = tempfile::tempdir().unwrap();
@@ -607,6 +610,7 @@ fn root_check_pages_are_the_same_through_a_task_and_a_direct_call() {
     assert_eq!(daemon.pause.entries(), 2, "continuations inspect nothing");
 }
 
+/// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
 #[test]
 fn cancel_during_actor_admission_after_handoff_never_begins_and_keeps_the_daemon() {
     let state = tempfile::tempdir().unwrap();
@@ -823,6 +827,7 @@ impl CanonicalInvocationService for CommittedApplyCancellationService {
     }
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-HANDOFF
 #[test]
 fn committed_canonical_apply_and_saved_replay_keep_their_receipts_after_task_cancel() {
     let workspace =
@@ -984,6 +989,7 @@ fn committed_canonical_apply_and_saved_replay_keep_their_receipts_after_task_can
     );
 }
 
+/// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
 #[test]
 fn protected_mutation_preserves_success_and_failure_after_cancel_request() {
     let cancellation = CancellationToken::new();
@@ -1415,6 +1421,7 @@ fn seven_second_submit_budget_is_not_truncated_by_transport_timeouts() {
     assert_eq!(server_result, Ok(()));
 }
 
+/// rule: INV.APP.DAEMON-STORE-FAIL-STOP
 #[test]
 fn commit_uncertain_is_returned_before_process_owned_fail_stop_retains_endpoint() {
     let root = tempfile::tempdir().expect("temporary fail-stop state root");
@@ -1486,6 +1493,7 @@ fn commit_uncertain_is_returned_before_process_owned_fail_stop_retains_endpoint(
 /// serialization margin, computed once from receipt. The largest
 /// budget a submit may carry keeps that deadline under the 10 s safety cap,
 /// so the cap never shortens it.
+/// rule: INV.WIRE.DAEMON-RESPONSE-TIME
 #[test]
 fn submit_response_deadline_is_its_budget_plus_one_margin_under_the_safety_cap() {
     let submit = |budget_ms: u64| {
@@ -1636,6 +1644,7 @@ fn running_mutation_timeout_preserves_response_margin_or_closes_after_it() {
     );
 }
 
+/// rule: INV.WIRE.DAEMON-RESPONSE-TIME
 #[test]
 fn fail_stop_transport_margin_starts_after_response_serialization() {
     struct DelayedResponse(V5ServerResponse);
@@ -1681,6 +1690,7 @@ fn fail_stop_transport_margin_starts_after_response_serialization() {
     );
 }
 
+/// rule: INV.APP.DAEMON-STORE-FAIL-STOP
 #[test]
 fn every_fail_stop_store_error_is_written_without_reentering_the_actor() {
     let root = tempfile::tempdir().expect("temporary store-failure state root");
@@ -1879,6 +1889,7 @@ fn cancel_existing_reserved_receipt_returns_the_typed_pending_winner() {
     ));
 }
 
+/// rule: INV.APP.DAEMON-TASK-RECOVERY
 #[test]
 fn startup_terminalizes_pre_task_receipts_without_replaying_domain_work() {
     for (phase, cancel_requested, expected) in [
@@ -2164,6 +2175,7 @@ fn startup_materializes_and_terminalizes_actor_bound_promised_task() {
     }
 }
 
+/// rule: INV.APP.DAEMON-TASK-RECOVERY
 #[test]
 fn startup_materializes_handoff_without_replaying_begun_work() {
     for (phase, cancel_requested) in [
@@ -2296,6 +2308,7 @@ fn startup_materializes_handoff_without_replaying_begun_work() {
 /// must neither refuse to start nor replay the work. The second crash point
 /// is inside that recovery: the receipt already handed the Task to its link,
 /// the recovery terminal is not written yet.
+/// rule: INV.APP.DAEMON-TASK-RECOVERY
 #[test]
 fn startup_completes_handoff_whose_link_is_already_task_bound() {
     for (phase, cancel_requested, receipt_completed_before_crash) in [
@@ -2856,6 +2869,7 @@ fn assert_staged_startup_preserves_exact_winner(fixture: StagedStartupCrashFixtu
     assert_eq!(observation.confirmed_terminals.load(Ordering::SeqCst), 1);
 }
 
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn startup_completes_exact_staged_terminal_after_post_store_crash_without_replay() {
     assert_staged_startup_preserves_exact_winner(staged_startup_crash_fixture());
@@ -2890,6 +2904,7 @@ fn finish_staged_crash_lifecycle_link(fixture: &StagedStartupCrashFixture) {
     );
 }
 
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn startup_completes_exact_staged_receipt_after_terminal_link_commit_without_replay() {
     let fixture = staged_startup_crash_fixture();
@@ -2919,6 +2934,7 @@ fn staged_startup_persisted_bytes(
     files
 }
 
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn startup_refuses_changed_staged_winner_metadata_before_any_store_mutation() {
     for terminal_link_committed in [false, true] {
@@ -3044,6 +3060,7 @@ fn materialize_saved_staged_startup_owner(
     (staged, record, bound)
 }
 
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn startup_publishes_saved_staged_winner_from_exact_provisional_without_replay() {
     for phase in [AttemptPhase::NotBegun, AttemptPhase::Begun] {
@@ -3129,6 +3146,7 @@ fn startup_publishes_saved_staged_winner_from_exact_provisional_without_replay()
     }
 }
 
+/// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
 #[test]
 fn startup_validates_all_staged_owners_before_completing_any_receipt_or_link() {
     let root = tempfile::tempdir().unwrap();
@@ -4555,11 +4573,13 @@ fn cancellation_owner_crosses_admission_count(held_handshakes: usize, held_owner
     ));
 }
 
+/// rule: INV.RUNTIME.DAEMON-CONNECTION-ADMISSION
 #[test]
 fn ninth_connection_delivers_cancel_while_eight_real_handshakes_are_held() {
     cancellation_owner_crosses_admission_count(8, 0);
 }
 
+/// rule: INV.RUNTIME.DAEMON-CONNECTION-ADMISSION
 #[test]
 fn sixty_fifth_authenticated_owner_delivers_exact_cancellation() {
     cancellation_owner_crosses_admission_count(0, 64);
@@ -4930,6 +4950,7 @@ fn release_promised_work_owner(mut owner: (TcpStream, BufReader<TcpStream>)) {
     let _ = owner.0.shutdown(std::net::Shutdown::Both);
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn daemon_idle_saved_apply_plan_preserves_instance_and_exact_replay_after_owner_release() {
     let workspace =
@@ -4995,6 +5016,7 @@ fn daemon_idle_saved_apply_plan_preserves_instance_and_exact_replay_after_owner_
     release_promised_work_owner(replay_owner);
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn daemon_idle_empty_runtime_still_exits_after_owner_release() {
     let idle = Duration::from_millis(80);
@@ -5006,6 +5028,7 @@ fn daemon_idle_empty_runtime_still_exits_after_owner_release() {
     assert!(daemon.endpoint().is_none());
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn daemon_idle_saved_apply_plan_does_not_prevent_explicit_stop() {
     let workspace =
@@ -5126,6 +5149,7 @@ impl Drop for IdleIndexProducerCleanup {
     }
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn daemon_idle_running_index_producer_without_rpc_or_lease_preserves_instance_then_retires() {
     let workspace =
@@ -5293,6 +5317,7 @@ fn idle_task_terminal_over_tcp(
     }
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn daemon_idle_live_task_after_client_release_preserves_attempt_then_retires() {
     let (_workspace, workspace) = catalog_workspace();
@@ -5361,6 +5386,7 @@ fn daemon_idle_live_task_after_client_release_preserves_attempt_then_retires() {
     assert!(daemon.endpoint().is_none());
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires() {
     let (_workspace, workspace) = catalog_workspace();
@@ -5505,6 +5531,7 @@ fn view_catalog_request_within(
 /// set read from the client's departure through the handoff holds the
 /// daemon by the attempt's cancellation registration, so the attempt never
 /// stands without an owner; its Task then ends once and the daemon retires.
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughout() {
     let (_workspace, workspace) = catalog_workspace();
@@ -5592,6 +5619,7 @@ fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughou
 /// an actor and the client leaves. With no workspace work retained, the Task
 /// alone holds the daemon through its cancellation registration; once bound,
 /// the same Task runs once and the daemon retires.
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn daemon_idle_task_promised_during_admission_holds_without_an_actor_then_retires() {
     let (_workspace, workspace) = catalog_workspace();
@@ -5667,6 +5695,7 @@ fn daemon_idle_task_promised_during_admission_holds_without_an_actor_then_retire
     assert!(daemon.endpoint().is_none());
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
 #[test]
 fn daemon_idle_completed_index_lease_preserves_same_result_then_retires() {
     let workspace =
@@ -5845,6 +5874,7 @@ fn displaced_owner_probe(mut stream: TcpStream, hello: &serde_json::Value) -> io
     }
 }
 
+/// rule: INV.APP.DAEMON-STORE-FAIL-STOP
 #[test]
 fn displaced_receipt_authority_fail_stops_until_process_death() {
     let root = tempfile::tempdir().expect("temporary state root");
@@ -6158,6 +6188,8 @@ impl Drop for IdleHandoffDaemon {
     }
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
+/// rule: INV.RUNTIME.DAEMON-CONNECTION-ADMISSION
 #[test]
 fn owner_handoff_between_idle_reads_keeps_listener_and_exact_owner_alive() {
     let root = tempfile::tempdir().unwrap();
@@ -6352,6 +6384,8 @@ impl CanonicalInvocationService for SlowRealReadService {
 /// runs prepare and execute on the promised Task's continuation. The
 /// daemon's handoff clock is moved by the test; the delay itself is real, so
 /// every former wall-clock budget of the read and of its publication passes.
+/// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
 #[test]
 fn promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks() {
     let state = tempfile::tempdir().expect("temporary daemon state");
@@ -6514,6 +6548,8 @@ impl CanonicalInvocationService for NoncooperativeStuckService {
 /// only its own Task. The Task shows the requested cancel, the daemon keeps
 /// serving other calls past the former two-second fail-stop, and the late
 /// executor still ends as cancelled.
+/// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
+/// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
 #[test]
 fn noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others() {
     let state = tempfile::tempdir().expect("temporary daemon state");
@@ -6615,6 +6651,7 @@ fn noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others() {
 /// #1251: a cancel that reaches an inline call still in admission, before
 /// the handoff moment, ends it. Without an admission deadline the token is
 /// the only stop; the attempt publishes its own cancelled terminal.
+/// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
 #[test]
 fn cancel_during_inline_admission_before_handoff_publishes_cancelled() {
     let state = tempfile::tempdir().unwrap();
@@ -6955,6 +6992,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for RejectUnexpectedTaskRead {
     }
 }
 
+/// rule: INV.APP.READ-CALL-JOINING
 #[test]
 fn an_unjoined_task_reply_does_not_read_its_canonical_store_again() {
     let root = tempfile::tempdir().unwrap();
@@ -7155,6 +7193,8 @@ fn retirement_disk_snapshot(
 
 /// Reopening invalidates the previous owner's permission before any new one
 /// is issued. A failed deletion keeps the exact pending link and both indexes.
+/// rule: INV.APP.TASK-RETIREMENT
+/// rule: INV.APP.TASK-RETIREMENT-PROCESS-AUTHORITY
 #[test]
 fn reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirmed_delete() {
     let root = tempfile::tempdir().expect("temporary retirement state");
@@ -7393,21 +7433,25 @@ fn assert_unretirable_record_stays_confined(step: V5RetirementStep) {
     );
 }
 
+/// rule: INV.APP.TASK-RETIREMENT
 #[test]
 fn retirement_begin_failure_stays_with_its_record() {
     assert_unretirable_record_stays_confined(V5RetirementStep::Begin);
 }
 
+/// rule: INV.APP.TASK-RETIREMENT
 #[test]
 fn retirement_authorize_failure_stays_with_its_record() {
     assert_unretirable_record_stays_confined(V5RetirementStep::Authorize);
 }
 
+/// rule: INV.APP.TASK-RETIREMENT
 #[test]
 fn retirement_delete_failure_stays_with_its_record() {
     assert_unretirable_record_stays_confined(V5RetirementStep::Delete);
 }
 
+/// rule: INV.APP.TASK-RETIREMENT
 #[test]
 fn retirement_finalize_failure_stays_with_its_record() {
     assert_unretirable_record_stays_confined(V5RetirementStep::Finalize);
@@ -7416,6 +7460,7 @@ fn retirement_finalize_failure_stays_with_its_record() {
 /// The real store fault: deleting an expired Task returns `CommitUncertain`
 /// after the file is gone. The record keeps its intent, the live Task is
 /// answered, and the retry reconciles the absent Task.
+/// rule: INV.APP.TASK-RETIREMENT
 #[test]
 fn uncertain_retirement_delete_stays_with_its_record_and_reconciles_on_retry() {
     let store = accumulated_retirement_store(Arc::new(NoHooks));
@@ -7453,6 +7498,7 @@ fn uncertain_retirement_delete_stays_with_its_record_and_reconciles_on_retry() {
     }
 }
 
+/// rule: INV.APP.TASK-RETIREMENT
 #[test]
 fn retirement_retry_pause_doubles_up_to_an_hour_without_an_attempt_limit() {
     assert_eq!(retirement_retry_delay_ms(1), 60_000);
@@ -7470,6 +7516,7 @@ fn retirement_retry_pause_doubles_up_to_an_hour_without_an_attempt_limit() {
 /// leaves when the directory sync or readback fails after the rename. The
 /// process goes on serving the other Tasks from the durable catalog, so later
 /// commits keep the intent instead of overwriting it with the stale copy.
+/// rule: INV.APP.TASK-RETIREMENT
 #[test]
 fn retirement_failure_after_uncertain_link_commit_serves_the_durable_catalog() {
     let hooks = Arc::new(RetirementStepFault::at(V5RetirementStep::Begin));
@@ -7756,6 +7803,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for StepOrderHooks {
 /// Task before the provider runs: the TaskStore record and its binding are
 /// committed before the provider is entered, and the same attempt then ends
 /// that Task, once.
+/// rule: INV.APP.DAEMON-INVOCATION-HANDOFF
 #[test]
 fn zero_budget_call_is_a_durable_task_before_the_provider_runs() {
     let (_workspace, workspace) = catalog_workspace();
@@ -7976,6 +8024,8 @@ fn held_prepare_service(
 /// #984: fail-stop latched by another call stops subject work that has not
 /// begun. The call is held in its prepare while the process latches
 /// fail-stop; released, it never enters its provider, and the daemon stops.
+/// rule: INV.APP.DAEMON-STORE-FAIL-STOP
+/// rule: INV.WIRE.DAEMON-RESPONSE-TIME
 #[test]
 fn fail_stop_by_another_call_during_prepare_never_enters_the_provider() {
     let (_workspace, workspace) = catalog_workspace();
@@ -8007,6 +8057,8 @@ fn fail_stop_by_another_call_during_prepare_never_enters_the_provider() {
 /// #984: fail-stop asks running subject work to stop. A known-long Task is
 /// already executing when another call latches fail-stop; its cancellation
 /// is signalled before the daemon stops.
+/// rule: INV.APP.DAEMON-STORE-FAIL-STOP
+/// rule: INV.WIRE.DAEMON-RESPONSE-TIME
 #[test]
 fn fail_stop_signals_cancellation_to_running_subject_work() {
     let (_workspace, workspace) = catalog_workspace();
@@ -8078,6 +8130,7 @@ fn submit_or_recover_task(
 /// Task reads that Task — while it runs and after it ends. The key is never
 /// reserved again, nothing is prepared a second time, and the daemon keeps
 /// serving. Another key that claims the same Task id is refused.
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_repeat_submit_reads_its_bound_task_without_a_second_attempt() {
     let state = tempfile::tempdir().expect("temporary daemon state");
@@ -8257,6 +8310,7 @@ impl ReceiptLedgerPort for StoreDeadlineObservingPort {
 /// every receipt-store step of the request the daemon's own step budget,
 /// counted from the step's start. A commit the store began is therefore not
 /// cut short by the caller.
+/// rule: INV.APP.DAEMON-STORE-FAIL-STOP
 #[test]
 fn tiny_submit_budget_gives_the_receipt_store_its_own_step_budget() {
     let root = tempfile::tempdir().expect("temporary state root");
@@ -8337,6 +8391,7 @@ fn tiny_submit_budget_gives_the_receipt_store_its_own_step_budget() {
 /// #1387 on the real receipt ledger: an early cancel and then a submit of the
 /// same key with a budget far below one durable commit end as the cancelled
 /// direct terminal, readable by recovery; the daemon never fail-stops.
+/// rule: INV.APP.DAEMON-STORE-FAIL-STOP
 #[test]
 fn tiny_submit_budget_after_an_early_cancel_keeps_the_daemon() {
     let root = tempfile::tempdir().expect("temporary state root");
@@ -8507,6 +8562,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for ExactRepeatRaceHooks {
 /// the Task link alone remembers the key from then on. An exact repeat that
 /// found no link yet must not reserve the key after the row is gone: it reads
 /// the one Task, and the attempt is prepared once.
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_repeat_racing_the_handoff_completion_reads_the_same_task() {
     let state = tempfile::tempdir().expect("temporary daemon state");
@@ -8635,6 +8691,7 @@ impl CanonicalInvocationService for CountingService {
 /// committed retirement intent, the Task record is already deleted. The exact
 /// repeat of the call finds no answer left to read: it is refused as not
 /// found, the key is not reserved again and no domain code runs.
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing() {
     let root = tempfile::tempdir().expect("temporary retirement state root");
@@ -8721,6 +8778,7 @@ fn exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing() {
 /// #1384: the staged handoff completion removes the call's receipt row only
 /// under the key's lock, the same lock an exact repeat holds between its Task
 /// link lookup and its reservation. While the lock is held the row stays.
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn staged_handoff_completion_waits_for_the_key_lock() {
     let root = tempfile::tempdir().expect("temporary staged root");
@@ -8800,6 +8858,7 @@ fn staged_handoff_completion_waits_for_the_key_lock() {
 /// must not write a cancel row after the handoff completion moved the key to
 /// the link. It reaches the call itself: the Task sees the cancel, recovery
 /// reads the Task, and no stray cancel row is left behind.
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_cancel_racing_the_handoff_completion_cancels_the_task() {
     let state = tempfile::tempdir().expect("temporary daemon state");
@@ -8929,6 +8988,7 @@ fn exact_cancel_racing_the_handoff_completion_cancels_the_task() {
 
 /// #1384: every bound handoff completion that does not already hold the
 /// key's lock takes it before the receipt row leaves the ledger.
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn bound_handoff_completion_waits_for_the_key_lock() {
     let root = tempfile::tempdir().expect("temporary handoff root");
@@ -9618,26 +9678,31 @@ fn cancel_during_task_materialization_by(
         .expect("daemon exits cleanly");
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_cancel_during_the_begun_promotion_cancels_the_unstarted_task() {
     cancel_during_task_materialization(MaterializationRace::PromotedBegun, false);
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_cancel_during_the_handoff_continuation_cancels_the_unstarted_task() {
     cancel_during_task_materialization(MaterializationRace::PromotedActorBound, false);
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_cancel_during_the_inline_cutoff_cancels_the_running_task() {
     cancel_during_task_materialization(MaterializationRace::InlineCutoff, false);
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_cancel_during_the_promised_continuation_cancels_the_unstarted_task() {
     cancel_during_task_materialization(MaterializationRace::PromisedAdmission, false);
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_cancel_marking_the_inline_handoff_cancels_the_running_task() {
     cancel_during_task_materialization(MaterializationRace::InlineCutoffMarkedBeforeTask, false);
@@ -9645,6 +9710,7 @@ fn exact_cancel_marking_the_inline_handoff_cancels_the_running_task() {
 
 /// The continued Task starts between the cancel's read and its write: the
 /// moved Task neither fails the cancel nor stops the daemon.
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn exact_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled() {
     cancel_during_task_materialization(MaterializationRace::PromotedActorBound, true);
@@ -9653,6 +9719,7 @@ fn exact_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled() {
 /// #1399: a cancel by `taskId` alone, landing in the same handoff windows,
 /// waits for the handoff completion like the exact-key cancel: it reaches
 /// the Task, an unstarted attempt never starts, and the daemon keeps serving.
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn task_id_cancel_during_the_begun_promotion_cancels_the_unstarted_task() {
     cancel_during_task_materialization_by(
@@ -9662,6 +9729,7 @@ fn task_id_cancel_during_the_begun_promotion_cancels_the_unstarted_task() {
     );
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn task_id_cancel_during_the_handoff_continuation_cancels_the_unstarted_task() {
     cancel_during_task_materialization_by(
@@ -9671,6 +9739,7 @@ fn task_id_cancel_during_the_handoff_continuation_cancels_the_unstarted_task() {
     );
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn task_id_cancel_during_the_inline_cutoff_cancels_the_running_task() {
     cancel_during_task_materialization_by(
@@ -9680,6 +9749,7 @@ fn task_id_cancel_during_the_inline_cutoff_cancels_the_running_task() {
     );
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn task_id_cancel_marking_the_inline_handoff_cancels_the_running_task() {
     cancel_during_task_materialization_by(
@@ -9689,6 +9759,7 @@ fn task_id_cancel_marking_the_inline_handoff_cancels_the_running_task() {
     );
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn task_id_cancel_during_the_promised_continuation_cancels_the_unstarted_task() {
     cancel_during_task_materialization_by(
@@ -9698,6 +9769,7 @@ fn task_id_cancel_during_the_promised_continuation_cancels_the_unstarted_task() 
     );
 }
 
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn task_id_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled() {
     cancel_during_task_materialization_by(
@@ -9741,6 +9813,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for StagedLinkWindowHooks {
 /// completion under the key's lock: the staged terminal wins, the cancel
 /// reads it, and the daemon keeps serving. Without the lock the cancel ended
 /// the not-begun Task itself and the staged publication found a moved Task.
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn task_id_cancel_waits_for_the_staged_handoff_completion() {
     for phase in [AttemptPhase::NotBegun, AttemptPhase::Begun] {
@@ -9862,6 +9935,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for CutoffClaimRaceHooks {
 /// handler made one, then the cutoff passed and the handler materialized
 /// the working Task and answered with it. The attempt, claiming the cutoff
 /// only now, takes that Task and executes it once; the daemon keeps serving.
+/// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
 fn begun_promotion_after_the_early_look_executes_the_materialized_task() {
     let state = tempfile::tempdir().expect("temporary daemon state");
@@ -10000,6 +10074,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for PublicationDelayHooks {
 /// preparation that outlasts it leaves no budget for the store: the terminal is
 /// not written, no new budget is granted at the queue, and the daemon keeps
 /// serving. A short preparation still publishes the same terminal.
+/// rule: INV.APP.DAEMON-STORE-FAIL-STOP
 #[test]
 fn direct_terminal_preparation_queue_and_store_share_one_publication_deadline() {
     let state = tempfile::tempdir().expect("temporary daemon state");
@@ -10232,6 +10307,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for ExecutorEntryDelayHooks {
 /// the handoff moment the executor sees is the caller's budget from the
 /// frame, not from the end of that wait. The same attempt then hands off
 /// and completes its Task.
+/// rule: INV.WIRE.DAEMON-RESPONSE-TIME
 #[test]
 fn the_deadline_fixed_at_frame_receipt_governs_the_whole_call() {
     const BUDGET: Duration = Duration::from_millis(7_000);

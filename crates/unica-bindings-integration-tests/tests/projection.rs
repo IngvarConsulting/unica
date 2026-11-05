@@ -200,6 +200,7 @@ mod tests {
         .unwrap()
     }
 
+    /// rule: INV.SOURCE.MODULE-SUMMARY
     #[test]
     fn every_approved_module_role_projects_without_a_parallel_role_registry() {
         let fixture = module_fixture();
@@ -375,6 +376,7 @@ mod tests {
         assert_eq!(serialized["branches"][0]["count"], 3);
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION
     #[test]
     fn method_compilation_count_and_nested_guards_match_actual_ranges() {
         let projection = project("main:CommonModule.ЗаказыСервер", Some(SYNTAX_BOUNDARIES));
@@ -404,6 +406,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
     #[test]
     fn crlf_method_text_keeps_the_source_line_endings() {
         let source = SYNTAX_BOUNDARIES.replace('\n', "\r\n");
@@ -552,6 +555,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.MODULE-EVENT-STATE
     #[test]
     fn form_handler_parameters_are_compared_with_the_item_and_the_form_check_rule() {
         let client = vec![
@@ -1298,6 +1302,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.PLATFORM.FORM-EVENT-CALL-TYPE
     #[test]
     fn form_event_implementation_requires_call_type_valid_for_the_form_definition() {
         let regular = form_context(
@@ -1405,6 +1410,7 @@ mod tests {
         assert!(declarative_source(&case.owner).contains(&method.signature));
     }
 
+    /// rule: INV.SOURCE.MODULE-SUMMARY
     #[test]
     fn valid_missing_physical_file_keeps_possible_events_but_no_source_projection() {
         let projection = project("main:Document.Пустой.Module.Object", None);
@@ -1432,6 +1438,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.MODULE-EVENT-STATE
     #[test]
     fn platform_event_state_requires_exact_kind_parameter_shape_and_effective_contexts() {
         let exact = project(
@@ -1476,6 +1483,7 @@ mod tests {
     /// #1381 (по PR #1364): без любого из четырёх флагов среды контексты
     /// методов и областей неизвестны, тело без фильтра доступно; все флаги
     /// `false` дают известный пустой список.
+    /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
     #[test]
     fn unknown_execution_flags_do_not_become_empty_or_universal_contexts() {
         use unica_bsl::projection::CommonModuleProperties;
@@ -1517,6 +1525,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
     #[test]
     fn common_module_requires_all_normalized_flags() {
         let at = QualifiedAddress::parse("main:CommonModule.ЗаказыСервер").unwrap();
@@ -1537,6 +1546,7 @@ mod tests {
         assert!(error.contains("common-module flags"), "{error}");
     }
 
+    /// rule: INV.SOURCE.MODULE-METHOD-DECLARATION
     #[test]
     fn method_projection_uses_ast_and_omits_body_text() {
         let handles = [
@@ -1603,6 +1613,8 @@ mod tests {
         assert!(!json.contains("source"));
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
+    /// rule: INV.SOURCE.MODULE-METHOD-DECLARATION
     #[test]
     fn method_text_spans_doc_comment_directive_declaration_and_end_without_preprocessor() {
         let source = concat!(
@@ -1659,6 +1671,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.MODULE-REGION-INTERFACE
     #[test]
     fn nested_regions_interface_projections_and_ambiguity_are_exact() {
         let projection = project("main:CommonModule.ЗаказыСервер", Some(COMPLEX));
@@ -1706,6 +1719,7 @@ mod tests {
         assert!(projection.region("Повтор").unwrap_err().is_ambiguous());
     }
 
+    /// rule: INV.SOURCE.MODULE-REGION-INTERFACE
     #[test]
     fn method_area_is_the_nearest_normative_region_whatever_the_export() {
         let source = "#Область ПрограммныйИнтерфейс\n\
@@ -1767,6 +1781,7 @@ mod tests {
         assert_eq!(duplicates, vec![Some(MethodArea::Public), None]);
     }
 
+    /// rule: INV.SOURCE.MODULE-EXTENSION-BINDING
     #[test]
     fn extension_annotations_resolve_independently_from_compilation_directives() {
         let targets = [
@@ -1877,6 +1892,7 @@ mod tests {
         assert!(!evaluate_guard(&guard, "server"));
     }
 
+    /// rule: INV.SOURCE.MODULE-EVENT-STATE
     #[test]
     fn form_binding_owners_and_all_four_event_states_are_projected() {
         let fixture = form_fixture();

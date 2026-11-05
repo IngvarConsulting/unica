@@ -1,20 +1,5 @@
 ---
 id: INV.SOURCE.MODULE-COMMON-PROPERTIES
-check:
-  - crates/unica-bsl/src/projection.rs::common_module_flags_serialize_exactly_once_and_never_become_contexts
-  - crates/unica-bindings-integration-tests/tests/projection.rs::common_module_requires_all_normalized_flags
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_common_module_keeps_missing_privileged_unknown
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_common_module_view_serializes_unknown_privileged_without_losing_contexts
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_common_module_reads_platform_absent_properties_as_unknown
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_common_module_without_any_single_environment_flag_has_unknown_contexts
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::borrowing_view_bounds_override_props_for_metadata_and_specialized_readers
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::platform_borrowed_common_module_preserves_unknown_contexts_and_independent_facts
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::common_module_absence_policy_keeps_ordinary_properties_required
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::common_module_present_damage_is_not_missing
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::borrowed_common_module_missing_reuse_preserves_methods_and_source
-  - crates/unica-bindings-integration-tests/tests/projection.rs::unknown_execution_flags_do_not_become_empty_or_universal_contexts
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::unknown_facts_of_borrowed_objects_are_named_as_node_limits
 gap: https://github.com/IngvarConsulting/unica/issues/973
 ---
 

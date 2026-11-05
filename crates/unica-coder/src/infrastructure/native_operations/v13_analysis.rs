@@ -471,6 +471,7 @@ mod medium_tests {
     /// `check` over a 2.21 root keeps the validator verdict and leads with
     /// the format warning of the retired guard: the active profile is single
     /// and a newer export never passes silently.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
     #[test]
     fn newer_configuration_root_leads_with_the_format_warning() {
         let (context, root) = context();

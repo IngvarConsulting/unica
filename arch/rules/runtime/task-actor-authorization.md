@@ -1,8 +1,5 @@
 ---
 id: INV.APP.DAEMON-ACTOR-AUTHORITY
-check:
-  - crates/unica-coder/tests/daemon_receipt_ledger.rs::bound_task_start_rejects_missing_foreign_stale_actor_proof_without_mutation
-  - crates/unica-coder/tests/daemon_receipt_ledger.rs::bound_task_start_rechecks_proof_after_working_readback
 ---
 
 # Фоновая задача повторно подтверждает право актора перед исполнением
