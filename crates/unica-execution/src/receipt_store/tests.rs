@@ -388,6 +388,7 @@ fn first_generation_publication_survives_a_crash_after_staging_creation() {
     );
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn cancel_reserved_persists_without_expiry_or_result_entitlement() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -503,6 +504,7 @@ fn legacy_cancel_duplicate_after_expiry_preserves_bytes_and_identity() {
     assert_eq!(fs::read(row).unwrap(), before);
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn historical_cancel_deletion_releases_indexes_without_resurrection() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -560,6 +562,7 @@ fn historical_cancel_deletion_allows_new_incarnation_without_replaying_deletion(
     );
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn mixed_legacy_and_persistent_cancel_rows_preserve_identity_across_reopen() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -617,6 +620,7 @@ fn mixed_legacy_and_persistent_cancel_rows_preserve_identity_across_reopen() {
     }
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn cancellation_schema_rejects_malformed_legacy_expiry_and_incompatible_v2_rows() {
     for case in [
@@ -1087,6 +1091,7 @@ fn expiry_reopen_cleans_witness_after_crash_at_visible_generation_replace() {
     );
 }
 
+/// rule: INV.APP.RECEIPT-POOL-CAPACITY
 #[test]
 fn early_cancellations_cross_the_former_live_quota_without_reserving_results() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -1134,6 +1139,7 @@ fn early_cancellations_cross_the_former_live_quota_without_reserving_results() {
     }
 }
 
+/// rule: INV.APP.RECEIPT-POOL-CAPACITY
 #[test]
 fn submit_admission_preserves_unrelated_cancellations_past_the_former_live_quota() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -1303,6 +1309,7 @@ fn exact_reserve_winner_preserves_an_unrelated_delayed_cancel() {
     ));
 }
 
+/// rule: INV.APP.RECEIPT-CANCEL-RESERVATION
 #[test]
 fn exact_submit_atomically_converts_cancel_reserved_to_full_cancelled_reservation() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -2728,6 +2735,7 @@ fn direct_ack_compacts_payload_to_restart_stable_idempotent_tombstone() {
     assert!(committed.encoded_bytes() > acknowledged.encoded_bytes());
 }
 
+/// rule: INV.APP.RECEIPT-ACK-CAPACITY
 #[test]
 fn compact_tombstone_fits_512_bytes_at_the_maximum_valid_epoch_and_longest_tool_name() {
     let key = ReceiptKey::new(
@@ -3171,6 +3179,7 @@ fn expired_tombstone_releases_partial_identity_for_new_admission_only_at_expiry(
         .exists());
 }
 
+/// rule: INV.APP.RECEIPT-ACK-CAPACITY
 #[test]
 fn tombstone_pool_does_not_consume_the_sixty_four_live_receipt_slots() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -3220,6 +3229,7 @@ fn tombstone_pool_does_not_consume_the_sixty_four_live_receipt_slots() {
         .expect("separate tombstone pool cannot block live admission");
 }
 
+/// rule: INV.APP.RECEIPT-ACKNOWLEDGEMENT
 #[test]
 fn rejected_ack_does_not_reclaim_an_unrelated_expired_tombstone() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -4686,6 +4696,7 @@ fn exact_duplicate_returns_original_cutoff_without_generation_or_file_mutation()
     );
 }
 
+/// rule: INV.APP.RECEIPT-IDENTITY-COLLISION
 #[test]
 fn invocation_id_collision_rejects_before_any_mutation() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -4773,6 +4784,7 @@ fn collision_rejection_requires_post_catalog_named_authority() {
     }
 }
 
+/// rule: INV.APP.RECEIPT-IDENTITY-COLLISION
 #[test]
 fn reserved_task_id_collision_rejects_before_any_mutation() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -4964,6 +4976,7 @@ impl ReceiptLedgerPort for DelayedActualReservePort {
     }
 }
 
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
 #[test]
 fn no_deadline_actor_returns_late_real_store_commit_and_reopens() {
     use crate::receipt_ledger_actor::ReceiptLedgerActor;
@@ -5026,6 +5039,7 @@ fn no_deadline_actor_returns_late_real_store_commit_and_reopens() {
     assert_eq!(committed.original_cutoff(), &cutoff);
 }
 
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
 #[test]
 fn no_deadline_row_commit_survives_delayed_sync_and_exact_reopen() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -5073,6 +5087,7 @@ fn no_deadline_row_commit_survives_delayed_sync_and_exact_reopen() {
     assert_eq!(recovered.terminal().outcome(), terminal.outcome());
 }
 
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
 #[test]
 fn no_deadline_keeps_visible_io_failure_commit_uncertain() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -5398,6 +5413,7 @@ fn concurrent_reserve_waits_for_generation_capability_swap_under_the_writer_lock
     assert_eq!(store.generation().expect("both reserves committed"), 2);
 }
 
+/// rule: INV.APP.RECEIPT-IDENTITY-COLLISION
 #[test]
 fn persisted_dual_index_collision_fails_reopen_before_temporary_cleanup_or_mutation() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -5724,6 +5740,7 @@ fn reopen_rejects_reserved_epoch_that_disagrees_with_the_accepted_epoch() {
     );
 }
 
+/// rule: INV.APP.RECEIPT-RECOVERY-BOUNDS
 #[test]
 fn oversized_live_persisted_row_is_corruption_and_fail_stops_the_store() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -5895,6 +5912,7 @@ fn reopen_cleans_identity_bound_quarantine_left_by_interrupted_staging_cleanup()
     assert!(!active_quarantine_path.exists());
 }
 
+/// rule: INV.APP.RECEIPT-RECOVERY-BOUNDS
 #[test]
 fn expired_recovery_deadline_fails_before_staging_cleanup_or_catalog_mutation() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -6033,6 +6051,7 @@ fn recovery_deadline_is_rechecked_after_generation_healing_publication() {
     assert_eq!(reopened.generation().expect("healed generation"), 1);
 }
 
+/// rule: INV.APP.RECEIPT-RECOVERY-BOUNDS
 #[test]
 fn medium_default_recovery_completes_after_former_automatic_timeout() {
     for retained_directory in [false, true] {
@@ -6087,6 +6106,8 @@ fn medium_default_recovery_completes_after_former_automatic_timeout() {
     }
 }
 
+/// rule: INV.APP.RECEIPT-POOL-CAPACITY
+/// rule: INV.APP.RECEIPT-RECOVERY-BOUNDS
 #[test]
 fn live_receipts_cross_former_count_and_byte_quotas_without_losing_exact_reservations() {
     let root = tempfile::tempdir().expect("temporary root");
@@ -6784,6 +6805,8 @@ fn named_generation_replacement_invalidates_the_retained_owner() {
     }
 }
 
+/// rule: INV.APP.RECEIPT-POOL-CAPACITY
+/// rule: INV.APP.RECEIPT-RECOVERY-BOUNDS
 #[cfg(feature = "receipt-ledger-test-support")]
 #[test]
 fn batched_live_receipts_and_actor_snapshot_cross_former_quotas_and_reopen() {
@@ -6865,6 +6888,7 @@ fn batched_live_receipts_and_actor_snapshot_cross_former_quotas_and_reopen() {
     }
 }
 
+/// rule: INV.APP.RECEIPT-POOL-CAPACITY
 #[test]
 fn live_catalog_arithmetic_overflow_rejects_single_and_batch_mutations_before_commit() {
     let root = tempfile::tempdir().unwrap();
@@ -7019,6 +7043,7 @@ fn recovery_cleanup_preserves_external_targets_of_replaced_active_and_generation
     }
 }
 
+/// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
 #[test]
 fn body_read_hint_survives_receipt_reopen_and_tampering_is_rejected() {
     for hint in [
@@ -7310,6 +7335,7 @@ use unica_workspace::state_fs::test_support::{
 /// INV.APP.RECEIPT-RESULT-RESERVATION: memory held for committed results does
 /// not grow with their number or size, and a repeat after reopening returns
 /// exactly the committed result (#1119).
+/// rule: INV.APP.RECEIPT-RESULT-RESERVATION
 #[test]
 fn committed_results_are_not_held_in_catalog_memory_and_recover_exactly() {
     let root = tempfile::tempdir().expect("temporary root");

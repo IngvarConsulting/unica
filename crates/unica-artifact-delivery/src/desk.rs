@@ -448,6 +448,7 @@ mod tests {
     fn desk() -> DeliveryDesk {
         DeliveryDesk::default()
     }
+    /// rule: CTR.APP.EXACT-SHARED-DELIVERY
     #[test]
     fn exact_delivery_progress_is_projected_to_the_owning_waiter() {
         let desk = desk();
@@ -508,6 +509,7 @@ mod tests {
                     == Some("rlm-tools-bsl")
         }));
     }
+    /// rule: CTR.APP.EXACT-SHARED-DELIVERY
     #[test]
     fn cancelling_one_delivery_follower_does_not_stop_the_process_owned_producer() {
         let desk = Arc::new(desk());
@@ -563,6 +565,7 @@ mod tests {
         ));
         assert_eq!(producers.load(Ordering::SeqCst), 1);
     }
+    /// rule: CTR.APP.EXACT-SHARED-DELIVERY
     #[test]
     fn pre_cancelled_delivery_returns_before_polling_and_never_publishes_progress() {
         let desk = Arc::new(desk());
@@ -624,6 +627,7 @@ mod tests {
         ));
         assert_eq!(producers.load(Ordering::SeqCst), 1);
     }
+    /// rule: CTR.APP.EXACT-SHARED-DELIVERY
     #[test]
     fn two_worktrees_join_one_identical_immutable_delivery() {
         let desk = Arc::new(desk());
@@ -675,6 +679,7 @@ mod tests {
         ));
         assert_eq!(producers.load(Ordering::SeqCst), 1);
     }
+    /// rule: CTR.APP.EXACT-SHARED-DELIVERY
     #[test]
     fn different_delivery_sha256_values_never_share() {
         let desk = desk();
@@ -711,6 +716,7 @@ mod tests {
         assert!(matches!(second, EngineDeliveryState::Ready(_)));
         assert_eq!(producers.load(Ordering::SeqCst), 2);
     }
+    /// rule: CTR.APP.EXACT-SHARED-DELIVERY
     #[test]
     fn interrupted_archive_is_a_classified_failure_and_never_artifact_ready() {
         let desk = desk();

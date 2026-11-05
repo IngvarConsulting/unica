@@ -778,6 +778,7 @@ mod tests {
         result
     }
 
+    /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
     #[test]
     fn check_pages_preserve_verdict_and_every_diagnostic_with_replay() {
         let store = ViewCursorStore::default();
@@ -839,6 +840,7 @@ mod tests {
         assert_eq!(stale, page_diagnostics(&store, binding, None, Some(cursor)));
     }
 
+    /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
     #[test]
     fn check_returns_whole_large_finding_and_refuses_late_oversize_before_page_one() {
         let store = ViewCursorStore::default();
@@ -873,6 +875,7 @@ mod tests {
         assert!(refused.cursor.is_none());
     }
 
+    /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
     #[test]
     fn check_refuses_before_first_page_when_snapshot_cannot_be_retained() {
         let store = ViewCursorStore::new(400);
@@ -887,6 +890,7 @@ mod tests {
         assert!(result.cursor.is_none());
     }
 
+    /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
     #[test]
     fn late_finding_at_transport_edge_is_refused_before_issuing_a_cursor() {
         let mut result = check_result(2);
@@ -935,6 +939,7 @@ mod tests {
 
     /// #1119 (9c): a diagnostic group is never cut. One over the 64 KiB page
     /// target travels alone and whole; the walk still reads every group.
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
     fn a_root_group_over_the_page_target_travels_whole() {
         let pages = ViewCursorStore::default();
@@ -971,6 +976,7 @@ mod tests {
     /// #1119 (9c): a group that cannot pass the 8 MiB result limit with its
     /// envelope refuses the whole answer before a cursor is promised, wherever
     /// it stands.
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
     fn a_late_root_group_over_the_result_limit_refuses_before_a_cursor() {
         let pages = ViewCursorStore::default();
@@ -1023,6 +1029,8 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
+    /// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
     #[test]
     fn every_node_kind_owns_its_validators_without_a_caller_choice() {
         let plain = NodeFacts {

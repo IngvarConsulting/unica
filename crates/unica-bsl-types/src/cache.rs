@@ -174,6 +174,7 @@ fn write_cached(path: &Path, cached: &CachedCatalog) -> Result<(), CatalogError>
 mod medium_tests {
     use super::*;
 
+    /// rule: INV.ANALYSIS.PLATFORM-TYPE-CATALOG
     #[test]
     fn a_catalog_is_kept_per_user_build_and_generator_and_stale_when_the_help_changes() {
         let state = tempfile::tempdir().unwrap();

@@ -1,9 +1,5 @@
 ---
 id: CTR.FORMAT.CFE-BORROWED-STRUCTURE
-check:
-  - crates/unica-coder/tests/support/cfe_structure.rs::canonical_stdio_checks_borrowed_cfe_structure_without_writes
-  - crates/unica-coder/tests/support/cfe_structure.rs::canonical_stdio_borrow_refresh_preserves_module_and_identity
-  - crates/unica-coder/src/infrastructure/native_operations/cfe.rs::cfe_validate_checks_every_platform_direct_and_owner_module_role
 ---
 
 # Проверка расширения обнаруживает повреждённую структуру заимствованного объекта

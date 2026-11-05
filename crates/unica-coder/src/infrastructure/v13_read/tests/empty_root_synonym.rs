@@ -56,6 +56,7 @@ fn install(fixture: &RealReaderFixture, kind: &str, synonym: &str) -> (String, S
     (format!("main:{kind}.{name}"), name.into())
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn empty_root_synonym_is_omitted_only_in_compact_view_and_remains_a_known_whole_property() {
     for kind in ["Constant", "Catalog"] {
