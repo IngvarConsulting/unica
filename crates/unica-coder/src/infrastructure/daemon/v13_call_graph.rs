@@ -478,6 +478,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.CALL-GRAPH-STATE-IS-NAMED
     #[test]
     fn a_capped_graph_requires_a_complete_same_revision_snapshot_before_paging() {
         let mut first = CallGraphSummary {
@@ -533,6 +534,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.SOURCE.CALL-GRAPH-STATE-IS-NAMED
     #[test]
     fn capped_graph_refetches_exact_total_before_publishing_a_branch() {
         let mut first = CallGraphSummary {
@@ -667,6 +669,7 @@ mod tests {
 
     /// Узел метода называет обе ветви графа без счёта и без состояния: их
     /// знает только ответ ветви, а узел к анализатору не обращается.
+    /// rule: INV.ANALYSIS.CALL-GRAPH-ON-DEMAND
     #[test]
     fn the_method_node_names_both_branches_without_a_count() {
         let mut data = Map::new();
@@ -744,6 +747,7 @@ mod tests {
     /// Личность, названную файлом, без резолвера в адрес перевести нечем; она
     /// не выбрасывается и не отдаётся внутренним именем анализатора, а названа
     /// в `limits`.
+    /// rule: INV.SOURCE.CALL-GRAPH-STATE-IS-NAMED
     #[test]
     fn the_branch_points_outward_and_names_what_it_could_not_address() {
         let at = address("main:CommonModule.Общий.Method.Утилита.Caller");

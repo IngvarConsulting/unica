@@ -1,11 +1,5 @@
 ---
 id: INV.APP.CODE-SEARCH-SOURCE-BOUNDARIES
-check:
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::bsl_analyzer_does_not_broaden_metadata_scoped_search
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::rlm_does_not_broaden_metadata_scoped_search
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_excludes_the_generated_cache_from_the_lexical_corpus
-  - crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_does_not_publish_a_parent_escape_as_a_location
-  - crates/unica-coder/tests/v13_search_integration.rs::canonical_search_is_source_scoped_and_rejects_legacy_call_shape
 ---
 
 # Поставщик не расширяет неподдерживаемую область поиска

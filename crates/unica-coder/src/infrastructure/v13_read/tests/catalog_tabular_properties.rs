@@ -31,6 +31,7 @@ fn section_views(fixture: &RealReaderFixture) -> [Value; 2] {
     [item, detail]
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn catalog_tabular_profile_reaches_public_collection_and_detail_without_writes() {
     let fixture = fixture_with_catalog(CATALOG);
@@ -126,6 +127,7 @@ fn catalog_tabular_profile_reads_each_use_value_without_inventing_hierarchy_rule
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn catalog_tabular_profile_missing_facts_are_not_filled_from_sibling_or_template() {
     let xml = CATALOG
@@ -161,6 +163,7 @@ fn catalog_tabular_profile_missing_facts_are_not_filled_from_sibling_or_template
     assert_eq!(tree_snapshot(&fixture.source), before);
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn catalog_tabular_profile_damage_is_local_to_the_observed_fact() {
     for (field, original, replacements) in [
