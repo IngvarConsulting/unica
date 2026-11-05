@@ -4193,6 +4193,13 @@ pub(crate) mod tests {
         canonical_pretty_json(&contract)
     }
 
+    /// The snapshot file of one tool: its operation and the compared schema.
+    fn native_mutation_snapshot(operation: &str, schema: &Value) -> String {
+        let mut contract = schema.clone();
+        remove_schema_descriptions(&mut contract);
+        canonical_pretty_json(&json!({"operation": operation, "inputSchema": contract}))
+    }
+
     /// Deterministic pretty JSON: the workspace enables `preserve_order`, so
     /// object keys are sorted here instead of relying on map order.
     fn canonical_pretty_json(value: &Value) -> String {
@@ -4415,10 +4422,7 @@ pub(crate) mod tests {
                     ToolHandler::Metadata { operation } => format!("metadata:{operation:?}"),
                     _ => unreachable!(),
                 };
-                let mut schema = input_schema_for_tool(&tool);
-                remove_schema_descriptions(&mut schema);
-                let snapshot =
-                    canonical_pretty_json(&json!({"operation": operation, "inputSchema": schema}));
+                let snapshot = native_mutation_snapshot(&operation, &input_schema_for_tool(&tool));
                 (tool.name.to_string(), snapshot)
             })
             .collect::<BTreeMap<_, _>>();
@@ -4453,7 +4457,11 @@ pub(crate) mod tests {
                 }
             }
             for (name, snapshot) in &actual {
-                let staged = directory.join(format!(".{name}.json.tmp"));
+                let staged = directory.join(format!(
+                    ".{name}.{}.{:?}.json.tmp",
+                    std::process::id(),
+                    std::thread::current().id()
+                ));
                 std::fs::write(&staged, snapshot).expect("stage a snapshot");
                 std::fs::rename(&staged, directory.join(format!("{name}.json")))
                     .expect("publish a snapshot");
@@ -4474,6 +4482,12 @@ pub(crate) mod tests {
                 continue;
             };
             if text == snapshot {
+                continue;
+            }
+            if text.trim_end() == snapshot.trim_end() {
+                problems.push(format!(
+                    "{name}: {name}.json differs only in its final line ending"
+                ));
                 continue;
             }
             let expected = text.lines().collect::<Vec<_>>();
