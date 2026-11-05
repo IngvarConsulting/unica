@@ -1869,7 +1869,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: choiceForm: unexpected type namespace in standard choice form",
+      "refusal": "bad_value: choiceForm: choiceForm supports only a single CatalogRef or DocumentRef",
       "fileAssertions": [
         {
           "path": "src/Catalogs/Валюты.xml",

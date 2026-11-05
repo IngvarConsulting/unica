@@ -52,7 +52,8 @@ fn qualified_name<'a>(
 }
 
 pub(super) fn reference_table(properties: Node<'_, '_>) -> Result<String, String> {
-    let name = configured_type(properties, super::MD)?;
+    const UNSUPPORTED: &str = "choiceForm supports only a single CatalogRef or DocumentRef";
+    let name = configured_type(properties, super::MD).map_err(|_| UNSUPPORTED.to_string())?;
     for (prefix, kind) in [("CatalogRef.", "Catalog"), ("DocumentRef.", "Document")] {
         if let Some(name) = name
             .strip_prefix(prefix)
@@ -61,7 +62,7 @@ pub(super) fn reference_table(properties: Node<'_, '_>) -> Result<String, String
             return Ok(format!("{kind}.{name}"));
         }
     }
-    Err("choiceForm supports only a single CatalogRef or DocumentRef".into())
+    Err(UNSUPPORTED.into())
 }
 
 pub(super) fn validate(payload: &str, table: &str, module: Option<&[u8]>) -> Result<(), String> {
@@ -242,6 +243,7 @@ mod tests {
                 Some("Document.Приход"),
             ),
             ("<v8:Type>xs:string</v8:Type>", None),
+            ("<v8:Type>xs:boolean</v8:Type>", None),
             ("<v8:Type>cfg:EnumRef.Mode</v8:Type>", None),
             (
                 "<v8:Type>cfg:CatalogRef.Валюты</v8:Type><v8:Type>cfg:DocumentRef.Приход</v8:Type>",
@@ -254,10 +256,14 @@ mod tests {
         ] {
             let text = properties(types);
             let doc = Document::parse(&text).unwrap();
-            assert_eq!(
-                reference_table(doc.root_element()).ok().as_deref(),
-                expected
-            );
+            let actual = reference_table(doc.root_element());
+            assert_eq!(actual.as_ref().ok().map(String::as_str), expected);
+            if expected.is_none() {
+                assert_eq!(
+                    actual.unwrap_err(),
+                    "choiceForm supports only a single CatalogRef or DocumentRef"
+                );
+            }
         }
     }
 }
