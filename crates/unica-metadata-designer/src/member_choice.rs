@@ -5,6 +5,7 @@ use unica_metadata::{
     MemberChoiceChanges, MemberChoiceProperty, MetaDiagnostic, MetaDiagnosticCode,
 };
 const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+mod form_profile;
 
 fn bad(property: MemberChoiceProperty, message: impl Into<String>) -> MetaDiagnostic {
     MetaDiagnostic::error(MetaDiagnosticCode::InvalidArguments, message)
@@ -42,12 +43,16 @@ fn validate_form(
     staged: &mut unica_source_contract::proposal::ApplyProposal<'_>,
     value: &str,
     source_kind: unica_source_contract::SourceSetKind,
+    reference_table: &str,
 ) -> Result<(), String> {
     use std::path::Path;
     use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
     use unica_source_designer::layout::metadata_descriptor_relative;
     if value.is_empty() {
         return Ok(());
+    }
+    if source_kind != unica_source_contract::SourceSetKind::Configuration {
+        return Err("standard choice form profile supports Configuration source sets only".into());
     }
     let parts = value.split('.').collect::<Vec<_>>();
     let (kind, owner_name, form_name) = match parts.as_slice() {
@@ -65,6 +70,26 @@ fn validate_form(
     };
     let config = read(Path::new("Configuration.xml"))?;
     let registrations = crate::validation_context::inspect_metadata_registration_image(&config)?;
+    let (table_kind, table_name) = reference_table
+        .split_once('.')
+        .ok_or("expected a reference metadata table")?;
+    if !registrations
+        .registrations
+        .iter()
+        .any(|(k, n)| k == table_kind && unica_metadata::metadata_name_eq(n, table_name))
+    {
+        return Err("field reference table is not registered in Configuration".into());
+    }
+    let table_address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, reference_table)
+        .map_err(|e| e.to_string())?;
+    let table_bytes = read(&metadata_descriptor_relative(&table_address, source_kind)?)?;
+    let table_identity = crate::validation_context::inspect_metadata_image_identity(&table_bytes)
+        .map_err(|e| e.to_string())?;
+    if table_identity.object_type != table_kind
+        || !unica_metadata::metadata_name_eq(&table_identity.object_name, table_name)
+    {
+        return Err("field reference table identity mismatch".into());
+    }
     if !registrations
         .registrations
         .iter()
@@ -126,7 +151,9 @@ fn validate_form(
     {
         return Err("expected managed form payload".into());
     }
-    Ok(())
+    let module_path = payload.with_extension("").join("Module.bsl");
+    let module = staged.read(&module_path).map_err(|e| e.to_string())?;
+    form_profile::validate(payload_text, reference_table, module.as_deref())
 }
 
 pub(crate) fn validate_references(
@@ -221,6 +248,9 @@ pub(crate) fn validate_references(
                             .and_then(|m| m.attribute("uuid"))
                             .map(str::to_owned),
                         n.text().unwrap_or_default().to_owned(),
+                        n.parent()
+                            .and_then(|p| child(p, "Type").ok())
+                            .map(|ty| doc.input_text()[ty.range()].to_owned()),
                     )
                 })
                 .collect::<Vec<_>>()
@@ -247,14 +277,19 @@ pub(crate) fn validate_references(
         }
         if value.is_empty()
             || (!force
-                && previous_forms
-                    .iter()
-                    .any(|(id, old)| id.as_deref() == member.attribute("uuid") && old == value))
+                && previous_forms.iter().any(|(id, old, old_type)| {
+                    id.as_deref() == member.attribute("uuid")
+                        && old == value
+                        && child(properties, "Type").ok().is_some_and(|ty| {
+                            old_type.as_deref() == Some(&doc.input_text()[ty.range()])
+                        })
+                }))
         {
             continue;
         }
         observed(properties, MemberChoiceProperty::Form).map_err(fail)?;
-        validate_form(staged, value, source_kind).map_err(fail)?;
+        let reference_table = form_profile::reference_table(properties).map_err(fail)?;
+        validate_form(staged, value, source_kind, &reference_table).map_err(fail)?;
     }
     Ok(())
 }

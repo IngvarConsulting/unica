@@ -50,7 +50,7 @@
               "values": {
                 "choiceFoldersAndItems": "FoldersAndItems",
                 "choiceHistoryOnInput": "DontUse",
-                "choiceForm": "Catalog.Codes.Form.Choose"
+                "choiceForm": "Catalog.Валюты.Form.ФормаСписка"
               }
             }
           }
@@ -97,7 +97,7 @@
         },
         {
           "pointer": "/data/props/ChoiceForm",
-          "eq": "Catalog.Codes.Form.Choose"
+          "eq": "Catalog.Валюты.Form.ФормаСписка"
         }
       ]
     },
@@ -476,7 +476,7 @@
               "values": {
                 "choiceFoldersAndItems": "FoldersAndItems",
                 "choiceHistoryOnInput": "DontUse",
-                "choiceForm": "Catalog.Codes.Form.Choose"
+                "choiceForm": "Catalog.Валюты.Form.ФормаСписка"
               }
             }
           }
@@ -523,7 +523,7 @@
         },
         {
           "pointer": "/data/props/ChoiceForm",
-          "eq": "Catalog.Codes.Form.Choose"
+          "eq": "Catalog.Валюты.Form.ФормаСписка"
         }
       ]
     },
@@ -902,7 +902,7 @@
               "values": {
                 "choiceFoldersAndItems": "FoldersAndItems",
                 "choiceHistoryOnInput": "DontUse",
-                "choiceForm": "Catalog.Codes.Form.Choose"
+                "choiceForm": "Catalog.Валюты.Form.ФормаСписка"
               }
             }
           }
@@ -949,7 +949,7 @@
         },
         {
           "pointer": "/data/props/ChoiceForm",
-          "eq": "Catalog.Codes.Form.Choose"
+          "eq": "Catalog.Валюты.Form.ФормаСписка"
         }
       ]
     },
@@ -1328,7 +1328,7 @@
               "values": {
                 "choiceFoldersAndItems": "FoldersAndItems",
                 "choiceHistoryOnInput": "DontUse",
-                "choiceForm": "Catalog.Codes.Form.Choose"
+                "choiceForm": "Catalog.Валюты.Form.ФормаСписка"
               }
             }
           }
@@ -1375,7 +1375,7 @@
         },
         {
           "pointer": "/data/props/ChoiceForm",
-          "eq": "Catalog.Codes.Form.Choose"
+          "eq": "Catalog.Валюты.Form.ФормаСписка"
         }
       ]
     },
@@ -1779,6 +1779,97 @@
         "refused"
       ],
       "refusal": "stale_revision: retained apply preimage changed: Catalogs/Валюты.xml; input `Catalogs/Валюты.xml`: source write target; the plan retains its original state to prevent overwriti",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.current"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "choiceForm": "Document.Приход.Form.Choose"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: choiceForm: standard choice form main table does not match the field reference type",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.current"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "choiceForm": "Catalog.Codes.Form.Choose"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: choiceForm: executable BSL is outside the standard choice form profile",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.current"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Attribute.ОсновнаяВалюта",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "boolean"
+                    }
+                  ]
+                },
+                "fillValue": {
+                  "kind": "boolean",
+                  "value": false
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: choiceForm: unexpected type namespace in standard choice form",
       "fileAssertions": [
         {
           "path": "src/Catalogs/Валюты.xml",

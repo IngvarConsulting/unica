@@ -130,6 +130,8 @@ fn member_choice_refuses_invalid_values_forms_context_and_malformed_preimage() {
             json!({"choiceFoldersAndItems":"All"}),
             json!({"choiceForm":"Catalog.Валюты.Form.Missing"}),
             json!({"choiceForm":"Catalog.Валюты"}),
+            json!({"choiceForm":"Catalog.Codes.Form.Choose"}),
+            json!({"choiceForm":"Document.Приход.Form.Choose"}),
         ] {
             let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
             let result = call(
@@ -182,6 +184,143 @@ fn member_choice_refuses_invalid_values_forms_context_and_malformed_preimage() {
             before
         );
     }
+    std::fs::write(&path, &original).unwrap();
+    let form_path = fixture
+        .source
+        .join("Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml");
+    let form = std::fs::read_to_string(&form_path).unwrap();
+    for damaged in [
+        form.replace(
+            "<ChoiceMode>true</ChoiceMode>",
+            "<ChoiceMode>false</ChoiceMode>",
+        ),
+        form.replace(
+            "<ManualQuery>false</ManualQuery>",
+            "<ManualQuery>true</ManualQuery>",
+        ),
+        form.replace(
+            "</Form>",
+            "<Events><Event name=\"ChoiceProcessing\">CustomChoice</Event></Events></Form>",
+        ),
+        form.replace(
+            "</Form>",
+            "<CommandName>CommonCommand.CustomChoice</CommandName></Form>",
+        ),
+    ] {
+        std::fs::write(&form_path, damaged).unwrap();
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        let result = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            request(
+                CASES[0].0,
+                CASES[0].1,
+                json!({"choiceForm":"Catalog.Валюты.Form.ФормаСписка"}),
+            ),
+        );
+        assert!(
+            !result.ok && result.summary.contains("choiceForm"),
+            "{result:?}"
+        );
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
+    }
+    std::fs::write(&form_path, form).unwrap();
+    let module = form_path.with_extension("").join("Module.bsl");
+    std::fs::create_dir_all(module.parent().unwrap()).unwrap();
+    std::fs::write(&module, "Процедура Выбор()\nКонецПроцедуры\n").unwrap();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let result = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        request(
+            CASES[0].0,
+            CASES[0].1,
+            json!({"choiceForm":"Catalog.Валюты.Form.ФормаСписка"}),
+        ),
+    );
+    assert!(
+        !result.ok && result.summary.contains("choiceForm"),
+        "{result:?}"
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
+    std::fs::remove_file(module).unwrap();
+    publish(
+        &runtime,
+        &fixture,
+        request(
+            CASES[0].0,
+            CASES[0].1,
+            json!({"choiceForm":"Catalog.Валюты.Form.ФормаСписка"}),
+        ),
+    );
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let result = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        request(
+            CASES[0].0,
+            CASES[0].1,
+            json!({"type":{"variants":[{"kind":"boolean"}]},"fillValue":{"kind":"boolean","value":false}}),
+        ),
+    );
+    assert!(
+        !result.ok && result.summary.contains("choiceForm"),
+        "{result:?}"
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
+    publish(
+        &runtime,
+        &fixture,
+        request(
+            CASES[0].0,
+            CASES[0].1,
+            json!({"choiceForm":"","type":{"variants":[{"kind":"boolean"}]},"fillValue":{"kind":"boolean","value":false}}),
+        ),
+    );
+    // Form ownership does not determine its selected type: a standard list
+    // may belong to Codes while selecting currency references.
+    let cross_owner = Fixture::new("workspace-member-choice");
+    std::fs::copy(
+        cross_owner
+            .source
+            .join("Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml"),
+        cross_owner
+            .source
+            .join("Catalogs/Codes/Forms/Choose/Ext/Form.xml"),
+    )
+    .unwrap();
+    std::fs::write(
+        cross_owner
+            .source
+            .join("Catalogs/Codes/Forms/Choose/Ext/Form/Module.bsl"),
+        "// Standard list without custom handlers\n",
+    )
+    .unwrap();
+    publish(
+        &runtime,
+        &cross_owner,
+        request(
+            CASES[0].0,
+            CASES[0].1,
+            json!({"choiceForm":"Catalog.Codes.Form.Choose"}),
+        ),
+    );
+    assert_eq!(
+        view(&runtime, &cross_owner, CASES[0].0)["props"]["ChoiceForm"],
+        "Catalog.Codes.Form.Choose"
+    );
 }
 
 #[test]
@@ -191,6 +330,7 @@ fn member_choice_saved_token_guards_form_payload_registration_and_owner() {
         "Catalogs/Валюты.xml",
         "Catalogs/Валюты/Forms/ФормаСписка.xml",
         "Catalogs/Валюты/Forms/ФормаСписка/Ext/Form.xml",
+        "Catalogs/Валюты/Forms/ФормаСписка/Ext/Form/Module.bsl",
     ] {
         let runtime = runtime();
         let fixture = Fixture::new("workspace-member-choice");
@@ -212,7 +352,8 @@ fn member_choice_saved_token_guards_form_payload_registration_and_owner() {
         );
         let token = preview.data.unwrap()["executionToken"].clone();
         let path = fixture.source.join(dependency);
-        let mut bytes = std::fs::read(&path).unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = std::fs::read(&path).unwrap_or_default();
         bytes.extend_from_slice(b"\n");
         std::fs::write(&path, bytes).unwrap();
         let concurrent = unica_workspace::test_support::tree_snapshot(&fixture.source);
@@ -231,7 +372,7 @@ fn member_choice_saved_token_guards_form_payload_registration_and_owner() {
 }
 
 #[test]
-fn member_choice_checks_final_form_after_later_removal_including_noop() {
+fn member_choice_rejects_missing_form_on_assignment_including_noop() {
     for at in [
         CASES[0].0,
         "main:Catalog.Валюты.TabularSection.представления.Attribute.кодязыка",
@@ -290,7 +431,7 @@ fn member_choice_exact_scope_preserves_same_named_neighbor_and_late_failure_is_a
         request(
             CASES[0].0,
             CASES[0].1,
-            json!({"choiceForm":"Catalog.Codes.Form.Choose"}),
+            json!({"choiceForm":"Catalog.Валюты.Form.ФормаСписка"}),
         ),
     );
     let before = unica_workspace::test_support::tree_snapshot(&fixture.source);

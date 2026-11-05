@@ -305,6 +305,8 @@ fn add_member_choice_fields(fields: &mut Map<String, Value>) {
         let mut shape = json!({"type":"string"});
         if let Some(values) = property.values() {
             shape["enum"] = json!(values);
+        } else {
+            shape["description"] = json!("Configuration only: registered managed standard list for one CatalogRef/DocumentRef with table ChoiceMode=true; no executable form BSL or custom commands; empty string clears the setting");
         }
         fields.insert(property.argument().into(), shape);
     }
