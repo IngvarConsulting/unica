@@ -363,7 +363,7 @@ fn decode_with_contract(
                         }
                     }
                 }
-                PropertiesSite::Metadata(kind) => {
+                PropertiesSite::Metadata { kind, .. } => {
                     // Preserve Metadata's existing conversion diagnostics and
                     // structured Type model, then verify the shared shape.
                     let changes =
@@ -377,6 +377,9 @@ fn decode_with_contract(
                         .iter()
                         .filter(|spec| spec.allowed_kinds.contains(&kind))
                     {
+                        if values_reader.shape.property(spec.public_name).is_none() {
+                            continue;
+                        }
                         values_reader.field(
                             spec.public_name,
                             spec.value_kind == MetaPropertyValueKind::UnsignedInteger,
@@ -480,8 +483,11 @@ mod tests {
             &["main"],
         )
         .unwrap();
-        let site = PropertiesSite::from_address(&address)
-            .expect("an existing document numerator has a property write profile");
+        let site = PropertiesSite::from_address(
+            &address,
+            unica_source_contract::SourceSetKind::Configuration,
+        )
+        .expect("an existing document numerator has a property write profile");
         for values in [
             json!({"NumberType":"Number"}),
             json!({"NumberLength":9}),
@@ -543,7 +549,10 @@ mod tests {
     #[test]
     fn every_current_metadata_property_uses_its_owner_schema_and_typed_value() {
         for kind in MetadataKind::ALL {
-            let site = PropertiesSite::Metadata(*kind);
+            let site = PropertiesSite::Metadata {
+                kind: *kind,
+                source_kind: unica_source_contract::SourceSetKind::Configuration,
+            };
             let contract = PropertiesOperation::Set.contract(site);
             let oracle = jsonschema::validator_for(&contract.schema).unwrap();
             for spec in METADATA_PROPERTY_SPECS
@@ -700,7 +709,10 @@ mod tests {
 
     #[test]
     fn metadata_numeric_spellings_and_structured_reference_types_survive_conversion() {
-        let site = PropertiesSite::Metadata(MetadataKind::Catalog);
+        let site = PropertiesSite::Metadata {
+            kind: MetadataKind::Catalog,
+            source_kind: unica_source_contract::SourceSetKind::Configuration,
+        };
         for spelling in ["0", "0.0", "0e0", "4294967295", "4294967295.0"] {
             let number: Value = serde_json::from_str(spelling).unwrap();
             let PropertiesIntent::Metadata(changes) =
@@ -730,9 +742,14 @@ mod tests {
             );
         }
         let args = json!({"values":{"Type":{"variants":[{"kind":"reference","metadataPath":"Catalog.Items"}]}}});
-        let PropertiesIntent::Metadata(changes) =
-            decode(PropertiesSite::Metadata(MetadataKind::Constant), args).unwrap()
-        else {
+        let PropertiesIntent::Metadata(changes) = decode(
+            PropertiesSite::Metadata {
+                kind: MetadataKind::Constant,
+                source_kind: unica_source_contract::SourceSetKind::Configuration,
+            },
+            args,
+        )
+        .unwrap() else {
             unreachable!()
         };
         let MetaPropertyValue::Type(ty) = &changes.entries()[0].1 else {
@@ -743,7 +760,10 @@ mod tests {
         );
         assert_eq!(
             decode(
-                PropertiesSite::Metadata(MetadataKind::Constant),
+                PropertiesSite::Metadata {
+                    kind: MetadataKind::Constant,
+                    source_kind: unica_source_contract::SourceSetKind::Configuration
+                },
                 json!({"values":{"Type":{"variants":[{"kind":"boolean","extra":true}]}}})
             )
             .unwrap_err()
