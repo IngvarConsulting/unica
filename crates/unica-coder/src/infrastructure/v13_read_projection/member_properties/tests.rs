@@ -136,27 +136,39 @@ fn catalog_tabular_provider_profile_does_not_escape_to_other_owners_or_nested_at
     );
     assert_profile_properties_absent(&node);
 
-    for at in [
-        "main:Catalog.Items.Attribute.Header",
-        "main:Catalog.Items.TabularSection.Lines.Attribute.Column",
+    for (at, collection, expected_use) in [
+        (
+            "main:Catalog.Items.Attribute.Header",
+            false,
+            Some("ForItem"),
+        ),
+        (
+            "main:Catalog.Items.TabularSection.Lines.Attribute.Column",
+            false,
+            None,
+        ),
+        ("main:Catalog.Items.Attribute", true, Some("ForItem")),
+        (
+            "main:Catalog.Items.TabularSection.Lines.Attribute",
+            true,
+            None,
+        ),
     ] {
         let node = project(
             at,
             provider_payload(observed_properties()),
             Some(SourceSetKind::Configuration),
         );
-        assert_profile_properties_absent(&node);
-    }
-    for at in [
-        "main:Catalog.Items.Attribute",
-        "main:Catalog.Items.TabularSection.Lines.Attribute",
-    ] {
-        let collection = project(
-            at,
-            provider_payload(observed_properties()),
-            Some(SourceSetKind::Configuration),
+        let node = if collection { &node["items"][0] } else { &node };
+        assert!(
+            node["props"].get("LineNumberLength").is_none(),
+            "{at}: {node}"
         );
-        assert_profile_properties_absent(&collection["items"][0]);
+        assert_eq!(
+            node["props"].get("Use"),
+            expected_use.map(Value::from).as_ref(),
+            "{at}: {node}",
+        );
     }
 }
 
