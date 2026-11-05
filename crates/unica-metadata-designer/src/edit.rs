@@ -2668,6 +2668,32 @@ where
         .descendants()
         .find(|node| node.is_element() && node.range().start == source_range.start)
         .expect("the found member is an element of the same text");
+    let ambiguous_name = |parent: roxmltree::Node<'_, '_>, tag: &str, name: &str| {
+        unica_xml_format::read::child_elements(parent, tag)
+            .into_iter()
+            .filter(|node| {
+                meta_edit_child_object_name(*node)
+                    .is_some_and(|candidate| metadata_name_eq(&candidate, name))
+            })
+            .take(2)
+            .count()
+            > 1
+    };
+    let parent = source.parent().expect("a member has its collection");
+    if ambiguous_name(parent, tag, &source_name) {
+        return Err(unsupported("the source member name is ambiguous"));
+    }
+    if let Some(section_name) = scope {
+        let section = parent
+            .parent()
+            .expect("a scoped member has its tabular section");
+        if section
+            .parent()
+            .is_some_and(|owner| ambiguous_name(owner, "TabularSection", section_name))
+        {
+            return Err(unsupported("the source tabular section name is ambiguous"));
+        }
+    }
     let elements = source
         .children()
         .filter(|child| child.is_element())
@@ -2686,7 +2712,7 @@ where
     if source
         .attributes()
         .any(|attribute| attribute.name() != "uuid")
-        || properties.descendants().skip(1).any(|node| {
+        || properties.descendants().any(|node| {
             node.is_element()
                 && node
                     .attributes()
@@ -2721,9 +2747,11 @@ where
             format!("{object_kind}.{object_name}.TabularSection.{section}.{tag}.{source_name}")
         }
         None => format!("{object_kind}.{object_name}.{tag}.{source_name}"),
-    };
+    }
+    .to_lowercase();
     // A longer name such as `…Attribute.СвойствоДоп` is a neighbour.
     let names_itself = |value: &str| {
+        let value = value.to_lowercase();
         value.match_indices(own_path.as_str()).any(|(at, _)| {
             !value[at + own_path.len()..]
                 .chars()
@@ -2766,7 +2794,6 @@ where
     copy.push_str(&text[name_range.end..]);
     // The copy follows the last member of the collection with the layout
     // observed in front of it.
-    let parent = source.parent().expect("a member has its collection");
     let last = unica_xml_format::read::child_elements(parent, tag)
         .into_iter()
         .last()
