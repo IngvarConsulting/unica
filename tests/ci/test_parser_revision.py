@@ -95,6 +95,7 @@ class ParserRevisionTests(unittest.TestCase):
         return "b" * 40 if current == "a" * 40 else "a" * 40
 
     def test_repository_parser_and_analyzer_sources_are_aligned(self) -> None:
+        """rule: INV.ANALYSIS.PARSER-ANALYZER-REVISION"""
         self.assertEqual(revision_errors(self.cargo, self.lock, self.tools, self.consumer), [])
 
     def test_only_the_parser_component_consumes_the_upstream_packages(self) -> None:

@@ -248,6 +248,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
     #[test]
     fn rejects_numeric_equivalents_of_the_exact_supported_literal() {
         for raw in ["2.20.0", "02.20", "2.020"] {

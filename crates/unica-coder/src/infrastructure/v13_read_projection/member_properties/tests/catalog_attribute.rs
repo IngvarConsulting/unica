@@ -177,6 +177,7 @@ fn catalog_attribute_provider_requires_admitted_source_marker_and_owner() {
     assert_absent(&node);
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn catalog_attribute_provider_keeps_contexts_closed_and_ignores_raw_item_keys() {
     for at in [

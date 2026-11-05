@@ -1,6 +1,5 @@
 ---
 id: INV.PKG.STARTUP-STAGE-RECORD
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/927
 ---
 

@@ -1247,6 +1247,7 @@ mod tests {
         bytes
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn production_catalog_creates_past_4096_and_reopens_exactly() {
         let root = tempfile::tempdir().expect("temporary root");
@@ -1290,6 +1291,7 @@ mod tests {
         assert_eq!(reopened.get(created.task_id, budget()).unwrap(), created);
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn inspection_cleans_staging_past_former_directory_bound() {
         let root = tempfile::tempdir().expect("temporary root");
@@ -1340,6 +1342,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn corrupt_committed_task_preserves_orphan_before_cleanup() {
         let root = tempfile::tempdir().unwrap();
@@ -1370,6 +1373,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn second_pass_refuses_replaced_task_staging_without_deleting_either_file() {
         let root = tempfile::tempdir().unwrap();
@@ -1396,6 +1400,7 @@ mod tests {
         assert_eq!(fs::read(root_path.join(".saved.tmp")).unwrap(), b"original");
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn second_pass_refuses_task_staging_symlink_and_preserves_external_bytes() {
         let root = tempfile::tempdir().unwrap();
@@ -1456,6 +1461,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
     fn open_inspect_only_preserves_nonterminal_bytes_and_catalogues_exact_state() {
         let root = tempfile::tempdir().expect("temporary v5 root");
@@ -1573,6 +1579,7 @@ mod tests {
     /// wire frame. A record exactly at the limit persists and reads back; one
     /// byte over is refused and the prior record stays as it was, with no
     /// staged file left.
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
     fn terminal_record_at_the_limit_persists_and_one_byte_over_keeps_the_prior_record() {
         assert_eq!(
@@ -1635,6 +1642,7 @@ mod tests {
         assert_eq!(store.get(working.task_id, deadline()).unwrap(), working);
     }
 
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
     fn create_exact_uses_preallocated_identity_and_is_idempotent_only_for_exact_readback() {
         let root = tempfile::tempdir().expect("temporary v5 root");
@@ -1770,6 +1778,7 @@ mod tests {
         assert_eq!(store.get(created.task_id, deadline()).unwrap(), working);
     }
 
+    /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
     fn terminal_records_remain_until_exact_retirement_and_not_found_is_typed() {
         let root = tempfile::tempdir().expect("temporary v5 root");
@@ -1812,6 +1821,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_task_commit_preserves_exact_terminal_cas_and_reopens() {
         let root = tempfile::tempdir().unwrap();
@@ -1867,6 +1877,7 @@ mod tests {
         assert_eq!(reopened.get(created.task_id, unlimited).unwrap(), winner);
     }
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn body_read_hint_survives_completed_task_reopen_without_rewriting() {
         use crate::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
@@ -1934,6 +1945,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_task_visible_io_failure_is_still_commit_uncertain() {
         let root = tempfile::tempdir().unwrap();
@@ -1961,6 +1973,7 @@ mod tests {
         assert_eq!(reopened.get(id, unlimited).unwrap(), visible);
     }
 
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
     fn post_publish_sync_failure_is_commit_uncertain_with_exact_visible_readback() {
         let root = tempfile::tempdir().expect("temporary v5 root");
@@ -1991,6 +2004,7 @@ mod tests {
         assert_eq!(store.get(task_id, deadline()).unwrap().task_id, task_id);
     }
 
+    /// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
     #[test]
     fn completed_terminal_cas_reconciles_commit_uncertain_by_exact_readback() {
         let root = tempfile::tempdir().expect("temporary v5 root");
@@ -2175,6 +2189,7 @@ mod tests {
         assert_eq!(store.get(expected.task_id, deadline()).unwrap(), changed);
     }
 
+    /// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
     #[test]
     fn staged_terminal_retry_refuses_foreign_successor_without_rewriting_bytes() {
         for field in ["foreign identity", "receipt identity"] {
@@ -2182,6 +2197,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
     #[test]
     fn staged_terminal_cas_reconciles_uncertain_commit_by_exact_successor() {
         let root = tempfile::tempdir().unwrap();
@@ -2244,6 +2260,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
     #[test]
     fn staged_terminal_retry_refuses_changed_successor_metadata_without_rewriting_bytes() {
         for field in [
@@ -2260,6 +2277,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[test]
     fn completed_provider_receipt_survives_a_late_task_cancel_request() {
         let root = tempfile::tempdir().unwrap();
@@ -2312,6 +2330,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DAEMON-TERMINAL-RECONCILIATION
     #[test]
     fn terminal_cas_rejects_foreign_stale_invalid_state_and_different_winner() {
         let root = tempfile::tempdir().expect("temporary v5 root");
@@ -2407,6 +2426,7 @@ mod tests {
         assert_eq!(store.get(created.task_id, deadline()).unwrap(), terminal);
     }
 
+    /// rule: INV.APP.DAEMON-TASK-RECOVERY
     #[test]
     fn recovery_terminalizes_queued_without_starting_domain_work() {
         let root = tempfile::tempdir().expect("temporary v5 root");
@@ -2457,6 +2477,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.DAEMON-TASK-RECOVERY
     #[test]
     fn recovered_begun_task_is_created_working_and_keeps_cancel_intent() {
         let root = tempfile::tempdir().expect("temporary v5 root");
