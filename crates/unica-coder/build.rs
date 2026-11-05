@@ -9,12 +9,14 @@ use std::path::{Path, PathBuf};
 
 const TEST_MODULES: &str = "src/infrastructure/daemon/metadata_can_tests";
 const GENERATED: &str = "metadata_can_tests_modules.rs";
-/// Lowercase Rust keywords, strict and reserved: `mod <keyword>;` does not compile.
+/// Lowercase Rust keywords, strict and reserved, and `_`: `mod <keyword>;` does
+/// not compile. `gen` is reserved from edition 2024; rejecting it now keeps the
+/// module names valid across an edition change.
 const KEYWORDS: &[&str] = &[
-    "abstract", "as", "async", "await", "become", "box", "break", "const", "continue", "crate",
-    "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if", "impl",
-    "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub", "ref",
-    "return", "self", "static", "struct", "super", "trait", "true", "try", "type", "typeof",
+    "_", "abstract", "as", "async", "await", "become", "box", "break", "const", "continue",
+    "crate", "do", "dyn", "else", "enum", "extern", "false", "final", "fn", "for", "gen", "if",
+    "impl", "in", "let", "loop", "macro", "match", "mod", "move", "mut", "override", "priv", "pub",
+    "ref", "return", "self", "static", "struct", "super", "trait", "true", "try", "type", "typeof",
     "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
 ];
 
