@@ -1,8 +1,5 @@
 ---
 id: INV.SOURCE.XDTO-EXPANDED-TYPE-NAME
-check:
-  - crates/unica-metadata-designer/tests/platform/info_projection.rs::expanded_xdto_names_do_not_depend_on_the_xml_prefix
-  - crates/unica-metadata-designer/tests/platform/info_projection.rs::web_service_details_preserve_packages_operations_and_expanded_qnames
 ---
 
 # Префикс XML не меняет имя типа XDTO

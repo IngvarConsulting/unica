@@ -695,6 +695,7 @@ mod tests {
         SourceTargetErrorCode, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
 
+    /// rule: INV.SOURCE.LOGICAL-IDENTITY
     #[test]
     fn source_target_profile_emits_canonical_english_kind_tokens() {
         let address = MetadataAddress::parse(
@@ -707,6 +708,7 @@ mod tests {
         assert_eq!(address.target_kind(), TargetKind::Module);
     }
 
+    /// rule: INV.SOURCE.LOGICAL-IDENTITY
     #[test]
     fn source_target_profile_normalizes_only_registered_exact_russian_kind_aliases() {
         let address = MetadataAddress::parse(
@@ -727,6 +729,7 @@ mod tests {
         assert_eq!(error.code, SourceTargetErrorCode::MetadataAddressInvalid);
     }
 
+    /// rule: INV.SOURCE.LOGICAL-IDENTITY
     #[test]
     fn source_target_profile_preserves_application_name_case() {
         let address = MetadataAddress::parse(
@@ -867,6 +870,7 @@ mod tests {
         assert_eq!(address.target_kind(), TargetKind::Module);
     }
 
+    /// rule: INV.SOURCE.LOGICAL-IDENTITY
     #[test]
     fn source_target_and_resolved_target_serialize_only_logical_identity() {
         let address =

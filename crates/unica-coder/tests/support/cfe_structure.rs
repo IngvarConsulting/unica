@@ -48,6 +48,7 @@ fn configuration(children: &str, extension: bool) -> String {
 
 // Ported from #621 to the current check/task protocol. Inputs are deliberately
 // damaged on disk: the checker must diagnose existing sources without repairing them.
+/// rule: CTR.FORMAT.CFE-BORROWED-STRUCTURE
 #[test]
 fn canonical_stdio_checks_borrowed_cfe_structure_without_writes() {
     let root = tempfile::tempdir().unwrap();
@@ -133,6 +134,7 @@ fn canonical_stdio_checks_borrowed_cfe_structure_without_writes() {
     mcp.finish();
 }
 
+/// rule: CTR.FORMAT.CFE-BORROWED-STRUCTURE
 #[test]
 fn canonical_stdio_borrow_refresh_preserves_module_and_identity() {
     let root = tempfile::tempdir().unwrap();

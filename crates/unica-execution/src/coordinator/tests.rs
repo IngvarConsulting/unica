@@ -63,6 +63,7 @@ fn begin(c: &mut ExecutionCoordinator, accepted: AcceptedPermit) -> RunPermit {
     }
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn accepted_and_begin_commits_are_required_before_a_single_run_permit() {
     let mut c = coordinator();
@@ -170,6 +171,7 @@ fn queued_factual_outcome_survives_cancel_expose_and_known_rollback() {
     assert!(record.public_task());
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn metadata_conflict_redecides_factual_outcome_without_new_execution() {
     let mut c = coordinator();
@@ -202,6 +204,7 @@ fn metadata_conflict_redecides_factual_outcome_without_new_execution() {
         ReadPublication::Task(permit) if permit.outcome() == &result));
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn exact_readback_and_duplicate_callback_never_repeat_the_run_permit() {
     let mut c = coordinator();
@@ -397,6 +400,7 @@ fn admission_refusal_retains_accepted_identity_without_begin_or_run() {
     ));
 }
 
+/// rule: INV.APP.RECEIPT-ACKNOWLEDGEMENT
 #[test]
 fn first_acknowledgement_is_immutable_across_duplicates_and_reopen() {
     let mut c = coordinator();
@@ -435,6 +439,7 @@ fn first_acknowledgement_is_immutable_across_duplicates_and_reopen() {
     assert!(restored.inspect(&k).unwrap().compacted());
 }
 
+/// rule: INV.APP.EXECUTION-DELIVERY
 #[test]
 fn publication_requires_committed_outcome_exact_key_and_live_direct_right() {
     let mut c = coordinator();
