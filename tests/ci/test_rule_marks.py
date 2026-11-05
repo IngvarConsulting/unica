@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -204,6 +205,17 @@ class RuleMarkMigrationTests(unittest.TestCase):
             )
 
 
+def committed(root: Path) -> None:
+    """Индекс читает дерево модулей по ревизии `HEAD`, как сборщик на сайте."""
+
+    for command in (
+        ["git", "init", "-q"],
+        ["git", "add", "-A"],
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "fixture"],
+    ):
+        subprocess.run(command, cwd=root, check=True, capture_output=True)
+
+
 class RuleLabelTests(unittest.TestCase):
     def test_report_entries_receive_the_rules_of_their_tests(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -211,11 +223,17 @@ class RuleLabelTests(unittest.TestCase):
             for rule_id in ("INV.A.ONE", "INV.A.TWO", "INV.A.FILE", "INV.A.MODULE", "INV.A.MACRO", "INV.A.CLASS"):
                 rule(root, rule_id)
             (root / "crates/a/src/feature").mkdir(parents=True)
+            (root / "crates/a/Cargo.toml").write_text('[package]\nname = "a"\n', encoding="utf-8")
+            (root / "crates/a/src/lib.rs").write_text("mod feature;\n", encoding="utf-8")
+            (root / "crates/a/src/feature/mod.rs").write_text("mod part;\n", encoding="utf-8")
             (root / "crates/a/src/feature/part.rs").write_text(RUST, encoding="utf-8")
+            # Unreached files compile into no test and carry no label.
+            (root / "crates/a/src/orphan.rs").write_text("/// rule: INV.A.ONE\n#[test]\nfn top() {}\n", encoding="utf-8")
             (root / "crates/a/tests").mkdir(parents=True)
             (root / "crates/a/tests/flow.rs").write_text("/// rule: INV.A.ONE\n#[test]\nfn works() {}\n", encoding="utf-8")
             (root / "tests/ci").mkdir(parents=True)
             (root / "tests/ci/test_x.py").write_text(PYTHON, encoding="utf-8")
+            committed(root)
             index = rule_marks.RuleIndex(root)
 
             def entry(language: str, suite: str, full_name: str) -> dict:
@@ -245,7 +263,7 @@ class RuleLabelTests(unittest.TestCase):
             )
             (crate / "src/lib.rs").write_text(
                 '#[path = "impl/server.rs"] mod server;\n'
-                'mod inc { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/included.rs")); }\n',
+                'mod inc { include!("included.rs"); }\n',
                 encoding="utf-8",
             )
             # A `#[path]` file keeps its child modules next to itself.
@@ -254,6 +272,7 @@ class RuleLabelTests(unittest.TestCase):
             (crate / "src/included.rs").write_text("/// rule: INV.A.ONE\n#[test]\nfn inc_t() {}\n", encoding="utf-8")
             (crate / "tests/flow.rs").write_text("/// rule: INV.A.ONE\n#[test]\nfn works() {}\n", encoding="utf-8")
             (crate / "tests/second.rs").write_text("#[test]\nfn works() {}\n", encoding="utf-8")
+            committed(root)
             index = rule_marks.RuleIndex(root)
 
             def rules(binary: str, name: str) -> list[str]:

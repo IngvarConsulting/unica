@@ -15,7 +15,7 @@ from __future__ import annotations
 import ast
 import json
 import re
-import tomllib
+import sys
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -165,13 +165,7 @@ def rust_items(source: str) -> list[RustItem]:
             head, is_test, marks = header(line)
             items.append(RustItem("fn", m.group(3), modules, line, head, is_test, marks, None, tuple(lines_of_marks)))
             continue
-        if m.group(4) == "include":
-            found = re.match(r'\s*(concat!\s*\(\s*env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*)?"([^"]+)"', source[m.end():m.end() + 300])
-            if found:
-                # Путь от каталога пакета отмечен префиксом `@crate`.
-                target = ("@crate" if found.group(1) else "") + found.group(2)
-                items.append(RustItem("include", found.group(2), modules, line, line, False, (), target))
-        elif m.group(4) and m.group(4) not in {"macro_rules", "include", "include_str", "concat", "format", "vec", "assert", "assert_eq", "assert_ne", "println", "panic", "write", "writeln", "json", "matches", "debug_assert"}:
+        if m.group(4) and m.group(4) not in {"macro_rules", "include", "include_str", "concat", "format", "vec", "assert", "assert_eq", "assert_ne", "println", "panic", "write", "writeln", "json", "matches", "debug_assert"}:
             # Имя теста — первый аргумент вызова макроса.
             rest = source[m.end():m.end() + 400]
             rest = re.sub(r"^\s*(?:#\[[^\]]*\]\s*)*", "", rest)
@@ -550,137 +544,45 @@ def migrate(root: Path) -> tuple[set[tuple[str, str]], set[tuple[str, str]], lis
 # --- Метки отчёта ----------------------------------------------------------
 
 
-def _rust_module_path(relative: str) -> tuple[str, tuple[str, ...]] | None:
-    """Пакет и модульный путь файла по раскладке Cargo; `None` вне `crates/`."""
+def _case_prefixes(root: Path, paths: set[str]) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
+    """(цель, модульный путь) каждого файла, как их называет nextest.
 
-    parts = relative.split("/")
-    if len(parts) < 4 or parts[0] != "crates":
-        return None
-    package, area, rest = parts[1], parts[2], parts[3:]
-    stem = rest[-1][:-3]
-    if area == "src":
-        modules = [*rest[:-1], stem]
-        if stem in ("lib", "main", "mod"):
-            modules = modules[:-1]
-        return package, tuple(modules)
-    if area == "tests":
-        # Цель интеграционного теста — файл верхнего уровня `tests/`.
-        return f"{package}::{stem}" if len(rest) == 1 else package, ()
-    return package, ()
-
-
-def _declared_targets(crate: Path, package: str) -> list[tuple[Path, str]]:
-    """Корни целей `tests/` и `src/bin/`: `[[test]]`/`[[bin]]` и автообнаружение Cargo."""
-
-    manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
-    roots: list[tuple[Path, str]] = []
-    declared: set[Path] = set()
-    for section, directory in (("test", "tests"), ("bin", "src/bin")):
-        for target in manifest.get(section, []):
-            name = target.get("name")
-            path = crate / target.get("path", f"{directory}/{name}.rs")
-            if name:
-                roots.append((path, f"{package}::{name}"))
-                declared.add(path.resolve())
-    autotests = manifest.get("package", {}).get("autotests", True)
-    for section, directory, automatic in (("test", "tests", autotests), ("bin", "src/bin", True)):
-        if not automatic:
-            continue
-        for path in sorted((crate / directory).glob("*.rs")):
-            if path.resolve() not in declared:
-                roots.append((path, f"{package}::{path.stem}"))
-    return roots
-
-
-def crate_modules(root: Path) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
-    """Модульные пути файлов: обход крейта от корней по `mod`, `#[path]`, `include!`.
-
-    Возвращает для файла список (цель, модули): цель — пакет для `src/` или
-    `пакет::файл` для корня интеграционного теста. Файл может входить в
-    несколько мест, если его подключают дважды.
+    Дерево модулей и цели строит `removed_tests.Packages` по ревизии `HEAD`:
+    `Cargo.toml`, `mod`, `#[path]`, `include!` и модули, которые объявляет
+    `build.rs`. Так метки и проверка удалённых тестов читают одно дерево.
     """
 
-    result: dict[str, list[tuple[str, tuple[str, ...]]]] = {}
-    for manifest in sorted((root / "crates").glob("*/Cargo.toml")):
-        crate = manifest.parent
-        package = crate.name
-        roots: list[tuple[Path, str]] = []
-        for name in ("src/lib.rs", "src/main.rs"):
-            if (crate / name).is_file():
-                roots.append((crate / name, package))
-        roots += _declared_targets(crate, package)
-        seen: set[tuple[Path, tuple[str, ...]]] = set()
-        queue: list[tuple[Path, str, tuple[str, ...], bool]] = [(path, target, (), True) for path, target in roots]
-        while queue:
-            path, target, base, owns_dir = queue.pop()
-            path = path.resolve()
-            if (path, base) in seen or not path.is_file():
-                continue
-            seen.add((path, base))
-            try:
-                relative = path.relative_to(root.resolve()).as_posix()
-            except ValueError:
-                continue
-            result.setdefault(relative, []).append((target, base))
-            source = path.read_text(encoding="utf-8", errors="replace")
-            # Каталог дочерних модулей: у lib.rs, main.rs, mod.rs и корней
-            # тестов — свой каталог, у прочих файлов — каталог по имени файла.
-            child_dir = path.parent if owns_dir else path.parent / path.stem
-            for item in rust_items(source):
-                if item.kind == "modfile":
-                    modules = base + item.modules + (item.name,)
-                    if item.target:
-                        # `#[path]` отсчитывается от каталога файла, а внутри
-                        # встроенного модуля — от каталога этого модуля.
-                        anchor = child_dir.joinpath(*item.modules) if item.modules else path.parent
-                        # Файл по `#[path]` держит дочерние модули в своём
-                        # каталоге, как `mod.rs`.
-                        queue.append((anchor / item.target, target, modules, True))
-                    else:
-                        directory = child_dir.joinpath(*item.modules)
-                        for candidate, owns in ((directory / f"{item.name}.rs", False), (directory / item.name / "mod.rs", True)):
-                            if candidate.is_file():
-                                queue.append((candidate, target, modules, owns))
-                                break
-                elif item.kind == "include" and item.target:
-                    if item.target.startswith("@crate"):
-                        included = crate / item.target[len("@crate"):].lstrip("/")
-                    else:
-                        included = path.parent / item.target
-                    queue.append((included, target, base + item.modules, False))
-    return result
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import removed_tests  # noqa: PLC0415
+
+    packages = removed_tests.Packages(root, "HEAD")
+    placed = {}
+    for path in sorted(paths):
+        prefixes = packages.case_prefixes(path) if removed_tests.package_root(path) else []
+        placed[path] = [(binary, tuple(part for part in module.split("::") if part)) for binary, module in prefixes]
+    return placed
 
 
 class RuleIndex:
     """Правила, названные пометками, по тестам из исходников."""
 
     def __init__(self, root: Path):
-        self.rust: list[tuple[str, tuple[str, ...], tuple[str, ...], str, str | None]] = []
-        self.by_name: dict[str, list[tuple[str, tuple[str, ...], tuple[str, ...], str, str | None]]] = {}
+        self.rust: list[tuple[str, tuple[str, ...], tuple[str, ...], str]] = []
+        self.by_name: dict[str, list[tuple[str, tuple[str, ...], tuple[str, ...], str]]] = {}
         self.python: dict[tuple[str, str, str], set[str]] = {}
-        placed = crate_modules(root)
-        for rule, address in marked_pairs(root):
-            if address.endswith(".py") or ".py::" in address:
+        pairs = marked_pairs(root)
+        rust = [(rule, address.split("::")) for rule, address in pairs if ".rs::" in address]
+        placed = _case_prefixes(root, {parts[0] for _, parts in rust})
+        for rule, address in pairs:
+            if ".py::" in address:
                 path, test = address.split("::", 1)
                 cls, method = test.split(".", 1)
                 self.python.setdefault((Path(path).stem, cls, method), set()).add(rule)
-                continue
-            path, *names = address.split("::")
-            if path in placed:
-                # Модульный путь известен точно: сопоставление только полное.
-                for package, modules in placed[path]:
-                    self.rust.append((package, modules, tuple(names), rule, ""))
-                continue
-            located = _rust_module_path(path)
-            if located is None:
-                continue
-            package, modules = located
-            # Файл из `src/`, подключённый через `include!` или `#[path]`,
-            # стоит в модуле со своим именем; его имя должно быть в пути.
-            stem = Path(path).stem if "/src/" in path and Path(path).stem not in ("lib", "main", "mod") else None
-            self.rust.append((package, modules, tuple(names), rule, stem))
-        for mark in self.rust:
-            self.by_name.setdefault(mark[2][-1], []).append(mark)
+        for rule, (path, *names) in rust:
+            for binary, modules in placed.get(path, []):
+                mark = (binary, modules, tuple(names), rule)
+                self.rust.append(mark)
+                self.by_name.setdefault(names[-1], []).append(mark)
         self.unknown = [line for line in stray_marks(root) if "is not defined in arch/rules" in line]
 
     _cache: dict[Path, "RuleIndex"] = {}
@@ -702,16 +604,9 @@ class RuleIndex:
         binary = next((item["value"] for item in entry.get("labels", []) if item.get("name") == "suite"), "")
         name = full_name[len(binary) + 2:] if full_name.startswith(binary + "::") else full_name
         segments = tuple(name.split("::"))
-        exact, suffix = set(), set()
-        for package, modules, names, rule, stem in self.by_name.get(segments[-1], []):
-            base = package.split("::")[0]
-            if binary != base and not binary.startswith(base + "::"):
-                continue
-            if binary == package and segments == modules + names:
-                exact.add(rule)
-            elif stem != "" and segments[-len(names):] == names and (stem is None or stem in segments[: -len(names)]):
-                suffix.add(rule)
-        return sorted(exact or suffix)
+        return sorted(
+            {rule for target, modules, names, rule in self.by_name.get(segments[-1], []) if target == binary and segments == modules + names}
+        )
 
 
 def label_rules(directory: Path, index: RuleIndex) -> int:
