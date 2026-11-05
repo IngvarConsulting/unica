@@ -1429,7 +1429,7 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
     publish(&runtime, &fixture, replace(family.clone()));
     assert_eq!(
         relation(&fixture),
-        json!([{"relation":"source","kind":"family","target":family}])
+        json!([{"relation":"source","kind":"family","target":family}, {"relation":"handler","at":"main:CommonModule.EventHandlers.Method.OnBeforeWrite","kind":"Method"}])
     );
     assert_eq!(
         subscription_source(&fixture),
@@ -1474,7 +1474,7 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
         );
         assert_eq!(
             relation(&fixture),
-            json!([{"relation":"source","at":"main:Constant.Sample","kind":"Constant","target":target}]),
+            json!([{"relation":"source","at":"main:Constant.Sample","kind":"Constant","target":target}, {"relation":"handler","at":"main:CommonModule.EventHandlers.Method.OnBeforeWrite","kind":"Method"}]),
             "{class}"
         );
         assert_noop(target);
