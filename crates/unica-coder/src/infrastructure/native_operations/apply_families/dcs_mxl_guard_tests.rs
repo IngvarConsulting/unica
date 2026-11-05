@@ -263,6 +263,8 @@ fn canonical_dcs_captured_body_and_each_owner_descriptor_reject_stale_publicatio
     }
 }
 
+/// rule: INV.SOURCE.EXACT-VERSION
+/// rule: INV.SOURCE.WRITABLE-PROFILE
 #[test]
 fn canonical_dcs_supported_source_still_requires_each_exact_owner_version() {
     for relative in [

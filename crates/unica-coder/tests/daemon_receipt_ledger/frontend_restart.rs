@@ -106,6 +106,7 @@ fn same_stdio_frontend_recovers_durable_task_without_reexecution() {
     );
 }
 
+/// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
 #[test]
 fn compatibility_completed_task_survives_daemon_process_restart() {
     let root = tempfile::tempdir().unwrap();

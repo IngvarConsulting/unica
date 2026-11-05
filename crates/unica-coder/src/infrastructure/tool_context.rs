@@ -276,6 +276,7 @@ mod medium_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// rule: INV.SOURCE.MULTI-FORMAT-WORKSPACE
     #[test]
     fn native_platform_xml_source_format_public_gate_is_closed_over_public_operations() {
         use unica_source_contract::SourceFormat;

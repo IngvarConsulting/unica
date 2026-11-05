@@ -668,6 +668,7 @@ mod tests {
         result
     }
 
+    /// rule: INV.APP.DOCUMENTATION-TEXT-PAGES
     #[test]
     fn short_opened_document_preserves_the_whole_response() {
         let original = document_response("Первая строка\r\nВторая 🙂\n");
@@ -681,6 +682,8 @@ mod tests {
         assert_eq!(page, original);
     }
 
+    /// rule: INV.APP.DOCUMENTATION-TEXT-PAGES
+    /// rule: INV.APP.SEARCH-CURSOR-OWNER
     #[test]
     fn opened_document_pages_reassemble_exact_utf8_text_and_replay() {
         let original = format!("Заголовок\r\n{}\n\nКонец🙂", "Строка🙂".repeat(18_000));
@@ -760,6 +763,7 @@ mod tests {
         assert_eq!(bytes, original.as_bytes());
     }
 
+    /// rule: INV.APP.DOCUMENTATION-TEXT-PAGES
     #[test]
     fn document_over_transport_size_on_one_line_starts_with_a_useful_page() {
         let text =
@@ -785,6 +789,7 @@ mod tests {
         assert!(text.starts_with(first));
     }
 
+    /// rule: INV.APP.DOCUMENTATION-TEXT-PAGES
     #[test]
     fn oversized_document_metadata_refuses_before_issuing_a_cursor() {
         let mut result = document_response("текст");
@@ -802,6 +807,7 @@ mod tests {
         assert!(page.cursor.is_none());
     }
 
+    /// rule: INV.APP.DOCUMENTATION-SEARCH-PAGES
     #[test]
     fn docs_pages_mixed_sections_and_rejects_changed_answers() {
         let store = SearchCursorStore::default();
@@ -886,6 +892,7 @@ mod tests {
         assert!(unique.contains("standards:30"));
     }
 
+    /// rule: INV.APP.DOCUMENTATION-SEARCH-PAGES
     #[test]
     fn late_oversized_docs_hit_refuses_before_first_cursor() {
         let store = SearchCursorStore::default();
@@ -899,6 +906,7 @@ mod tests {
         assert!(page.cursor.is_none());
     }
 
+    /// rule: INV.APP.DOCUMENTATION-SEARCH-PAGES
     #[test]
     fn one_docs_hit_over_page_target_is_returned_whole() {
         let page = page_documentation(
@@ -927,6 +935,7 @@ mod tests {
         assert!(page.cursor.is_some());
     }
 
+    /// rule: INV.APP.DOCUMENTATION-SEARCH-PAGES
     #[test]
     fn prepared_docs_search_continues_across_calls_before_source_admission() {
         use unica_documentation::model::{
@@ -1082,6 +1091,7 @@ mod tests {
         assert!(refused.cursor.is_none());
     }
 
+    /// rule: INV.APP.DOCUMENTATION-TEXT-PAGES
     #[test]
     fn docs_locator_accepts_pagination_arguments() {
         let workspace = tempfile::tempdir().unwrap();
@@ -1102,6 +1112,7 @@ mod tests {
         assert_eq!(prepared.limit, 20);
     }
 
+    /// rule: INV.APP.DOCUMENTATION-TEXT-PAGES
     #[test]
     fn prepared_document_locator_continues_across_calls_before_source_admission() {
         use std::sync::Mutex;

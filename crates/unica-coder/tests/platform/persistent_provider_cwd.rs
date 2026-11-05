@@ -206,16 +206,19 @@ fn live_provider_rename(rlm: bool) {
     stop_session(&mut session);
 }
 
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[test]
 fn native_rlm_cwd_is_external_while_same_warm_process_survives_workspace_rename() {
     live_provider_rename(true);
 }
 
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[test]
 fn native_bsl_cwd_is_external_while_same_warm_process_survives_workspace_rename() {
     live_provider_rename(false);
 }
 
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[cfg(windows)]
 #[test]
 fn windows_factories_start_live_providers_at_an_external_anchor_when_other_candidates_are_excluded()
@@ -263,6 +266,7 @@ fn windows_factories_start_live_providers_at_an_external_anchor_when_other_candi
     }
 }
 
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[cfg(windows)]
 #[test]
 fn windows_live_cwd_inside_outside_pair_isolates_workspace_rename() {
@@ -319,6 +323,7 @@ fn windows_live_cwd_inside_outside_pair_isolates_workspace_rename() {
     stop_session(&mut outside);
 }
 
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[test]
 fn native_helper_does_not_inherit_project_cwd_from_isolated_caller() {
     let fixture = CwdFixture::new(true);
