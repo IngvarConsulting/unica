@@ -336,6 +336,36 @@ class AcceptanceProfileTests(unittest.TestCase):
 
 
 class DeliveryTaskTests(unittest.TestCase):
+    def test_explicit_apply_completion_preserves_terminal_failures_without_republishing(self):
+        from tests.ci import test_acceptance_scenarios as acceptance
+        receipt = {"ok": True, "data": {"task": {"taskId": "task-a", "status": "queued"}}}
+        pending = {"ok": False, "data": {"matches": [{
+            "role": "symbol", "provider": "bsl-analyzer", "termination": {
+                "code": "dependencyPending", "retryable": True}}]}}
+        step = {"tool": "unica.apply", "expect": ["ok"], "awaitTask": True}
+        arguments = {"executionToken": "planned-once"}
+        for terminal in [{"ok": True, "data": {"mode": "published"}},
+                         {"ok": False, "diagnostics": [{"code": "task_failed"}]}, pending]:
+            with self.subTest(terminal=terminal):
+                server = Mock()
+                server.call.side_effect = [{"result": {"structuredContent": value}}
+                                           for value in [receipt, terminal]]
+                result = acceptance.call_step(server, step, arguments, "deferred-apply")
+                self.assertEqual(result["result"]["structuredContent"], terminal)
+                self.assertEqual([(call.args[0], call.args[1]) for call in server.call.call_args_list],
+                                 [("unica.apply", arguments),
+                                  ("unica.task.result", {"taskId": "task-a", "waitMs": 7000})])
+        server = Mock()
+        server.call.return_value = {"result": {"structuredContent": receipt}}
+        with self.assertRaises(TimeoutError):
+            acceptance.call_step(server, step, arguments, "unfinished-apply")
+        self.assertEqual(sum(call.args[0] == "unica.apply" for call in server.call.call_args_list), 1)
+        server = Mock()
+        server.call.return_value = {"result": {"structuredContent": receipt}}
+        result = acceptance.call_step(server, {**step, "awaitTask": False}, arguments, "raw-receipt")
+        self.assertEqual(result["result"]["structuredContent"], receipt)
+        self.assertEqual(server.call.call_count, 1)
+
     def test_failed_delivery_initialization_closes_partial_resources(self):
         from io import BytesIO
         from tests.ci.test_acceptance_scenarios import DeliveredAcceptanceServer

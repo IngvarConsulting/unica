@@ -73,7 +73,9 @@ fn capacity_report_at_root(root: &Path) -> Result<Option<String>, String> {
 /// process environment. Packaged hosts supply the provider root explicitly;
 /// an interactive user falls back to a private directory beneath their home.
 pub(crate) fn default_user_daemon_state_root() -> Result<PathBuf, String> {
-    resolve_default_user_daemon_state_root(&|name| std::env::var_os(name))
+    let root = resolve_default_user_daemon_state_root(&|name| std::env::var_os(name))?;
+    unica_workspace::state_fs::state_root_with_resolved_ancestors(&root)
+        .map_err(|error| format!("cannot resolve the user daemon state root: {error}"))
 }
 
 fn resolve_default_user_daemon_state_root(

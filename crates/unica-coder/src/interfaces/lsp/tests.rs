@@ -412,7 +412,7 @@ fn a_session_the_daemon_no_longer_serves_ends_the_frontend() {
 /// области отвечает, не дожидаясь её. Затем полоса непрерывно занята
 /// расчётом hover, и медиана задержки MCP сравнивается с медианой без LSP.
 #[test]
-fn an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call() {
+fn medium_an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call() {
     let host = Arc::new(HeldHost::default());
     let daemon = LiveV5Daemon::start_with_lsp_host(
         canonical_v13_service(),
