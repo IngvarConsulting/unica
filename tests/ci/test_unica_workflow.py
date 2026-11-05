@@ -335,8 +335,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch'", condition(delivery))
         self.assertIn("startsWith(github.ref, 'refs/tags/')", condition(delivery))
 
-    def test_a_queue_entry_occupies_linux_macos_and_a_windows_lint_runner(self) -> None:
-        """Запись очереди — `Unica CI` на Linux, джоба macOS и Clippy Windows; PR — только Linux."""
+    def test_a_queue_entry_occupies_linux_and_a_windows_lint_runner(self) -> None:
+        """Запись очереди — `Unica CI` на Linux и Clippy Windows, джоба macOS её не ждёт; PR — только Linux."""
         validation = {job_id: found for job_id, found in jobs(self.release).items()
                       if job_id not in ("build-tools", "package-thin", "p0-release-proof", "probe-thin-bootstrap",
                                         "release-assessment", "publish-release-assets", "smoke-thin-plugin",
@@ -361,7 +361,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Матрица — один macOS; Windows только в ночном large.
         self.assertEqual(
             normalized(other["strategy"]["matrix"]["runner"]),
-            "${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && '[\"macos-14\", \"windows-latest\"]' || '[\"macos-14\"]') }}",
+            "${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && '[\"macos-15\", \"windows-latest\"]' || '[\"macos-15\"]') }}",
         )
         self.assertEqual(needs(other), [])
         # Pull request без `ci:full` и push в `main` macOS не занимают.
@@ -375,7 +375,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                     self.assertNotIn("ci-python-ordinary", upload["name"])
         self.assertEqual(
             [download.get("pattern") for download in downloads(gate)],
-            ["{plan,results}-{macos-14,windows-latest}"],
+            ["{plan,results}-{macos-15,windows-latest}"],
         )
         # `Unica CI` ждёт джобу ОС по API, а не через `needs`.
         wait = step_by_id(gate, "os-jobs")
@@ -631,11 +631,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertLess(steps(checks).index(step_by_id(checks, "python")), steps(checks).index(step_by_id(checks, "clippy")))
         self.assertIs(steps_using(checks, "Swatinem/rust-cache")[0]["with"]["save-if"], False)
         self.assertIn("--all-targets --all-features --message-format=json -- -D warnings", CLIPPY_SCRIPT.read_text(encoding="utf-8"))
-        # Очередь с одними платформенными каталогами линтует macOS ночью и на
-        # теге, остальные контуры — сразу.
+        # Джоба другой ОС линтует везде, где идёт: очереди в ней нет.
         os_clippy = step_by_id(other, "clippy")
         self.assertEqual([os_clippy], [step for step in steps(other) if "cargo clippy" in step.get("run", "")])
-        self.assertIn("env.GATE_PROFILE != 'queue'", condition(os_clippy))
+        self.assertIn("github.event_name != 'merge_group'", other["if"])
         self.assertIn("rust_required == 'true'", condition(os_clippy))
         self.assertIn("--workspace --all-targets --all-features --locked -- -D warnings", os_clippy["run"])
         self.assertNotIn("continue-on-error", os_clippy)
@@ -650,7 +649,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertLess(order.index(cache), order.index(clippy))
         self.assertLess(order.index(clippy), order.index(build))
         self.assertIn("!cancelled()", condition(clippy))
-        self.assertIn("env.GATE_PROFILE != 'queue'", condition(clippy))
         # Всё после Clippy идёт и после его отказа: оба сигнала — в одном прогоне.
         for step in (build, plan_upload, run):
             with self.subTest(step=step.get("id") or step["with"]["name"]):
@@ -1088,16 +1086,18 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("github.event_name == 'workflow_dispatch' && inputs.profile", normalized(self.release["env"]["GATE_PROFILE"]))
         gate, platforms = job(self.release, "unica-ci"), job(self.release, "rust-os")
         self.assertEqual(gate["outputs"]["runners"], "${{ steps.runners.outputs.runners }}")
-        # Две полосы: pull request — ubuntu, обе ОС — в очереди, на push
-        # и по кнопке; ci:full возвращает macOS на следующем прогоне pull request.
+        # Две полосы: pull request и очередь — ubuntu, обе ОС — на push и по
+        # кнопке; ci:full возвращает macOS на следующем прогоне pull request.
+        # Очередь macOS не ждёт.
         runners = step_by_id(gate, "runners")
-        self.assertIn('runners=["ubuntu-latest", "macos-14", "windows-latest"]', runners["run"])
+        self.assertIn('runners=["ubuntu-latest", "macos-15", "windows-latest"]', runners["run"])
         self.assertIn('runners=["ubuntu-latest"]', runners["run"])
-        self.assertIn('runners=["ubuntu-latest", "macos-14"]', runners["run"])
+        self.assertIn('runners=["ubuntu-latest", "macos-15"]', runners["run"])
         self.assertEqual(
             normalized(runners["env"]["FULL_MATRIX"]),
-            "${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full') }}",
+            "${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}",
         )
+        self.assertIn("github.event_name != 'merge_group'", normalized(platforms["if"]))
         self.assertIn("inputs.profile == 'large'", normalized(platforms["strategy"]["matrix"]["runner"]))
         self.assertIn("windows-latest", normalized(platforms["strategy"]["matrix"]["runner"]))
         for found in (gate, platforms):
@@ -1294,6 +1294,41 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("startsWith(github.ref, 'refs/tags/')", " ".join(expressions(build)))
         self.assertGreaterEqual(sum(1 for upload in uploads(build) if upload.get("retention-days") == 1), 3)
 
+    def test_manual_macos_acceptance_exports_core_bytes_without_publishing_a_release(self) -> None:
+        build = job(self.release, "build-tools")
+        upload = step_named(build, "Upload required runtime archive")
+
+        def allowed(node, target, event, ref):
+            # Evaluate the closed boolean/string subset used by these actual
+            # YAML conditions, with successful prerequisites; no script runs.
+            expression = condition(node).removeprefix("${{").removesuffix("}}").strip()
+            values = {"matrix.target": target, "github.event_name": event, "github.ref": ref,
+                      "needs.build-tools.result": "success", "needs.unica-ci.result": "success",
+                      "needs.rust-os.result": "success", "needs.package-thin.result": "success",
+                      "needs.publish-release-assets.result": "success",
+                      "needs.unica-ci.outputs.release_required": "true", "needs.unica-ci.outputs.ci_changed": "true"}
+            for key, value in values.items():
+                expression = expression.replace(key, repr(value))
+            expression = expression.replace("&&", " and ").replace("||", " or ")
+            return bool(eval(expression, {"__builtins__": {}, "always": lambda: True,
+                                          "startsWith": lambda value, prefix: value.startswith(prefix)}))
+
+        for target in ("linux-x64", "darwin-arm64", "win-x64"):
+            for event, ref in (("workflow_dispatch", "refs/heads/codex/ci-macos15"),
+                               ("pull_request", "refs/pull/2370/merge"),
+                               ("push", "refs/heads/main"), ("push", "refs/tags/v0.15.0")):
+                expected = (target == "linux-x64" or (target == "darwin-arm64" and event == "workflow_dispatch")
+                            or (event == "push" and ref.startswith("refs/tags/")))
+                with self.subTest(target=target, event=event, ref=ref):
+                    self.assertEqual(allowed(upload, target, event, ref), expected)
+                    if event == "pull_request":
+                        self.assertFalse(allowed(build, target, event, ref))
+                    if event == "workflow_dispatch":
+                        for name in ("publish-release-assets", "verify-published-assets"):
+                            self.assertFalse(allowed(job(self.release, name), target, event, ref))
+        self.assertEqual(upload["with"]["retention-days"], 1)
+        self.assertEqual(upload["with"]["name"], "unica-runtime-${{ matrix.target }}")
+
     def test_mcp_smoke_runs_against_extracted_deterministic_runtime(self) -> None:
         build = job(self.release, "build-tools")
         smoke = step_named(build, "Smoke packaged Unica MCP")
@@ -1372,7 +1407,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         expected_targets = {
             "linux-x64": "ubuntu-latest",
             "win-x64": "windows-2022",
-            "darwin-arm64": "macos-14",
+            "darwin-arm64": "macos-15",
         }
 
         self.assertEqual(dict(targets(probe)), expected_targets)
@@ -1627,7 +1662,7 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
             [
                 ("linux-x64", "ubuntu-latest"),
                 ("win-x64", "windows-latest"),
-                ("darwin-arm64", "macos-14"),
+                ("darwin-arm64", "macos-15"),
             ],
         )
         authoritative_targets = {target for target, _ in authoritative}
