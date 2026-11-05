@@ -1,0 +1,9 @@
+[package]
+name = "unica-bsl-applied"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+unica-bsl-types = { path = "../unica-bsl-types" }

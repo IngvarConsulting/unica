@@ -186,6 +186,9 @@ mod tests {
                 indexing: None,
                 deny_incomplete_values: None,
                 use_in_totals: Some(value),
+                main_filter: None,
+                master: None,
+                type_reduction_mode: None,
             }],
         }
     }

@@ -1,0 +1,296 @@
+{
+  "id": "S-2047-form-homepage-remove",
+  "issue": 2047,
+  "area": "Формы",
+  "workspace": "tests/fixtures/acceptance/workspace-form-homepage-remove",
+  "task": "Создать документ и две формы, поместить Main в обе колонки начальной страницы и MainExtra рядом. Удаление Main показывает composition_cleaned, сохраняет страницу до исполнения токена и удаляет только её Item; соседняя форма, параметры и конфигурация сохранены. Результат предназначен для отдельной проверки загрузкой 8.3.27.",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Document",
+                "name": "CorpusDocument"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.CorpusDocument",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Main",
+                  "type": "ObjectForm"
+                },
+                {
+                  "name": "MainExtra",
+                  "type": "ObjectForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "homePage.set",
+            "args": {
+              "values": {
+                "template": "TwoColumnsEqualWidth",
+                "left": [
+                  {
+                    "form": "Document.CorpusDocument.Form.Main",
+                    "height": 7
+                  },
+                  {
+                    "form": "Document.CorpusDocument.Form.MainExtra",
+                    "height": 15,
+                    "common": false
+                  }
+                ],
+                "right": [
+                  {
+                    "form": "Document.CorpusDocument.Form.Main",
+                    "height": 9
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "page": {
+          "kind": "sha256",
+          "file": "src/Ext/HomePageWorkArea.xml"
+        },
+        "keep": {
+          "kind": "sha256",
+          "file": "src/Documents/CorpusDocument/Forms/MainExtra/Ext/Form.xml"
+        },
+        "configuration": {
+          "kind": "sha256",
+          "file": "src/Configuration.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.CorpusDocument.Form.Main",
+        "ops": [
+          {
+            "op": "form.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "composition_cleaned"
+        },
+        {
+          "pointer": "/warnings/0/entries",
+          "eq": [
+            {
+              "at": "main:Configuration",
+              "property": "HomePageWorkArea"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Ext/HomePageWorkArea.xml",
+          "eq": "$capture.page"
+        },
+        {
+          "kind": "exists",
+          "path": "src/Documents/CorpusDocument/Forms/Main.xml",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "composition_cleaned"
+        },
+        {
+          "pointer": "/warnings/0/entries",
+          "eq": [
+            {
+              "at": "main:Configuration",
+              "property": "HomePageWorkArea"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Documents/CorpusDocument/Forms/Main.xml",
+          "eq": false
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Documents/CorpusDocument/Forms/MainExtra/Ext/Form.xml",
+          "eq": "$capture.keep"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "$capture.configuration"
+        },
+        {
+          "kind": "xml",
+          "path": "src/Ext/HomePageWorkArea.xml",
+          "select": ".//{*}Item/{*}Form",
+          "eq": [
+            "Document.CorpusDocument.Form.MainExtra"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/homePage/template",
+          "eq": "TwoColumnsEqualWidth"
+        },
+        {
+          "pointer": "/data/props/homePage/left",
+          "eq": [
+            {
+              "form": "Document.CorpusDocument.Form.MainExtra",
+              "height": 15,
+              "common": false,
+              "roles": []
+            }
+          ]
+        },
+        {
+          "pointer": "/data/props/homePage/right",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}
