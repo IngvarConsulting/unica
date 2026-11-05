@@ -26,6 +26,39 @@ fn request(at: &str, op: &str, values: Value) -> Value {
     json!({"at":at,"ops":[{"op":op,"args":{"values":values}}]})
 }
 
+fn assert_prefixed_choice_ranges(runtime: &V5CanonicalInvocationRuntime) {
+    let fixture = Fixture::new("workspace-member-choice");
+    for owner in ["Catalogs/Валюты.xml", "InformationRegisters/Цены.xml"] {
+        let path = fixture.source.join(owner);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let doc = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+        let offset = text.len() - text.trim_start_matches('\u{feff}').len();
+        let mut ranges = doc.descendants().filter(|node| {
+            node.is_element() && node.tag_name().name() == "Properties"
+                && node.parent().is_some_and(|parent| matches!(parent.tag_name().name(), "Attribute" | "Dimension" | "Resource"))
+        }).map(|node| node.range()).collect::<Vec<_>>();
+        ranges.sort_by_key(|range| std::cmp::Reverse(range.start));
+        let mut prefixed = text.clone();
+        for range in ranges {
+            let replacement = text[offset + range.start..offset + range.end]
+                .replacen("<Properties>", "<md:Properties xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\">", 1)
+                .replacen("</Properties>", "</md:Properties>", 1);
+            let replacement = replacement
+                .replacen("<QuickChoice>", "<choice:QuickChoice xmlns:choice=\"http://v8.1c.ru/8.3/MDClasses\">", 1)
+                .replacen("</QuickChoice>", "</choice:QuickChoice>", 1);
+            prefixed.replace_range(offset + range.start..offset + range.end, &replacement);
+        }
+        std::fs::write(path, prefixed).unwrap();
+    }
+    for &(at, op, _) in CASES {
+        publish(runtime, &fixture, request(at, op, json!({"quickChoice":"Use"})));
+        assert_eq!(view(runtime, &fixture, at)["props"]["QuickChoice"], "Use");
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        publish(runtime, &fixture, request(at, op, json!({"quickChoice":"Use"})));
+        assert_eq!(unica_workspace::test_support::tree_snapshot(&fixture.source), before);
+    }
+}
+
 fn legacy_catalog_form(fixture: &Fixture, owner: &str, form: &str) -> (PathBuf, String) {
     let path = fixture.source.join(format!("Catalogs/{owner}.xml"));
     let descriptor = std::fs::read_to_string(
@@ -164,6 +197,7 @@ fn medium_member_choice_roundtrip_preserves_identity_types_neighbors_and_noop() 
 #[test]
 fn medium_member_choice_refuses_invalid_values_forms_context_and_malformed_preimage() {
     let runtime = runtime();
+    assert_prefixed_choice_ranges(&runtime);
     assert_legacy_choice_repair(&runtime);
     let fixture = Fixture::new("workspace-member-choice");
     for &(at, op, _) in CASES {

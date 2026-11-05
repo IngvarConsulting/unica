@@ -304,12 +304,18 @@ pub(crate) fn validate_references(
     Ok(())
 }
 
+#[derive(Default)]
+pub(crate) struct ChoiceEdits {
+    pub properties_range: Option<Range<usize>>,
+    pub replacements: Vec<(Range<usize>, String)>,
+}
+
 pub(crate) fn edits(
     xml: &str,
     selected: Range<usize>,
     changes: &MemberChoiceChanges,
-) -> Result<Vec<(Range<usize>, String)>, MetaDiagnostic> {
-    let mut edits = Vec::new();
+) -> Result<ChoiceEdits, MetaDiagnostic> {
+    let mut edits = ChoiceEdits::default();
     for (property, value) in &changes.0 {
         if !property.accepts(value) {
             return Err(bad(*property, "invalid choice setting"));
@@ -320,25 +326,20 @@ pub(crate) fn edits(
             .find(|node| node.is_element() && node.range() == selected)
             .ok_or_else(|| bad(*property, "field is unavailable"))?;
         let properties = child(member, "Properties").map_err(|message| bad(*property, message))?;
+        edits.properties_range.get_or_insert(properties.range());
         let node = observed(properties, *property).map_err(|message| bad(*property, message))?;
         if node.text().unwrap_or_default() != value {
             let raw = &xml[node.range()];
-            let tag = raw
-                .strip_prefix('<')
-                .and_then(|text| {
-                    text.split(|c: char| c.is_whitespace() || matches!(c, '/' | '>'))
-                        .next()
-                })
-                .ok_or_else(|| bad(*property, "property tag is unavailable"))?;
+            let (opening, tag) = crate::edit::scalar_element_shell(raw);
             let replacement = if value.is_empty() {
-                format!("<{tag}/>")
+                format!("{opening}/>")
             } else {
                 format!(
-                    "<{tag}>{}</{tag}>",
+                    "{opening}>{}</{tag}>",
                     unica_xml_format::text::escape_xml(value)
                 )
             };
-            edits.push((node.range(), replacement));
+            edits.replacements.push((node.range(), replacement));
         }
     }
     Ok(edits)
