@@ -1036,6 +1036,14 @@
                     "CodeMask": {
                       "type": "string"
                     },
+                    "CodeSeries": {
+                      "enum": [
+                        "WholeCatalog",
+                        "WithinOwnerSubordination",
+                        "WithinSubordination"
+                      ],
+                      "type": "string"
+                    },
                     "CodeType": {
                       "enum": [
                         "String",

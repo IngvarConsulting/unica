@@ -3975,6 +3975,10 @@ mod dimension_deny_tests;
 mod attribute_copy_tests;
 
 #[cfg(test)]
+#[path = "../tests/platform/edit_catalog_code_series.rs"]
+mod catalog_code_series_tests;
+
+#[cfg(test)]
 mod observed_type_property_tests {
     use super::*;
 
