@@ -416,6 +416,7 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         CATALOG_CODE_SERIES_VALUES,
     )
     .written_in_place(InPlace::Always),
+    enum_property(
         "FullTextSearch",
         "FullTextSearch",
         MetaPropertyKey::FullTextSearch,
