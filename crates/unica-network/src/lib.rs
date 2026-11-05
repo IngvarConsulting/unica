@@ -399,6 +399,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn a_redirect_from_https_to_plain_http_is_refused_at_any_step() {
         let current = url::Url::parse("https://github.com/release").expect("url");
@@ -414,6 +415,7 @@ mod medium_tests {
         assert!(next_hop(&plain, "https://github.com/a").is_ok());
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn each_redirect_step_chooses_its_own_route() {
         // Первый узел в NO_PROXY, второй — нет: второй шаг обязан пойти
@@ -452,6 +454,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn an_empty_os_store_falls_back_to_bundled_roots_and_nothing_else_does() {
         // Пустое хранилище ОС — единственный повод взять вшитый набор.
@@ -466,6 +469,7 @@ mod medium_tests {
         assert_eq!(select_trust::<()>(Err(other.clone())), Err(other));
     }
 
+    /// rule: INV.PKG.NETWORK-TRUST-AND-PROXY
     #[test]
     fn the_fallback_trusts_exactly_the_bundled_mozilla_roots() {
         let roots = bundled_roots();

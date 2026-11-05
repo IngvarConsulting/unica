@@ -100,6 +100,7 @@ fn replace_spelling_tooltip(xml: &str, replacement: &str) -> String {
     result
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn catalog_attribute_tooltip_completes_six_facts_in_public_collection_and_detail_without_writes() {
     let fixture = fixture_with_catalog(CATALOG);
@@ -140,6 +141,7 @@ fn catalog_attribute_tooltip_completes_six_facts_in_public_collection_and_detail
     assert_eq!(tree_snapshot(&fixture.source), before);
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn catalog_attribute_tooltip_empty_set_reads_as_absence_but_an_empty_translation_survives() {
     for (replacement, expected) in [
@@ -178,6 +180,7 @@ fn catalog_attribute_tooltip_empty_set_reads_as_absence_but_an_empty_translation
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn catalog_attribute_tooltip_damage_is_local_in_owner_row_and_detail() {
     let item =
@@ -331,6 +334,7 @@ fn catalog_attribute_tooltip_requires_proved_catalog_configuration_and_literal_x
     );
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn catalog_attribute_tooltip_compact_limit_preserves_independent_facts() {
     let replacement = format!(

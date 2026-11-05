@@ -1,7 +1,5 @@
 ---
 id: INV.APP.CODE-DEFINITION-READINESS
-check:
-  - crates/unica-adapter-rlm/src/navigation.rs::definition_readiness_matrix_never_reports_false_typed_success
 ---
 
 # Недоступность индекса не означает, что определений нет

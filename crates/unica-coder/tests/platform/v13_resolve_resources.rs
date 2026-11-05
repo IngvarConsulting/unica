@@ -22,6 +22,7 @@ fn resource_resolve_mcp(workspace: &std::path::Path) -> McpProcess {
     mcp
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp() {
     for source_kind in ["CONFIGURATION", "EXTENSION"] {
@@ -151,6 +152,7 @@ fn resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp() {
     }
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn resolve_resources_refuse_unregistered_and_absent_targets_on_public_mcp() {
     let root = resource_resolve_fixture();
@@ -190,6 +192,7 @@ fn resolve_resources_refuse_unregistered_and_absent_targets_on_public_mcp() {
     mcp.finish();
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn resolve_form_metadata_survives_absent_local_content_without_substituting_it() {
     for source_kind in ["CONFIGURATION", "EXTENSION"] {
@@ -239,6 +242,7 @@ fn resolve_form_metadata_survives_absent_local_content_without_substituting_it()
     }
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn resolve_resources_keep_source_prefix_and_deepest_root_selection_on_public_mcp() {
     let root = resource_resolve_fixture();
@@ -299,6 +303,7 @@ fn resolve_resources_keep_source_prefix_and_deepest_root_selection_on_public_mcp
     mcp.finish();
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[cfg(unix)]
 #[test]
 fn resolve_resources_do_not_follow_linked_files_or_directories_on_public_mcp() {
@@ -330,6 +335,7 @@ fn resolve_resources_do_not_follow_linked_files_or_directories_on_public_mcp() {
     }
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[cfg(unix)]
 #[test]
 fn resolve_resource_prefix_skips_a_foreign_linked_collection_on_public_mcp() {
@@ -362,6 +368,7 @@ fn resolve_resource_prefix_skips_a_foreign_linked_collection_on_public_mcp() {
     mcp.finish();
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn resolve_resource_refuses_mismatched_descriptor_identity_on_public_mcp() {
     for (relative, name) in [
@@ -391,6 +398,7 @@ fn resolve_resource_refuses_mismatched_descriptor_identity_on_public_mcp() {
     }
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn resolve_common_form_resources_preserve_deepest_root_and_ambiguity() {
     let root = resource_resolve_fixture();
@@ -430,6 +438,7 @@ fn resolve_common_form_resources_preserve_deepest_root_and_ambiguity() {
     mcp.finish();
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[cfg(unix)]
 #[test]
 fn resolve_common_form_resources_never_follow_content_or_metadata_links() {
@@ -479,6 +488,7 @@ fn external_form_resolve_fixture() -> tempfile::TempDir {
     root
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn resolve_external_form_resources_round_trip_all_three_file_kinds() {
     let root = external_form_resolve_fixture();
@@ -528,6 +538,7 @@ fn resolve_external_form_resources_round_trip_all_three_file_kinds() {
     mcp.finish();
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[test]
 fn resolve_external_form_resources_require_registered_matching_owner_and_form() {
     for (set, owner) in [("epf", "Import"), ("erf", "Sales")] {
@@ -601,6 +612,7 @@ fn resolve_external_form_resources_require_registered_matching_owner_and_form() 
     }
 }
 
+/// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
 #[cfg(unix)]
 #[test]
 fn resolve_external_form_resources_never_follow_linked_content() {

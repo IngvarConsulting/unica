@@ -1,6 +1,5 @@
 ---
 id: INV.PKG.RETAINED-HISTORY-READER
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/1747
 ---
 

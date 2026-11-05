@@ -2433,6 +2433,7 @@ mod dcs_structure_tests {
     use super::*;
     /// Итоги одного поля по разным группировкам адреса не получают: строка
     /// ветви без `at`, а адрес `Total.<путь>` их не выбирает (#1357).
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn repeated_total_paths_stay_rows_and_are_not_chosen() {
         let base = "cf:Report.F05Report.Template.F05Schema";
@@ -2463,6 +2464,7 @@ mod dcs_structure_tests {
     /// Именованный элемент, единственный по имени на своём уровне, — узел
     /// с адресом; безымянный прозрачен и остаётся строкой, а одноимённые
     /// элементы одного уровня адреса не получают и не выбираются (#1357).
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn setting_structure_rows_never_fabricate_or_choose_named_addresses() {
         let base = "cf:Report.F05Report.Template.F05Schema";
@@ -2755,6 +2757,7 @@ mod composite_prop_tests {
     /// Ни одно значение не пропадает молча: превышение предела названо
     /// вместе с адресом, где свойство читается целиком; пустое наблюдение
     /// предела не даёт, ведь значения нет.
+    /// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
     #[test]
     fn an_oversize_value_names_its_whole_address_and_an_empty_one_does_not() {
         let owner = QualifiedAddress::parse("main:Constant.Limit").unwrap();

@@ -1,8 +1,5 @@
 ---
 id: INV.ANALYSIS.ANALYZER-JSONL-STREAM
-check:
-  - crates/unica-coder/src/infrastructure/internal_adapters.rs::diagnostics_analyze_parses_more_than_the_legacy_stdout_capture_limit
-  - crates/unica-coder/src/infrastructure/internal_adapters.rs::diagnostics_analyze_rejects_one_oversized_line_without_publishing_it
 gap: https://github.com/IngvarConsulting/unica/issues/958
 ---
 
