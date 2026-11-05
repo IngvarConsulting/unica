@@ -428,6 +428,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.CONFIG-SNAPSHOT
     #[test]
     fn explicit_diagnostics_timeout_is_validated_and_overlaid_immutably() {
         let defaults = OperationalConfig::compiled_defaults();

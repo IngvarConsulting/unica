@@ -279,6 +279,7 @@ impl std::fmt::Display for ResolveError {
 mod tests {
     use super::*;
 
+    /// rule: INV.WIRE.RESOLVE-EXACT-BRIDGE
     #[test]
     fn resolve_takes_exactly_one_side_of_the_bridge() {
         assert_eq!(
@@ -322,6 +323,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.WIRE.RESOLVE-PATH-BATCH
     #[test]
     fn resolve_paths_items_split_a_trailing_line_and_refuse_only_themselves() {
         let parsed = |item: &str| {
@@ -366,6 +368,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.WIRE.RESOLVED-SOURCE-LOCATION
     #[test]
     fn absent_lines_are_named_rather_than_omitted() {
         let tree = ResolvedSource::new(

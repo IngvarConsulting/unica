@@ -1625,6 +1625,7 @@ mod tests {
     /// (`platform_failure`, `timed_out`) в неё не попадали и уходили в запасную ветку.
     /// Владелец словаря один — [`RUNNER_WIRE_CODES`]; если раннер добавит код, этот
     /// тест покажет его, а не запасная ветка молча.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
     #[test]
     fn every_runner_wire_code_maps_away_from_the_fallback() {
         for code in RUNNER_WIRE_CODES {
@@ -1655,6 +1656,7 @@ mod tests {
         assert_eq!(mapped.outcome(), Outcome::NeedsHuman);
     }
 
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
     #[test]
     fn runner_outcomes_follow_the_codes_rather_than_the_fallback() {
         for (code, expected) in [
@@ -1679,6 +1681,8 @@ mod tests {
     /// читал умолчание `needsHuman` без причины. Теперь отказ общий для всех
     /// маршрутов «нет поставляемого движка» (#549): уточнение `provider_absent`
     /// и поля движка в `data`, взятые из типа резолвера, а не из текста.
+    /// rule: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn an_absent_bundled_runner_names_the_missing_engine_in_data() {
         let root = tempfile::tempdir().unwrap();
@@ -1739,6 +1743,7 @@ mod tests {
     /// пользователя ИБ, точка входа агента не ответила, прочая среда раннера и
     /// отсутствующий поставляемый раннер — четыре разных ответа, а не один
     /// `provider_absent`.
+    /// rule: INV.RUNTIME.RUNNER-ENVIRONMENT-LAYER
     #[test]
     fn runner_environment_refusals_name_the_layer_that_refused() {
         // Тексты — `AgentError` раннера 0.14 дословно, с контекстом, который
@@ -2032,6 +2037,7 @@ mod tests {
         })
     }
 
+    /// rule: INV.RUNTIME.V13-INFOBASE-EXPORTS
     #[test]
     fn runner_015_provider_receipt_replaces_selection_for_all_three_operations() {
         let root = tempfile::tempdir().unwrap();
@@ -2068,6 +2074,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.V13-INFOBASE-EXPORTS
     #[test]
     fn parser_rejects_provider_controls_and_output_escape() {
         let root = tempfile::tempdir().unwrap();
@@ -2100,6 +2107,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.RUNTIME.INFOBASE-IMPORT-MODE
     #[test]
     fn restore_preview_names_the_source_and_the_mode_without_touching_the_infobase() {
         let root = tempfile::tempdir().unwrap();
@@ -2147,6 +2155,7 @@ mod tests {
         assert!(call.args.contains(&"--dry-run".to_string()));
     }
 
+    /// rule: INV.RUNTIME.INFOBASE-IMPORT-MODE
     #[test]
     fn restore_apply_attributes_the_infobase_state_to_the_provider() {
         let root = tempfile::tempdir().unwrap();
@@ -2210,6 +2219,7 @@ mod tests {
     /// Живые конверты раннера 0.14.0: загрузка `.dt` в базу другой рабочей
     /// копии идёт с предупреждением раннера; ответ называет его своим
     /// предупреждением и выходом к своей базе.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
     #[test]
     fn captured_restore_into_the_infobase_of_another_copy_names_it() {
         let root = tempfile::tempdir().unwrap();
@@ -2263,6 +2273,7 @@ mod tests {
         super::super::v13_source_import::tests::assert_another_copy_is_named(&result);
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[test]
     fn restore_detaches_only_its_mutating_call() {
         let root = tempfile::tempdir().unwrap();
@@ -2303,6 +2314,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.INFOBASE-IMPORT-MODE
     #[test]
     fn restore_apply_refuses_when_the_provider_reports_another_mode() {
         let root = tempfile::tempdir().unwrap();
@@ -2334,6 +2346,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.RUNTIME.INFOBASE-IMPORT-MODE
     #[test]
     fn restore_refuses_a_preview_that_claims_it_already_restored() {
         let root = tempfile::tempdir().unwrap();
@@ -2362,6 +2375,7 @@ mod tests {
         assert!(!result.ok, "{result:?}");
     }
 
+    /// rule: INV.RUNTIME.INFOBASE-IMPORT-MODE
     #[test]
     fn restore_arguments_require_a_stated_mode_and_a_dt_input() {
         let root = tempfile::tempdir().unwrap();
@@ -2394,6 +2408,7 @@ mod tests {
         assert_eq!(ok.named_file_relative, PathBuf::from("transfer/base.dt"));
     }
 
+    /// rule: INV.RUNTIME.V13-INFOBASE-EXPORTS
     #[test]
     fn preview_is_non_mutating_and_returns_no_revision_or_raw_command() {
         let root = tempfile::tempdir().unwrap();
@@ -2434,6 +2449,7 @@ mod tests {
         assert!(!prepared.arguments.named_file.exists());
     }
 
+    /// rule: INV.RUNTIME.V13-INFOBASE-EXPORTS
     #[test]
     fn apply_repeats_preflight_and_returns_an_independent_file_receipt() {
         for published in [Some(&b"verified cf"[..]), None, Some(&b""[..])] {
@@ -2510,6 +2526,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.V13-INFOBASE-EXPORTS
     #[test]
     fn direct_export_executes_without_a_previous_preview_or_revision() {
         let root = tempfile::tempdir().unwrap();
@@ -2658,6 +2675,7 @@ mod tests {
 
     /// Проектный файл, который адаптер не передаёт раннеру, — отказ источника с
     /// причиной, а не «поставщика нет».
+    /// rule: INV.RUNTIME.RUNNER-011-CONFIG-PROJECTION
     #[test]
     fn a_refused_project_config_is_not_reported_as_an_absent_runner() {
         let root = tempfile::tempdir().unwrap();
@@ -2692,6 +2710,7 @@ mod tests {
     /// называет шаг `start` вместе с причиной ОС, но без пути к движку. Сбой
     /// после старта движок не теряет: свой код, без полей движка, причина
     /// сохранена.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn only_a_failed_launch_of_the_runner_is_a_missing_engine() {
         use unica_process::runner::SystemProcessRunner;
@@ -2754,6 +2773,7 @@ mod tests {
         assert!(!message.contains("private-dir"), "{message}");
     }
 
+    /// rule: INV.RUNTIME.V13-INFOBASE-EXPORTS
     #[test]
     fn apply_rejects_a_runner_receipt_for_a_different_output() {
         let root = tempfile::tempdir().unwrap();
@@ -2803,6 +2823,7 @@ mod tests {
         assert_eq!(plan.provider, "ibcmd-rs");
     }
 
+    /// rule: INV.RUNTIME.V13-INFOBASE-EXPORTS
     #[test]
     fn cfe_and_dt_invocations_use_only_their_closed_runner_arguments() {
         let root = tempfile::tempdir().unwrap();

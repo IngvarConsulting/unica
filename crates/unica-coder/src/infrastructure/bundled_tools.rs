@@ -1501,6 +1501,7 @@ mod medium_delivery_tests {
         assert!(found.is_none(), "чего нет на диске, то и не установлено");
     }
 
+    /// rule: INV.PKG.ARTIFACT-CACHE-IDENTITY
     #[test]
     fn tools_sharing_one_archive_name_one_artifact() {
         let plugin_root = medium_tests::temp_plugin_root("artifact-name");
@@ -1704,6 +1705,7 @@ mod medium_missing_binary_refusal_tests {
     /// Каждая причина отсутствия выходит своим шагом поставки, и ни одна не
     /// требует читать текст: нет манифеста, движок в нём не назван, не
     /// упакован под платформу, файла нет, сумма не совпала.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn every_delivery_step_is_named_by_type_without_reading_text() {
         let target = medium_tests::host_target();
@@ -1798,6 +1800,7 @@ mod medium_missing_binary_refusal_tests {
 
     /// Наличие проверяется без хеша, а полная проверка на пути отказа
     /// различает подменённый файл.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn presence_skips_the_checksum_and_absence_on_the_failure_path_does_not() {
         let plugin_root = medium_tests::temp_plugin_root("presence-vs-absence");

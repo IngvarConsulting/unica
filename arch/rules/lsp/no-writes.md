@@ -1,6 +1,5 @@
 ---
 id: INV.LSP.NO-WRITES
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/2179
 ---
 

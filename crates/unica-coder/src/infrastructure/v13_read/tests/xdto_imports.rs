@@ -190,6 +190,8 @@ fn xdto_import_read_distinguishes_empty_damage_and_unknown_package_syntax() {
     }
 }
 
+/// rule: CTR.SOURCE.LOGICAL-NODE-VIEW-SHAPE
+/// rule: INV.WIRE.READ-PAGE-BUDGET
 #[test]
 fn xdto_import_pages_preserve_large_lists_and_one_indivisible_uri_without_addresses() {
     let fixture = RealReaderFixture::new();

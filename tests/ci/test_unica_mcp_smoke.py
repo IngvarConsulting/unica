@@ -308,6 +308,8 @@ class UnicaMcpSmokeTests(unittest.TestCase):
         does not select the project and is not a public tool argument.
         Neither process may need its launch directory for later workspace,
         typed metadata, or code-search requests.
+
+        rule: INV.APP.EXPLICIT-WORKSPACE-CWD
         """
 
         with tempfile.TemporaryDirectory() as tmp:

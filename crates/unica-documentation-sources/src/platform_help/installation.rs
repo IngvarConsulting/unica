@@ -371,6 +371,7 @@ mod tests {
     /// Локали корпусов разрешаются по отдельности. Немецкая справка подсистем
     /// на установке есть (`1cv8_de.hbk`), немецкого Синтакс-помощника нет —
     /// одна локаль на вызов отняла бы у запроса на `de` немецкие руководства.
+    /// rule: INV.APP.DOCUMENTATION-VERSION-SELECTION
     #[test]
     fn each_corpus_resolves_its_own_locale() {
         let dir = install(
