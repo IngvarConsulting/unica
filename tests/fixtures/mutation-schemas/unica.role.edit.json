@@ -1,0 +1,125 @@
+{
+  "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "dryRun": {
+        "default": true,
+        "type": "boolean"
+      },
+      "metadataPath": {
+        "minLength": 6,
+        "pattern": "^Role\\.[^.]+$",
+        "type": "string"
+      },
+      "operations": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "objectName": {
+              "minLength": 3,
+              "pattern": "^[^.]+\\.[^.]+(?:\\.[^.]+\\.[^.]+)*$",
+              "type": "string"
+            },
+            "op": {
+              "const": "setRight"
+            },
+            "right": {
+              "enum": [
+                "ActiveUsers",
+                "Administration",
+                "AnalyticsSystemClient",
+                "Automation",
+                "CollaborationSystemInfoBaseRegistration",
+                "ConfigurationExtensionsAdministration",
+                "DataAdministration",
+                "Delete",
+                "Edit",
+                "EditDataHistoryVersionComment",
+                "EventLog",
+                "ExclusiveMode",
+                "Execute",
+                "ExternalConnection",
+                "Get",
+                "InputByString",
+                "Insert",
+                "InteractiveActivate",
+                "InteractiveChangeOfPosted",
+                "InteractiveClearDeletionMark",
+                "InteractiveClearDeletionMarkPredefinedData",
+                "InteractiveDelete",
+                "InteractiveDeleteMarked",
+                "InteractiveDeleteMarkedPredefinedData",
+                "InteractiveDeletePredefinedData",
+                "InteractiveExecute",
+                "InteractiveInsert",
+                "InteractiveOpenExtDataProcessors",
+                "InteractiveOpenExtReports",
+                "InteractivePosting",
+                "InteractivePostingRegular",
+                "InteractiveSetDeletionMark",
+                "InteractiveSetDeletionMarkPredefinedData",
+                "InteractiveStart",
+                "InteractiveUndoPosting",
+                "MainWindowModeEmbeddedWorkplace",
+                "MainWindowModeFullscreenWorkplace",
+                "MainWindowModeKiosk",
+                "MainWindowModeNormal",
+                "MainWindowModeWorkplace",
+                "MobileClient",
+                "Output",
+                "Posting",
+                "Read",
+                "ReadDataHistory",
+                "ReadDataHistoryOfMissingData",
+                "SaveUserData",
+                "Set",
+                "Start",
+                "SwitchToDataHistoryVersion",
+                "TechnicalSpecialistMode",
+                "ThickClient",
+                "ThinClient",
+                "TotalsControl",
+                "UndoPosting",
+                "Update",
+                "UpdateDataBaseConfiguration",
+                "UpdateDataHistory",
+                "UpdateDataHistoryOfMissingData",
+                "UpdateDataHistorySettings",
+                "UpdateDataHistoryVersionComment",
+                "Use",
+                "View",
+                "ViewDataHistory",
+                "WebClient"
+              ],
+              "type": "string"
+            },
+            "value": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "op",
+            "objectName",
+            "right",
+            "value"
+          ],
+          "type": "object"
+        },
+        "minItems": 1,
+        "type": "array"
+      },
+      "sourceSet": {
+        "minLength": 1,
+        "pattern": "^\\S(?:.*\\S)?$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "sourceSet",
+      "metadataPath",
+      "operations"
+    ],
+    "type": "object"
+  },
+  "operation": "role-edit"
+}

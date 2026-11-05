@@ -331,6 +331,13 @@ def names_form_attribute(address: str) -> bool:
             and segments[4] == "Attribute" and all(segments[index] for index in (1, 3, 5)))
 
 
+def names_form_column(address: str) -> bool:
+    segments = re.split(r"(?<!\\)\.", address.partition(":")[2])
+    return (len(segments) == 8 and segments[2] == "Form"
+            and segments[4] == "Attribute" and segments[6] == "Column"
+            and all(segments[index] for index in (1, 3, 5, 7)))
+
+
 def pins_published_file(assertion) -> bool:
     """True when a file assertion fixes what the publication wrote: exact
     bytes, XML content or a removed path.  `notEq`, a still-present path or
@@ -390,8 +397,9 @@ def apply_operation_cases(scenarios, registry) -> dict[tuple[str, str], list[str
                     on_form = names_form(target)
                     candidates = [row for row in candidates if (
                         row[1] == "Form" and on_form is True
+                        or row[1] == "FormProperties" and (on_form is True or names_form_column(target))
                         or row[1] == "FormAttribute" and names_form_attribute(target)
-                        or row[1] not in {"Form", "FormAttribute"} and on_form is False
+                        or row[1] not in {"Form", "FormProperties", "FormAttribute"} and on_form is False
                     )]
                     if len(candidates) != 1:
                         raise ValueError(f"{scenario['id']}: `{name}` at `{target}` matches no single family")
@@ -863,7 +871,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         ("ColumnAdd", "column.add", "FormAttribute", "Items"),
         ("CommandAdd", "command.add", "Form", "Items"),
         ("EventBind", "event.bind", "FormEvent", "Values"),
-        ("PropsSet", "props.set", "Form", "Values"),
+        ("PropsSet", "props.set", "FormProperties", "Values"),
     ]
     CONTEXT_ROWS = [
         (name, "Metadata", applicability, skeleton)
@@ -1102,6 +1110,21 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             "a registered apply operation is not published with checked files by the executed acceptance "
             "corpus; add a scenario under tests/fixtures/acceptance/scenarios/",
         )
+
+    def test_form_property_inventory_distinguishes_columns_from_metadata_and_items(self):
+        registry = [("props.set", "Properties", "Metadata", "Values"),
+                    ("props.set", "Form", "FormProperties", "Values")]
+        def scenario(at):
+            return {"id": "column", "wire": [
+                {"tool":"unica.apply", "args":{"at":at,"ops":[{"op":"props.set"}]}, "expect":["ok"]},
+                {"tool":"unica.apply", "args":{"executionToken":"$executionToken"}, "expect":["ok"],
+                 "fileAssertions":[{"path":"Form.xml", "kind":"xml", "select":"./Type", "eq":["T"]}]}]}
+        for at in ["main:Catalog.X.Form.F", "main:Catalog.X.Form.F.Attribute.Rows.Column.Value"]:
+            self.assertEqual(apply_operation_cases([scenario(at)], registry), {("props.set", "Form"): ["column"]})
+        self.assertEqual(apply_operation_cases([scenario("main:Catalog.X")], registry), {("props.set", "Properties"): ["column"]})
+        for at in ["main:Catalog.X.Form.F.Attribute.Rows", "main:Catalog.X.Form.F.Item.Value"]:
+            with self.assertRaises(ValueError):
+                apply_operation_cases([scenario(at)], registry)
 
     def test_column_creation_inventory_distinguishes_form_data_from_visual_columns(self):
         registry = [("column.add", "Metadata", "MetadataColumns", "Items"),
@@ -1408,7 +1431,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("item.remove", "Form", "FormItem", "Target"),
             ("item.move", "Form", "FormItem", "Values"),
             ("event.bind", "Form", "FormEvent", "Values"),
-            ("props.set", "Form", "Form", "Values"),
+            ("props.set", "Form", "FormProperties", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
         ] + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)

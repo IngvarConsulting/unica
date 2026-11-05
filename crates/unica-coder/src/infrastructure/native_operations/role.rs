@@ -942,7 +942,7 @@ fn prove_role_rights_path(
 }
 
 #[cfg(test)]
-pub(crate) mod role_edit_contract_tests {
+pub(crate) mod medium_role_edit_contract_tests {
     use super::*;
     use unica_roles_designer::test_support::{operation, rights_xml, validate_every_role_value};
     use unica_workspace::single_file_publisher::{with_publish_failpoints, PublishCheckpoint};
@@ -1596,7 +1596,7 @@ pub(crate) mod role_edit_contract_tests {
 }
 
 #[cfg(test)]
-pub(super) mod role_info_typed_result_tests {
+pub(super) mod medium_role_info_typed_result_tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1820,7 +1820,7 @@ pub(super) mod role_info_typed_result_tests {
 }
 
 #[cfg(test)]
-pub(crate) mod role_validate_contract_tests {
+pub(crate) mod medium_role_validate_contract_tests {
     use super::*;
 
     fn temp_root(name: &str) -> PathBuf {
