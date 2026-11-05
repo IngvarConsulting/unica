@@ -2220,6 +2220,10 @@ mod tests {
         result
     }
 
+    mod operational_discovery_tests {
+        include!("mcp_operational_discovery_tests.rs");
+    }
+
     struct McpClient {
         writer: tokio::io::WriteHalf<tokio::io::DuplexStream>,
         reader: tokio::io::Lines<BufReader<tokio::io::ReadHalf<tokio::io::DuplexStream>>>,

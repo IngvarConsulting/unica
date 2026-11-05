@@ -869,15 +869,36 @@ impl CanonicalV13ReadService {
                     return *refusal;
                 }
             }
+            let operational =
+                match crate::infrastructure::operational_config::load_operational_config(
+                    &invocation.workspace_context().workspace_root,
+                ) {
+                    Ok(config) => config,
+                    Err(diagnostic) => {
+                        return error_result(
+                            Some(owner.to_string()),
+                            RefusalCode::InvalidState,
+                            format!("operational config is unreadable: {diagnostic}"),
+                        )
+                    }
+                };
+            let provider_timeout = operational.code_intelligence().provider_read_timeout();
             return match self.call_graph_summary(
                 invocation,
                 &owner,
                 CALL_GRAPH_PAGE_LIMIT,
+                provider_timeout,
                 cancellation,
             ) {
                 Ok(initial) => {
                     let (summary, directory) = match complete_branch(initial, direction, |limit| {
-                        self.call_graph_summary(invocation, &owner, limit, cancellation)
+                        self.call_graph_summary(
+                            invocation,
+                            &owner,
+                            limit,
+                            provider_timeout,
+                            cancellation,
+                        )
                     }) {
                         Ok(answer) => answer,
                         Err(CompleteBranchError::CountTooLarge(message)) => {
@@ -1103,6 +1124,7 @@ impl CanonicalV13ReadService {
         invocation: &ActorBoundExecution,
         method_at: &QualifiedAddress,
         limit: usize,
+        provider_timeout: std::time::Duration,
         cancellation: &CancellationToken,
     ) -> Result<(CallGraphSummary, Option<FindIndex>), Box<DomainResult>> {
         let mut directory = None;
@@ -1153,16 +1175,6 @@ impl CanonicalV13ReadService {
             ))
         })?;
         let workspace = invocation.workspace_context();
-        let operational = crate::infrastructure::operational_config::load_operational_config(
-            &workspace.workspace_root,
-        )
-        .map_err(|diagnostic| {
-            Box::new(error_result(
-                Some(method_at.to_string()),
-                RefusalCode::InvalidState,
-                format!("operational config is unreadable: {diagnostic}"),
-            ))
-        })?;
         let summary = fetch_summary(
             self.ports.as_ref(),
             workspace,
@@ -1171,7 +1183,7 @@ impl CanonicalV13ReadService {
             // Первая попытка берёт не более 50 соседей. Ветвь с большим
             // счётом повторяет запрос для полного снимка до публикации курсора.
             limit,
-            operational.code_intelligence().provider_read_timeout(),
+            provider_timeout,
             cancellation,
         )
         .map_err(|error| {
