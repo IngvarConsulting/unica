@@ -6,6 +6,7 @@ use serde_json::{json, Map, Value};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_operation_contract::OperationSkeleton;
 use unica_operation_contract::{object, OperationContract};
+use unica_source_contract::SourceSetKind;
 
 macro_rules! properties_operations {
     ($($variant:ident => ($name:literal, $applicability:ident, $skeleton:ident)),+ $(,)?) => {
@@ -44,7 +45,10 @@ properties_operations!(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertiesSite {
-    Metadata(MetadataKind),
+    Metadata {
+        kind: MetadataKind,
+        source_kind: SourceSetKind,
+    },
     CommentOnly(NodeKind),
     DocumentNumerator,
     FunctionalOption,
@@ -96,7 +100,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension: true } => {
                         match self { $(Self::$field => $extension),+ }
                     }
-                    PropertiesSite::Metadata(_) => false,
+                    PropertiesSite::Metadata { .. } => false,
                     PropertiesSite::DocumentNumerator => self == Self::Comment,
                     PropertiesSite::CommentOnly(_) => self == Self::Comment,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
@@ -182,7 +186,7 @@ impl PropertiesSite {
         if site.route() == unica_source_contract::route::RouteClass::Configuration {
             return Self::root_of(site.source().kind());
         }
-        let profile = Self::from_address(site.at())?;
+        let profile = Self::from_address(site.at(), site.source().kind())?;
         if profile == Self::WSReference
             && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
         {
@@ -209,7 +213,7 @@ impl PropertiesSite {
     /// a module and still owns a metadata descriptor. Members do not acquire
     /// the owner's write profile; a nested subsystem owns a descriptor of its
     /// own and the subsystem profile with it.
-    pub fn from_address(at: &QualifiedAddress) -> Option<Self> {
+    pub fn from_address(at: &QualifiedAddress, source_kind: SourceSetKind) -> Option<Self> {
         if let Some(owner) = at.form_metadata_owner() {
             return (owner.segments().len() == 1)
                 .then_some(Self::CommentOnly(NodeKind::CommonForm));
@@ -247,7 +251,9 @@ impl PropertiesSite {
             | NodeKind::XdtoPackage
             | NodeKind::Sequence
             | NodeKind::Style => Some(Self::CommentOnly(owner.kind())),
-            kind => MetadataKind::parse(kind.as_str()).ok().map(Self::Metadata),
+            kind => MetadataKind::parse(kind.as_str())
+                .ok()
+                .map(|kind| Self::Metadata { kind, source_kind }),
         }
     }
 
@@ -284,7 +290,13 @@ impl PropertiesSite {
                 values["x-unica-alias-groups"] = json!([names]);
                 return values;
             }
-            Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
+            Self::Metadata { kind, source_kind } => {
+                properties = metadata_property_schemas(Some(kind));
+                // EditType is written only in a configuration's own objects.
+                if source_kind != SourceSetKind::Configuration {
+                    properties.remove("EditType");
+                }
+            }
             Self::StyleItem
             | Self::WSReference
             | Self::FunctionalOption
@@ -360,7 +372,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -450,9 +462,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn edit_type_profile_uses_the_actual_source_kind() {
+        for source_kind in [
+            SourceSetKind::Configuration,
+            SourceSetKind::Extension,
+            SourceSetKind::ExternalReport,
+        ] {
+            let site = PropertiesSite::from_address(
+                &QualifiedAddress::parse("main:Catalog.Probe").unwrap(),
+                source_kind,
+            )
+            .unwrap();
+            let contract = PropertiesOperation::Set.contract(site);
+            let fields = &contract.schema["properties"]["values"]["properties"];
+            assert_eq!(
+                fields.get("EditType").is_some(),
+                source_kind == SourceSetKind::Configuration
+            );
+            let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+            assert!(oracle.is_valid(&json!({"values":{"Comment":"independent"}})));
+            assert_eq!(
+                oracle.is_valid(&json!({"values":{"EditType":"InList"}})),
+                source_kind == SourceSetKind::Configuration
+            );
+        }
+    }
+
+    #[test]
     fn ws_reference_location_url_has_a_closed_existing_descriptor_contract() {
         let address = QualifiedAddress::parse("main:WSReference.Probe").unwrap();
-        let site = PropertiesSite::from_address(&address)
+        let site = PropertiesSite::from_address(&address, SourceSetKind::Configuration)
             .expect("an existing WSReference owns its LocationURL property profile");
         let contract = PropertiesOperation::Set.contract(site);
         let oracle = jsonschema::validator_for(&contract.schema).unwrap();
@@ -634,8 +673,11 @@ mod tests {
             } else {
                 format!("main:{kind}.Probe")
             };
-            let site = PropertiesSite::from_address(&QualifiedAddress::parse(&at).unwrap())
-                .unwrap_or_else(|| panic!("missing comment profile for {at}"));
+            let site = PropertiesSite::from_address(
+                &QualifiedAddress::parse(&at).unwrap(),
+                SourceSetKind::Configuration,
+            )
+            .unwrap_or_else(|| panic!("missing comment profile for {at}"));
             let schema = PropertiesOperation::Set.contract(site).schema;
             let properties = schema["properties"]["values"]["properties"]
                 .as_object()
@@ -686,7 +728,7 @@ mod tests {
             assert!(
                 QualifiedAddress::parse(at)
                     .ok()
-                    .and_then(|at| PropertiesSite::from_address(&at))
+                    .and_then(|at| PropertiesSite::from_address(&at, SourceSetKind::Configuration))
                     .is_none(),
                 "{at}"
             );
@@ -696,7 +738,8 @@ mod tests {
     #[test]
     fn functional_option_storage_properties_have_an_addressed_contract() {
         let at = QualifiedAddress::parse("main:FunctionalOption.UseGoods").unwrap();
-        let site = PropertiesSite::from_address(&at).expect("FunctionalOption property profile");
+        let site = PropertiesSite::from_address(&at, SourceSetKind::Configuration)
+            .expect("FunctionalOption property profile");
         let contract = PropertiesOperation::Set.contract(site);
         let oracle = jsonschema::validator_for(&contract.schema).unwrap();
         assert!(oracle.is_valid(
@@ -754,8 +797,11 @@ mod tests {
         for kind in MetadataKind::ALL {
             let at = QualifiedAddress::parse(&format!("main:{}.Example", kind.as_str())).unwrap();
             assert_eq!(
-                PropertiesSite::from_address(&at),
-                Some(PropertiesSite::Metadata(*kind))
+                PropertiesSite::from_address(&at, SourceSetKind::Configuration),
+                Some(PropertiesSite::Metadata {
+                    kind: *kind,
+                    source_kind: SourceSetKind::Configuration
+                })
             );
         }
         assert_eq!(
@@ -786,7 +832,10 @@ mod tests {
             ("main:Subsystem.Sales.Interface", None),
         ] {
             assert_eq!(
-                PropertiesSite::from_address(&QualifiedAddress::parse(at).unwrap()),
+                PropertiesSite::from_address(
+                    &QualifiedAddress::parse(at).unwrap(),
+                    SourceSetKind::Configuration
+                ),
                 expected,
                 "{at}"
             );
@@ -852,7 +901,10 @@ mod tests {
                 false,
             ),
         ] {
-            let contract = PropertiesOperation::Set.contract(PropertiesSite::Metadata(kind));
+            let contract = PropertiesOperation::Set.contract(PropertiesSite::Metadata {
+                kind,
+                source_kind: SourceSetKind::Configuration,
+            });
             let oracle = jsonschema::validator_for(&contract.schema).unwrap();
             assert_eq!(
                 oracle.is_valid(&json!({"values":values})),
