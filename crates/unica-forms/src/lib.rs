@@ -266,6 +266,28 @@ pub enum FormItemRole {
     Leaf,
 }
 
+/// Observed form facts shared by operation dictionaries and staged preflight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FormObservation {
+    Item(FormItemRole),
+    ValueTableAttribute,
+    ValueTableColumn,
+}
+impl FormObservation {
+    pub fn from_attribute_type(type_name: &str) -> Option<Self> {
+        (type_name == "ValueTable").then_some(Self::ValueTableAttribute)
+    }
+    pub fn from_column_parent_type(type_name: &str) -> Option<Self> {
+        (type_name == "ValueTable").then_some(Self::ValueTableColumn)
+    }
+    pub fn item_role(self) -> Option<FormItemRole> {
+        match self {
+            Self::Item(role) => Some(role),
+            Self::ValueTableAttribute | Self::ValueTableColumn => None,
+        }
+    }
+}
+
 impl FormItemRole {
     /// Роль по признаку `tag` элемента, как его публикует `view`
     /// (`[Group:V]`, `[Table]`, `[AutoCommandBar]`, `[Input]`).
@@ -296,3 +318,5 @@ pub mod events;
 pub mod facts;
 
 pub mod event_targets;
+
+pub mod default_forms;
