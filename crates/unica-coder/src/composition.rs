@@ -36,7 +36,7 @@ pub(crate) mod testing {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use crate::application::input_schema_for_tool;
     use serde_json::{Map, Value};

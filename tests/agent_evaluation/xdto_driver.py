@@ -19,7 +19,7 @@ FIXTURE = REPO / "tests/fixtures/acceptance/agent-xdto"
 REQUESTS = {
     (PACKAGE, "valueType.add"): {"values": {"name": "Agent1721Value", "base": "xs:string"}},
     (PACKAGE, "objectType.add"): {"values": {"name": "Agent1721Object"}},
-    (OBJECT, "property.add"): {"values": {"property": {"name": "Value", "type": "tns:Agent1721Value", "minOccurs": 0}}},
+    (OBJECT, "property.add"): {"values": {"property": {"name": "Value", "type": "tns:Agent1721Value", "lowerBound": 0}}},
     (NESTED, "property.add"): {"values": {"property": {"name": "Agent1721.A", "type": "xs:string"}}},
     (OLD_TYPE, "type.remove"): {},
     (OLD_PROPERTY, "property.remove"): {},
@@ -35,7 +35,7 @@ RUBRIC = (
     "Check пакета passed, validators=[xdto]: находки профиля Unica, а не загрузка в 1С и не вердикт платформы. "
     "FileObservations независимо проверяют полный буквальный Package.bin до/после, namespace, BOM/CRLF, порядок узлов, "
     "сохранённые descriptor/Configuration UUID/Name/version/Namespace, readonly соседний пакет и полную карту исходников. "
-    "Агент использовал values-only add, no-payload remove и корректно объяснил математический integer 0/1 для minOccurs, "
+    "Агент использовал values-only add, no-payload remove и корректно объяснил математический integer 0/1 для lowerBound, "
     "включая эквивалентные 0.0/1.0; дробные/вне диапазона/строки/bool/null недопустимы. "
     "Нет ручного редактирования XML, других источников, новых операций или обещания XDTO validator/проверки платформой. "
     "Физическое чтение драйвера не выдаётся за чтение XML самим агентом."

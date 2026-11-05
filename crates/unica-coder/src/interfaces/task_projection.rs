@@ -510,7 +510,7 @@ mod tests {
     }
 
     #[test]
-    fn error_fallback_is_bounded_without_losing_structured_diagnostics() {
+    fn medium_error_fallback_is_bounded_without_losing_structured_diagnostics() {
         use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
         for message in ["\"\\\n\u{0000}".repeat(4_096), "Ошибка🙂".repeat(4_096)] {
