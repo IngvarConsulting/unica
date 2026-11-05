@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/number_settings.rs"]
+mod number_settings;
+
 #[path = "metadata_can_tests/code_allowed_length.rs"]
 mod code_allowed_length;
 
