@@ -60,6 +60,20 @@ fn main(){
     executable
 }
 
+fn normalize_service_access(snapshot: &mut [(PathBuf, Option<Vec<u8>>)], record: &Path) {
+    let bytes = snapshot
+        .iter_mut()
+        .find(|(path, _)| path == record)
+        .unwrap()
+        .1
+        .as_mut()
+        .unwrap();
+    let mut value: Value = serde_json::from_slice(bytes).unwrap();
+    assert!(value["last_access_at"].as_u64().is_some());
+    value["last_access_at"] = json!(0);
+    *bytes = serde_json::to_vec(&value).unwrap();
+}
+
 pub(crate) fn with_provider(context: &WorkspaceContext, format: u8, call: impl FnOnce()) {
     let source_root = context.workspace_root.join("src");
     write_ready_rlm_status_for_current_source(context, &source_root);
@@ -89,6 +103,12 @@ pub(crate) fn with_provider(context: &WorkspaceContext, format: u8, call: impl F
         .unwrap()
         .to_owned();
     fs::write(&lock_path, b"").unwrap();
+    let relative_record = identity
+        .service_dir
+        .join("service.json")
+        .strip_prefix(&context.workspace_root)
+        .unwrap()
+        .to_owned();
     let mut runtime = new_runtime(identity, &record);
     runtime.test_set_rlm_starter(Arc::new({
         let executable = executable.clone();
@@ -123,7 +143,10 @@ pub(crate) fn with_provider(context: &WorkspaceContext, format: u8, call: impl F
     };
     let mut before = unica_workspace::actor::test_support::snapshot_tree(&context.workspace_root);
     before.retain(|(path, _)| path != &relative_lock);
+    normalize_service_access(&mut before, &relative_record);
     call();
+    // Force the legitimate heartbeat across a clock tick without a sleep.
+    update_service_record_last_access(&_guard.runtime, record.last_access_at + 1);
     assert_eq!(
         fs::read(&build.db_path).unwrap(),
         bytes,
@@ -134,9 +157,19 @@ pub(crate) fn with_provider(context: &WorkspaceContext, format: u8, call: impl F
         fs::read_to_string(&trace).unwrap(),
         format!("read-private-index:{expected}:rlm_execute\n")
     );
+    let observed: Value =
+        serde_json::from_slice(&fs::read(context.workspace_root.join(&relative_record)).unwrap())
+            .unwrap();
+    assert_eq!(
+        observed["last_access_at"],
+        record.last_access_at + 1,
+        "the controlled heartbeat must update the real owned record"
+    );
     let mut after = unica_workspace::actor::test_support::snapshot_tree(&context.workspace_root);
+    normalize_service_access(&mut after, &relative_record);
     // Only the managed provider trace and the manager's exact coordination
-    // lock may change. No directory/provider-state subtree is excluded.
+    // lock may change. The service record normalizes only last_access_at;
+    // all its other fields and the complete provider-state tree are compared.
     let lock = fs::read_to_string(&lock_path).unwrap();
     let mut lines = lock.lines();
     assert_eq!(lines.next().unwrap(), format!("pid={}", std::process::id()));

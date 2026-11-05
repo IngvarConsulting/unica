@@ -130,6 +130,12 @@ async fn engine_free_mcp_construction_and_discovery_with_cold_engines() {
             .env(CHILD_ROOT, root.path())
             .output()
             .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("running 1 test") && stdout.contains(name),
+            "the exact child must execute the contract test: {stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         assert!(
             output.status.success(),
             "child failed:\n{}\n{}",
