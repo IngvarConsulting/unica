@@ -299,7 +299,7 @@ fn all_flags_in_one_update_keep_original_offsets_and_neighbor_bytes() {
 }
 
 #[test]
-fn information_boolean_edits_preserve_split_text_markup_and_reader_values() {
+fn medium_information_boolean_edits_preserve_split_text_markup_and_reader_values() {
     for tag in ["Master", "MainFilter", "DenyIncompleteValues"] {
         for (input, changed) in [
             ("false<!-- trailing -->", "true<!-- trailing -->"),

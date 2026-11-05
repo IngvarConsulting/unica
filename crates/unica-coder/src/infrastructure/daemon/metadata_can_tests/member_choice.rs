@@ -70,7 +70,7 @@ fn assert_legacy_choice_repair(runtime: &V5CanonicalInvocationRuntime) {
 }
 
 #[test]
-fn member_choice_roundtrip_preserves_identity_types_neighbors_and_noop() {
+fn medium_member_choice_roundtrip_preserves_identity_types_neighbors_and_noop() {
     for &(at, op, owner) in CASES {
         let runtime = runtime();
         let fixture = Fixture::new("workspace-member-choice");
@@ -162,7 +162,7 @@ fn member_choice_roundtrip_preserves_identity_types_neighbors_and_noop() {
 }
 
 #[test]
-fn member_choice_refuses_invalid_values_forms_context_and_malformed_preimage() {
+fn medium_member_choice_refuses_invalid_values_forms_context_and_malformed_preimage() {
     let runtime = runtime();
     assert_legacy_choice_repair(&runtime);
     let fixture = Fixture::new("workspace-member-choice");
@@ -370,7 +370,7 @@ fn member_choice_refuses_invalid_values_forms_context_and_malformed_preimage() {
 }
 
 #[test]
-fn member_choice_saved_token_guards_form_payload_registration_and_owner() {
+fn medium_member_choice_saved_token_guards_form_payload_registration_and_owner() {
     for dependency in [
         "Configuration.xml",
         "Catalogs/Валюты.xml",
@@ -418,7 +418,7 @@ fn member_choice_saved_token_guards_form_payload_registration_and_owner() {
 }
 
 #[test]
-fn member_choice_rejects_missing_form_on_assignment_including_noop() {
+fn medium_member_choice_rejects_missing_form_on_assignment_including_noop() {
     for at in [
         CASES[0].0,
         "main:Catalog.Валюты.TabularSection.представления.Attribute.кодязыка",
@@ -454,7 +454,7 @@ fn member_choice_rejects_missing_form_on_assignment_including_noop() {
 }
 
 #[test]
-fn member_choice_exact_scope_preserves_same_named_neighbor_and_late_failure_is_atomic() {
+fn medium_member_choice_exact_scope_preserves_same_named_neighbor_and_late_failure_is_atomic() {
     let runtime = runtime();
     let fixture = Fixture::new("workspace-member-choice");
     let path = fixture.source.join("Catalogs/Валюты.xml");
