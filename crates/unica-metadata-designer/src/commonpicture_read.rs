@@ -114,8 +114,14 @@ impl Picture {
 /// Enriches an already proven owner. Companion failures retain independent owner facts.
 /// The caller supplies only the fixed XML companion, never the referenced payload.
 pub fn enrich(owner: &[u8], companion: Result<&[u8], String>, payload: &mut Value) {
-    let mut properties = Vec::new();
-    let mut unreadable = Vec::new();
+    let mut properties = payload["properties"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let mut unreadable = payload["unreadable"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     match appearance(owner) {
         Ok(Some(value)) => {
             properties.push(json!({"key":"AvailabilityForAppearance","value":value}))
@@ -149,6 +155,44 @@ pub fn enrich(owner: &[u8], companion: Result<&[u8], String>, payload: &mut Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn picture_enrichment_retains_independent_comment_facts_and_limits() {
+        let owner = format!(
+            r#"<MetaDataObject xmlns="{MD}"><CommonPicture><Properties><Name>Picture</Name><AvailabilityForAppearance>true</AvailabilityForAppearance></Properties></CommonPicture></MetaDataObject>"#
+        );
+        let comment = json!({"key":"Comment", "value":{"kind":"text", "value":"retained"}});
+        let finding = json!({"field":"properties.Comment", "message":"independent damage"});
+        let mut payload = json!({"properties":[comment.clone()], "unreadable":[finding.clone()]});
+        enrich(
+            owner.as_bytes(),
+            Err("missing companion".into()),
+            &mut payload,
+        );
+        assert!(
+            payload["properties"].as_array().unwrap().contains(&comment),
+            "{payload}"
+        );
+        assert!(
+            payload["properties"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|property| property["key"] == "AvailabilityForAppearance"),
+            "{payload}"
+        );
+        assert!(
+            payload["unreadable"].as_array().unwrap().contains(&finding),
+            "{payload}"
+        );
+        assert!(
+            payload["unreadable"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| finding["field"] == "properties.Picture"),
+            "{payload}"
+        );
+    }
     #[test]
     fn companion_observation_uses_expanded_names_and_retains_independent_fields() {
         let xml = format!(
