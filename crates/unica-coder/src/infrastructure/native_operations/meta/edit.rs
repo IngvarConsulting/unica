@@ -1128,7 +1128,19 @@ pub(crate) mod tests {
                 "DefaultPresentation",
                 "DefaultPresentation",
                 MetaPropertyValue::String("AsCode".into()),
-                &[Catalog],
+                &[
+                    Catalog,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ExchangePlan,
+                ],
+            ),
+            (
+                "DefaultPresentation",
+                "DefaultPresentation",
+                MetaPropertyValue::String("AsNumber".into()),
+                &[Task],
             ),
             (
                 "DependenceOnCalculationTypes",
@@ -1177,7 +1189,7 @@ pub(crate) mod tests {
                 "FoldersOnTop",
                 "FoldersOnTop",
                 MetaPropertyValue::Boolean(false),
-                &[Catalog],
+                &[Catalog, ChartOfCharacteristicTypes],
             ),
             (
                 "Global",

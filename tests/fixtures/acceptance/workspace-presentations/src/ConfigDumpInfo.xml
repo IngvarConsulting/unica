@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Catalog.Items" id="7c5c0eb0-de57-42a0-83a1-eb6e8fb89e66" configVersion="1ab4a25e64a5314db4fa95588f60849400000000"/>
+		<Metadata name="ChartOfAccounts.Accounts" id="8d5fb884-7ef8-4982-b2f1-0ac98b4f90ef" configVersion="4a8b8c83f365fe499c9da963839eaa8c00000000"/>
+		<Metadata name="ChartOfCalculationTypes.CalculationTypes" id="5d6574fc-2fc6-4d88-8a16-b7a45132caac" configVersion="3e93d23b7e29c8438f6bd3b2cf63c4ce00000000"/>
+		<Metadata name="ChartOfCharacteristicTypes.Properties" id="56c4a275-8526-5415-a272-e64675f4e838" configVersion="1115377d1f5d20439d518357bd64fdff00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="4932c8e42ff05c44a14a5d73f46034d800000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="c5848fbe0dc85c4ea9d6e95e4081495400000000"/>
+		<Metadata name="ExchangePlan.Exchange" id="c27da06f-c6f6-4edf-b3d9-6c007fba4b0c" configVersion="c93a42691b4cbf47b3e611b945c8b7c800000000"/>
+		<Metadata name="ExchangePlan.Exchange.Content" id="c27da06f-c6f6-4edf-b3d9-6c007fba4b0c.1" configVersion="411a836d6577054e99a1c51f1678744200000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="0c753f34a0396f448a0e68473cd9da3c00000000"/>
+		<Metadata name="Task.Tasks" id="bad88af9-e764-4dd3-ba44-5bb30b5caee1" configVersion="1af5ce9fc4b4c54cbe026932548a86d900000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

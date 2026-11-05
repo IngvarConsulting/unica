@@ -184,6 +184,20 @@ pub fn meta_validate_valid_http_methods() -> &'static [&'static str] {
     // Single authority: the HTTPMethod entry of the 8.3.27 property enum table.
     meta_validate_property_enum("HTTPMethod")
 }
+pub fn meta_validate_property_values_for_owner(
+    owner: &str,
+) -> impl Iterator<Item = (&'static str, &'static [&'static str])> + '_ {
+    meta_validate_property_values()
+        .iter()
+        .map(move |&(name, allowed)| {
+            let allowed = if owner == "Task" && name == "DefaultPresentation" {
+                &["AsDescription", "AsNumber"][..]
+            } else {
+                allowed
+            };
+            (name, allowed)
+        })
+}
 pub fn meta_validate_property_enum(property: &str) -> &'static [&'static str] {
     meta_validate_property_values()
         .iter()
@@ -3398,7 +3412,11 @@ pub fn meta_validate_check_property_values(
     };
     let mut enum_checked = 0usize;
     let mut check_ok = true;
-    for (prop_name, allowed) in crate::validation::meta_validate_property_values() {
+    let owner = props_node
+        .parent_element()
+        .map(|node| node.tag_name().name())
+        .unwrap_or_default();
+    for (prop_name, allowed) in meta_validate_property_values_for_owner(owner) {
         if let Some(value) = unica_xml_format::read::child_direct_text(props_node, prop_name)
             .filter(|value| !value.is_empty())
         {
