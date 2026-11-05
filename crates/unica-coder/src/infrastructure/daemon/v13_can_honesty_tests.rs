@@ -869,37 +869,37 @@ fn check_fixture_coverage(name: &str) {
 }
 
 #[test]
-fn honest_can_on_the_main_corpus_workspace() {
+fn medium_honest_can_on_the_main_corpus_workspace() {
     check_fixture_coverage("workspace");
 }
 
 #[test]
-fn honest_can_on_the_dcs_workspace() {
+fn medium_honest_can_on_the_dcs_workspace() {
     check_fixture_coverage("workspace-dcs");
 }
 
 #[test]
-fn honest_can_on_the_mxl_workspace() {
+fn medium_honest_can_on_the_mxl_workspace() {
     check_fixture_coverage("workspace-mxl");
 }
 
 #[test]
-fn honest_can_on_the_code_and_extension_workspace() {
+fn medium_honest_can_on_the_code_and_extension_workspace() {
     check_fixture_coverage("workspace-code");
 }
 
 #[test]
-fn honest_can_on_the_predefined_workspace() {
+fn medium_honest_can_on_the_predefined_workspace() {
     check_fixture_coverage("workspace-predefined");
 }
 
 #[test]
-fn honest_can_on_the_resolve_workspace() {
+fn medium_honest_can_on_the_resolve_workspace() {
     check_fixture_coverage("workspace-resolve");
 }
 
 #[test]
-fn honest_can_on_external_sources() {
+fn medium_honest_can_on_external_sources() {
     check_fixture_coverage("workspace-external");
 }
 

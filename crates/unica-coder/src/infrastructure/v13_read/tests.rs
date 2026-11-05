@@ -5376,7 +5376,7 @@ fn external_inventory_accepts_a_single_owner_descriptor_beyond_eight_mib() {
 }
 
 #[test]
-fn named_external_owner_view_has_no_hidden_eight_mib_descriptor_fallback() {
+fn medium_named_external_owner_view_has_no_hidden_eight_mib_descriptor_fallback() {
     for (kind, xml_kind) in [
         (SourceSetKind::ExternalProcessor, "ExternalDataProcessor"),
         (SourceSetKind::ExternalReport, "ExternalReport"),

@@ -107,19 +107,22 @@ Rust items: например, функцию, модуль или `impl`. Не �
 | Размер | Выбор | Разметка в Unica |
 | --- | --- | --- |
 | `small` | Локальная проверка с малыми затратами, без запуска продукта и сетевого взаимодействия | Умолчание после исключения старших размеров |
-| `medium` | Процесс продукта, сокет, интеграционное окружение или замеренная длительность от 3 с | Rust: все Cargo integration targets (`kind(test)`), тесты файлов с признаками процесса/сокета и точные имена с замером в `MEASURED_MEDIUM_CASES` генератора. Python: `[medium].entries` в `.config/python-sizes.toml` |
+| `medium` | Процесс продукта, сокет, интеграционное окружение или замеренная длительность от 3 с | Rust: Cargo integration targets (`kind(test)`) и тесты с сегментом пути `medium`: модуль `medium_tests` (`medium_<имя>_tests`) или функция `medium_<имя>`. Python: `[medium].entries` в `.config/python-sizes.toml` |
 | `large` | Нагрузка, ёмкость или длительный сценарий с существенными затратами | Явные Rust-фильтры в `.config/nextest.toml`; Python-переопределения пока не поддерживаются |
 
-Отдельных size-аннотаций в тестах нет. Rust-классификатор
-`scripts/ci/size-filters.py` смотрит на весь исходный файл: даже чистый тест
-в файле с `std::process`, `Command::new`, сокетом или `CARGO_BIN_EXE_` может
-стать `medium`. Это приближение; вызов через helper может скрыть зависимость.
-Не назначай размер только по имени теста и не обходи отбор ради зелёного PR.
+Rust-тест объявляет размер сам, без регистрации и генератора. Тест, который
+запускает процесс или сокет либо идёт дольше 3 с, кладут в `tests/`
+(интеграционная цель — всегда `medium`) или в модуль `medium_tests`;
+отдельный такой тест среди малых называют `medium_<имя>`. Фильтр
+`kind(test) | test(/(^|::)medium(_|::|$)/)` в `.config/nextest.toml`
+постоянный и от PR к PR не меняется. Вызов через helper может скрыть
+процесс от взгляда: размер решает автор по тому, что тест делает, и
+вопрос шаблона PR. Не обходи отбор ради зелёного PR: малый по имени тест
+с процессом в PR идёт в ворота `pr` без срока `medium`.
 
-После изменения состава таких Rust-тестов обнови генерируемые блоки командой
-`python3.12 scripts/ci/size-filters.py --write`. Она вызывает `cargo nextest list`
-и может компилировать тесты; запуск без `--write` тоже обращается к Cargo.
-Фильтры `large` генератор не меняет: согласуй отбор `queue`, `main`, `large`
+Переименование модуля или функции меняет имя теста: объяви старые имена
+строкой `Removes-test: <binary-id>::<путь>::*` в описании PR. Фильтры
+`large` задаются вручную: согласуй отбор `queue`, `main`, `large`
 и его timeout в `.config/nextest.toml`. Этот ярус выбирает точные имена
 тестов в `daemon_receipt_ledger` и `unica_coder`; страж сверяет их с
 атрибутами тестов и модулями исходников. Расширение на другие цели требует
@@ -156,8 +159,8 @@ Rust items: например, функцию, модуль или `impl`. Не �
 Страж замечает прямой вызов Cargo или импорт socket, но не все косвенные
 зависимости. Одной секции `[large]` в TOML недостаточно: её runner не читает.
 Если нужен Python `large`, сначала реши поддержку отбора в runner.
-После изменения разметки запусти применимые `tests/ci/test_size_guard.py`,
-`tests/ci/test_python_sizes.py` и `tests/ci/test_gate_profiles.py`.
+После изменения разметки запусти применимые `tests/ci/test_python_sizes.py`
+и `tests/ci/test_gate_profiles.py`.
 
 ## Что запускать
 
@@ -251,7 +254,7 @@ clippy и тестами Rust. Тест, чей исход зависит от �
 Для точечной проверки используй nextest или unittest напрямую. Например:
 
 ```sh
-cargo nextest run -p unica-coder --lib --profile default -E 'test(/^infrastructure::workspace::tests::git_worktree_boundary_prevents_parent_workspace_discovery$/)'
+cargo nextest run -p unica-coder --lib --profile default -E 'test(/^infrastructure::workspace::medium_tests::git_worktree_boundary_prevents_parent_workspace_discovery$/)'
 python3.12 -m unittest tests.ci.test_rust_platform_boundary.RustPlatformBoundaryTests.test_repository_currently_complies_with_platform_boundary
 ```
 

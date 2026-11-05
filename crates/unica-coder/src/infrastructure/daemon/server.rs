@@ -1667,8 +1667,6 @@ mod apply_large_input_tests;
 #[path = "code_target_tests.rs"]
 mod code_target_tests;
 #[cfg(test)]
-mod external_cache_apply_tests;
-#[cfg(test)]
 #[path = "form_lifecycle_tests.rs"]
 mod form_lifecycle_tests;
 #[cfg(test)]
@@ -1680,6 +1678,9 @@ mod form_native_profile_tests;
 #[cfg(test)]
 #[path = "form_properties_tests.rs"]
 mod form_properties_tests;
+#[cfg(test)]
+#[path = "server/external_cache_apply_tests.rs"]
+mod medium_external_cache_apply_tests;
 #[cfg(test)]
 #[path = "metadata_can_tests.rs"]
 mod metadata_can_tests;
@@ -1709,10 +1710,14 @@ mod legacy_inline_check_tests;
 mod apply_answer_size_tests;
 
 #[cfg(test)]
-mod stored_secret_tests;
+#[path = "server/stored_secret_tests.rs"]
+mod medium_stored_secret_tests;
 
+// Shared helpers keep their former name for the modules that import them.
 #[cfg(test)]
-pub(crate) mod actor_capacity_tests {
+pub(crate) use medium_actor_capacity_tests as actor_capacity_tests;
+#[cfg(test)]
+pub(crate) mod medium_actor_capacity_tests {
     use super::super::runner_015::VERSION as RUNNER_VERSION;
     use super::*;
     use unica_analysis_services::provider_host::ProviderHostKey;
@@ -19700,7 +19705,7 @@ fn main() {
 /// #1251: no production operation path may start a finite `ProviderDeadline`
 /// again, under its own name or an alias, outside the listed per-step limits.
 #[cfg(test)]
-mod finite_deadline_guard {
+mod medium_finite_deadline_guard {
 
     /// Constructors that start a finite operation deadline.
     const FINITE_DEADLINE_CONSTRUCTORS: [&str; 3] = ["from_budget", "new", "from_started_at"];

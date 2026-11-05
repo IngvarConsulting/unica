@@ -1689,7 +1689,7 @@ impl Drop for InFlightGuard {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use crate::application::{ResultContract, ToolExecution};
     use crate::interfaces::daemon_router::remaining_invocation_budget;

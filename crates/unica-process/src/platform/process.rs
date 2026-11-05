@@ -3824,7 +3824,7 @@ fn retain_tail(captured: &mut CapturedOutput, chunk: &[u8], limit: usize) {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     #[cfg(windows)]
     use super::{assert_windows_runtime_process_tree_semantics_for_test, ProcessTree};
     use super::{
