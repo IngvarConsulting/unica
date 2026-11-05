@@ -582,12 +582,30 @@ fn build_sample_args(descriptor: OperationDescriptor) -> Value {
 
 /// Аргументы на конкретном узле: удаляемый элемент формы называет только
 /// адрес (#1355).
-fn node_args(descriptor: OperationDescriptor, at: &QualifiedAddress) -> Value {
+fn node_args(
+    descriptor: OperationDescriptor,
+    at: &QualifiedAddress,
+    traits: unica_source_contract::context::SourceSetTraits,
+) -> Value {
     let method_address = at
         .segments()
         .last()
         .is_some_and(|segment| segment.kind() == NodeKind::Method);
     match descriptor.name() {
+        "props.set" if descriptor.family() == OperationFamily::Properties => {
+            // The source set selects the profile: an extension's adopted
+            // language publishes the Comment-only example.
+            crate::domain::apply::operation_site(at, traits)
+                .and_then(|site| {
+                    unica_metadata::descriptor_operations::PropertiesSite::from_site(&site)
+                })
+                .map(|site| {
+                    unica_metadata::descriptor_operations::PropertiesOperation::Set
+                        .contract(site)
+                        .example_args
+                })
+                .unwrap_or_else(|| sample_args(descriptor))
+        }
         "item.remove" => json!({"at": ""}),
         // Место вставки у метода — до или после него (#1354).
         "code.insert" if method_address => {
@@ -868,37 +886,37 @@ fn check_fixture_coverage(name: &str) {
 }
 
 #[test]
-fn honest_can_on_the_main_corpus_workspace() {
+fn medium_honest_can_on_the_main_corpus_workspace() {
     check_fixture_coverage("workspace");
 }
 
 #[test]
-fn honest_can_on_the_dcs_workspace() {
+fn medium_honest_can_on_the_dcs_workspace() {
     check_fixture_coverage("workspace-dcs");
 }
 
 #[test]
-fn honest_can_on_the_mxl_workspace() {
+fn medium_honest_can_on_the_mxl_workspace() {
     check_fixture_coverage("workspace-mxl");
 }
 
 #[test]
-fn honest_can_on_the_code_and_extension_workspace() {
+fn medium_honest_can_on_the_code_and_extension_workspace() {
     check_fixture_coverage("workspace-code");
 }
 
 #[test]
-fn honest_can_on_the_predefined_workspace() {
+fn medium_honest_can_on_the_predefined_workspace() {
     check_fixture_coverage("workspace-predefined");
 }
 
 #[test]
-fn honest_can_on_the_resolve_workspace() {
+fn medium_honest_can_on_the_resolve_workspace() {
     check_fixture_coverage("workspace-resolve");
 }
 
 #[test]
-fn honest_can_on_external_sources() {
+fn medium_honest_can_on_external_sources() {
     check_fixture_coverage("workspace-external");
 }
 
@@ -1078,7 +1096,7 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
             continue;
         }
         let listed = can.contains(op);
-        let request = apply_request(at, op, node_args(descriptor, &address));
+        let request = apply_request(at, op, node_args(descriptor, &address, checked.traits));
         let preflight = super::v13_service::preflight_apply_operations_observed(
             &request, checked.traits, &|_| None,
             &|at| (at == &address).then_some(form_observation).flatten(),
@@ -1182,7 +1200,7 @@ fn check_unknown_argument_is_named(
 ) {
     const KEY: &str = "unicaUnknownArgument";
     let op = descriptor.name();
-    let mut args = node_args(descriptor, address);
+    let mut args = node_args(descriptor, address, checked.traits);
     let Some(object) = args.as_object_mut() else {
         return;
     };

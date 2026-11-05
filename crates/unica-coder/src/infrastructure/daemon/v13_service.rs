@@ -6191,7 +6191,7 @@ fn view_error_result(
 }
 
 #[cfg(test)]
-mod plan_detail_key_tests {
+mod medium_plan_detail_key_tests {
     use super::{plan_detail_key_errors, PLAN_DETAIL_KEYS};
     use unica_source_contract::proposal::PlanDetailKey;
 
@@ -6219,7 +6219,7 @@ mod plan_detail_key_tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::TextEngine;
     use serde_json::json;
     use std::path::PathBuf;
