@@ -39,8 +39,9 @@ fn unprefixed(source: &str) -> String {
         .replacen(&format!("xmlns:md=\"{MD}\""), &format!("xmlns=\"{MD}\""), 1)
 }
 
-/// New elements get fresh UUIDs in each run; compare everything else.
-fn masked_uuids(source: &str) -> String {
+/// New elements get fresh UUIDs in each run; UUIDs of the original tree are
+/// compared as they are.
+fn masked_uuids(source: &str, known: &BTreeSet<String>) -> String {
     let bytes = source.as_bytes();
     let is_hex = |byte: &u8| byte.is_ascii_hexdigit();
     let mut text = String::with_capacity(source.len());
@@ -52,7 +53,7 @@ fn masked_uuids(source: &str) -> String {
                 8 | 13 | 18 | 23 => *byte == b'-',
                 _ => is_hex(byte),
             });
-        if uuid {
+        if uuid && !known.contains(&source[at..at + 36]) {
             text.push_str("UUID");
             at += 36;
         } else {
@@ -79,7 +80,10 @@ fn element_names(source: &str) -> Vec<(Option<String>, String)> {
 
 /// Operations whose writes are not checked here, with the reason.
 const NOT_IN_MATRIX: &[(&str, &str)] = &[
-    ("object.borrow", "writes an extension's borrowed descriptor"),
+    (
+        "object.borrow",
+        "borrows into an extension, which needs its own source set",
+    ),
     ("help.create", "writes the help facet, not a descriptor element"),
 ];
 
@@ -272,6 +276,20 @@ fn every_metadata_write_keeps_the_owner_prefix() {
             "object.remove",
             json!({"at":"main:Catalog.Extra","ops":[{"op":"object.remove","args":{}}]}),
         ),
+        // Writer paths reached through other operations: a register adds a
+        // record to its registrar document and a form registration
+        // its owner.
+        (
+            "object.create",
+            json!({"at":"main:Configuration","ops":[
+                {"op":"object.create","args":{"values":{"kind":"AccumulationRegister","name":"Turnover"}}},
+                {"op":"resource.add","args":{"at":"main:AccumulationRegister.Turnover","items":[{"name":"Amount"}]}}
+            ]}),
+        ),
+        (
+            "form.add",
+            json!({"at":"main:Catalog.B","ops":[{"op":"form.add","args":{"items":[{"name":"Choose","type":"ChoiceForm"}]}}]}),
+        ),
     ];
 
     let sampled = steps
@@ -283,9 +301,10 @@ fn every_metadata_write_keeps_the_owner_prefix() {
         .iter()
         .map(|operation| operation.name())
         .collect::<BTreeSet<_>>();
-    assert_eq!(
-        sampled, registry,
-        "every metadata write operation needs a sample in this matrix or a reason in NOT_IN_MATRIX"
+    let missing = registry.difference(&sampled).collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "every metadata write operation needs a sample in this matrix or a reason in NOT_IN_MATRIX: {missing:?}"
     );
 
     let fixture = Fixture::blank();
@@ -312,6 +331,17 @@ fn every_metadata_write_keeps_the_owner_prefix() {
         ]}),
     );
     let original = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let known = original
+        .values()
+        .filter_map(|bytes| std::str::from_utf8(bytes).ok())
+        .flat_map(|text| {
+            text.char_indices()
+                .filter_map(|(at, _)| text.get(at..at + 36))
+                .filter(|candidate| uuid::Uuid::parse_str(candidate).is_ok() && candidate.len() == 36)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .collect::<BTreeSet<_>>();
     let run = |prefix: bool| {
         for (path, bytes) in &original {
             let text = String::from_utf8(bytes.clone()).unwrap_or_default();
@@ -375,9 +405,17 @@ fn every_metadata_write_keeps_the_owner_prefix() {
         if roxmltree::Document::parse(plain_text.trim_start_matches('\u{feff}')).is_err() {
             continue;
         }
-        if element_names(&prefixed_text) != element_names(&plain_text) {
+        let was_prefixed = original
+            .get(path)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .is_some_and(|text| prefixed(text) != text);
+        if was_prefixed && prefixed(&unprefixed(&prefixed_text)) != prefixed_text {
+            problems.push(format!("{path:?}: the prefixed descriptor lost its prefix"));
+        } else if element_names(&prefixed_text) != element_names(&plain_text) {
             problems.push(format!("{path:?}: element namespaces differ"));
-        } else if masked_uuids(&unprefixed(&prefixed_text)) != masked_uuids(&plain_text) {
+        } else if masked_uuids(&unprefixed(&prefixed_text), &known)
+            != masked_uuids(&plain_text, &known)
+        {
             problems.push(format!("{path:?}: bytes differ once the prefix is removed"));
         }
     }

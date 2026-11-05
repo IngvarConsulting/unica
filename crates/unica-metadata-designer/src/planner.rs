@@ -1375,8 +1375,41 @@ fn edit_descriptor_property(
     Some(updated)
 }
 
-/// Replaces the first `<Tag>…</Tag>` or `<Tag/>` inside `<Properties>`.
+/// Replaces the first `<Tag>…</Tag>` or `<Tag/>` inside `<Properties>`. A
+/// prefixed descriptor is edited in the default-namespace spelling and keeps
+/// its prefix.
 fn replace_property_block(text: &str, tag: &str, replacement: &str) -> Option<String> {
+    let (normalized, form) = unica_xml_format::prefix_form::PrefixForm::normalize(text).ok()?;
+    let updated = replace_default_property_block(&normalized, tag, replacement)?;
+    form.restore(&updated).ok()
+}
+
+#[cfg(test)]
+mod prefixed_property_block_tests {
+    #[test]
+    fn a_prefixed_descriptor_keeps_its_prefix_in_the_replaced_block() {
+        let prefixed = concat!(
+            "<md:MetaDataObject xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\">",
+            "<md:Role><md:Properties><md:Name>Q</md:Name><md:Comment/></md:Properties></md:Role>",
+            "</md:MetaDataObject>"
+        );
+        let updated =
+            super::replace_property_block(prefixed, "Comment", "<Comment>Reader</Comment>")
+                .unwrap();
+        assert_eq!(
+            updated,
+            prefixed.replace("<md:Comment/>", "<md:Comment>Reader</md:Comment>")
+        );
+        let default = prefixed.replace("md:", "").replace("xmlns:md=", "xmlns=");
+        assert_eq!(
+            super::replace_property_block(&default, "Comment", "<Comment>Reader</Comment>")
+                .unwrap(),
+            default.replace("<Comment/>", "<Comment>Reader</Comment>")
+        );
+    }
+}
+
+fn replace_default_property_block(text: &str, tag: &str, replacement: &str) -> Option<String> {
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let empty = format!("<{tag}/>");

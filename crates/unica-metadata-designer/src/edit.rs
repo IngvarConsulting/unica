@@ -738,7 +738,7 @@ where
     let (mut working, form) = unica_xml_format::prefix_form::PrefixForm::normalize(xml_text)
         .map_err(|message| {
             unica_metadata::request::MetaFailure::from(typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
+                MetaDiagnosticCode::ProviderUnavailable,
                 message,
                 None,
             ))

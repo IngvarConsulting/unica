@@ -60,7 +60,7 @@ impl PrefixForm {
         }
         let normalized = rename(source, &document, &prefix, Direction::Strip);
         let form = PrefixForm::Prefixed(prefix.clone());
-        if form.restore(&normalized)? != source {
+        if form.restore(&normalized).ok().as_deref() != Some(source) {
             return Err(refused());
         }
         Ok((normalized, form))
