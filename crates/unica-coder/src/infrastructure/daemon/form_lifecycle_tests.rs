@@ -1,3 +1,6 @@
+#[path = "form_lifecycle_tests/common_defaults.rs"]
+mod common_defaults;
+
 use super::actor_capacity_tests::direct_v5;
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -387,12 +390,72 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
         externally_changed
     );
 
-    apply_pair(form_at, serde_json::json!([{"op":"form.remove"}]));
+    apply_pair(
+        "main:Configuration",
+        serde_json::json!([{"op":"homePage.set","args":{"values":{
+            "template":"OneColumn","left":[{"form":"Document.Order.Form.Main","height":7}]
+        }}}]),
+    );
+    let homepage_path = source.join("Ext/HomePageWorkArea.xml");
+    let original_homepage = std::fs::read(&homepage_path).unwrap();
+    for malformed in [b"<HomePageWorkArea".as_slice(), b"<WrongRoot/>".as_slice()] {
+        std::fs::write(&homepage_path, malformed).unwrap();
+        let before = unica_workspace::test_support::tree_snapshot(&source);
+        let refused = call(
+            ToolIdentity::Apply,
+            serde_json::json!({"at":form_at,"ops":[{"op":"form.remove"}]}),
+        );
+        assert!(!refused.ok, "damaged homepage was ignored: {refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "invalid_source");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
+    }
+    std::fs::write(&homepage_path, &original_homepage).unwrap();
+    let pending = preview(form_at, serde_json::json!([{"op":"form.remove"}]));
+    let mut changed_homepage = original_homepage.clone();
+    changed_homepage.extend_from_slice(b"<!-- concurrent homepage edit -->");
+    std::fs::write(&homepage_path, &changed_homepage).unwrap();
+    let before = unica_workspace::test_support::tree_snapshot(&source);
+    let stale = call(
+        ToolIdentity::Apply,
+        serde_json::json!({"executionToken":pending.data.as_ref().unwrap()["executionToken"]}),
+    );
+    assert!(
+        !stale.ok,
+        "changed homepage accepted stale removal: {stale:?}"
+    );
+    assert_eq!(stale.diagnostics[0]["code"], "stale_revision");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&source),
+        before
+    );
+    std::fs::write(&homepage_path, original_homepage).unwrap();
+    let before_removal = unica_workspace::test_support::tree_snapshot(&source);
+    let removal = preview(form_at, serde_json::json!([{"op":"form.remove"}]));
+    assert!(
+        removal
+            .warnings
+            .iter()
+            .any(|warning| warning["code"] == "composition_cleaned"),
+        "removal preview must disclose homepage cleanup: {removal:?}"
+    );
+    let published = call(
+        ToolIdentity::Apply,
+        serde_json::json!({
+            "executionToken":removal.data.as_ref().unwrap()["executionToken"]
+        }),
+    );
+    assert!(published.ok, "{published:?}");
+    assert_eq!(published.warnings, removal.warnings);
+    let homepage = std::fs::read_to_string(source.join("Ext/HomePageWorkArea.xml")).unwrap();
+    assert!(!homepage.contains("Document.Order.Form.Main"));
     assert_exact_effects(
         &source,
-        &externally_changed,
+        &before_removal,
         &[],
-        &["Documents/Order.xml"],
+        &["Documents/Order.xml", "Ext/HomePageWorkArea.xml"],
         &[descriptor, content, module, sidecar],
     );
     let (forms, slots) = owner_forms_and_slots(&source);

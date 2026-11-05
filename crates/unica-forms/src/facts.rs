@@ -148,14 +148,36 @@ pub struct FormInfoAttribute {
     pub is_main: bool,
     /// `MainTable` of a dynamic list; `null` for every other type.
     pub main_table: Option<String>,
+    /// Observed settings, present only for DynamicList attributes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dynamic_list: Option<FormInfoDynamicList>,
     /// Columns of a value table or tree; empty for every other type.
     pub columns: Vec<FormInfoColumn>,
+}
+
+/// Design-time observations, with no inferred runtime defaults.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FormInfoDynamicList {
+    pub main_table: Option<String>,
+    pub manual_query: Option<bool>,
+    /// XML-decoded direct text, including whitespace and line breaks.
+    pub query_text: Option<String>,
+    pub dynamic_data_read: Option<bool>,
+    pub key_type: Option<String>,
+    /// Repeated KeyField values in source order, including repeats.
+    pub key_fields: Option<Vec<String>>,
+    /// Whether MainTable permits use of KeyFields, not the effective runtime key.
+    pub key_fields_applicable: Option<bool>,
+    pub limits: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FormInfoColumn {
     pub name: String,
+    /// Strictly decoded type of the containing form attribute.
+    pub parent_type: Option<String>,
     #[serde(rename = "type")]
     pub type_name: Option<String>,
 }
@@ -185,6 +207,14 @@ pub struct FormInfoCommand {
     pub picture: Option<String>,
     /// The command's DefaultRepresentation; `null` when it keeps the default.
     pub representation: Option<String>,
+    pub current_row_use: Option<String>,
+    pub modifies_saved_data: Option<bool>,
+    pub associated_table_element_id: Option<String>,
+    pub functional_options: Option<Vec<String>>,
+    /// An explicitly stored flag, independent of the picture reference.
+    pub picture_load_transparent: Option<bool>,
+    /// Damage to one command property does not discard the other facts.
+    pub property_limits: Vec<String>,
 }
 
 /// Minimal, provider-neutral form evidence consumed by the hidden event

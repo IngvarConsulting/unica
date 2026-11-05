@@ -1,0 +1,1703 @@
+{
+  "id": "S-1696-common-form-defaults",
+  "issue": 1696,
+  "area": "Назначения форм",
+  "task": "Назначить совместимые общие формы в четыре слота отчёта/константы, заменить A→B, сохранить собственную форму, использовать preview/token и проверить no-op.",
+  "workspace": "tests/fixtures/acceptance/workspace-common-form-defaults",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Report.CorpusReport"
+        }
+      ],
+      "captures": {
+        "report": {
+          "pointer": "/data/items/0/at"
+        },
+        "configBefore": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "formDescriptorBefore": {
+          "file": "src/CommonForms/MainA.xml",
+          "kind": "sha256"
+        },
+        "formBodyBefore": {
+          "file": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "moduleBefore": {
+          "file": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "MainA": {
+          "pointer": "/data/items/0/at"
+        },
+        "MainB": {
+          "pointer": "/data/items/1/at"
+        },
+        "SettingsA": {
+          "pointer": "/data/items/2/at"
+        },
+        "SettingsB": {
+          "pointer": "/data/items/3/at"
+        },
+        "VariantA": {
+          "pointer": "/data/items/4/at"
+        },
+        "VariantB": {
+          "pointer": "/data/items/5/at"
+        },
+        "ConstantsA": {
+          "pointer": "/data/items/6/at"
+        },
+        "ConstantsB": {
+          "pointer": "/data/items/7/at"
+        },
+        "ImplicitMain": {
+          "pointer": "/data/items/8/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Constant.MainCurrency"
+        }
+      ],
+      "captures": {
+        "constant": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Can.form.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MainCurrency"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MainCurrency.Can.form.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before0": {
+          "file": "src/Reports/CorpusReport.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultForm": "$capture.ImplicitMain"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token0": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultForm",
+          "eq": [
+            "CommonForm.ImplicitMain"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultForm",
+          "eq": "CommonForm.ImplicitMain"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before1": {
+          "file": "src/Reports/CorpusReport.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultForm": "$capture.MainA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token1": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultForm",
+          "eq": [
+            "CommonForm.MainA"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultForm",
+          "eq": "CommonForm.MainA"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before2": {
+          "file": "src/Reports/CorpusReport.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultSettingsForm": "$capture.SettingsA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token2": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultSettingsForm",
+          "eq": [
+            "CommonForm.SettingsA"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultSettingsForm",
+          "eq": "CommonForm.SettingsA"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before3": {
+          "file": "src/Reports/CorpusReport.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultVariantForm": "$capture.VariantA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token3": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultVariantForm",
+          "eq": [
+            "CommonForm.VariantA"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultVariantForm",
+          "eq": "CommonForm.VariantA"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MainCurrency"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before4": {
+          "file": "src/Constants/MainCurrency.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.constant",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultForm": "$capture.ConstantsA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token4": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultForm",
+          "eq": [
+            "CommonForm.ConstantsA"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MainCurrency"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultForm",
+          "eq": "CommonForm.ConstantsA"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before5": {
+          "file": "src/Reports/CorpusReport.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultForm": "main:Report.CorpusReport.Form.Own"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token5": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultForm",
+          "eq": [
+            "Report.CorpusReport.Form.Own"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultForm",
+          "eq": "Report.CorpusReport.Form.Own"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before6": {
+          "file": "src/Reports/CorpusReport.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultForm": "$capture.MainB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token6": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.before6"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token6"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultForm",
+          "eq": [
+            "CommonForm.MainB"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultForm",
+          "eq": "CommonForm.MainB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before7": {
+          "file": "src/Reports/CorpusReport.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultSettingsForm": "$capture.SettingsB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token7": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.before7"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token7"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultSettingsForm",
+          "eq": [
+            "CommonForm.SettingsB"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultSettingsForm",
+          "eq": "CommonForm.SettingsB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before8": {
+          "file": "src/Reports/CorpusReport.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultVariantForm": "$capture.VariantB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token8": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.before8"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token8"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultVariantForm",
+          "eq": [
+            "CommonForm.VariantB"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultVariantForm",
+          "eq": "CommonForm.VariantB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MainCurrency"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before9": {
+          "file": "src/Constants/MainCurrency.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.constant",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultForm": "$capture.ConstantsB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token9": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.before9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token9"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultForm",
+          "eq": [
+            "CommonForm.ConstantsB"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MainCurrency"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultForm",
+          "eq": "CommonForm.ConstantsB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "noopBefore": {
+          "file": "src/Reports/CorpusReport.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultForm": "$capture.MainB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "noopToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.noopToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA.xml",
+          "kind": "sha256",
+          "eq": "$capture.formDescriptorBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBodyBefore"
+        },
+        {
+          "path": "src/CommonForms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MainCurrency"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "constantBeforeNegative": {
+          "file": "src/Constants/MainCurrency.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultSettingsForm": "main:CommonForm.MainA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: this report slot requires a CommonForm with ReportFormType=Settings",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.constantBeforeNegative"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultForm": "other:CommonForm.MainA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: a default form must belong to the same source set as its owner",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.constantBeforeNegative"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultForm": "main:CommonForm"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: MetadataAddressInvalid: metadata address must contain a kind and application name",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.constantBeforeNegative"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultForm": "main:CommonForm.Absent"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: CommonForm is not registered in this source set",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.constantBeforeNegative"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        }
+      ]
+    }
+  ]
+}

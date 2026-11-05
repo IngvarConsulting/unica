@@ -1787,7 +1787,7 @@ fn ensure_no_link_components(source_root: &Path, path: &Path) -> Result<(), Stri
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{revalidate_platform_xml_target, set_object_descriptor_content_read_hook_for_test};
 
     use std::fs;

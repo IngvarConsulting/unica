@@ -53,7 +53,18 @@ pub fn observe(
                         crate::info_projection::strict_localized_meta_info_property_value(*value)
                     }
                     _ if !value.children().any(|child| child.is_element()) => {
-                        spec.parse_text(&crate::info_projection::direct_text_content(*value))
+                        let text = crate::info_projection::direct_text_content(*value);
+                        // Information register dimension flags are also read
+                        // as element fields; both readers share that reading.
+                        let text = if context
+                            == unica_metadata::MetaMemberReadContext::InformationRegisterDimension
+                            && matches!(spec.value_kind(), MetaMemberValueKind::Boolean)
+                        {
+                            text.trim_matches(crate::info::dimension_boolean_xml_space)
+                        } else {
+                            text.as_str()
+                        };
+                        spec.parse_text(text)
                     }
                     _ => None,
                 }
