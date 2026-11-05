@@ -26,4 +26,5 @@ entries = [
   "test_tool_surface_ledger.ToolSurfaceLedgerTests",
   # наблюдатель адресов: процесс продукта и страница на 127.0.0.1
   "test_unica_observer.UnicaObserverTests",
+  "test_unica_observer_tree.ObserverTreeTests",
 ]

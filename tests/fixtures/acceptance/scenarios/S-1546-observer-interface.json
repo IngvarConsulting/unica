@@ -1,0 +1,203 @@
+{
+  "id": "S-1546-observer-interface",
+  "issue": 1546,
+  "area": "Чтение модулей",
+  "task": "Пройти Interface к точному returned Method; сохранить нормативные группы, пустые срезы и отдельные наборы одноимённого модуля без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-observer-interface",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Shared.Interface"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/name",
+          "eq": "Public"
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/methods",
+          "sameItems": [
+            "main:CommonModule.Shared.Method.Открытая",
+            "main:CommonModule.Shared.Method.Вложенная"
+          ]
+        },
+        {
+          "pointer": "/data/items/1/name",
+          "eq": "Library"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/methods",
+          "sameItems": [
+            "main:CommonModule.Shared.Method.Открытая",
+            "main:CommonModule.Shared.Method.Вложенная",
+            "main:CommonModule.Shared.Method.Служебная"
+          ]
+        },
+        {
+          "pointer": "/data/items/2/name",
+          "eq": "Override"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/methods",
+          "sameItems": [
+            "main:CommonModule.Shared.Method.Переопределяемая"
+          ]
+        }
+      ],
+      "captures": {
+        "method": {
+          "pointer": "/data/items/0/methods/0"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.method"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "$capture.method"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Empty.Interface"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/methods",
+          "eq": []
+        },
+        {
+          "pointer": "/data/items/1/methods",
+          "eq": []
+        },
+        {
+          "pointer": "/data/items/2/methods",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:CommonModule.Shared.Interface"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/methods",
+          "sameItems": [
+            "ext:CommonModule.Shared.Method.Открытая",
+            "ext:CommonModule.Shared.Method.ТолькоРасширение"
+          ]
+        },
+        {
+          "pointer": "/data/items/1/methods",
+          "sameItems": [
+            "ext:CommonModule.Shared.Method.Открытая",
+            "ext:CommonModule.Shared.Method.ТолькоРасширение"
+          ]
+        },
+        {
+          "pointer": "/data/items/2/methods",
+          "eq": []
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "README.md",
+          "eq": "f5da3b23500e33750827aa8e20a28ed21875761f70bc5a661fcd03235c5e561c"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/Empty/Ext/Module.bsl",
+          "eq": "2c023f394d8a5c718c481a3a1bfdd273a9a64779632306d9e89ac91202b90cb6"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/Empty.xml",
+          "eq": "718fcb5cd8aa001a56323ee0a87c8aabed241c98ebd6d4fe163e3a29d9f3cd15"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/Shared/Ext/Module.bsl",
+          "eq": "aee204f14f7caec3083448dc23c1b604bf6f84d2c4dfcb152c459b976645aeac"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/Shared.xml",
+          "eq": "c919dce9571abc223b4c7e232a6d1efdbd1629e822322803f4d2895b6b0d9b87"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "9afe5438eaa1abd462e4378df0a8ecff8cc74600b653619d1e697bd15dfddeff"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "88209e814459d6f3a581e688b40caaea500a140c87382a0e2604f4901f3b71c0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/CommonModules/Shared/Ext/Module.bsl",
+          "eq": "9134730420b46472e7355ae836e4243fe3f7679ea7116b6b1fd05e4976713cbc"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/CommonModules/Shared.xml",
+          "eq": "46967e1bd391145e98b3e7e8f4f48dab2131b20368ab30e623f27ab7635f78b5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/Configuration.xml",
+          "eq": "6b349387c032eab3b779d72d5ddc48d2db53337a2761126405d91bb2e0e706f2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src-ext/Languages/Русский.xml",
+          "eq": "88209e814459d6f3a581e688b40caaea500a140c87382a0e2604f4901f3b71c0"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "ad66bbc36bcab2877eae70d9b5eb5e9233f0d0c0018de56429b3c5f757236945"
+        }
+      ]
+    }
+  ]
+}
