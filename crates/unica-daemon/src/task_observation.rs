@@ -101,6 +101,7 @@ mod tests {
     use super::*;
     use crate::identity::CoreIdentity;
 
+    /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[test]
     fn observation_exposes_only_bounded_timing_and_generation_digest() {
         let record = V5EndpointRecord::new(CoreIdentity::production_v5(), 41001).unwrap();

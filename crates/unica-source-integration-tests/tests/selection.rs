@@ -2,21 +2,25 @@
 use std::sync::Arc;
 use unica_source_designer::project_sources::ActorSourceMapDiscovery;
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn aggregate_selection_directory_handles_cross_former_128_and_keep_finality() {
     unica_workspace::selection_evidence::contract_tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk() {
     unica_workspace::selection_evidence::contract_tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn aggregate_selection_membership_crosses_former_16384_across_sources() {
     unica_workspace::selection_evidence::contract_tests::aggregate_selection_membership_crosses_former_16384_across_sources(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn published_replacement_of_a_retained_source_map_file_passes_the_final_gate() {
     unica_workspace::selection_evidence::contract_tests::published_replacement_of_a_retained_source_map_file_passes_the_final_gate(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
@@ -62,11 +66,13 @@ fn actor_admission_rejects_route_and_name_byte_budget() {
     unica_workspace::selection_evidence::contract_tests::actor_admission_rejects_route_and_name_byte_budget(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn actor_admission_comparison_honors_cancellation() {
     unica_workspace::selection_evidence::contract_tests::actor_admission_comparison_honors_cancellation(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
 }
 
+/// rule: INV.APP.SOURCE-SELECTION-LIMITS
 #[test]
 fn actor_admission_comparison_honors_deadline() {
     unica_workspace::selection_evidence::contract_tests::actor_admission_comparison_honors_deadline(
@@ -76,16 +82,19 @@ fn actor_admission_comparison_honors_deadline() {
     );
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn retained_selection_pass_rejects_inconsistent_regular_repeat() {
     unica_workspace::selection_evidence::contract_tests::retained_selection_pass_rejects_inconsistent_regular_repeat(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn actor_admission_distinguishes_presence_identity_from_exact_content() {
     unica_workspace::selection_evidence::contract_tests::actor_admission_distinguishes_presence_identity_from_exact_content(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn actor_admission_rejects_a_probe_interrupted_after_real_descriptor_read() {
     unica_workspace::selection_evidence::contract_tests::actor_admission_rejects_a_probe_interrupted_after_real_descriptor_read(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));

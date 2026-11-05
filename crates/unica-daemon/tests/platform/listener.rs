@@ -487,6 +487,7 @@ fn handler_spawn_failure_preserves_live_owner_listener_and_next_connection() {
     assert!(state.read_v5_endpoint_record().unwrap().is_none());
 }
 
+/// rule: INV.RUNTIME.DAEMON-CONNECTION-ADMISSION
 #[test]
 fn v5_duplicate_live_owner_lease_is_rejected() {
     let root = tempfile::tempdir().expect("temporary duplicate-lease state root");
@@ -545,6 +546,7 @@ fn v5_duplicate_live_owner_lease_is_rejected() {
         .expect("duplicate-lease runtime");
 }
 
+/// rule: INV.RUNTIME.DAEMON-CONNECTION-ADMISSION
 #[test]
 fn connection_ownership_survives_former_limit_and_checked_overflow() {
     let admitted = Arc::new(AtomicUsize::new(0));
@@ -563,6 +565,8 @@ fn connection_ownership_survives_former_limit_and_checked_overflow() {
     assert_eq!(maximum.load(Ordering::Acquire), usize::MAX);
 }
 
+/// rule: INV.RUNTIME.DAEMON-ACTIVE-OWNERS
+/// rule: INV.RUNTIME.DAEMON-CONNECTION-ADMISSION
 #[test]
 fn live_v5_owner_prevents_idle_listener_shutdown() {
     let root = tempfile::tempdir().expect("temporary owner-idle state root");
@@ -607,6 +611,7 @@ fn live_v5_owner_prevents_idle_listener_shutdown() {
 
 /// The first frame is read before the token is checked and keeps the small
 /// handshake bound; an authenticated session reads far larger frames (#1309).
+/// rule: INV.WIRE.DAEMON-REQUEST-FRAMING
 #[test]
 fn handshake_keeps_its_small_bound_while_an_authenticated_frame_may_be_far_larger() {
     use crate::protocol_v5::{MAX_V5_HANDSHAKE_LINE_BYTES, MAX_V5_REQUEST_LINE_BYTES};
@@ -679,6 +684,7 @@ fn handshake_keeps_its_small_bound_while_an_authenticated_frame_may_be_far_large
 /// A large frame that begins just before an idle session poll expires keeps
 /// its consumed prefix: the frame has its own deadline from its first byte,
 /// and its tail is never read as a new request (#1309).
+/// rule: INV.WIRE.DAEMON-REQUEST-FRAMING
 #[test]
 fn a_frame_straddling_the_idle_session_poll_is_read_whole() {
     let root = tempfile::tempdir().expect("temporary state root");
@@ -733,6 +739,7 @@ fn a_frame_straddling_the_idle_session_poll_is_read_whole() {
 
 /// A session frame that misses its own deadline ends the session: its tail
 /// is never answered as another request.
+/// rule: INV.WIRE.DAEMON-REQUEST-FRAMING
 #[test]
 fn a_session_frame_missing_its_deadline_closes_the_session() {
     let root = tempfile::tempdir().expect("temporary state root");
@@ -777,6 +784,7 @@ fn a_session_frame_missing_its_deadline_closes_the_session() {
     server.join().expect("join v5 runtime").expect("v5 runtime");
 }
 
+/// rule: INV.APP.HIDDEN-SERVICES
 #[test]
 fn direct_runtime_entry_rejects_every_non_v5_identity_before_state_creation() {
     use std::str::FromStr;

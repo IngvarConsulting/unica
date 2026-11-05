@@ -803,11 +803,13 @@ class ProductContractTests(unittest.TestCase):
     def test_rmcp_dependency_is_owned_by_unica_coder_without_macro_features(
         self,
     ) -> None:
+        """rule: INV.WIRE.SDK-TRANSPORT"""
         self.assertEqual(workspace_rmcp_dependency_errors(REPO_ROOT), [])
 
     def test_production_rmcp_handler_assertion_rejects_test_only_or_gated_bound(
         self,
     ) -> None:
+        """rule: INV.WIRE.SDK-TRANSPORT"""
         bound = (
             b"#[allow(dead_code)]\n"
             b"fn assert_unica_server_implements_official_rmcp_server_handler()\n"
@@ -875,6 +877,7 @@ class ProductContractTests(unittest.TestCase):
         # Rust (не-тестовый бинарь `unica`, фичи объединены с dev-зависимостями
         # тестов), а вне PR и push в main — шаг `product` точным
         # production-набором фич (`cargo build -p unica-coder --bin unica`).
+        """rule: INV.WIRE.SDK-TRANSPORT"""
         sources = {
             path: (REPO_ROOT / path).read_bytes()
             for path in (RMCP_OWNER, *(path for path, _ in RMCP_HANDLER_MODULE_CHAIN))
@@ -894,6 +897,7 @@ class ProductContractTests(unittest.TestCase):
         self.assertEqual(lanes.prepared_binary.ORDINARY_FEATURES, ["default"])
 
     def test_rmcp_module_preserves_legacy_public_exports_only(self) -> None:
+        """rule: INV.WIRE.SDK-MODULE-EXPORTS"""
         source = tracked_workspace_production_rust_sources(REPO_ROOT)[RMCP_OWNER]
         for declaration in (
             b"pub struct UnicaServer",
@@ -926,6 +930,7 @@ class ProductContractTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_rmcp_transport_is_confined_to_mcp_interface(self) -> None:
+        """rule: INV.WIRE.SDK-TRANSPORT"""
         self.assertEqual(
             workspace_rmcp_reference_confinement_errors(REPO_ROOT),
             [],
@@ -2216,6 +2221,7 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_application_layer_does_not_spawn_git_directly(self) -> None:
+        """rule: INV.APP.DEPENDENCY-DIRECTION"""
         repo_root = Path(__file__).resolve().parents[2]
         application_root = (
             repo_root / "crates" / "unica-coder" / "src" / "application"
@@ -2228,6 +2234,7 @@ class ProductContractTests(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_direct_git_command_guard_matches_calls_before_masking_literals(self) -> None:
+        """rule: INV.APP.DEPENDENCY-DIRECTION"""
         source = br'''
 fn productive() { std::process::Command::new("git"); }
 fn harmless() {
@@ -3151,6 +3158,8 @@ fn test_only() { std::process::Command::new("git"); }
         Разойдись эти списки — выпуск соберётся, а установка откажет уже у
         пользователя: «origin is outside the approved release origin». Ловить
         это надо здесь, а не в поле.
+
+        rule: INV.PKG.ENGINE-RELEASE-SOURCES
         """
         repo_root = Path(__file__).resolve().parents[2]
         packager = (repo_root / "scripts/ci/package-unica-plugin.py").read_text(
