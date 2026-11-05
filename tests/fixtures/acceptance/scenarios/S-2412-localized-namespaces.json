@@ -1,0 +1,472 @@
+{
+  "id": "S-2412-localized-namespaces",
+  "issue": 2412,
+  "area": "XML и локализация",
+  "task": "Сохранить QName и локальные namespace старых Synonym и DCS title: preview без записи, token, readback, no-op и удаление последнего перевода.",
+  "workspace": "tests/fixtures/acceptance/workspace-localized-namespaces",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before0": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F05Report.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Synonym": "Новый"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "token0": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Новый",
+            "Keep & preserve"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.Append"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before1": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/Append.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.Append",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Synonym": "Новый"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "token1": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/Append.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/Append.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Keep",
+            "Новый"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.Append"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.Empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before2": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/Empty.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.Empty",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Synonym": "Новый"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "token2": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/Empty.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/Empty.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Новый"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.Empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount.Can.field.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before3": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount",
+        "ops": [
+          {
+            "op": "field.set",
+            "args": {
+              "values": {
+                "title": "Новый"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "token3": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Новый"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "noopBefore": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount",
+        "ops": [
+          {
+            "op": "field.set",
+            "args": {
+              "values": {
+                "title": "Новый"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before4": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount",
+        "ops": [
+          {
+            "op": "field.set",
+            "args": {
+              "values": {
+                "title": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "token4": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}lang",
+          "eq": [
+            "ru"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Field.Amount"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    }
+  ]
+}

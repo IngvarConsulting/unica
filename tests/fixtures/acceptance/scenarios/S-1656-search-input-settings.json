@@ -1,0 +1,4289 @@
+{
+  "id": "S-1656-search-input-settings",
+  "issue": 1656,
+  "area": "Метаданные",
+  "task": "Изменить шесть настроек поиска и ввода Catalog/Document, сохранить формы и состав, проверить no-op и конфликт.",
+  "workspace": "tests/fixtures/acceptance/workspace-search-input-settings",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/FullTextSearch/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/SearchStringModeOnInputByString/enum",
+          "eq": [
+            "Begin",
+            "AnyPart"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/FullTextSearchOnInputByString/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ChoiceDataGetModeOnInputByString/enum",
+          "eq": [
+            "Directly",
+            "Background"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CreateOnInput/enum",
+          "eq": [
+            "Auto",
+            "Use",
+            "DontUse"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ChoiceHistoryOnInput/enum",
+          "eq": [
+            "Auto",
+            "DontUse"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearch": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}FullTextSearch",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0_3": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SearchStringModeOnInputByString": "Begin"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}SearchStringModeOnInputByString",
+          "eq": [
+            "Begin"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/SearchStringModeOnInputByString",
+          "eq": "Begin"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SearchStringModeOnInputByString": "AnyPart"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}SearchStringModeOnInputByString",
+          "eq": [
+            "AnyPart"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/SearchStringModeOnInputByString",
+          "eq": "AnyPart"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SearchStringModeOnInputByString": "Begin"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}SearchStringModeOnInputByString",
+          "eq": [
+            "Begin"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/SearchStringModeOnInputByString",
+          "eq": "Begin"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1_3": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SearchStringModeOnInputByString": "Begin"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}SearchStringModeOnInputByString",
+          "eq": [
+            "Begin"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/SearchStringModeOnInputByString",
+          "eq": "Begin"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_2_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearchOnInputByString": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_2_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}FullTextSearchOnInputByString",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearchOnInputByString",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_2_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearchOnInputByString": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}FullTextSearchOnInputByString",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearchOnInputByString",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_2_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearchOnInputByString": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_2_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}FullTextSearchOnInputByString",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearchOnInputByString",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_2_3": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearchOnInputByString": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_2_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}FullTextSearchOnInputByString",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearchOnInputByString",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_3_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceDataGetModeOnInputByString": "Directly"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_3_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceDataGetModeOnInputByString",
+          "eq": [
+            "Directly"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceDataGetModeOnInputByString",
+          "eq": "Directly"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_3_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceDataGetModeOnInputByString": "Background"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_3_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceDataGetModeOnInputByString",
+          "eq": [
+            "Background"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceDataGetModeOnInputByString",
+          "eq": "Background"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_3_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceDataGetModeOnInputByString": "Directly"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_3_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceDataGetModeOnInputByString",
+          "eq": [
+            "Directly"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceDataGetModeOnInputByString",
+          "eq": "Directly"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_3_3": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceDataGetModeOnInputByString": "Directly"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_3_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceDataGetModeOnInputByString",
+          "eq": [
+            "Directly"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceDataGetModeOnInputByString",
+          "eq": "Directly"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_4_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_4_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Auto"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_4_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateOnInput": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_4_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_4_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_4_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_4_3": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_4_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_4_4": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_4_4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_5_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceHistoryOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_5_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceHistoryOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_5_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceHistoryOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_5_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceHistoryOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_5_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceHistoryOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_5_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceHistoryOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_5_3": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceHistoryOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_5_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}ChoiceHistoryOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "bdf0fefd89a63aac87e1a27f1d539c7218896369803bf4b61983a93ad65002ed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/FullTextSearch/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/SearchStringModeOnInputByString/enum",
+          "eq": [
+            "Begin",
+            "AnyPart"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/FullTextSearchOnInputByString/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ChoiceDataGetModeOnInputByString/enum",
+          "eq": [
+            "Directly",
+            "Background"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/CreateOnInput/enum",
+          "eq": [
+            "Auto",
+            "Use",
+            "DontUse"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ChoiceHistoryOnInput/enum",
+          "eq": [
+            "Auto",
+            "DontUse"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0_0": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0_1": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearch": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}FullTextSearch",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0_2": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0_3": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1_0": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SearchStringModeOnInputByString": "Begin"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}SearchStringModeOnInputByString",
+          "eq": [
+            "Begin"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/SearchStringModeOnInputByString",
+          "eq": "Begin"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1_1": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SearchStringModeOnInputByString": "AnyPart"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}SearchStringModeOnInputByString",
+          "eq": [
+            "AnyPart"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/SearchStringModeOnInputByString",
+          "eq": "AnyPart"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1_2": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SearchStringModeOnInputByString": "Begin"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}SearchStringModeOnInputByString",
+          "eq": [
+            "Begin"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/SearchStringModeOnInputByString",
+          "eq": "Begin"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1_3": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SearchStringModeOnInputByString": "Begin"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}SearchStringModeOnInputByString",
+          "eq": [
+            "Begin"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/SearchStringModeOnInputByString",
+          "eq": "Begin"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_2_0": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearchOnInputByString": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_2_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}FullTextSearchOnInputByString",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearchOnInputByString",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_2_1": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearchOnInputByString": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_2_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}FullTextSearchOnInputByString",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearchOnInputByString",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_2_2": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearchOnInputByString": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_2_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}FullTextSearchOnInputByString",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearchOnInputByString",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_2_3": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearchOnInputByString": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_2_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}FullTextSearchOnInputByString",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearchOnInputByString",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_3_0": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceDataGetModeOnInputByString": "Directly"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_3_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}ChoiceDataGetModeOnInputByString",
+          "eq": [
+            "Directly"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceDataGetModeOnInputByString",
+          "eq": "Directly"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_3_1": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceDataGetModeOnInputByString": "Background"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_3_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}ChoiceDataGetModeOnInputByString",
+          "eq": [
+            "Background"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceDataGetModeOnInputByString",
+          "eq": "Background"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_3_2": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceDataGetModeOnInputByString": "Directly"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_3_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}ChoiceDataGetModeOnInputByString",
+          "eq": [
+            "Directly"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceDataGetModeOnInputByString",
+          "eq": "Directly"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_3_3": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceDataGetModeOnInputByString": "Directly"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_3_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}ChoiceDataGetModeOnInputByString",
+          "eq": [
+            "Directly"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceDataGetModeOnInputByString",
+          "eq": "Directly"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_4_0": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_4_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Auto"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_4_1": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateOnInput": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_4_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_4_2": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_4_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_4_3": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_4_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_4_4": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "CreateOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_4_4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}CreateOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/CreateOnInput",
+          "eq": "DontUse"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_5_0": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceHistoryOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_5_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}ChoiceHistoryOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_5_1": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceHistoryOnInput": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_5_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}ChoiceHistoryOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_5_2": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceHistoryOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_5_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}ChoiceHistoryOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_5_3": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceHistoryOnInput": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_5_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}ChoiceHistoryOnInput",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "Auto"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "6f082dd45e8e75da92e624a7b55afc05f7ead6e60251cd366e8be351aacff2bc"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearch": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Changed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "changed": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Catalogs/Codes.xml; input `Catalogs/Codes.xml`: source write target; the plan retains its original state to prevent overwriting",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SearchStringModeOnInputByString": "Anywhere"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: property `SearchStringModeOnInputByString` value `Anywhere` is invalid; expected one of: Begin, AnyPart",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceHistoryOnInput": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: property `ChoiceHistoryOnInput` value `Use` is invalid; expected one of: Auto, DontUse",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: property `FullTextSearch` is not supported for InformationRegister",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    }
+  ]
+}

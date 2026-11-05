@@ -139,7 +139,7 @@ fn hash_path(hasher: &mut DefaultHasher, root: &Path, rel: &str) {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         discover_workspace, discover_workspace_with_cache_override,
         discover_workspace_with_current_dir,

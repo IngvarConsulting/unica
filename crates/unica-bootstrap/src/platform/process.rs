@@ -112,7 +112,7 @@ pub(crate) fn runtime_command(
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
 
     #[cfg(unix)]
