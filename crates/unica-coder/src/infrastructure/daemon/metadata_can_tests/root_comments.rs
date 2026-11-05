@@ -220,6 +220,9 @@ fn root_comments_preview_publish_read_and_repeat_preserve_native_companions() {
                 4
             } else if kind == "StyleItem" {
                 3
+            } else if kind == "DocumentNumerator" {
+                // Five numerator scalars plus Comment and its alias.
+                7
             } else {
                 2
             },

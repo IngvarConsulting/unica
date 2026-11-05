@@ -1420,6 +1420,7 @@ pub fn apply_typed_properties(
                 | MetaPropertyKey::ChoiceDataGetModeOnInputByString
                 | MetaPropertyKey::CreateOnInput
                 | MetaPropertyKey::ChoiceHistoryOnInput
+                | MetaPropertyKey::PredefinedDataUpdate
         ) {
             let same_name_count = properties
                 .children()

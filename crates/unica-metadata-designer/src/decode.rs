@@ -89,6 +89,7 @@ pub enum MetadataPlanKind {
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
     CommentOnly { kind: NodeKind, comment: String },
+    DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
     StyleItem(unica_metadata::property_input::StyleItemPropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
@@ -1115,6 +1116,10 @@ pub fn parse_properties(
                 DescriptorPropertyChanges::CommentOnly { kind, comment },
             )
         }
+        unica_metadata::property_input::PropertiesIntent::DocumentNumerator(values) => (
+            "DocumentNumerators",
+            DescriptorPropertyChanges::DocumentNumerator(values),
+        ),
         unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
             "FunctionalOptions",
             DescriptorPropertyChanges::FunctionalOption(values),

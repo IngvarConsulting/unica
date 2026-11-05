@@ -46,6 +46,7 @@ properties_operations!(
 pub enum PropertiesSite {
     Metadata(MetadataKind),
     CommentOnly(NodeKind),
+    DocumentNumerator,
     FunctionalOption,
     Role,
     WSReference,
@@ -96,6 +97,7 @@ macro_rules! descriptor_properties {
                         match self { $(Self::$field => $extension),+ }
                     }
                     PropertiesSite::Metadata(_) => false,
+                    PropertiesSite::DocumentNumerator => self == Self::Comment,
                     PropertiesSite::CommentOnly(_) => self == Self::Comment,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
                     PropertiesSite::StyleItem => self == Self::Comment,
@@ -225,6 +227,7 @@ impl PropertiesSite {
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::DocumentNumerator => Some(Self::DocumentNumerator),
             NodeKind::StyleItem => Some(Self::StyleItem),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
             NodeKind::Role => Some(Self::Role),
@@ -241,7 +244,6 @@ impl PropertiesSite {
             | NodeKind::CommonPicture
             | NodeKind::Language
             | NodeKind::IntegrationService
-            | NodeKind::DocumentNumerator
             | NodeKind::XdtoPackage
             | NodeKind::Sequence
             | NodeKind::Style => Some(Self::CommentOnly(owner.kind())),
@@ -270,6 +272,18 @@ impl PropertiesSite {
             );
         }
         match self {
+            Self::DocumentNumerator => {
+                // The numerator's closed scalar profile plus the descriptor
+                // Comment that the Designer property palette also edits.
+                let mut values = crate::document_numerator::values_schema();
+                let names = DescriptorProperty::Comment.names();
+                for name in names {
+                    values["properties"][*name] = json!({"type":"string"});
+                }
+                values["not"] = json!({"anyOf":[{"required":names}]});
+                values["x-unica-alias-groups"] = json!([names]);
+                return values;
+            }
             Self::Metadata(kind) => properties = metadata_property_schemas(Some(kind)),
             Self::StyleItem
             | Self::WSReference
@@ -338,6 +352,7 @@ impl PropertiesOperation {
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
+                    PropertiesSite::DocumentNumerator => json!({"values":{"NumberLength":12,"CheckUnique":true}}),
                     PropertiesSite::WSReference => json!({"values":{"LocationURL":"https://example.invalid/service?wsdl"}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
@@ -345,7 +360,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata(_) | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::WSReference | PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -610,7 +625,6 @@ mod tests {
             "CommonPicture",
             "Language",
             "IntegrationService",
-            "DocumentNumerator",
             "XDTOPackage",
             "Sequence",
             "Style",

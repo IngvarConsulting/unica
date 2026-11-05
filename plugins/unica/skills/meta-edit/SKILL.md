@@ -58,7 +58,7 @@ allowed-tools:
 `CommonAttribute`, `FunctionalOptionsParameter`,
 `SessionParameter`, `FilterCriterion`, `SettingsStorage`, `CommonCommand`,
 `CommandGroup`, `CommonForm`, `CommonTemplate`, `CommonPicture`, `Language`,
-`IntegrationService`, `DocumentNumerator`, `XDTOPackage`,
+`IntegrationService`, `XDTOPackage`,
 `Sequence` и `Style`. Для общей формы адресуй дескриптор
 `main:CommonForm.<Имя>.Metadata`; остальные владельцы адресуются как
 `main:<Вид>.<Имя>`. Например, `{"values":{"Comment":"Назначение параметра"}}`;
@@ -89,6 +89,13 @@ allowed-tools:
 можно передать вместе; изменение цвета сохраняет проверки Type, регистрации и
 формата, а ошибка любого поля отменяет всю операцию. Font/Border и неподдержанный
 Value не получают контракт записи цвета.
+
+Для существующего `DocumentNumerator` операция `props.set` меняет
+`NumberType`, `NumberLength`, `NumberAllowedLength`, `NumberPeriodicity`,
+`CheckUnique` и строковый `Comment`/`comment`, в том числе в одном
+`values`. Имя, UUID и ссылки документов сохраняются. Числовой номер
+допускает до 38 разрядов; сочетание типа и длины проверяется после всех
+операций пакета. Перенумерация данных информационной базы не выполняется.
 
 **Член создаётся на владельце, а изменяется и удаляется по своему адресу.**
 `*.add` адресует того, кому член принадлежит, и несёт новые элементы в
