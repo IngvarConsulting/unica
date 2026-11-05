@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.AUTODETECTED-MAIN-CONFLICT
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/938
 ---
 

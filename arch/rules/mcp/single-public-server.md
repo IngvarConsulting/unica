@@ -1,9 +1,5 @@
 ---
 id: INV.WIRE.ONE-SERVER
-check:
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_source_mcp_declares_single_unica_orchestrator
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_packaged_plugin_serves_both_hosts_from_one_directory
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_zcode_manifest_declares_portable_shared_components
 ---
 
 # Codex, Claude Code и ZCode используют один публичный MCP-сервер

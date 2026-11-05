@@ -3976,6 +3976,7 @@ mod medium_tests {
     /// Ревью #549: незапуском программы называется только отказ ОС создать
     /// процесс. Отсутствующий рабочий каталог программу не пробовал, хотя ОС
     /// ответила бы на него той же ошибкой, что на отсутствующий файл.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn only_a_refused_launch_is_a_launch_failure() {
         let root = tempfile::tempdir().unwrap();
@@ -5263,6 +5264,7 @@ mod medium_tests {
         .unwrap();
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[cfg(unix)]
     #[test]
     pub(super) fn runtime_sentinel_preserves_a_meaningful_inherited_fd198() {
@@ -5610,6 +5612,7 @@ mod medium_tests {
         let _ = std::fs::remove_file(pid_file);
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[cfg(windows)]
     #[test]
     fn windows_runtime_tree_proves_a_child_that_finished_before_first_poll() {
@@ -5676,6 +5679,7 @@ mod medium_tests {
             .expect("release the completed runtime fixture");
     }
 
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[cfg(windows)]
     #[test]
     fn windows_runtime_terminal_waits_for_the_descendant_process_signal() {
@@ -6367,6 +6371,7 @@ mod medium_tests {
         assert_eq!(managed.state, ChildState::Reaped);
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[test]
     fn protected_process_finishes_after_cancellation_on_every_host() {
         let start = HelperStart::new();
@@ -6602,6 +6607,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stream_held_stderr_keeps_timeout_after_leader_exit() {
         let (mut managed, mut fixture) = ControlledStderrFixture::spawn();
@@ -6636,6 +6642,7 @@ mod medium_tests {
         assert_eq!(managed.state, ChildState::Reaped);
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stream_late_stderr_eof_preserves_tail_after_leader_exit() {
         let (mut managed, mut fixture) = ControlledStderrFixture::spawn();
@@ -6700,6 +6707,7 @@ mod medium_tests {
         )
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stdout_read_error_stays_an_error_after_disconnect() {
         let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Error);
@@ -6756,6 +6764,7 @@ mod medium_tests {
         assert_eq!(lines, 1);
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stdout_reader_panic_is_not_eof() {
         let (reader, finished) = controlled_faulting_read(ControlledReaderFault::Panic);
@@ -6799,6 +6808,7 @@ mod medium_tests {
         assert_eq!(lines, 1);
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-RETAINED-IDENTITY
     #[test]
     fn controlled_stderr_reader_faults_do_not_satisfy_eof() {
         for fault in [ControlledReaderFault::Error, ControlledReaderFault::Panic] {
@@ -7173,6 +7183,7 @@ mod medium_tests {
         assert!(cancellation.protected_process_started());
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn completed_line_drain_keeps_stop_only_for_successful_children() {
         for (mode, expected_stop) in [("stream_then_exit", true), ("stream_then_fail", false)] {
@@ -7332,6 +7343,7 @@ mod medium_tests {
         cleanup.disarm();
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn pending_launch_release_preserves_detached_descendant() {
         let directory = tempfile::tempdir().unwrap();
@@ -7359,6 +7371,7 @@ mod medium_tests {
         assert_eq!(super::unix_signal_count_for_test(), 0);
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[test]
     fn pending_launch_rejection_drops_owned_descendant() {
         let directory = tempfile::tempdir().unwrap();
@@ -7558,6 +7571,7 @@ mod medium_tests {
         cleanup.disarm();
     }
 
+    /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
     #[cfg(unix)]
     #[test]
     fn pending_launch_complete_json_without_eof_remains_cancelable() {
@@ -7844,6 +7858,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.PLATFORM.PROCESS-TREE-LIFECYCLE
     #[test]
     fn managed_process_tree_lifecycle_is_bounded() {
         managed_child_timeout_returns_within_a_bounded_interval();
@@ -7960,6 +7975,7 @@ mod medium_tests {
         child.wait();
     }
 
+    /// rule: INV.RUNTIME.RUNNER-MUTATION-CANCELLATION
     #[cfg(windows)]
     #[test]
     fn slow_job_attach_delays_cancel_without_starting_the_mutation_early() {

@@ -456,6 +456,7 @@ mod tests {
     /// против недоступного поставщика. Решение владельца 16.09.2026 — свести
     /// каждую пару к одному имени; тест держит их снятыми, чтобы синоним не
     /// вернулся под видом нового кода.
+    /// rule: INV.WIRE.REFUSAL-CODE-NAMES
     #[test]
     fn the_dictionary_keeps_no_synonym_of_a_code_it_already_carries() {
         let names: BTreeSet<&str> = RefusalCode::ALL.iter().map(|code| code.as_str()).collect();

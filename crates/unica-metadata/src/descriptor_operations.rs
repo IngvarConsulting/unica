@@ -56,6 +56,7 @@ pub enum PropertiesSite {
     Role,
     WSReference,
     Subsystem,
+    Language,
     StyleItem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
     /// or an extension's, which may change only its identity properties.
@@ -122,7 +123,7 @@ macro_rules! descriptor_properties {
                     }
                     PropertiesSite::Metadata { .. } | PropertiesSite::TypeOwner(_) => false,
                     PropertiesSite::DocumentNumerator => self == Self::Comment,
-                    PropertiesSite::CommentOnly(_) => self == Self::Comment,
+                    PropertiesSite::CommentOnly(_) | PropertiesSite::Language => self == Self::Comment,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
                     PropertiesSite::StyleItem => self == Self::Comment,
                     PropertiesSite::WSReference => matches!(self, Self::LocationUrl | Self::Comment),
@@ -207,10 +208,14 @@ impl PropertiesSite {
             return Self::root_of(site.source().kind());
         }
         let profile = Self::from_address(site.at(), site.source().kind())?;
-        if profile == Self::WSReference
-            && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
-        {
-            return Some(Self::CommentOnly(NodeKind::WsReference));
+        if site.source().kind() != unica_source_contract::SourceSetKind::Configuration {
+            // An extension adopts WS references and languages; only their own
+            // Comment belongs to the extension.
+            match profile {
+                Self::WSReference => return Some(Self::CommentOnly(NodeKind::WsReference)),
+                Self::Language => return Some(Self::CommentOnly(NodeKind::Language)),
+                _ => {}
+            }
         }
         Some(profile)
     }
@@ -260,6 +265,7 @@ impl PropertiesSite {
             NodeKind::StyleItem => Some(Self::StyleItem),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
             NodeKind::Role => Some(Self::Role),
+            NodeKind::Language => Some(Self::Language),
             NodeKind::WsReference => Some(Self::WSReference),
             NodeKind::Subsystem => Some(Self::Subsystem),
             NodeKind::FunctionalOptionsParameter
@@ -268,7 +274,6 @@ impl PropertiesSite {
             | NodeKind::CommandGroup
             | NodeKind::CommonTemplate
             | NodeKind::CommonPicture
-            | NodeKind::Language
             | NodeKind::IntegrationService
             | NodeKind::XdtoPackage
             | NodeKind::Sequence
@@ -328,6 +333,7 @@ impl PropertiesSite {
             Self::StyleItem
             | Self::WSReference
             | Self::FunctionalOption
+            | Self::Language
             | Self::Role
             | Self::Subsystem
             | Self::Configuration { .. }
@@ -357,6 +363,15 @@ impl PropertiesSite {
                 }
             }
         }
+        if self == Self::Language {
+            properties.insert(
+                "LanguageCode".to_string(),
+                json!({
+                    "type":"string", "minLength":1,
+                    "pattern":crate::language_code::LANGUAGE_CODE_PATTERN
+                }),
+            );
+        }
         let mut values = json!({"type":"object", "additionalProperties":false,
             "minProperties":1, "properties":properties});
         if !groups.is_empty() {
@@ -377,6 +392,7 @@ impl PropertiesOperation {
             Self::Set => OperationContract {
                 schema: object(&[("values", site.values_schema())], &["values"]),
                 target: match site {
+                    PropertiesSite::Language => "An existing registered Language of an ordinary configuration. Its Comment can change; LanguageCode changes only for an unused additional language.",
                     PropertiesSite::WSReference => "An existing registered WSReference in a configuration source set, platform XML 2.20. Its Comment and existing LocationURL properties can change.",
                     PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
@@ -388,6 +404,7 @@ impl PropertiesOperation {
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
                 notes: match site {
                     PropertiesSite::TypeOwner(TypePropertyOwner::CommonAttribute) => "values contains either the structured Type or Comment/comment, one property per operation. The new Type must accept the existing active FillValue. The Type of a borrowed data separator cannot change; changing an ordinary borrowed attribute requires known DataSeparation. Descriptor identity, other properties and companion files are preserved. Preview writes nothing; execute only the saved execution token.",
+                    PropertiesSite::Language => "Comment/comment is an exact string; an empty string clears it. LanguageCode is a nonempty string without the platform's reserved characters; custom codes are allowed. A LanguageCode change requires an unused additional language, no code collision, and no texts or embedded help bound to either the old or new code. XML and literal NStr/НСтр dependencies are checked in original and final sources; an unprovable dependency refuses the change. No translation migration is performed. An equivalent value preserves bytes. In an extension a language is adopted: its code is set in the main configuration and only Comment changes. Preview writes nothing; execute only the saved execution token.",
                     PropertiesSite::WSReference => "LocationURL and optional Comment/comment are exact strings; an empty string clears the supplied field. Comment-only edits do not validate LocationURL; mixed edits validate both fields before publication. Missing or damaged fields are refused. Editing preserves identity, registration and the local WSDL; it does not download WSDL/imports or generate a client. Preview writes nothing; publish only its execution token. Changes to the descriptor or configuration registration invalidate the saved plan.",
                     PropertiesSite::StyleItem => "Color Value and optional string Comment/comment are accepted: #RRGGBB or an enumerated web/builtin style color. Empty Value, null and arbitrary XML are refused; empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Type, identity and bytes outside supplied Value/Comment stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
@@ -399,10 +416,11 @@ impl PropertiesOperation {
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
                     PropertiesSite::StyleItem => json!({"values":{"Value":"#F0F0F0"}}),
+                    PropertiesSite::Language => json!({"values":{"LanguageCode":"de"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::TypeOwner(_) | PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::TypeOwner(_) | PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -708,6 +726,13 @@ mod tests {
                 SourceSetKind::Configuration,
             )
             .unwrap_or_else(|| panic!("missing comment profile for {at}"));
+            // A configuration's own language also changes LanguageCode; an
+            // extension's adopted language keeps the Comment-only profile.
+            let site = if site == PropertiesSite::Language {
+                PropertiesSite::CommentOnly(NodeKind::Language)
+            } else {
+                site
+            };
             let schema = PropertiesOperation::Set.contract(site).schema;
             let properties = schema["properties"]["values"]["properties"]
                 .as_object()

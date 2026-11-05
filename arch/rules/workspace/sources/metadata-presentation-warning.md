@@ -1,7 +1,5 @@
 ---
 id: INV.APP.META-FINDINGS
-check:
-  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_check_reports_list_presentation_findings_with_field_and_language
 ---
 
 # Предупреждение о представлении называет поле и язык

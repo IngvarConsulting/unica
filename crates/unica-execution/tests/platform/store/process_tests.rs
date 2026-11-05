@@ -613,6 +613,7 @@ fn persisted_record(config: &Configuration) -> unica_execution_contract::storage
         .unwrap()
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn forced_process_death_recovers_accepted_begun_and_durable_outcome() {
     if let Ok(value) = std::env::var(CHILD_CONFIG) {

@@ -1274,6 +1274,7 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
+    /// rule: CTR.FORMAT.CFE-BORROWED-STRUCTURE
     #[test]
     fn cfe_validate_checks_every_platform_direct_and_owner_module_role() {
         for (type_name, role) in [
