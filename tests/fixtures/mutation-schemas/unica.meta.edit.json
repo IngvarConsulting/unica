@@ -1100,6 +1100,14 @@
                     "DistributedInfoBase": {
                       "type": "boolean"
                     },
+                    "EditType": {
+                      "enum": [
+                        "InDialog",
+                        "InList",
+                        "BothWays"
+                      ],
+                      "type": "string"
+                    },
                     "EnableTotalsSplitting": {
                       "type": "boolean"
                     },

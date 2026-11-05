@@ -88,7 +88,14 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
-    CommentOnly { kind: NodeKind, comment: String },
+    LanguageCode {
+        code: String,
+        comment: Option<String>,
+    },
+    CommentOnly {
+        kind: NodeKind,
+        comment: String,
+    },
     DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
     StyleItem(unica_metadata::property_input::StyleItemPropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
@@ -1072,7 +1079,7 @@ pub fn parse_properties(
     ) {
         PropertiesSite::root_of(binding.source_kind)
     } else {
-        PropertiesSite::from_address(&target)
+        PropertiesSite::from_address(&target, binding.source_kind)
     }
     .ok_or_else(|| {
         ApplyPlanError::new(
@@ -1081,12 +1088,20 @@ pub fn parse_properties(
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
-    let site = if site == PropertiesSite::WSReference
-        && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
-    {
-        PropertiesSite::CommentOnly(NodeKind::WsReference)
-    } else {
-        site
+    // An extension adopts WS references and languages; only their own
+    // Comment belongs to the extension.
+    let site = match site {
+        PropertiesSite::WSReference
+            if binding.source_kind != unica_source_contract::SourceSetKind::Configuration =>
+        {
+            PropertiesSite::CommentOnly(NodeKind::WsReference)
+        }
+        PropertiesSite::Language
+            if binding.source_kind != unica_source_contract::SourceSetKind::Configuration =>
+        {
+            PropertiesSite::CommentOnly(NodeKind::Language)
+        }
+        site => site,
     };
     // ApplyRequest has already resolved the operation address. It is an
     // internal carrier key, not part of the published property arguments.
@@ -1135,6 +1150,10 @@ pub fn parse_properties(
                 addressed: None,
             });
         }
+        unica_metadata::property_input::PropertiesIntent::LanguageCode { code, comment } => (
+            "Languages",
+            DescriptorPropertyChanges::LanguageCode { code, comment },
+        ),
         unica_metadata::property_input::PropertiesIntent::WSReference(values) => {
             crate::ws_reference::validate_location_url(&values.location_url).map_err(
                 |message| {
