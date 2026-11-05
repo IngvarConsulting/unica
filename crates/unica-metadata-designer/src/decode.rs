@@ -1262,6 +1262,15 @@ pub fn parse_attribute_set(
     )?;
     let (owner, kind, name, scope) = attribute_owner_and_name(&target, op_index)?;
     let mut values = required_object(args, "values", op_index)?.clone();
+    if values.contains_key("use")
+        && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
+    {
+        return Err(ApplyPlanError::new(
+            ApplyPlanErrorKind::BadValue,
+            "use requires a configuration source set",
+        )
+        .at_path(format!("ops[{op_index}].args.values.use")));
+    }
     if values
         .insert("name".to_string(), Value::String(name))
         .is_some()

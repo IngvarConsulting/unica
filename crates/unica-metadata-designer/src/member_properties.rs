@@ -52,7 +52,10 @@ pub fn observe(
                     MetaMemberValueKind::LocalizedString => {
                         crate::info_projection::strict_localized_meta_info_property_value(*value)
                     }
-                    _ if !value.children().any(|child| child.is_element()) => {
+                    _ if !value.children().any(|child| child.is_element())
+                        && (context != unica_metadata::MetaMemberReadContext::HeaderAttribute
+                            || value.children().all(|child| child.is_text())) =>
+                    {
                         spec.parse_text(&crate::info_projection::direct_text_content(*value))
                     }
                     _ => None,

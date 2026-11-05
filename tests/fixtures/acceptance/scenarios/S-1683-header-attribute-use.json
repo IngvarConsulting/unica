@@ -1,0 +1,723 @@
+{
+  "id": "S-1683-header-attribute-use",
+  "issue": 1683,
+  "area": "Реквизиты и состав",
+  "task": "Изменить Use реквизита шапки справочника и плана видов характеристик по циклу ForItem → ForFolder → ForFolderAndItem → ForItem, проверить Can, preview без записи, исполнение токена, чтение и XML; неверный ввод и пакет с конфликтом не меняют файлы",
+  "workspace": "tests/fixtures/acceptance/workspace-attribute-use",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        }
+      ],
+      "captures": {
+        "image1": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/use/enum",
+          "eq": [
+            "ForItem",
+            "ForFolder",
+            "ForFolderAndItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "ForFolder"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.image1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolder",
+            "ForItem"
+          ]
+        }
+      ],
+      "captures": {
+        "image2": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForFolder"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "ForFolderAndItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.image2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolderAndItem",
+            "ForItem"
+          ]
+        }
+      ],
+      "captures": {
+        "image3": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForFolderAndItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.image3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Catalog/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForItem",
+            "ForItem"
+          ]
+        }
+      ],
+      "captures": {
+        "image4": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "Future"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.image4"
+        }
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.image4"
+        }
+      ],
+      "refusal": "bad_value: `use` must be a string"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": null
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.image4"
+        }
+      ],
+      "refusal": "bad_value: `use` must be a string"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "ForFolder"
+              }
+            }
+          },
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "Future"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.image4"
+        }
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        }
+      ],
+      "captures": {
+        "image5": {
+          "file": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/use/enum",
+          "eq": [
+            "ForItem",
+            "ForFolder",
+            "ForFolderAndItem"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "ForFolder"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "sha256",
+          "eq": "$capture.image5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ChartOfCharacteristicTypes/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolder",
+            "ForItem"
+          ]
+        }
+      ],
+      "captures": {
+        "image6": {
+          "file": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForFolder"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "ForFolderAndItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "sha256",
+          "eq": "$capture.image6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ChartOfCharacteristicTypes/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForFolderAndItem",
+            "ForItem"
+          ]
+        }
+      ],
+      "captures": {
+        "image7": {
+          "file": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForFolderAndItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "ForItem"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "sha256",
+          "eq": "$capture.image7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}ChartOfCharacteristicTypes/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}Attribute/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Use",
+          "eq": [
+            "ForItem",
+            "ForItem"
+          ]
+        }
+      ],
+      "captures": {
+        "image8": {
+          "file": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Use",
+          "eq": "ForItem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "Future"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "sha256",
+          "eq": "$capture.image8"
+        }
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "sha256",
+          "eq": "$capture.image8"
+        }
+      ],
+      "refusal": "bad_value: `use` must be a string"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": null
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "sha256",
+          "eq": "$capture.image8"
+        }
+      ],
+      "refusal": "bad_value: `use` must be a string"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ChartOfCharacteristicTypes.Traits.Attribute.Flag",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "ForFolder"
+              }
+            }
+          },
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "use": "Future"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCharacteristicTypes/Traits.xml",
+          "kind": "sha256",
+          "eq": "$capture.image8"
+        }
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives"
+    }
+  ]
+}

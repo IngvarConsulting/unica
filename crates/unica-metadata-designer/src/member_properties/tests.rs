@@ -155,7 +155,7 @@ fn catalog_tabular_native_context_does_not_admit_other_platform_owner_kinds() {
 }
 
 #[test]
-fn catalog_tabular_native_context_does_not_propagate_to_header_or_column_attributes() {
+fn catalog_tabular_context_stays_separate_from_header_use_and_column_properties() {
     let info = read(
         CATALOG,
         "Catalog.Валюты",
@@ -164,7 +164,8 @@ fn catalog_tabular_native_context_does_not_propagate_to_header_or_column_attribu
     assert!(info.member_read_profile.is_some());
     assert!(!info.collections.attributes.is_empty());
     for attribute in &info.collections.attributes {
-        assert_no_pilot_properties(attribute);
+        assert_eq!(attribute.properties.len(), 1);
+        assert_eq!(attribute.properties[0].name, "Use");
     }
     let columns = info
         .collections

@@ -1033,6 +1033,26 @@ pub fn typed_operation_effect_value(
             )?;
             if elements
                 .iter()
+                .any(|element| element.attribute_use.is_some())
+            {
+                crate::attribute_use::effect(
+                    xml,
+                    object,
+                    value,
+                    &elements
+                        .iter()
+                        .filter(|element| element.attribute_use.is_some())
+                        .map(|element| {
+                            if after {
+                                element.new_name.as_deref().unwrap_or(&element.name)
+                            } else {
+                                &element.name
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )?
+            } else if elements
+                .iter()
                 .any(|element| element.type_reduction_mode.is_some())
             {
                 crate::dimension_reduction::effect(
@@ -2323,6 +2343,12 @@ pub fn update_typed_element(
             )
         })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    if let Some(value) = &update.attribute_use {
+        if let Some((edit, token)) = crate::attribute_use::edit(xml_text, range.clone(), value)? {
+            let start = range.start + properties_range.start;
+            properties_text.replace_range(edit.start - start..edit.end - start, &token);
+        }
+    }
     if let Some(value) = &update.type_reduction_mode {
         if let Some(edit) = crate::dimension_reduction::edit(xml_text, range.clone(), value)? {
             flag_edits.push(edit);

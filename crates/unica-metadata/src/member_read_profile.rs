@@ -8,11 +8,13 @@ use unica_source_contract::SourceSetKind;
 #[serde(rename_all = "camelCase")]
 pub enum MetaMemberReadProfile {
     CatalogTabularSection220,
+    CharacteristicHeader220,
     InformationRegisterDimension220,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaMemberReadContext {
+    HeaderAttribute,
     TabularSection,
     InformationRegisterDimension,
     TabularAttribute,
@@ -32,7 +34,13 @@ pub struct MetaMemberPropertySpec {
     kind: MetaMemberValueKind,
 }
 
+const HEADER_USE: MetaMemberPropertySpec = MetaMemberPropertySpec {
+    name: "Use",
+    context: MetaMemberReadContext::HeaderAttribute,
+    kind: MetaMemberValueKind::Text(crate::ATTRIBUTE_USE_VALUES),
+};
 const CATALOG_MEMBER_PROPERTIES: &[MetaMemberPropertySpec] = &[
+    HEADER_USE,
     MetaMemberPropertySpec {
         name: "LineNumberLength",
         context: MetaMemberReadContext::TabularSection,
@@ -77,6 +85,7 @@ impl MetaMemberReadProfile {
         match owner {
             MetadataKind::Catalog => Some(Self::CatalogTabularSection220),
             MetadataKind::InformationRegister => Some(Self::InformationRegisterDimension220),
+            MetadataKind::ChartOfCharacteristicTypes => Some(Self::CharacteristicHeader220),
             _ => None,
         }
     }
@@ -84,6 +93,7 @@ impl MetaMemberReadProfile {
         match self {
             Self::CatalogTabularSection220 => MetadataKind::Catalog,
             Self::InformationRegisterDimension220 => MetadataKind::InformationRegister,
+            Self::CharacteristicHeader220 => MetadataKind::ChartOfCharacteristicTypes,
         }
     }
 
@@ -93,6 +103,7 @@ impl MetaMemberReadProfile {
     ) -> impl Iterator<Item = &'static MetaMemberPropertySpec> {
         let properties = match self {
             Self::CatalogTabularSection220 => CATALOG_MEMBER_PROPERTIES,
+            Self::CharacteristicHeader220 => &[HEADER_USE],
             Self::InformationRegisterDimension220 => &[MetaMemberPropertySpec {
                 name: "TypeReductionMode",
                 context: MetaMemberReadContext::InformationRegisterDimension,
@@ -109,6 +120,12 @@ impl MetaMemberReadProfile {
             return indexed_field_suffix(field, "collections.dimensions[")?
                 .is_empty()
                 .then_some(MetaMemberReadContext::InformationRegisterDimension);
+        }
+        if indexed_field_suffix(field, "collections.attributes[").is_some_and(str::is_empty) {
+            return Some(MetaMemberReadContext::HeaderAttribute);
+        }
+        if self == Self::CharacteristicHeader220 {
+            return None;
         }
         let rest = indexed_field_suffix(field, "collections.tabularSections[")?;
         if rest.is_empty() {
@@ -137,6 +154,19 @@ impl MetaMemberReadProfile {
                 }
                 _ => None,
             };
+        }
+        if let [owner, attribute] = address.segments() {
+            if owner.kind().as_str() == self.owner_kind().as_str()
+                && owner.name().is_some()
+                && attribute.kind() == NodeKind::Attribute
+                && attribute.name().is_some()
+                && kind == NodeKind::Attribute
+            {
+                return Some(MetaMemberReadContext::HeaderAttribute);
+            }
+        }
+        if self == Self::CharacteristicHeader220 {
+            return None;
         }
         match address.segments() {
             [owner, section]
@@ -182,7 +212,7 @@ impl MetaMemberReadContext {
         match self {
             Self::InformationRegisterDimension => "Dimension",
             Self::TabularSection => "TabularSection",
-            Self::TabularAttribute => "Attribute",
+            Self::TabularAttribute | Self::HeaderAttribute => "Attribute",
         }
     }
 }
@@ -193,6 +223,11 @@ impl MetaMemberPropertySpec {
     }
 
     pub fn parse_text(self, value: &str) -> Option<MetaObservedPropertyValue> {
+        let value = if self.context == MetaMemberReadContext::HeaderAttribute {
+            value.trim_matches([' ', '\t', '\r', '\n'])
+        } else {
+            value
+        };
         match self.kind {
             MetaMemberValueKind::UnsignedInteger => value
                 .parse::<u32>()
