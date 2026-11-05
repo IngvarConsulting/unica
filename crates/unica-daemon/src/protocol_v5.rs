@@ -10,7 +10,6 @@ use serde_json::{Map, Value};
 use std::fmt;
 use std::io::{self, BufRead};
 use std::net::{Ipv4Addr, SocketAddrV4};
-use unica_execution::invocation::normalized_arguments_hash;
 use unica_execution::receipt_ledger::CoreIdentityDigest;
 use unica_execution::receipt_ledger::{
     canonical_v5_terminal_from_shared, receipt_key_digest, request_scope_hash, ReceiptKey,
@@ -237,7 +236,7 @@ pub struct V5InvocationRequest {
     invocation_id: InvocationId,
     reserved_task_id: TaskId,
     tool: V5ToolIdentity,
-    arguments: Map<String, Value>,
+    arguments: unica_execution_contract::arguments::InvocationArguments,
     workspace_hint: String,
     /// Which host channel chose `workspace_hint`. It explains the directory to
     /// the caller and is not part of the request identity.
@@ -258,7 +257,7 @@ impl V5InvocationRequest {
             invocation_id,
             reserved_task_id,
             tool,
-            arguments,
+            arguments: arguments.into(),
             workspace_hint: workspace.directory,
             workspace_origin: workspace.origin,
             response_budget_ms,
@@ -280,7 +279,16 @@ impl V5InvocationRequest {
     }
 
     pub fn arguments(&self) -> &Map<String, Value> {
-        &self.arguments
+        self.arguments.projection()
+    }
+
+    pub fn raw_arguments(&self) -> Option<&str> {
+        self.arguments.raw()
+    }
+
+    pub fn with_raw_arguments(mut self, raw: Option<String>) -> Result<Self, String> {
+        self.arguments = self.arguments.with_raw(raw)?;
+        Ok(self)
     }
 
     pub fn workspace_hint(&self) -> &str {
@@ -785,7 +793,10 @@ impl DecodedV5Request {
         let identity = RequestIdentity::new(
             runtime_core_identity.digest().clone(),
             invocation.tool(),
-            normalized_arguments_hash(invocation.arguments()),
+            unica_execution::invocation::arguments_hash_with_raw(
+                invocation.arguments(),
+                invocation.raw_arguments(),
+            ),
             scope,
         );
         let receipt_key = ReceiptKey::new(
@@ -996,8 +1007,20 @@ where
 
 pub fn decode_v5_client_request(bytes: &[u8]) -> Result<V5ClientRequest, String> {
     ensure_frame_fits(bytes, MAX_V5_REQUEST_LINE_BYTES, "request")?;
-    let request: V5ClientRequest = serde_json::from_slice(bytes)
+    let mut request: V5ClientRequest = serde_json::from_slice(bytes)
         .map_err(|_| "v5 daemon request is not strict versioned JSON".to_string())?;
+    if let V5ClientRequest::SubmitInvocation { invocation } = &mut request {
+        use serde_json::value::RawValue;
+        use std::collections::BTreeMap;
+        let frame: BTreeMap<String, Box<RawValue>> =
+            serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        let fields: BTreeMap<String, Box<RawValue>> =
+            serde_json::from_str(frame["invocation"].get()).map_err(|e| e.to_string())?;
+        invocation.arguments = invocation
+            .arguments
+            .clone()
+            .with_raw(Some(fields["arguments"].get().to_owned()))?;
+    }
     request.validate()?;
     Ok(request)
 }

@@ -40,6 +40,26 @@ impl ApplyRequest {
         input: &Map<String, Value>,
         available_source_sets: &[&str],
     ) -> Result<Self, ApplyValidationError> {
+        Self::parse_with_raw(input, available_source_sets, None)
+    }
+
+    pub(crate) fn parse_with_raw(
+        input: &Map<String, Value>,
+        available_source_sets: &[&str],
+        raw: Option<&str>,
+    ) -> Result<Self, ApplyValidationError> {
+        use serde_json::value::RawValue;
+        use std::collections::BTreeMap;
+        let raw_fields = raw
+            .map(serde_json::from_str::<BTreeMap<String, Box<RawValue>>>)
+            .transpose()
+            .map_err(|e| ApplyValidationError::bad_value("ops", e.to_string()))?;
+        let exact_ops = raw_fields
+            .as_ref()
+            .and_then(|fields| fields.get("ops"))
+            .map(|raw| serde_json::from_str::<Vec<Box<RawValue>>>(raw.get()))
+            .transpose()
+            .map_err(|e| ApplyValidationError::bad_value("ops", e.to_string()))?;
         for key in input.keys() {
             if !["at", "ops", "dryRun", "ifRev"].contains(&key.as_str()) {
                 return Err(ApplyValidationError::bad_value(
@@ -173,8 +193,33 @@ impl ApplyRequest {
                     created_objects.push(created);
                 }
             }
+            let mut number_errors = std::collections::BTreeMap::new();
+            if name == "property.add"
+                && operation_at
+                    .segments()
+                    .first()
+                    .is_some_and(|segment| segment.kind() == NodeKind::XdtoPackage)
+            {
+                if let Some(raw_op) = exact_ops.as_ref().and_then(|ops| ops.get(index)) {
+                    let fields: BTreeMap<String, Box<RawValue>> =
+                        serde_json::from_str(raw_op.get()).map_err(|e| {
+                            ApplyValidationError::bad_value(&operation_location, e.to_string())
+                        })?;
+                    if let Some(raw_args) = fields.get("args") {
+                        let mut value = Value::Object(args);
+                        number_errors = XdtoOperation::AddProperty
+                            .normalize_json_numbers(&mut value, raw_args.get(), &args_location)
+                            .map_err(|e| ApplyValidationError::bad_value(e.path, e.message))?;
+                        args = value
+                            .as_object()
+                            .expect("normalized arguments remain an object")
+                            .clone();
+                    }
+                }
+            }
             args.insert("at".to_string(), Value::String(operation_at.to_string()));
             operations.push(ApplyOp {
+                number_errors,
                 name,
                 args,
                 at: operation_at,
@@ -265,12 +310,16 @@ fn parse_address(
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ApplyOp {
+    number_errors: std::collections::BTreeMap<String, String>,
     name: String,
     args: Map<String, Value>,
     at: QualifiedAddress,
 }
 
 impl ApplyOp {
+    pub(crate) fn number_errors(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.number_errors
+    }
     pub(crate) fn name(&self) -> &str {
         &self.name
     }

@@ -217,3 +217,75 @@ fn forward_reference_is_validated_on_the_final_public_package_without_writes() {
         .as_str()
         .is_some_and(|token| !token.is_empty()));
 }
+
+#[test]
+fn exact_xdto_bound_preview_preserves_sources_and_ordered_refusals() {
+    let fixture = Fixture::new();
+    let runtime = V5CanonicalInvocationRuntime::new(
+        Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()),
+        Arc::new(TokioClock),
+    );
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    for (literal, valid) in [
+        ("9223372036854775807", true),
+        ("9223372036854775807.0", true),
+        ("9.223372036854775807e18", true),
+        ("9223372036854775808", false),
+        ("9223372036854775808.0", false),
+        ("9.223372036854775808e18", false),
+        ("1.000000000000000000001", false),
+        (
+            r#"{"$serde_json::private::Number":"9223372036854775807.0"}"#,
+            false,
+        ),
+    ] {
+        let raw = format!(
+            r#"{{"at":"{OBJECT}","ops":[{{"op":"property.add","args":{{"values":{{"property":{{"name":"ExactBoundProbe","type":"xs:string","upperBound":{literal}}}}}}}}}]}}"#
+        );
+        let request = InvocationRequest::new(
+            ToolIdentity::Apply,
+            serde_json::from_str(&raw).unwrap(),
+            fixture.workspace.to_string_lossy(),
+            7000,
+        )
+        .unwrap()
+        .with_raw_arguments(Some(raw))
+        .unwrap();
+        let result = direct_v5(&runtime, request).unwrap();
+        assert_eq!(result.ok, valid, "{literal}: {result:?}");
+        if !valid {
+            assert_eq!(
+                result.at.as_deref(),
+                Some("ops[0].args.values.property.upperBound"),
+                "{result:?}"
+            );
+        }
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+            before
+        );
+    }
+    // Parent identity wins over a later child's numeric refusal.
+    let raw = format!(
+        r#"{{"at":"{OBJECT}","ops":[{{"op":"property.add","args":{{"values":{{"property":{{"name":"bad:name","objectType":{{"properties":[{{"name":"Child","type":"xs:string","upperBound":9223372036854775808.0}}]}}}}}}}}}}]}}"#
+    );
+    let request = InvocationRequest::new(
+        ToolIdentity::Apply,
+        serde_json::from_str(&raw).unwrap(),
+        fixture.workspace.to_string_lossy(),
+        7000,
+    )
+    .unwrap()
+    .with_raw_arguments(Some(raw))
+    .unwrap();
+    let result = direct_v5(&runtime, request).unwrap();
+    assert!(!result.ok, "{result:?}");
+    assert_eq!(
+        result.at.as_deref(),
+        Some("ops[0].args.values.property.name")
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
+}

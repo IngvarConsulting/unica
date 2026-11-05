@@ -93,6 +93,7 @@ zeroize.workspace = true
 rmcp.workspace = true
 chrono.workspace = true
 tokio.workspace = true
+tokio-util = { version = "0.7", features = ["codec"] }
 toml.workspace = true
 roxmltree.workspace = true
 xml.workspace = true

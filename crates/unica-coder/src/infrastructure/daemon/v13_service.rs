@@ -26,7 +26,7 @@ use super::v13_read_modes::{
     attach_can_with_color, operation_node_with, search_scope_route, source_backed, SearchScopeRoute,
 };
 use crate::application::tool_contracts::SurfaceRelease;
-use crate::application::v13::apply::parse_request as parse_apply_request;
+
 use crate::application::v13::check::{DEFAULT_CHECK_LIMIT, MAX_CHECK_LIMIT};
 use crate::application::v13::diff::{
     DiffError, DiffHandler, DiffPage, DiffRequest, DiffSource, DEFAULT_DIFF_LIMIT, MAX_DIFF_LIMIT,
@@ -390,7 +390,11 @@ impl CanonicalV13ReadService {
         let source_sets = invocation.admitted_source_set_names();
         let mut planning_arguments = invocation.arguments().clone();
         planning_arguments.insert("dryRun".into(), json!(true));
-        let request = match parse_apply_request(&planning_arguments, &source_sets) {
+        let request = match crate::domain::apply::ApplyRequest::parse_with_raw(
+            &planning_arguments,
+            &source_sets,
+            invocation.raw_arguments(),
+        ) {
             Ok(request) => request,
             Err(error) => {
                 return error_result(

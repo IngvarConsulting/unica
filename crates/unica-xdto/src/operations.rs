@@ -440,6 +440,135 @@ impl XdtoOperation {
         }
     }
 
+    /// Decode JSON before its numeric operands can be rounded by a Value projection.
+    #[cfg(test)]
+    fn decode_json(
+        self,
+        raw: &str,
+        path: &str,
+        source_set: &str,
+    ) -> Result<XdtoPlanOperation, ContractError> {
+        let mut value = Value::Null;
+        let errors = self.normalize_json_numbers(&mut value, raw, path)?;
+        self.decode_with_number_errors(&value, path, source_set, &errors)
+    }
+
+    /// The family owns which operands require exact integer semantics. The raw
+    /// witness and projection have already been matched at invocation admission.
+    pub fn normalize_json_numbers(
+        self,
+        value: &mut Value,
+        raw: &str,
+        path: &str,
+    ) -> Result<std::collections::BTreeMap<String, String>, ContractError> {
+        use serde_json::value::RawValue;
+        use std::collections::BTreeMap;
+        fn property(
+            raw: &RawValue,
+            path: &str,
+            errors: &mut BTreeMap<String, String>,
+        ) -> Result<Box<RawValue>, ContractError> {
+            let Ok(mut fields) = serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(raw.get())
+            else {
+                return Ok(raw.to_owned());
+            };
+            for key in ["lowerBound", "upperBound"] {
+                if let Some(raw) = fields.get(key) {
+                    let raw = raw.get();
+                    if raw.starts_with('-')
+                        || raw.as_bytes().first().is_some_and(u8::is_ascii_digit)
+                    {
+                        let integer = exact_decimal_integer(raw).filter(|n| {
+                            if key == "lowerBound" {
+                                *n == 0 || *n == 1
+                            } else {
+                                *n == -1 || *n >= 1
+                            }
+                        });
+                        let Some(integer) = integer else {
+                            errors.insert(
+                                format!("{path}.{key}"),
+                                if key == "lowerBound" {
+                                    "lowerBound must be 0 or 1"
+                                } else {
+                                    "upperBound must be -1 or a positive integer"
+                                }
+                                .to_owned(),
+                            );
+                            // Keep finite invalid inputs as-is. For raw unit inputs
+                            // outside Value's float range, the deferred error owns
+                            // the refusal before this non-value can be consumed.
+                            if serde_json::from_str::<Value>(raw).is_err() {
+                                fields.insert(
+                                    key.to_owned(),
+                                    RawValue::from_string("null".into()).unwrap(),
+                                );
+                            }
+                            continue;
+                        };
+                        fields.insert(
+                            key.to_owned(),
+                            RawValue::from_string(integer.to_string()).expect("integer JSON"),
+                        );
+                    }
+                }
+            }
+            if let Some(raw) = fields.get("objectType") {
+                if let Ok(mut object) =
+                    serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(raw.get())
+                {
+                    if let Some(raw) = object.get("properties") {
+                        if let Ok(items) = serde_json::from_str::<Vec<Box<RawValue>>>(raw.get()) {
+                            let children = items
+                                .iter()
+                                .enumerate()
+                                .map(|(i, raw)| {
+                                    property(
+                                        raw,
+                                        &format!("{path}.objectType.properties[{i}]"),
+                                        errors,
+                                    )
+                                })
+                                .collect::<Result<Vec<_>, _>>()?;
+                            object.insert(
+                                "properties".into(),
+                                serde_json::value::to_raw_value(&children).expect("raw children"),
+                            );
+                            fields.insert(
+                                "objectType".into(),
+                                serde_json::value::to_raw_value(&object).expect("raw object type"),
+                            );
+                        }
+                    }
+                }
+            }
+            Ok(serde_json::value::to_raw_value(&fields).expect("raw property"))
+        }
+        let mut errors = BTreeMap::new();
+        let mut fields: BTreeMap<String, Box<RawValue>> =
+            serde_json::from_str(raw).map_err(|e| invalid(path, e.to_string()))?;
+        if self == Self::AddProperty {
+            if let Some(raw) = fields.get("values") {
+                if let Ok(mut values) =
+                    serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(raw.get())
+                {
+                    if let Some(raw) = values.get("property") {
+                        let normalized =
+                            property(raw, &format!("{path}.values.property"), &mut errors)?;
+                        values.insert("property".into(), normalized);
+                        fields.insert(
+                            "values".into(),
+                            serde_json::value::to_raw_value(&values).expect("raw property values"),
+                        );
+                    }
+                }
+            }
+        }
+        *value = serde_json::from_str(&serde_json::to_string(&fields).expect("raw arguments"))
+            .map_err(|e| invalid(path, e.to_string()))?;
+        Ok(errors)
+    }
+
     pub fn decode(
         self,
         args: &Value,
@@ -456,7 +585,35 @@ impl XdtoOperation {
         path: &str,
         source_set: &str,
     ) -> Result<XdtoPlanOperation, ContractError> {
-        let mut reader = ArgumentReader::new(args, ArgumentShape::new(&contract.schema), path)?;
+        self.decode_contract_with_number_errors(contract, args, path, source_set, None)
+    }
+
+    pub fn decode_with_number_errors(
+        self,
+        args: &Value,
+        path: &str,
+        source_set: &str,
+        errors: &std::collections::BTreeMap<String, String>,
+    ) -> Result<XdtoPlanOperation, ContractError> {
+        self.decode_contract_with_number_errors(
+            &self.contract(),
+            args,
+            path,
+            source_set,
+            Some(errors),
+        )
+    }
+
+    fn decode_contract_with_number_errors(
+        self,
+        contract: &OperationContract,
+        args: &Value,
+        path: &str,
+        source_set: &str,
+        errors: Option<&std::collections::BTreeMap<String, String>>,
+    ) -> Result<XdtoPlanOperation, ContractError> {
+        let mut reader =
+            ArgumentReader::new(args, ArgumentShape::new(&contract.schema), path, errors)?;
         let raw = reader.resolved_address()?;
         let (at, properties) = self
             .site()
@@ -595,10 +752,16 @@ struct ArgumentReader<'a> {
     shape: ArgumentShape<'a>,
     path: String,
     consumed: HashSet<String>,
+    number_errors: Option<&'a std::collections::BTreeMap<String, String>>,
 }
 
 impl<'a> ArgumentReader<'a> {
-    fn new(value: &'a Value, shape: ArgumentShape<'a>, path: &str) -> Result<Self, ContractError> {
+    fn new(
+        value: &'a Value,
+        shape: ArgumentShape<'a>,
+        path: &str,
+        number_errors: Option<&'a std::collections::BTreeMap<String, String>>,
+    ) -> Result<Self, ContractError> {
         shape.validate_type(value, path)?;
         let object = value
             .as_object()
@@ -616,6 +779,7 @@ impl<'a> ArgumentReader<'a> {
             shape,
             path: path.into(),
             consumed: HashSet::new(),
+            number_errors,
         })
     }
 
@@ -632,6 +796,9 @@ impl<'a> ArgumentReader<'a> {
         self.consumed.insert(key.into());
         match self.object.get(key) {
             Some(value) => {
+                if let Some(message) = self.number_errors.and_then(|errors| errors.get(&path)) {
+                    return Err(invalid(&path, message));
+                }
                 shape.validate_type(value, &path)?;
                 convert(value, shape, &path).map(Some)
             }
@@ -812,8 +979,9 @@ impl<'a> ArgumentReader<'a> {
         key: &str,
         parse: impl FnOnce(&mut Self) -> Result<T, ContractError>,
     ) -> Result<Option<T>, ContractError> {
+        let number_errors = self.number_errors;
         self.read(key, |value, shape, path| {
-            let mut reader = Self::new(value, shape, path)?;
+            let mut reader = Self::new(value, shape, path, number_errors)?;
             let parsed = parse(&mut reader)?;
             reader.finish(parsed)
         })
@@ -826,6 +994,7 @@ impl<'a> ArgumentReader<'a> {
         item: ArgumentShape<'a>,
         mut parse: impl FnMut(&mut Self, &str) -> Result<T, ContractError>,
     ) -> Result<Vec<T>, ContractError> {
+        let number_errors = self.number_errors;
         self.required(key, |value, _shape, path| {
             let items = value
                 .as_array()
@@ -835,7 +1004,7 @@ impl<'a> ArgumentReader<'a> {
                 .enumerate()
                 .map(|(index, value)| {
                     let item_path = format!("{path}[{index}]");
-                    let mut reader = Self::new(value, item, &item_path)?;
+                    let mut reader = Self::new(value, item, &item_path, number_errors)?;
                     let parsed = parse(&mut reader, &item_path)?;
                     reader.finish(parsed)
                 })
@@ -848,8 +1017,9 @@ impl<'a> ArgumentReader<'a> {
         key: &str,
         parse: impl FnOnce(&mut Self) -> Result<T, ContractError>,
     ) -> Result<T, ContractError> {
+        let number_errors = self.number_errors;
         self.required(key, |value, shape, path| {
-            let mut reader = Self::new(value, shape, path)?;
+            let mut reader = Self::new(value, shape, path, number_errors)?;
             let parsed = parse(&mut reader)?;
             reader.finish(parsed)
         })
@@ -876,7 +1046,15 @@ impl<'a> ArgumentReader<'a> {
 /// Decode the retained JSON decimal without rounding through a binary float.
 /// Work is proportional to its spelling, never to the exponent's magnitude.
 fn exact_json_integer(value: &Value) -> Option<i64> {
-    let raw = value.as_number()?.as_str();
+    value.as_i64().or_else(|| {
+        let number = value.as_f64()?;
+        // The upper limit is exclusive: i64::MAX rounds to 2^63 as f64.
+        (number.fract() == 0.0 && number >= i64::MIN as f64 && number < -(i64::MIN as f64))
+            .then_some(number as i64)
+    })
+}
+
+fn exact_decimal_integer(raw: &str) -> Option<i64> {
     let (negative, raw) = match raw.strip_prefix('-') {
         Some(raw) => (true, raw),
         None => (false, raw),
@@ -1336,17 +1514,26 @@ mod tests {
                 Err("ops[0].args.values.property.upperBound".to_string())
             );
         }
+        let raw_bound = |raw: &str| {
+            let input = format!(
+                r#"{{"at":"{at}","values":{{"property":{{"name":"X","type":"xs:string","upperBound":{raw}}}}}}}"#
+            );
+            operation
+                .decode_json(&input, "ops[0].args", "main")
+                .map(|op| match op {
+                    XdtoPlanOperation::AddProperty(args) => args.property.max_occurs,
+                    _ => unreachable!(),
+                })
+                .map_err(|error| error.path)
+        };
+        assert_eq!(raw_bound("9007199254740993.0"), Ok(Some(9007199254740993)));
         for raw in [
             "9223372036854775807",
             "9223372036854775807.0",
             "9.223372036854775807e18",
             "92233720368547758070e-1",
         ] {
-            assert_eq!(
-                bound(serde_json::from_str(raw).unwrap()),
-                Ok(Some(i64::MAX)),
-                "{raw}"
-            );
+            assert_eq!(raw_bound(raw), Ok(Some(i64::MAX)), "{raw}");
         }
         for raw in [
             "9223372036854775808",
@@ -1359,15 +1546,12 @@ mod tests {
             "1e-99999999999999999999999999999999999",
         ] {
             assert_eq!(
-                bound(serde_json::from_str(raw).unwrap()),
+                raw_bound(raw),
                 Err("ops[0].args.values.property.upperBound".to_string()),
                 "{raw}"
             );
         }
-        assert_eq!(
-            bound(serde_json::from_str("9007199254740993.0").unwrap()),
-            Ok(Some(9007199254740993))
-        );
+
         for (raw, expected) in [
             ("-1.0", -1),
             ("-10e-1", -1),
@@ -1376,15 +1560,11 @@ mod tests {
             ("9223372036854775806.0", i64::MAX - 1),
             ("9007199254740992.0", 9007199254740992),
         ] {
-            assert_eq!(
-                bound(serde_json::from_str(raw).unwrap()),
-                Ok(Some(expected)),
-                "{raw}"
-            );
+            assert_eq!(raw_bound(raw), Ok(Some(expected)), "{raw}");
         }
         for raw in ["0", "-0.0e999999", "-2", "-9223372036854775808.0", "0.001"] {
             assert_eq!(
-                bound(serde_json::from_str(raw).unwrap()),
+                raw_bound(raw),
                 Err("ops[0].args.values.property.upperBound".to_string()),
                 "{raw}"
             );
