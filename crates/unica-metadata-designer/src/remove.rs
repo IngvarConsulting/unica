@@ -711,7 +711,12 @@ pub fn meta_remove_references(
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("bsl"));
     let mut found = Vec::new();
-    if !is_bsl && !search.may_mention(text, true) {
+    let may_mention = if is_bsl {
+        search.bsl_patterns.mentioned_in(text)
+    } else {
+        search.may_mention(text, true)
+    };
+    if !may_mention {
         return found;
     }
     let (patterns, query_patterns) = (&search.patterns, &search.query_patterns);
