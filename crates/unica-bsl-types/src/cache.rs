@@ -171,7 +171,7 @@ fn write_cached(path: &Path, cached: &CachedCatalog) -> Result<(), CatalogError>
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
 
     #[test]

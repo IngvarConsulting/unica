@@ -595,7 +595,7 @@ pub struct RuntimeWorkKey {
 }
 
 #[cfg(test)]
-mod shared_identity_tests {
+mod medium_shared_identity_tests {
     use super::{RuntimeWorkKey, Uuid};
 
     #[test]

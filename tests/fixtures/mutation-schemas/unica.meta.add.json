@@ -1064,6 +1064,14 @@
                     "CodeMask": {
                       "type": "string"
                     },
+                    "CodeSeries": {
+                      "enum": [
+                        "WholeCatalog",
+                        "WithinOwnerSubordination",
+                        "WithinSubordination"
+                      ],
+                      "type": "string"
+                    },
                     "CodeType": {
                       "enum": [
                         "String",
@@ -1087,6 +1095,13 @@
                     },
                     "CreateTaskInPrivilegedMode": {
                       "type": "boolean"
+                    },
+                    "DataLockControlMode": {
+                      "enum": [
+                        "Automatic",
+                        "Managed"
+                      ],
+                      "type": "string"
                     },
                     "DefaultPresentation": {
                       "enum": [
@@ -1112,6 +1127,14 @@
                     },
                     "DistributedInfoBase": {
                       "type": "boolean"
+                    },
+                    "EditType": {
+                      "enum": [
+                        "InDialog",
+                        "InList",
+                        "BothWays"
+                      ],
+                      "type": "string"
                     },
                     "EnableTotalsSplitting": {
                       "type": "boolean"
