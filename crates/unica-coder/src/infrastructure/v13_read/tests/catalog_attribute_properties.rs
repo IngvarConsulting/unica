@@ -58,6 +58,7 @@ fn assert_string_type(node: &Value, length: u64) {
     assert_eq!(observed["variants"][0]["allowedLength"], "variable");
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn catalog_attribute_profile_reaches_public_collection_and_detail_without_writes() {
     let fixture = fixture_with_catalog(CATALOG);
@@ -164,6 +165,7 @@ fn assert_independent_facts(fixture: &RealReaderFixture, attribute: &Value) {
     assert_string_type(&header, 40);
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn catalog_attribute_profile_absence_is_not_filled_from_parent_sibling_or_template() {
     for absent in [
@@ -212,6 +214,7 @@ fn catalog_attribute_profile_absence_is_not_filled_from_parent_sibling_or_templa
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn catalog_attribute_profile_damage_limits_only_the_named_fact_in_owner_row_and_detail() {
     for (field, original) in ENUMS {

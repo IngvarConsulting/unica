@@ -158,6 +158,10 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
             module.package_runtime(bundle, root / "out")
 
     def test_runtime_archive_is_deterministic_and_target_only(self) -> None:
+        """
+        rule: INV.CI.RUNTIME-ARCHIVE-DETERMINISTIC
+        rule: INV.PKG.RUNTIME-ARCHIVE-REPRODUCIBLE
+        """
         module = load_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -259,6 +263,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
         self.assertNotIn("entrypoint", engine)
 
     def test_metadata_hashes_archive_and_each_runtime_file(self) -> None:
+        """rule: INV.CI.RUNTIME-METADATA-HASHES"""
         module = load_module()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -322,6 +327,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
             module.package_runtime(bundle, root / "out")
 
     def test_runtime_packager_rejects_missing_extra_and_metadata_drift(self) -> None:
+        """rule: INV.PKG.RUNTIME-TOOL-CLOSURE"""
         module = load_module()
 
         for label, expected_error in (
@@ -356,6 +362,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "Windows does not preserve POSIX execute bits")
     def test_runtime_packager_rejects_mode_drift(self) -> None:
+        """rule: INV.PKG.RUNTIME-TOOL-CLOSURE"""
         module = load_module()
         for label in ("gained-executable", "lost-executable"):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
@@ -404,6 +411,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                         module.package_runtime(bundle, root / "out")
 
     def test_runtime_packager_rejects_duplicate_and_out_of_closure_tool_paths(self) -> None:
+        """rule: INV.PKG.RUNTIME-TOOL-CLOSURE"""
         module = load_module()
         for label in ("duplicate", "duplicate-tool", "outside", "wrong-target"):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:

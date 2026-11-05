@@ -1,7 +1,5 @@
 ---
 id: INV.PKG.SOURCE-SYMLINK-REJECTED
-check:
-  - tests/ci/test_package_unica_plugin.py::PackageUnicaPluginTests.test_plugin_source_copy_rejects_tracked_symlink
 ---
 
 # Символическая ссылка из исходников не переносит свою цель в пакет

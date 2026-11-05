@@ -249,6 +249,7 @@ mod tests {
     use serde_json::json;
 
     /// #2243: a relation operation has at least one owner-specific value.
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn relation_operations_require_a_relation_domain_for_every_metadata_kind() {
         use unica_address::address::QualifiedAddress;

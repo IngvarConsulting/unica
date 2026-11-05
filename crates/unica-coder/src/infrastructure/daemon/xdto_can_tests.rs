@@ -178,6 +178,7 @@ fn type_set_can_is_closed_and_previews_without_writes() {
     );
 }
 
+/// rule: INV.SOURCE.XDTO-ORDERED-BATCH
 #[test]
 fn forward_reference_is_validated_on_the_final_public_package_without_writes() {
     let fixture = Fixture::new();
