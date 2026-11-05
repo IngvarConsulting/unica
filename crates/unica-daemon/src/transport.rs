@@ -1423,7 +1423,7 @@ fn tokens_equal(left: &str, right: &str) -> bool {
 
 #[cfg(test)]
 #[path = "../tests/platform/listener.rs"]
-mod tests;
+mod medium_tests;
 
 #[cfg(test)]
 #[path = "../tests/pure/wire.rs"]

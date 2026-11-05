@@ -215,7 +215,7 @@ fn absent_nested_facts_are_not_filled_from_defaults_or_siblings() {
 }
 
 #[test]
-fn damaged_nested_facts_preserve_members_and_independent_facts() {
+fn medium_damaged_nested_facts_preserve_members_and_independent_facts() {
     for (file, collection, member, expected) in cases() {
         for public in expected.as_object().unwrap().keys() {
             let key = xml_name(public);
