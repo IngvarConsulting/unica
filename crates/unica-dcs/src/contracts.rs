@@ -305,7 +305,7 @@ pub fn dcs(op: Primitive) -> OperationContract {
             ("items",inner,data_target,"Add dataset fields. Existing dataPath is unchanged. Query fields derive their type from the query and refuse type; describe Object field types explicitly. Selection is a separate operation.",json!({"items":[{"dataPath":"Added","title":"Added [шт]"}]}))
         }
         Primitive::FieldSet => {
-            let mut inner=object(&[("type",text(false)),("title",title.clone()),("useRestriction",restriction.clone()),("attributeUseRestriction",restriction.clone()),("presentationExpression",text(false)),("sourceField",text(true))],&[]);
+            let mut inner=object(&[("type",text(false)),("title",title.clone()),("useRestriction",restriction.clone()),("attributeUseRestriction",restriction.clone()),("presentationExpression",text(false)),("field",text(true))],&[]);
             inner["minProperties"]=json!(1);
             ("values",inner,field_target,"Update only supplied field mapping/title/type/restrictions/presentation expression. Query fields derive their type from query and refuse type. Other field patches remove stale valueType on the addressed Query field. Other field data remains.",json!({"values":{"title":{"ru":"Сумма","en":"Amount"}}}))
         }

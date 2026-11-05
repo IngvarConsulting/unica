@@ -57,10 +57,10 @@ pub(super) fn project(
                 &mut props,
                 &mut limits,
                 address,
-                spec.name,
+                spec.public_name,
                 &value,
                 true,
-                spec.name,
+                spec.public_name,
             ),
             None => limits.push(format!(
                 "{} has an invalid or duplicated observed value",

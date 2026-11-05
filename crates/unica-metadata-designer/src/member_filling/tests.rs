@@ -28,6 +28,9 @@ fn op(
             indexing: None,
             deny_incomplete_values: None,
             fill_from_filling_value: Some(value),
+            main_filter: None,
+            master: None,
+            type_reduction_mode: None,
         }],
     }
 }

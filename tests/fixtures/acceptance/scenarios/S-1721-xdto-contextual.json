@@ -2,7 +2,7 @@
   "id": "S-1721-xdto-contextual",
   "issue": 1721,
   "area": "XDTO",
-  "task": "Прочитать подробный contextual Can всех пяти операций и обоих property.add sites. Canonical values-only add/no-payload remove и математические 0/1 включая 0.0/1.0 дают preview. Flat, inner at, payload remove и неверные minOccurs/type дают адресный отказ по фактическому values. Все файлы, включая соседний пакет, сохраняются.",
+  "task": "Прочитать подробный contextual Can всех пяти операций и обоих property.add sites. Canonical values-only add/no-payload remove и математические 0/1 включая 0.0/1.0 дают preview. Flat, inner at, payload remove и неверные lowerBound/type дают адресный отказ по фактическому values. Все файлы, включая соседний пакет, сохраняются.",
   "workspace": "tests/fixtures/acceptance/workspace-xdto-contract",
   "wire": [
     {
@@ -862,7 +862,7 @@
                 "property": {
                   "name": "ContextualProperty",
                   "type": "xs:string",
-                  "minOccurs": 0
+                  "lowerBound": 0
                 }
               }
             }
@@ -933,7 +933,7 @@
                 "property": {
                   "name": "ContextualProperty",
                   "type": "xs:string",
-                  "minOccurs": 0.0
+                  "lowerBound": 0.0
                 }
               }
             }
@@ -1004,7 +1004,7 @@
                 "property": {
                   "name": "ContextualProperty",
                   "type": "xs:string",
-                  "minOccurs": 1
+                  "lowerBound": 1
                 }
               }
             }
@@ -1075,7 +1075,7 @@
                 "property": {
                   "name": "ContextualProperty",
                   "type": "xs:string",
-                  "minOccurs": 1.0
+                  "lowerBound": 1.0
                 }
               }
             }
@@ -1516,7 +1516,7 @@
                 "property": {
                   "name": "InvalidBound",
                   "type": "xs:string",
-                  "minOccurs": 0.5
+                  "lowerBound": 0.5
                 }
               }
             }
@@ -1534,7 +1534,7 @@
         },
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.property.minOccurs"
+          "eq": "ops[0].args.values.property.lowerBound"
         },
         {
           "pointer": "/data",
@@ -1596,7 +1596,7 @@
                 "property": {
                   "name": "InvalidBound",
                   "type": "xs:string",
-                  "minOccurs": -1
+                  "lowerBound": -1
                 }
               }
             }
@@ -1606,7 +1606,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: minOccurs must be 0 or 1",
+      "refusal": "bad_value: lowerBound must be 0 or 1",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",
@@ -1614,7 +1614,7 @@
         },
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.property.minOccurs"
+          "eq": "ops[0].args.values.property.lowerBound"
         },
         {
           "pointer": "/data",
@@ -1676,7 +1676,7 @@
                 "property": {
                   "name": "InvalidBound",
                   "type": "xs:string",
-                  "minOccurs": 2
+                  "lowerBound": 2
                 }
               }
             }
@@ -1686,7 +1686,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: minOccurs must be 0 or 1",
+      "refusal": "bad_value: lowerBound must be 0 or 1",
       "assertions": [
         {
           "pointer": "/diagnostics/0/code",
@@ -1694,7 +1694,7 @@
         },
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.property.minOccurs"
+          "eq": "ops[0].args.values.property.lowerBound"
         },
         {
           "pointer": "/data",
@@ -1756,87 +1756,7 @@
                 "property": {
                   "name": "InvalidBound",
                   "type": "xs:string",
-                  "minOccurs": false
-                }
-              }
-            }
-          }
-        ]
-      },
-      "expect": [
-        "refused"
-      ],
-      "refusal": "bad_value: expected \"integer\"",
-      "assertions": [
-        {
-          "pointer": "/diagnostics/0/code",
-          "eq": "bad_value"
-        },
-        {
-          "pointer": "/at",
-          "eq": "ops[0].args.values.property.minOccurs"
-        },
-        {
-          "pointer": "/data",
-          "absent": true
-        }
-      ],
-      "fileAssertions": [
-        {
-          "path": "src/Configuration.xml",
-          "kind": "sha256",
-          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
-        },
-        {
-          "path": "src/Ext/ClientApplicationInterface.xml",
-          "kind": "sha256",
-          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
-        },
-        {
-          "path": "src/Languages/Русский.xml",
-          "kind": "sha256",
-          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
-        },
-        {
-          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
-          "kind": "sha256",
-          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
-        },
-        {
-          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
-          "kind": "sha256",
-          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
-        },
-        {
-          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
-          "kind": "sha256",
-          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
-        },
-        {
-          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
-          "kind": "sha256",
-          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
-        },
-        {
-          "path": "v8project.yaml",
-          "kind": "sha256",
-          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
-        }
-      ]
-    },
-    {
-      "tool": "unica.apply",
-      "args": {
-        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
-        "ops": [
-          {
-            "op": "property.add",
-            "args": {
-              "values": {
-                "property": {
-                  "name": "InvalidBound",
-                  "type": "xs:string",
-                  "minOccurs": null
+                  "lowerBound": false
                 }
               }
             }
@@ -1854,7 +1774,7 @@
         },
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.property.minOccurs"
+          "eq": "ops[0].args.values.property.lowerBound"
         },
         {
           "pointer": "/data",
@@ -1916,7 +1836,7 @@
                 "property": {
                   "name": "InvalidBound",
                   "type": "xs:string",
-                  "minOccurs": "0"
+                  "lowerBound": null
                 }
               }
             }
@@ -1934,7 +1854,87 @@
         },
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.property.minOccurs"
+          "eq": "ops[0].args.values.property.lowerBound"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1e8968d49b7f27e9b030747a3d8e8acd9ce7ad09c6ff6b4479b42c7c33af83e0"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "5c3ee35a9f33b57c3ffc33646639da6892edbfbbd5554d0bcb497cd0aa7ab9dd"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "3114d40a44da3301f5c7949e7a68f2d59ddeb6fcfdc33ad9a4678bc5b6824816"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "e79d010f2276973f32687d129cd74519a4471ab0ea0a8c3b15db3cb307848665"
+        },
+        {
+          "path": "src/XDTOPackages/EnterpriseData_1_17_3.xml",
+          "kind": "sha256",
+          "eq": "373601283bc1481fd2d3677b2ee0940a5d50b250c148174c43a0942cb3a5c880"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "4fb61dfd5a71f072580650bef99714fc16ce11b13fe72da49d1b1fea70f9c49f"
+        },
+        {
+          "path": "src/XDTOPackages/ReadonlyNeighbor.xml",
+          "kind": "sha256",
+          "eq": "e9ae4541ced8678aa47b5cfedf64a9555e22902016681ba262464818ae097dca"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "InvalidBound",
+                  "type": "xs:string",
+                  "lowerBound": "0"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"integer\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.property.lowerBound"
         },
         {
           "pointer": "/data",

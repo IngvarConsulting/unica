@@ -183,7 +183,7 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use crate::application::tools;
     use serde_json::json;
