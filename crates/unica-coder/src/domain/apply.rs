@@ -1590,7 +1590,7 @@ mod tests {
             "event.implement",
         ];
         let registry = crate::domain::apply::operation_registry();
-        assert_eq!(expected.len(), 130);
+        assert_eq!(expected.len(), 131);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
         // метаданных (#1465), свойства формы — как свойства описания (#1984):
