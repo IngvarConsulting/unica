@@ -1,0 +1,144 @@
+{
+  "id": "S-2056-duplicate-member-name",
+  "issue": 2056,
+  "area": "Метаданные",
+  "task": "Отказ добавления занятого имени указывает имя в исходном items и требует исправления вызова; частично подготовленное добавление не публикуется.",
+  "workspace": "tests/fixtures/acceptance/workspace",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "AcceptanceFresh",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "Организация",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Attribute 'Организация' already exists",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[1].name"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "AcceptanceFresh",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                },
+                {
+                  "name": "Субъект",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 20,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Attribute 'КатегорииДанных.Субъект' already exists",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[1].name"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/АктОбУничтоженииПерсональныхДанных.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    }
+  ]
+}
