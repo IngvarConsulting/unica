@@ -83,7 +83,7 @@ pub fn canonical_json(raw: &str) -> String {
         let text = raw.get();
         match text.as_bytes().first() {
             Some(b'{') => {
-                let entries: std::collections::BTreeMap<String, Box<RawValue>> =
+                let entries: std::collections::BTreeMap<String, &RawValue> =
                     serde_json::from_str(text).expect("validated raw object");
                 format!(
                     "{{{}}}",
@@ -99,7 +99,7 @@ pub fn canonical_json(raw: &str) -> String {
                 )
             }
             Some(b'[') => {
-                let items: Vec<Box<RawValue>> =
+                let items: Vec<&RawValue> =
                     serde_json::from_str(text).expect("validated raw array");
                 format!(
                     "[{}]",
@@ -116,7 +116,7 @@ pub fn canonical_json(raw: &str) -> String {
             _ => text.to_owned(),
         }
     }
-    canonical(&serde_json::from_str::<Box<RawValue>>(raw).expect("validated invocation arguments"))
+    canonical(serde_json::from_str::<&RawValue>(raw).expect("validated invocation arguments"))
 }
 
 #[cfg(test)]

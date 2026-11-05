@@ -3129,14 +3129,26 @@ mod tests {
                 serde_json::from_str::<Map<String, Value>>(raw).unwrap(),
                 *arguments
             );
-            direct_outcome(canonical_result("captured"))
+            direct_outcome(unica_execution_contract::invocation::DomainResult::success(
+                "captured",
+            ))
         });
         let (mut client, _) = spawn_unica_server(UnicaServer::with_canonical_v13(call));
         client.initialize().await;
         client.writer.write_all(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"unica.apply","arguments":{"at":"main:XDTOPackage.Sample.Type.Target","ops":[{"op":"property.add","args":{"values":{"property":{"name":"Probe","type":"xs:string","upperBound":9223372036854775807.0}}}}]}}}
 "#).await.unwrap();
         client.writer.flush().await.unwrap();
-        assert_eq!(client.receive().await["id"], 1);
+        let response = client.receive().await;
+        assert_eq!(response["id"], 1);
+        assert!(
+            response.get("error").is_none(),
+            "handler failed: {response}"
+        );
+        assert_eq!(response["result"]["structuredContent"]["ok"], true);
+        assert_eq!(
+            response["result"]["structuredContent"]["summary"],
+            "captured"
+        );
         client.shutdown().await;
     }
 

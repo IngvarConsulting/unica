@@ -462,14 +462,21 @@ impl XdtoOperation {
         path: &str,
     ) -> Result<std::collections::BTreeMap<String, String>, ContractError> {
         use serde_json::value::RawValue;
-        use std::collections::BTreeMap;
+        use std::{borrow::Cow, collections::BTreeMap};
+        fn object(raw: &str) -> Result<BTreeMap<String, Cow<'_, RawValue>>, serde_json::Error> {
+            serde_json::from_str::<BTreeMap<String, &RawValue>>(raw).map(|fields| {
+                fields
+                    .into_iter()
+                    .map(|(key, value)| (key, Cow::Borrowed(value)))
+                    .collect()
+            })
+        }
         fn property(
             raw: &RawValue,
             path: &str,
             errors: &mut BTreeMap<String, String>,
         ) -> Result<Box<RawValue>, ContractError> {
-            let Ok(mut fields) = serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(raw.get())
-            else {
+            let Ok(mut fields) = object(raw.get()) else {
                 return Ok(raw.to_owned());
             };
             for key in ["lowerBound", "upperBound"] {
@@ -501,24 +508,24 @@ impl XdtoOperation {
                             if serde_json::from_str::<Value>(raw).is_err() {
                                 fields.insert(
                                     key.to_owned(),
-                                    RawValue::from_string("null".into()).unwrap(),
+                                    Cow::Owned(RawValue::from_string("null".into()).unwrap()),
                                 );
                             }
                             continue;
                         };
                         fields.insert(
                             key.to_owned(),
-                            RawValue::from_string(integer.to_string()).expect("integer JSON"),
+                            Cow::Owned(
+                                RawValue::from_string(integer.to_string()).expect("integer JSON"),
+                            ),
                         );
                     }
                 }
             }
             if let Some(raw) = fields.get("objectType") {
-                if let Ok(mut object) =
-                    serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(raw.get())
-                {
+                if let Ok(mut object) = object(raw.get()) {
                     if let Some(raw) = object.get("properties") {
-                        if let Ok(items) = serde_json::from_str::<Vec<Box<RawValue>>>(raw.get()) {
+                        if let Ok(items) = serde_json::from_str::<Vec<&RawValue>>(raw.get()) {
                             let children = items
                                 .iter()
                                 .enumerate()
@@ -532,11 +539,17 @@ impl XdtoOperation {
                                 .collect::<Result<Vec<_>, _>>()?;
                             object.insert(
                                 "properties".into(),
-                                serde_json::value::to_raw_value(&children).expect("raw children"),
+                                Cow::Owned(
+                                    serde_json::value::to_raw_value(&children)
+                                        .expect("raw children"),
+                                ),
                             );
                             fields.insert(
                                 "objectType".into(),
-                                serde_json::value::to_raw_value(&object).expect("raw object type"),
+                                Cow::Owned(
+                                    serde_json::value::to_raw_value(&object)
+                                        .expect("raw object type"),
+                                ),
                             );
                         }
                     }
@@ -545,20 +558,20 @@ impl XdtoOperation {
             Ok(serde_json::value::to_raw_value(&fields).expect("raw property"))
         }
         let mut errors = BTreeMap::new();
-        let mut fields: BTreeMap<String, Box<RawValue>> =
-            serde_json::from_str(raw).map_err(|e| invalid(path, e.to_string()))?;
+        let mut fields = object(raw).map_err(|e| invalid(path, e.to_string()))?;
         if self == Self::AddProperty {
             if let Some(raw) = fields.get("values") {
-                if let Ok(mut values) =
-                    serde_json::from_str::<BTreeMap<String, Box<RawValue>>>(raw.get())
-                {
+                if let Ok(mut values) = object(raw.get()) {
                     if let Some(raw) = values.get("property") {
                         let normalized =
                             property(raw, &format!("{path}.values.property"), &mut errors)?;
-                        values.insert("property".into(), normalized);
+                        values.insert("property".into(), Cow::Owned(normalized));
                         fields.insert(
                             "values".into(),
-                            serde_json::value::to_raw_value(&values).expect("raw property values"),
+                            Cow::Owned(
+                                serde_json::value::to_raw_value(&values)
+                                    .expect("raw property values"),
+                            ),
                         );
                     }
                 }
