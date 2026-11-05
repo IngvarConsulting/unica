@@ -903,6 +903,7 @@ mod event_subscription_binding_tests {
         );
     }
 
+    /// rule: INV.APP.EVENT-BINDING
     #[test]
     fn event_subscription_binding_requires_exact_case_presence_and_one_signature() {
         assert!(event_definition(EventSourceClass::CatalogObject, "beforewrite").is_none());
@@ -955,6 +956,7 @@ mod event_subscription_binding_tests {
         ));
     }
 
+    /// rule: INV.APP.EVENT-BINDING
     #[test]
     fn event_subscription_binding_validates_the_complete_handler_contract() {
         let classes = [EventSourceClass::CatalogObject];

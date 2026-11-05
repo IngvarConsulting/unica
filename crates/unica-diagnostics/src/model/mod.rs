@@ -706,6 +706,7 @@ mod tests {
         Arc::new(StubProvider(descriptor))
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FOCUS
     #[test]
     fn zero_width_observation_range_matches_the_requested_range_that_contains_its_caret() {
         let requested = DiagnosticRange {

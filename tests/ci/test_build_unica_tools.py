@@ -545,6 +545,10 @@ class BuildUnicaToolsTests(unittest.TestCase):
     def test_bundle_builder_downloads_shared_archive_once_and_declares_runtime_closure(
         self,
     ) -> None:
+        """
+        rule: INV.PKG.BUILD-TOOL-CLOSURE
+        rule: INV.PKG.SHARED-BUILD-ARCHIVE-DOWNLOAD
+        """
         module = load_build_module()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         archive_path = root / "source.tar.gz"
@@ -774,6 +778,8 @@ class BuildUnicaToolsTests(unittest.TestCase):
 
         Bootstrap сверяет распакованный набор целиком: README и лицензия рядом с
         бинарём не должны стать «лишними» файлами, а бинарь ищется по пути в архиве.
+
+        rule: INV.PKG.BUILD-TOOL-CLOSURE
         """
         files = {
             "v8-runner-x/v8-runner": (b"runner", 0o755),
@@ -826,6 +832,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                 self.assertEqual(runner["binaryPath"], "bin/linux-x64/v8-runner-x/v8-runner")
 
     def test_upstream_archive_rejects_unsafe_members_before_materialization(self) -> None:
+        """rule: INV.PKG.BUILD-ARCHIVE-SAFETY"""
         module = load_build_module()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         cases = {
@@ -884,6 +891,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         self.assertEqual(list(root.glob(".bundle.staging-*")), [])
 
     def test_verified_archive_rejects_unsafe_and_drifted_members(self) -> None:
+        """rule: INV.PKG.BUILD-ARCHIVE-SAFETY"""
         module = load_runtime_archive_module()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         base_payload = [

@@ -187,6 +187,7 @@ mod tests {
         daemon.finish(owner);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn resolve_path_ignores_the_full_directory_entry_budget() {
         let workspace = tempfile::tempdir().unwrap();
@@ -324,6 +325,8 @@ mod tests {
         }
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn name_search_reports_an_injected_local_read_fault_through_the_live_daemon() {
         let workspace = tempfile::tempdir().unwrap();
@@ -911,6 +914,7 @@ mod tests {
         assert!(!boundary.contains("workspace_hint"));
     }
 
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
     fn medium_canonical_invocation_authority_keeps_root_capabilities_without_a_tree_revision() {
         canonical_service_boundary_exposes_no_raw_request_or_workspace_hint();
