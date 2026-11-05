@@ -1,0 +1,19 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="7b7196e757c66643bf58229adf7fb7b600000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="f6da9dad5e764147a434a06e168617d300000000"/>
+		<Metadata name="IntegrationService.Bus" id="723ae80a-f699-58ad-b045-ce38cbd1921b" configVersion="40285ff57e0fcc46be1e2f948854e80800000000">
+			<Metadata name="IntegrationService.Bus.IntegrationServiceChannel.SendFalseHandler" id="81144d9a-5f5d-5b3f-8963-067f771d325c"/>
+			<Metadata name="IntegrationService.Bus.IntegrationServiceChannel.SendTrueEmpty" id="8b31c840-39c2-5a6e-b432-a57711c7a3f7"/>
+			<Metadata name="IntegrationService.Bus.IntegrationServiceChannel.ReceiveEmptyTrue" id="923f4f0d-9c19-5d1f-ab88-36453320e3d3"/>
+			<Metadata name="IntegrationService.Bus.IntegrationServiceChannel.SendTrueHandler" id="acfa5ad7-bf55-597e-b343-a9b809774714"/>
+			<Metadata name="IntegrationService.Bus.IntegrationServiceChannel.ReceiveEmptyFalse" id="af25bce7-b386-5ab0-b75f-2205788e0e7f"/>
+			<Metadata name="IntegrationService.Bus.IntegrationServiceChannel.SendFalseEmpty" id="d27b3928-348b-5705-a503-8ca5ecca46d0"/>
+			<Metadata name="IntegrationService.Bus.IntegrationServiceChannel.ReceiveFalse" id="e33644d2-32a5-5fd1-a9f5-ba458dc7a4c4"/>
+			<Metadata name="IntegrationService.Bus.IntegrationServiceChannel.ReceiveTrue" id="fcfa9db5-a279-5cc0-a0a4-808b7d876f5a"/>
+		</Metadata>
+		<Metadata name="IntegrationService.Bus.Module" id="723ae80a-f699-58ad-b045-ce38cbd1921b.0" configVersion="7c0477afeb5ab84fbc53c7e51fe79c0f00000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="a61b702aae98874893d62eaf1894b8dd00000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

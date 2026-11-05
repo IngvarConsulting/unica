@@ -45,6 +45,7 @@ properties_operations!(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertiesSite {
     Metadata(MetadataKind),
+    IntegrationServiceChannel,
     FunctionalOption,
     Role,
     WSReference,
@@ -61,8 +62,7 @@ pub enum PropertiesSite {
 pub enum DescriptorPropertyKind {
     String,
     Boolean,
-    /// A closed platform enumeration; its values are the 8.3.27 set of
-    /// `crate::configuration::cf_validate_enum_allowed`.
+    /// A closed platform enumeration from the addressed descriptor's 8.3.27 profile.
     Enum,
 }
 
@@ -96,6 +96,7 @@ macro_rules! descriptor_properties {
                     }
                     PropertiesSite::Metadata(_) | PropertiesSite::StyleItem => false,
                     PropertiesSite::WSReference => matches!(self, Self::LocationUrl),
+                    PropertiesSite::IntegrationServiceChannel => matches!(self, Self::ExternalIntegrationServiceChannelName | Self::MessageDirection | Self::ReceiveMessageProcessing | Self::Transactioned),
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode),
                 }
             }
@@ -110,6 +111,10 @@ macro_rules! descriptor_properties {
 // re-export of 8.3.27 resets a configuration's own
 // `ConfigurationExtensionCompatibilityMode`, so only an extension sets it.
 descriptor_properties!(
+    ExternalIntegrationServiceChannelName => ("ExternalIntegrationServiceChannelName", "externalIntegrationServiceChannelName", String, false, false, false, false),
+    MessageDirection => ("MessageDirection", "messageDirection", Enum, false, false, false, false),
+    ReceiveMessageProcessing => ("ReceiveMessageProcessing", "receiveMessageProcessing", String, false, false, false, false),
+    Transactioned => ("Transactioned", "transactioned", Boolean, false, false, false, false),
     LocationUrl => ("LocationURL", "locationURL", String, false, false, false, false),
     Location => ("Location", "location", String, false, false, false, false),
     PrivilegedGetMode => ("PrivilegedGetMode", "privilegedGetMode", Boolean, false, false, false, false),
@@ -159,6 +164,9 @@ impl DescriptorProperty {
     /// The closed 8.3.27 value set of an enumerated property. A compatibility
     /// mode leaves out `DontUse`: the platform reads it back as another mode.
     pub fn allowed_values(self) -> &'static [&'static str] {
+        if self == Self::MessageDirection {
+            return &["Receive", "Send"];
+        }
         let values = crate::configuration::cf_validate_enum_allowed(self.names()[0]);
         match (self, values.split_first()) {
             (
@@ -178,7 +186,7 @@ impl PropertiesSite {
             return Self::root_of(site.source().kind());
         }
         let profile = Self::from_address(site.at())?;
-        if profile == Self::WSReference
+        if matches!(profile, Self::WSReference | Self::IntegrationServiceChannel)
             && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
         {
             return None;
@@ -205,6 +213,11 @@ impl PropertiesSite {
     /// the owner's write profile; a nested subsystem owns a descriptor of its
     /// own and the subsystem profile with it.
     pub fn from_address(at: &QualifiedAddress) -> Option<Self> {
+        if matches!(at.segments(), [owner, channel] if owner.kind() == NodeKind::IntegrationService
+            && owner.name().is_some() && channel.kind() == NodeKind::Channel && channel.name().is_some())
+        {
+            return Some(Self::IntegrationServiceChannel);
+        }
         if at.segments().len() > 1
             && at
                 .segments()
@@ -245,7 +258,8 @@ impl PropertiesSite {
                     crate::style_color::StyleItemColor::argument_schema(),
                 );
             }
-            Self::FunctionalOption
+            Self::IntegrationServiceChannel
+            | Self::FunctionalOption
             | Self::WSReference
             | Self::Role
             | Self::Subsystem
@@ -292,6 +306,7 @@ impl PropertiesOperation {
             Self::Set => OperationContract {
                 schema: object(&[("values", site.values_schema())], &["values"]),
                 target: match site {
+                    PropertiesSite::IntegrationServiceChannel => "An existing Channel of a registered IntegrationService in configuration XML 2.20. ReceiveMessageProcessing names a unique two-parameter procedure in the service module, or is empty. A supplied nonempty handler, or a nonempty handler when switching to Receive, is checked against the module. Unspecified properties and inactive Send values are preserved.",
                     PropertiesSite::WSReference => "An existing registered WSReference in a configuration source set, platform XML 2.20. Only its existing LocationURL property can change.",
                     PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
@@ -305,6 +320,7 @@ impl PropertiesOperation {
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
+                    PropertiesSite::IntegrationServiceChannel => json!({"values":{"ExternalIntegrationServiceChannelName":"bus/incoming"}}),
                     PropertiesSite::WSReference => json!({"values":{"LocationURL":"https://example.invalid/service?wsdl"}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
@@ -312,7 +328,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) | PropertiesSite::FunctionalOption | PropertiesSite::WSReference | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::IntegrationServiceChannel | PropertiesSite::FunctionalOption | PropertiesSite::WSReference | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -370,6 +386,42 @@ impl unica_operations::FamilyOperation for PropertiesOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integration_channel_has_a_closed_existing_member_contract() {
+        let address =
+            QualifiedAddress::parse("main:IntegrationService.Bus.Channel.Incoming").unwrap();
+        let site = PropertiesSite::from_address(&address)
+            .expect("an integration channel owns its property profile");
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        assert!(oracle.is_valid(&contract.example_args));
+        for values in [
+            json!({"ExternalIntegrationServiceChannelName":"bus/in"}),
+            json!({"MessageDirection":"Receive"}),
+            json!({"ReceiveMessageProcessing":"Handle"}),
+            json!({"ReceiveMessageProcessing":""}),
+            json!({"Transactioned":false}),
+        ] {
+            assert!(oracle.is_valid(&json!({"values":values})), "{values}");
+        }
+        for values in [
+            json!({"MessageDirection":"Both"}),
+            json!({"Transactioned":"false"}),
+            json!({"Name":"Other"}),
+            json!({}),
+        ] {
+            assert!(!oracle.is_valid(&json!({"values":values})), "{values}");
+        }
+        for target in [
+            "main:IntegrationService.Bus",
+            "main:Catalog.Bus.Channel.Incoming",
+        ] {
+            assert!(
+                PropertiesSite::from_address(&QualifiedAddress::parse(target).unwrap()).is_none()
+            );
+        }
+    }
 
     #[test]
     fn ws_reference_location_url_has_a_closed_existing_descriptor_contract() {

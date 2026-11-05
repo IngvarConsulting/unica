@@ -79,6 +79,13 @@ const ITEM_SCALAR_KEYS: &[&str] = &[
     "actionPeriodIsBase",
 ];
 
+const CHANNEL_SCALAR_KEYS: &[&str] = &[
+    "ExternalIntegrationServiceChannelName",
+    "MessageDirection",
+    "ReceiveMessageProcessing",
+    "Transactioned",
+];
+
 pub(super) fn project_metadata_for_source(
     address: &QualifiedAddress,
     payload: &Value,
@@ -598,6 +605,7 @@ fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
         NodeKind::PredefinedItem => ("predefinedItems", None),
         NodeKind::UrlTemplate => ("details.urlTemplates", None),
         NodeKind::Operation => ("details.operations", None),
+        NodeKind::Channel => ("details.channels", None),
         NodeKind::StandardAttribute => {
             ("standardAttributes", Some("properties.StandardAttributes"))
         }
@@ -681,6 +689,7 @@ fn metadata_branch_kinds() -> &'static [NodeKind] {
         NodeKind::Column,
         NodeKind::Recalculation,
         NodeKind::Operation,
+        NodeKind::Channel,
         NodeKind::UrlTemplate,
         NodeKind::Form,
         NodeKind::Command,
@@ -719,6 +728,11 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
         // `collections`, но для читателя это такая же адресуемая коллекция.
         NodeKind::UrlTemplate => metadata_details(payload)?.get("urlTemplates"),
         NodeKind::Operation => metadata_details(payload)?.get("operations"),
+        NodeKind::Channel
+            if payload.get("kind").and_then(Value::as_str) == Some("IntegrationService") =>
+        {
+            metadata_details(payload)?.get("channels")
+        }
         _ => None,
     }
 }
@@ -918,7 +932,16 @@ fn metadata_item_with_context(
     member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> NodeView {
     let node = metadata_item_node(address, kind, item, member_profile);
-    if kind == NodeKind::TabularSection {
+    if kind == NodeKind::Channel {
+        let name = item.get("name").and_then(Value::as_str).unwrap_or_default();
+        let prefix = format!("details.channels[{name}].");
+        node.with_additional_limits(
+            unreadable_entries(payload)
+                .filter(|(field, _)| field.starts_with(&prefix))
+                .map(|(field, message)| format!("{field}: {message}"))
+                .collect(),
+        )
+    } else if kind == NodeKind::TabularSection {
         node.with_additional_limits(tabular_standard_attribute_limits(payload, item))
     } else {
         node
@@ -956,9 +979,19 @@ fn metadata_item_node(
     item: &Value,
     member_profile: Option<unica_metadata::MetaMemberReadProfile>,
 ) -> NodeView {
-    let mut props = selected_scalar_props(item, ITEM_SCALAR_KEYS);
+    let keys = if kind == NodeKind::Channel
+        && address
+            .segments()
+            .first()
+            .is_some_and(|owner| owner.kind() == NodeKind::IntegrationService)
+    {
+        CHANNEL_SCALAR_KEYS
+    } else {
+        ITEM_SCALAR_KEYS
+    };
+    let mut props = selected_scalar_props(item, keys);
     let mut limits = dropped_by_size(item, &props, address, |probe| {
-        selected_scalar_props(probe, ITEM_SCALAR_KEYS)
+        selected_scalar_props(probe, keys)
     });
     if kind == NodeKind::StandardAttribute {
         let tabular = address
@@ -1199,6 +1232,26 @@ pub(crate) fn borrowing_props(
 mod tabular_standard_attribute_property_tests {
     use super::*;
     use crate::infrastructure::v13_read_projection::MAX_COMPACT_PROP_BYTES;
+
+    #[test]
+    fn integration_channel_properties_do_not_leak_into_other_member_profiles() {
+        let item = json!({"name":"A", "MessageDirection":"Send", "Transactioned":true});
+        let address = QualifiedAddress::parse("main:Catalog.Items.Attribute.A").unwrap();
+        let node = serde_json::to_value(metadata_item_node(
+            &address,
+            NodeKind::Attribute,
+            &item,
+            None,
+        ))
+        .unwrap();
+        assert!(node["props"].get("MessageDirection").is_none());
+        assert!(node["props"].get("Transactioned").is_none());
+        assert!(metadata_collection(
+            &json!({"kind":"Catalog", "collections":{}, "details":{"details":{"channels":[item]}}}),
+            NodeKind::Channel
+        )
+        .is_none());
+    }
 
     #[test]
     fn tabular_standard_properties_keep_a_closed_utf8_bound_and_independent_values() {

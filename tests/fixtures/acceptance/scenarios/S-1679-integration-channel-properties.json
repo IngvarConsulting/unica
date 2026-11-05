@@ -1,0 +1,1059 @@
+{
+  "id": "S-1679-integration-channel-properties",
+  "issue": 1679,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-integration-channel",
+  "task": "Через discovery и Can независимо изменить четыре свойства существующего канала: preview без записи, исполнение executionToken, чтение и XML post-image. Пустой handler допустим; Send и сохранённые значения не нормализуются. Неверный handler отклоняется. Фикстура выгружена платформой 8.3.27.2074.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:IntegrationService.Bus"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Bus"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:IntegrationService.Bus.Channel",
+            "count": 8
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:IntegrationService.Bus.Channel.ReceiveTrue"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/MessageDirection/enum",
+          "eq": [
+            "Receive",
+            "Send"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ExternalIntegrationServiceChannelName": "bus/<new>&"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "publish0": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "sha256",
+          "eq": "5bc0ce4784692373543853cb92a306f32ba0c4e6c0e090adab33e1758ec24574"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.publish0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ExternalIntegrationServiceChannelName",
+          "eq": [
+            "bus/<new>&"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}MessageDirection",
+          "eq": [
+            "Receive"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ReceiveMessageProcessing",
+          "eq": [
+            "Handle"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}Transactioned",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceChannelName",
+          "eq": "bus/<new>&"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ReceiveMessageProcessing": "Alternate"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "publish1": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.publish1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ExternalIntegrationServiceChannelName",
+          "eq": [
+            "bus/<new>&"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}MessageDirection",
+          "eq": [
+            "Receive"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ReceiveMessageProcessing",
+          "eq": [
+            "Alternate"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}Transactioned",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ReceiveMessageProcessing",
+          "eq": "Alternate"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Transactioned": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "publish2": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.publish2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ExternalIntegrationServiceChannelName",
+          "eq": [
+            "bus/<new>&"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}MessageDirection",
+          "eq": [
+            "Receive"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ReceiveMessageProcessing",
+          "eq": [
+            "Alternate"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}Transactioned",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Transactioned",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MessageDirection": "Send"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "publish3": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.publish3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ExternalIntegrationServiceChannelName",
+          "eq": [
+            "bus/<new>&"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}MessageDirection",
+          "eq": [
+            "Send"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ReceiveMessageProcessing",
+          "eq": [
+            "Alternate"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}Transactioned",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MessageDirection",
+          "eq": "Send"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ReceiveMessageProcessing": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "publish4": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.publish4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ExternalIntegrationServiceChannelName",
+          "eq": [
+            "bus/<new>&"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}MessageDirection",
+          "eq": [
+            "Send"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ReceiveMessageProcessing",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}Transactioned",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ReceiveMessageProcessing",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "MessageDirection": "Receive"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "publish5": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.publish5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ExternalIntegrationServiceChannelName",
+          "eq": [
+            "bus/<new>&"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}MessageDirection",
+          "eq": [
+            "Receive"
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}ReceiveMessageProcessing",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/IntegrationServices/Bus.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}IntegrationService/{http://v8.1c.ru/8.3/MDClasses}ChildObjects/{http://v8.1c.ru/8.3/MDClasses}IntegrationServiceChannel/{http://v8.1c.ru/8.3/MDClasses}Properties[{http://v8.1c.ru/8.3/MDClasses}Name=\"ReceiveTrue\"]/{http://v8.1c.ru/8.3/MDClasses}Transactioned",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/MessageDirection",
+          "eq": "Receive"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ReceiveMessageProcessing": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "6513dbbb3ac923c9aeb04c7259e958d56492e9463bef6df999fb5344458d837a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "2a65da565cfaac1c55cd37ae920d03f07e395d5a5d0c0f92da595a5f3cbfd806"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/IntegrationServices/Bus/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "92ce389f4230fd6f0182727f7306e3a51da6e042be7c010d052b1f99be4c7e3d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:IntegrationService.Bus.Channel.ReceiveTrue",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ReceiveMessageProcessing": "WrongFunction"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ReceiveMessageProcessing must name a unique two-parameter procedure in the integration service module"
+    }
+  ]
+}

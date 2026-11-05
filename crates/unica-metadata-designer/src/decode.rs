@@ -88,6 +88,10 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
+    IntegrationServiceChannel {
+        channel: String,
+        values: unica_metadata::property_input::IntegrationServiceChannelChanges,
+    },
     StyleItem(unica_metadata::style_color::StyleItemColor),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
@@ -1076,12 +1080,14 @@ pub fn parse_properties(
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
-    if site == PropertiesSite::WSReference
-        && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
+    if matches!(
+        site,
+        PropertiesSite::WSReference | PropertiesSite::IntegrationServiceChannel
+    ) && binding.source_kind != unica_source_contract::SourceSetKind::Configuration
     {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::BadValue,
-            "WSReference LocationURL editing requires a configuration source set",
+            "this property profile requires a configuration source set",
         )
         .at_path(format!("ops[{op_index}].args.at")));
     }
@@ -1107,6 +1113,16 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::IntegrationServiceChannel(values) => (
+            "IntegrationServices",
+            DescriptorPropertyChanges::IntegrationServiceChannel {
+                channel: target.segments()[1]
+                    .name()
+                    .expect("named channel")
+                    .to_string(),
+                values,
+            },
+        ),
         unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
             "FunctionalOptions",
             DescriptorPropertyChanges::FunctionalOption(values),
