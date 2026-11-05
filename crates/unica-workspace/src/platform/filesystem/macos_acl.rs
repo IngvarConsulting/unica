@@ -124,6 +124,7 @@ pub(super) fn verify_owner_only_acl(file: &File, owner_uid: libc::uid_t) -> io::
 mod medium_tests {
     use std::{ffi::OsStr, fs, os::unix::fs::PermissionsExt, process::Command};
 
+    /// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
     #[test]
     fn inherited_foreign_allow_refuses_private_children_before_returning_a_writable_file() {
         let root = tempfile::tempdir().unwrap();
@@ -166,6 +167,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.SAFETY.DAEMON-ENDPOINT-OWNERSHIP
     #[test]
     fn private_acl_accepts_owner_allow_and_non_owner_deny() {
         let root = tempfile::tempdir().unwrap();

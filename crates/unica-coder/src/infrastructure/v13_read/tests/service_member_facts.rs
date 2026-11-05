@@ -36,6 +36,7 @@ fn install(fixture: &RealReaderFixture) {
     }
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn service_member_nine_facts_reach_collections_and_details_without_changing_technical_fields() {
     let fixture = RealReaderFixture::new();
@@ -110,6 +111,7 @@ fn change(fixture: &RealReaderFixture, index: usize, mutate: impl FnOnce(&str) -
     );
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn service_member_damage_limits_only_the_named_fact_and_keeps_owner_diagnostics() {
     for (index, &(_, at)) in MEMBERS.iter().enumerate() {

@@ -354,6 +354,7 @@ mod tests {
         }))
     }
 
+    /// rule: INV.APP.DOCUMENTATION-LEXICAL-MATCHING
     #[test]
     fn word_order_and_morphology_do_not_matter() {
         let index = corpus(&[
@@ -372,6 +373,7 @@ mod tests {
         assert_eq!(hits[0].document, 1, "{hits:?}");
     }
 
+    /// rule: INV.APP.DOCUMENTATION-LEXICAL-MATCHING
     #[test]
     fn title_match_outranks_body_match() {
         let index = corpus(&[
@@ -383,6 +385,7 @@ mod tests {
         assert!(hits[0].score > hits[1].score, "{hits:?}");
     }
 
+    /// rule: INV.APP.DOCUMENTATION-LEXICAL-MATCHING
     #[test]
     fn typo_falls_back_to_fuzzy_with_discount() {
         let index = corpus(&[(
@@ -395,6 +398,7 @@ mod tests {
         assert!(typo[0].score < exact[0].score, "{typo:?} против {exact:?}");
     }
 
+    /// rule: INV.APP.DOCUMENTATION-LEXICAL-MATCHING
     #[test]
     fn shorter_page_outranks_long_enumeration_for_equal_field() {
         let long_enumeration = "Свернуть окно раздел приложение команда список действие \
@@ -409,6 +413,7 @@ mod tests {
         assert_eq!(hits[0].document, 0, "{hits:?}");
     }
 
+    /// rule: INV.APP.SEARCH-EXPANSIONS
     #[test]
     fn expansions_can_add_a_match_for_an_unmatched_query() {
         let index = corpus(&[
@@ -429,6 +434,7 @@ mod tests {
         assert_eq!(with[0].document, 0, "{with:?}");
     }
 
+    /// rule: INV.APP.SEARCH-TIE-ORDER
     #[test]
     fn ties_break_by_document_index_deterministically() {
         let index = corpus(&[

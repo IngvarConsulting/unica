@@ -1,5 +1,6 @@
 use super::*;
 
+/// rule: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
 #[test]
 fn canonical_service_descriptive_findings_keep_failed_verdict_and_readable_members() {
     for (file, owner, member, field, tag, replacement, code, tail) in [
