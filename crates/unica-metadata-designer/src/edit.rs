@@ -1415,6 +1415,12 @@ pub fn apply_typed_properties(
         let kind_scoped_enum = matches!(
             (kind, key),
             (
+                MetadataKind::BusinessProcess | MetadataKind::Task,
+                MetaPropertyKey::NumberAllowedLength
+            ) | (
+                MetadataKind::BusinessProcess,
+                MetaPropertyKey::NumberPeriodicity
+            ) | (
                 MetadataKind::ChartOfCharacteristicTypes
                     | MetadataKind::ChartOfCalculationTypes
                     | MetadataKind::ExchangePlan,
@@ -1981,6 +1987,19 @@ pub fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinit
         );
         let _ = meta_edit_replace_or_insert_property(&mut text, "Indexing", &replacement, &indent);
     }
+    for (tag, value) in [
+        ("Master", element.master),
+        ("MainFilter", element.main_filter),
+        ("DenyIncompleteValues", element.deny_incomplete_values),
+    ] {
+        if let Some(value) = value {
+            // These defaults are emitted by the proven register template.
+            text = text.replace(
+                &format!("<{tag}>false</{tag}>"),
+                &format!("<{tag}>{value}</{tag}>"),
+            );
+        }
+    }
     xml.replace_range(range, &text);
 }
 pub fn typed_properties_text_range(text: &str) -> Option<std::ops::Range<usize>> {
@@ -2050,6 +2069,142 @@ pub fn find_typed_element_identity(
             )
         })
 }
+// The caller has parsed the whole document and proved a boolean text leaf.
+// Keep lexical whitespace (including character references) outside the value.
+fn dimension_boolean_text_range(
+    xml: &str,
+    range: std::ops::Range<usize>,
+    decode_references: bool,
+) -> Option<std::ops::Range<usize>> {
+    let mut cursor = range.start;
+    let mut first = None;
+    let mut last = range.start;
+    while cursor < range.end {
+        let raw = &xml[cursor..range.end];
+        let (value, length) = if decode_references && raw.starts_with("&#") {
+            let end = raw.find(';')?;
+            let number = &raw[2..end];
+            let code = if let Some(hex) = number.strip_prefix('x') {
+                u32::from_str_radix(hex, 16).ok()?
+            } else {
+                number.parse().ok()?
+            };
+            (char::from_u32(code)?, end + 1)
+        } else {
+            let value = raw.chars().next()?;
+            (value, value.len_utf8())
+        };
+        if !crate::info::dimension_boolean_xml_space(value) {
+            first.get_or_insert(cursor);
+            last = cursor + length;
+        }
+        cursor += length;
+    }
+    first.map(|start| start..last)
+}
+
+// roxmltree merges adjacent Text/CDATA nodes without extending their source
+// range. Scan the already validated leaf instead, retaining its markup.
+fn dimension_boolean_text_edits(
+    xml: &str,
+    flag: roxmltree::Node<'_, '_>,
+    replacement: &'static str,
+) -> Option<Vec<(std::ops::Range<usize>, &'static str)>> {
+    let range = flag.range();
+    let end = range.start + xml[range.clone()].rfind("</")?;
+    let mut cursor = flag.first_child()?.range().start;
+    let mut edits = Vec::new();
+    while cursor < end {
+        let rest = &xml[cursor..end];
+        if rest.starts_with("<!--") {
+            cursor += rest.find("-->")? + 3;
+            continue;
+        }
+        if rest.starts_with("<?") {
+            cursor += rest.find("?>")? + 2;
+            continue;
+        }
+        let (text, decode_references) = if rest.starts_with("<![CDATA[") {
+            let start = cursor + 9;
+            let close = start + xml[start..end].find("]]>")?;
+            cursor = close + 3;
+            (start..close, false)
+        } else {
+            let start = cursor;
+            cursor += rest.find('<').unwrap_or(rest.len());
+            if cursor == start {
+                return None;
+            }
+            (start..cursor, true)
+        };
+        if let Some(range) = dimension_boolean_text_range(xml, text, decode_references) {
+            edits.push((range, if edits.is_empty() { replacement } else { "" }));
+        }
+    }
+    (!edits.is_empty()).then_some(edits)
+}
+
+struct DimensionBooleanEdit {
+    properties_range: std::ops::Range<usize>,
+    replacements: Vec<(std::ops::Range<usize>, &'static str)>,
+}
+
+// Read the original document so inherited namespace bindings remain authoritative.
+// Replace only the boolean text; markup and unrelated bytes stay unchanged.
+fn dimension_boolean_edit(
+    xml: &str,
+    element_range: std::ops::Range<usize>,
+    tag: &str,
+    field: &str,
+    value: bool,
+) -> Result<DimensionBooleanEdit, MetaDiagnostic> {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let refused =
+        || {
+            typed_diagnostic(
+        MetaDiagnosticCode::InvalidArguments,
+        format!("the dimension's {tag} must be one metadata element containing only true or false"),
+        Some(field),
+    )
+        };
+    let document = Document::parse(xml).map_err(|_| refused())?;
+    let element = document
+        .descendants()
+        .find(|node| node.is_element() && node.range() == element_range)
+        .ok_or_else(refused)?;
+    let properties = element
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+        .collect::<Vec<_>>();
+    let [properties] = properties.as_slice() else {
+        return Err(refused());
+    };
+    if properties.tag_name().namespace() != Some(MD) {
+        return Err(refused());
+    }
+    let flags = properties
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == tag)
+        .collect::<Vec<_>>();
+    let [flag] = flags.as_slice() else {
+        return Err(refused());
+    };
+    if flag.tag_name().namespace() != Some(MD) || flag.attributes().len() != 0 {
+        return Err(refused());
+    }
+    let current = crate::info::dimension_boolean_value(*flag).ok_or_else(refused)?;
+    let replacements = if current == value {
+        Vec::new()
+    } else {
+        let replacement = if value { "true" } else { "false" };
+        dimension_boolean_text_edits(xml, *flag, replacement).ok_or_else(refused)?
+    };
+    Ok(DimensionBooleanEdit {
+        properties_range: properties.range(),
+        replacements,
+    })
+}
+
 pub fn update_typed_element(
     xml_text: &mut String,
     collection: MetaCollection,
@@ -2067,21 +2222,50 @@ pub fn update_typed_element(
         ensure_typed_name_free(xml_text, tag, scope, new_name)?;
     }
     let node_xml = xml_text[range.clone()].to_string();
-    let properties_range = typed_properties_text_range(&node_xml).ok_or_else(|| {
-        typed_diagnostic(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata element has no Properties",
-            None,
-        )
-    })?;
+    let mut flag_properties_range = None;
+    let mut flag_edits = Vec::new();
+    for (tag, field, value) in [
+        ("Master", "master", update.master),
+        ("MainFilter", "mainFilter", update.main_filter),
+        (
+            "DenyIncompleteValues",
+            "denyIncompleteValues",
+            update.deny_incomplete_values,
+        ),
+    ] {
+        if let Some(value) = value {
+            let edit = dimension_boolean_edit(xml_text, range.clone(), tag, field, value)?;
+            flag_properties_range.get_or_insert(edit.properties_range);
+            flag_edits.extend(
+                edit.replacements
+                    .into_iter()
+                    .map(|(range, value)| (range, value.to_owned())),
+            );
+        }
+    }
+    let properties_range = flag_properties_range
+        .map(|properties| properties.start - range.start..properties.end - range.start)
+        .or_else(|| typed_properties_text_range(&node_xml))
+        .ok_or_else(|| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata element has no Properties",
+                None,
+            )
+        })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
     if let Some(value) = &update.type_reduction_mode {
-        if let Some((edit, token)) =
-            crate::dimension_reduction::edit(xml_text, range.clone(), value)?
-        {
-            let start = range.start + properties_range.start;
-            properties_text.replace_range(edit.start - start..edit.end - start, &token);
+        if let Some(edit) = crate::dimension_reduction::edit(xml_text, range.clone(), value)? {
+            flag_edits.push(edit);
         }
+    }
+    flag_edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let properties_start = range.start + properties_range.start;
+    for (range, value) in flag_edits {
+        properties_text.replace_range(
+            range.start - properties_start..range.end - properties_start,
+            &value,
+        );
     }
 
     if let Some(metadata_type) = &update.r#type {
@@ -2227,43 +2411,6 @@ pub fn update_typed_element(
                 Some("indexing"),
             )
         })?;
-    }
-    if let Some(deny) = update.deny_incomplete_values {
-        // 8.3.27 writes the flag on every dimension of these registers as
-        // `<DenyIncompleteValues>true|false</…>`; any other shape or value
-        // has no proven meaning to keep, so it is refused, not overwritten.
-        let refused = |message: &str| {
-            typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
-                message,
-                Some("denyIncompleteValues"),
-            )
-        };
-        let open = "<DenyIncompleteValues>";
-        let close = "</DenyIncompleteValues>";
-        let start = match properties_text.find(open) {
-            Some(start) => start + open.len(),
-            None if properties_text.contains("<DenyIncompleteValues") => {
-                return Err(refused(
-                    "the dimension's DenyIncompleteValues has a form other than an element with a boolean value",
-                ))
-            }
-            None => return Err(refused("the dimension has no DenyIncompleteValues to change")),
-        };
-        let end = start
-            + properties_text[start..]
-                .find(close)
-                .ok_or_else(|| refused("the dimension's DenyIncompleteValues is not closed"))?;
-        let current = properties_text[start..end].trim();
-        if !matches!(current, "true" | "false") {
-            return Err(refused(
-                "the dimension's DenyIncompleteValues holds a value other than true or false",
-            ));
-        }
-        let value = if deny { "true" } else { "false" };
-        if current != value {
-            properties_text.replace_range(start..end, value);
-        }
     }
     let mut updated_node = node_xml;
     updated_node.replace_range(properties_range, &properties_text);
