@@ -145,6 +145,20 @@
         "crates/unica-coder/src/infrastructure/native_operations/role.rs",
         "tests/ci/test_unica_skills.py"
       ]
+    },
+    {
+      "skill": "localization",
+      "notes": "Original Unica guidance for 1C localization, based on the vendor 8.3.27 Syntax Assistant and primary 1Ci localization standards. No donor prose was copied or adapted. Public write boundaries are checked against the current metadata and form contracts.",
+      "localPaths": [
+        "plugins/unica/skills/localization"
+      ],
+      "contractPaths": [
+        "plugins/unica/references/specs/1c-configuration-spec.md",
+        "crates/unica-source-designer/src/language.rs",
+        "crates/unica-metadata/src/contracts.rs",
+        "crates/unica-forms/src/contracts.rs",
+        "arch/rules/distribution/skill-example-addresses.md"
+      ]
     }
   ],
   "upstreams": [

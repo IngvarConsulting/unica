@@ -231,12 +231,25 @@ pub fn validate_metadata_8_3_27_boolean_contract(
         for property in properties.children().filter(roxmltree::Node::is_element) {
             let property_name = property.tag_name().name();
             if boolean_properties.contains(&property_name) {
-                validate_meta_8_3_27_boolean_property_value(
-                    context,
-                    object_type,
-                    property_name,
-                    property.text().unwrap_or(""),
-                )?;
+                let dimension_flag = object_type == "Dimension"
+                    && matches!(
+                        property_name,
+                        "Master" | "MainFilter" | "DenyIncompleteValues"
+                    );
+                if dimension_flag {
+                    if crate::info::dimension_boolean_value(property).is_none() {
+                        return Err(format!(
+                            "{context} property {object_type}.{property_name} is not a boolean text leaf"
+                        ));
+                    }
+                } else {
+                    validate_meta_8_3_27_boolean_property_value(
+                        context,
+                        object_type,
+                        property_name,
+                        property.text().unwrap_or(""),
+                    )?;
+                }
             }
         }
     }

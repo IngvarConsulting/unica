@@ -228,7 +228,7 @@
             "op": "props.set",
             "args": {
               "values": {
-                "CheckUnique": true
+                "Name": "ForbiddenRename"
               }
             }
           }
@@ -237,7 +237,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: apply operation `props.set` does not apply to DocumentNumerator `main:DocumentNumerator.A_String`; it applies at `main:Configuration`",
+      "refusal": "bad_value: unknown field `Name`",
       "fileAssertions": [
         {
           "kind": "sha256",
