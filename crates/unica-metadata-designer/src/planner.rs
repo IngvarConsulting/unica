@@ -1431,6 +1431,33 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::Sequence(value) => {
+            let invalid = |message: String| {
+                ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                    .at_path(at_path.clone())
+            };
+            let root_path = Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|e| ApplyPlanError::staging(e, at_path.clone()))?
+                .ok_or_else(|| invalid("configuration descriptor was not found".into()))?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|e| invalid(e.message))?;
+            if source_kind != SourceSetKind::Configuration
+                || root.version() != Some("2.20")
+                || !root.registers("Sequence", name)
+            {
+                return Err(invalid(
+                    "Sequence must be registered in a configuration with literal XML 2.20".into(),
+                ));
+            }
+            let text = crate::sequence_boundary::patch(&source, name, value).map_err(invalid)?;
+            (NodeKind::Sequence, text)
+        }
         DescriptorPropertyChanges::DocumentNumerator(changes) => {
             let invalid = |message: String| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)

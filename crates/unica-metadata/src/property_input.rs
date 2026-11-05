@@ -45,6 +45,7 @@ pub struct WsReferencePropertyChanges {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
+    Sequence(String),
     DocumentNumerator(crate::document_numerator::DocumentNumeratorChanges),
     Metadata(MetaPropertyChanges),
     FunctionalOption(FunctionalOptionPropertyChanges),
@@ -298,6 +299,16 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::Sequence => PropertiesIntent::Sequence(
+                    values_reader
+                        .enumerated(DescriptorProperty::MoveBoundaryOnPosting)?
+                        .ok_or_else(|| {
+                            invalid(
+                                format!("{values_path}.MoveBoundaryOnPosting"),
+                                "MoveBoundaryOnPosting is required",
+                            )
+                        })?,
+                ),
                 PropertiesSite::DocumentNumerator => {
                     use crate::document_numerator::DocumentNumeratorChanges;
                     PropertiesIntent::DocumentNumerator(DocumentNumeratorChanges {

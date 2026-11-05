@@ -44,6 +44,7 @@ properties_operations!(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertiesSite {
+    Sequence,
     Metadata(MetadataKind),
     DocumentNumerator,
     FunctionalOption,
@@ -98,6 +99,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::StyleItem => false,
                     PropertiesSite::WSReference => matches!(self, Self::LocationUrl),
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode),
+                    PropertiesSite::Sequence => matches!(self, Self::MoveBoundaryOnPosting),
                 }
             }
         }
@@ -111,6 +113,7 @@ macro_rules! descriptor_properties {
 // re-export of 8.3.27 resets a configuration's own
 // `ConfigurationExtensionCompatibilityMode`, so only an extension sets it.
 descriptor_properties!(
+    MoveBoundaryOnPosting => ("MoveBoundaryOnPosting", "moveBoundaryOnPosting", Enum, false, false, false, false),
     LocationUrl => ("LocationURL", "locationURL", String, false, false, false, false),
     Location => ("Location", "location", String, false, false, false, false),
     PrivilegedGetMode => ("PrivilegedGetMode", "privilegedGetMode", Boolean, false, false, false, false),
@@ -160,6 +163,9 @@ impl DescriptorProperty {
     /// The closed 8.3.27 value set of an enumerated property. A compatibility
     /// mode leaves out `DontUse`: the platform reads it back as another mode.
     pub fn allowed_values(self) -> &'static [&'static str] {
+        if self == Self::MoveBoundaryOnPosting {
+            return &["DontMove", "Move"];
+        }
         let values = crate::configuration::cf_validate_enum_allowed(self.names()[0]);
         match (self, values.split_first()) {
             (
@@ -179,7 +185,7 @@ impl PropertiesSite {
             return Self::root_of(site.source().kind());
         }
         let profile = Self::from_address(site.at())?;
-        if profile == Self::WSReference
+        if matches!(profile, Self::WSReference | Self::Sequence)
             && site.source().kind() != unica_source_contract::SourceSetKind::Configuration
         {
             return None;
@@ -219,6 +225,7 @@ impl PropertiesSite {
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::Sequence => Some(Self::Sequence),
             NodeKind::DocumentNumerator => Some(Self::DocumentNumerator),
             NodeKind::StyleItem => Some(Self::StyleItem),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
@@ -248,7 +255,8 @@ impl PropertiesSite {
                     crate::style_color::StyleItemColor::argument_schema(),
                 );
             }
-            Self::FunctionalOption
+            Self::Sequence
+            | Self::FunctionalOption
             | Self::WSReference
             | Self::Role
             | Self::Subsystem
@@ -295,6 +303,7 @@ impl PropertiesOperation {
             Self::Set => OperationContract {
                 schema: object(&[("values", site.values_schema())], &["values"]),
                 target: match site {
+                    PropertiesSite::Sequence => "An existing registered Sequence in a configuration source set, platform XML 2.20. Only its existing MoveBoundaryOnPosting property can change.",
                     PropertiesSite::WSReference => "An existing registered WSReference in a configuration source set, platform XML 2.20. Only its existing LocationURL property can change.",
                     PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
@@ -308,6 +317,7 @@ impl PropertiesOperation {
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
+                    PropertiesSite::Sequence => json!({"values":{"MoveBoundaryOnPosting":"Move"}}),
                     PropertiesSite::DocumentNumerator => json!({"values":{"NumberLength":12,"CheckUnique":true}}),
                     PropertiesSite::WSReference => json!({"values":{"LocationURL":"https://example.invalid/service?wsdl"}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
@@ -316,7 +326,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::FunctionalOption | PropertiesSite::WSReference | PropertiesSite::StyleItem => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::Metadata(_) | PropertiesSite::DocumentNumerator | PropertiesSite::FunctionalOption | PropertiesSite::WSReference | PropertiesSite::StyleItem | PropertiesSite::Sequence => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -392,6 +402,54 @@ mod tests {
         ] {
             assert!(!oracle.is_valid(&json!({"values":values})), "{values}");
         }
+    }
+
+    #[test]
+    fn sequence_boundary_has_a_closed_existing_descriptor_contract() {
+        let at = QualifiedAddress::parse("main:Sequence.Sales").unwrap();
+        let site = PropertiesSite::from_address(&at).expect("Sequence property profile");
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        for value in ["DontMove", "Move"] {
+            let args = json!({"values":{"MoveBoundaryOnPosting":value}});
+            assert!(oracle.is_valid(&args));
+            crate::property_input::decode_properties(PropertiesOperation::Set, site, &args, "args")
+                .unwrap();
+        }
+        for values in [
+            json!({}),
+            json!({"MoveBoundaryOnPosting":"Unknown"}),
+            json!({"MoveBoundaryOnPosting":true}),
+            json!({"MoveBoundaryOnPosting":null}),
+            json!({"Name":"Other"}),
+            json!({"Documents":[]}),
+            json!({"MoveBoundaryOnPosting":"Move", "moveBoundaryOnPosting":"DontMove"}),
+        ] {
+            let args = json!({"values":values});
+            assert!(!oracle.is_valid(&args), "{args}");
+            assert!(
+                crate::property_input::decode_properties(
+                    PropertiesOperation::Set,
+                    site,
+                    &args,
+                    "args"
+                )
+                .is_err(),
+                "{args}"
+            );
+        }
+        let document =
+            PropertiesSite::from_address(&QualifiedAddress::parse("main:Document.Sales").unwrap())
+                .unwrap();
+        assert!(
+            !jsonschema::validator_for(&PropertiesOperation::Set.contract(document).schema)
+                .unwrap()
+                .is_valid(&json!({"values":{"MoveBoundaryOnPosting":"Move"}}))
+        );
+        assert!(PropertiesSite::from_address(
+            &QualifiedAddress::parse("main:Sequence.Sales.Dimension.Company").unwrap()
+        )
+        .is_none());
     }
 
     #[test]

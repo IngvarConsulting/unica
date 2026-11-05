@@ -1,0 +1,1 @@
+﻿// Sequence manager companion.
