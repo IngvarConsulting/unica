@@ -520,10 +520,15 @@ mod tests {
         let properties = schema["properties"]["values"]["properties"]
             .as_object()
             .unwrap();
-        assert_eq!(properties.keys().collect::<Vec<_>>(), vec!["LanguageCode"]);
+        let mut names = properties.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, ["Comment", "LanguageCode", "comment"]);
         assert_eq!(properties["LanguageCode"]["type"], "string");
         for code in ["de", "zz", "en-US"] {
-            assert!(decode(site, serde_json::json!({"values":{"LanguageCode":code}})).is_ok());
+            assert!(matches!(
+                decode(site, serde_json::json!({"values":{"LanguageCode":code}})),
+                Ok(PropertiesIntent::LanguageCode { comment: None, .. })
+            ));
         }
         for value in [
             serde_json::json!(""),
@@ -532,11 +537,44 @@ mod tests {
         ] {
             assert!(decode(site, serde_json::json!({"values":{"LanguageCode":value}})).is_err());
         }
-        assert!(decode(
-            site,
-            serde_json::json!({"values":{"Comment":"not this profile"}})
-        )
-        .is_err());
+        assert!(matches!(
+            decode(site, serde_json::json!({"values":{"comment":"Назначение"}})),
+            Ok(PropertiesIntent::CommentOnly { kind: unica_address::address::NodeKind::Language, comment })
+                if comment == "Назначение"
+        ));
+        assert!(matches!(
+            decode(site, serde_json::json!({"values":{"Comment":"","LanguageCode":"de"}})),
+            Ok(PropertiesIntent::LanguageCode { code, comment: Some(comment) })
+                if code == "de" && comment.is_empty()
+        ));
+        for values in [
+            serde_json::json!({"Comment":"A","comment":"A"}),
+            serde_json::json!({"Comment":null}),
+            serde_json::json!({"Synonym":"Label"}),
+            serde_json::json!({}),
+        ] {
+            assert!(
+                decode(site, serde_json::json!({"values":values})).is_err(),
+                "{values}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_extension_language_refuses_language_code_with_the_main_configuration_reason() {
+        let site = PropertiesSite::CommentOnly(unica_address::address::NodeKind::Language);
+        let error = decode(site, serde_json::json!({"values":{"LanguageCode":"de"}}))
+            .expect_err("an adopted language has no LanguageCode write");
+        assert_eq!(error.path, "ops[7].args.values.LanguageCode");
+        assert!(
+            error.message.contains("set in the main configuration"),
+            "{}",
+            error.message
+        );
+        assert!(matches!(
+            decode(site, serde_json::json!({"values":{"Comment":"x"}})),
+            Ok(PropertiesIntent::CommentOnly { .. })
+        ));
     }
 
     #[test]

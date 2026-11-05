@@ -654,6 +654,13 @@ mod tests {
             };
             let site = PropertiesSite::from_address(&QualifiedAddress::parse(&at).unwrap())
                 .unwrap_or_else(|| panic!("missing comment profile for {at}"));
+            // A configuration's own language also changes LanguageCode; an
+            // extension's adopted language keeps the Comment-only profile.
+            let site = if site == PropertiesSite::Language {
+                PropertiesSite::CommentOnly(NodeKind::Language)
+            } else {
+                site
+            };
             let schema = PropertiesOperation::Set.contract(site).schema;
             let properties = schema["properties"]["values"]["properties"]
                 .as_object()

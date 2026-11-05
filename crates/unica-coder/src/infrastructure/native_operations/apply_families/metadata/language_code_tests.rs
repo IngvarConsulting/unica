@@ -172,3 +172,78 @@ fn language_code_refuses_default_conflict_or_unregistered_owner() {
             .contains("DefaultLanguage")
     );
 }
+
+#[test]
+fn language_comment_and_code_change_together_and_comment_alone_keeps_the_code() {
+    let fixture = make_fixture(&[]);
+    let before = String::from_utf8(
+        std::fs::read(fixture.binding.source_root().join("Languages/English.xml")).unwrap(),
+    )
+    .unwrap();
+    let mut staged = plan_all(
+        &fixture,
+        &[(
+            "props.set",
+            json!({"at":"main:Language.English","values":{"Comment":"Второй язык","LanguageCode":"de"}}),
+        )],
+    )
+    .unwrap();
+    validate(&mut staged).unwrap();
+    assert_eq!(
+        staged_texts(&staged)[Path::new("Languages/English.xml")],
+        before
+            .replace("<Comment/>", "<Comment>Второй язык</Comment>")
+            .replace("<LanguageCode>en</LanguageCode>", "<LanguageCode>de</LanguageCode>")
+    );
+    // The default language changes its Comment too; only its code is fixed.
+    let staged = plan_all(
+        &fixture,
+        &[(
+            "props.set",
+            json!({"at":"main:Language.Русский","values":{"comment":"Основной"}}),
+        )],
+    )
+    .unwrap();
+    let russian = &staged_texts(&staged)[Path::new("Languages/Русский.xml")];
+    assert!(russian.contains("<Comment>Основной</Comment>"), "{russian}");
+    assert!(russian.contains("<LanguageCode>ru</LanguageCode>"), "{russian}");
+}
+
+#[test]
+fn an_extension_language_changes_only_comment_and_names_the_main_configuration() {
+    let configuration = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration uuid="99999999-9999-4999-8999-999999999999"><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>Ext</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose><NamePrefix>Ext_</NamePrefix><DefaultLanguage>Language.English</DefaultLanguage></Properties><ChildObjects><Language>English</Language></ChildObjects></Configuration></MetaDataObject>"#;
+    let language = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Language uuid="33333333-3333-4333-8333-333333333333"><InternalInfo/><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>English</Name><Comment/><ExtendedConfigurationObject>44444444-4444-4444-8444-444444444444</ExtendedConfigurationObject><LanguageCode>en</LanguageCode></Properties></Language></MetaDataObject>"#;
+    let fixture = MetadataFixture::with_kind_and_files(
+        SourceSetKind::Extension,
+        &[
+            ("Configuration.xml", configuration),
+            ("Languages/English.xml", language),
+        ],
+    );
+    let error = parse_metadata_plan_operation(
+        "props.set",
+        &json!({"at":"main:Language.English","values":{"LanguageCode":"de"}}),
+        0,
+        &fixture.binding,
+    )
+    .map(|_| ())
+    .expect_err("an adopted language has no LanguageCode write");
+    assert_eq!(error.path(), Some("ops[0].args.values.LanguageCode"));
+    assert!(
+        error.to_string().contains("set in the main configuration"),
+        "{}",
+        error
+    );
+    let staged = plan_all(
+        &fixture,
+        &[(
+            "props.set",
+            json!({"at":"main:Language.English","values":{"Comment":"Расширение"}}),
+        )],
+    )
+    .unwrap();
+    assert_eq!(
+        staged_texts(&staged)[Path::new("Languages/English.xml")],
+        language.replace("<Comment/>", "<Comment>Расширение</Comment>")
+    );
+}

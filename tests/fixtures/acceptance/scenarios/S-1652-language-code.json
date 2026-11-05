@@ -115,7 +115,11 @@
           "eq": "string"
         },
         {
-          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment",
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Synonym",
           "absent": true
         }
       ]

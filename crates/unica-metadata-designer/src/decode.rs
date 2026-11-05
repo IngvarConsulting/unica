@@ -92,7 +92,10 @@ pub enum DescriptorPropertyChanges {
         code: String,
         comment: Option<String>,
     },
-    CommentOnly { kind: NodeKind, comment: String },
+    CommentOnly {
+        kind: NodeKind,
+        comment: String,
+    },
     DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
     StyleItem(unica_metadata::property_input::StyleItemPropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
