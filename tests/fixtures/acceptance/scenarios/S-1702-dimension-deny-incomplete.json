@@ -2,7 +2,7 @@
   "id": "S-1702-dimension-deny-incomplete",
   "issue": 1702,
   "area": "Реквизиты и состав",
-  "task": "Включить и выключить запрет пустых значений у измерений регистров накопления, бухгалтерии и расчёта, проверить XML и побайтовый возврат, отклонить неверный тип, ресурс и отсутствующее измерение без записи",
+  "task": "Включить и выключить запрет пустых значений у измерений регистров сведений, накопления, бухгалтерии и расчёта, проверить XML и побайтовый возврат, отклонить неверный тип, ресурс и отсутствующее измерение без записи",
   "workspace": "tests/fixtures/acceptance/workspace-register-dimensions",
   "wire": [
     {
@@ -534,8 +534,8 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/props/contract/argsSchema/properties/values/properties/denyIncompleteValues",
-          "absent": true
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/denyIncompleteValues/type",
+          "eq": "boolean"
         }
       ]
     },
@@ -570,9 +570,67 @@
         ]
       },
       "expect": [
-        "refused"
+        "ok"
       ],
-      "refusal": "bad_value: denyIncompleteValues is available for dimensions of accumulation, accounting and calculation registers",
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.ir0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/denyIncompleteValues",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "denyIncompleteValues": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
       "fileAssertions": [
         {
           "path": "src/InformationRegisters/Цены.xml",

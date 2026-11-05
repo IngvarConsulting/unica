@@ -180,7 +180,7 @@ pub(crate) struct CfInfoExecution {
 }
 
 #[cfg(test)]
-mod metadata_kind_consumer_tests {
+mod medium_metadata_kind_consumer_tests {
     use super::*;
     use std::collections::HashSet;
 
@@ -511,7 +511,7 @@ fn cf_edit_transaction_error(error: String) -> String {
 }
 
 #[cfg(test)]
-pub(crate) mod cf_edit_transaction_tests {
+pub(crate) mod medium_cf_edit_transaction_tests {
     use super::*;
     use crate::application::UnicaApplication;
     use unica_workspace::compile_transaction::{with_commit_failpoint, CommitFailpoint};
@@ -1312,7 +1312,7 @@ pub(crate) fn invoke_mutation(
 }
 
 #[cfg(test)]
-pub(super) mod cf_read_selector_bridge_tests {
+pub(super) mod medium_cf_read_selector_bridge_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 

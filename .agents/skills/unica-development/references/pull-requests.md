@@ -69,7 +69,8 @@
   Если изменение снимает или переименовывает `#[test]`, объявите это строками
   `Removes-test:` в описании PR и проверьте до push:
   `python3.12 scripts/ci/removed_tests.py --base origin/main --description-file <описание>`
-  (нужен Python 3.11+).
+  (нужен Python 3.11+; на Windows — по
+  [командам на разных ОС](../SKILL.md#команды-на-разных-ос)).
   Остальные проверки до push выбирайте по
   [unica-testing](../../unica-testing/SKILL.md#что-запускать).
 - Подготовленный коммит проходит проверки и ревью по

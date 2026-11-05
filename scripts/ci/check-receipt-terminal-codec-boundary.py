@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import posixpath
 import re
 import sys
 from pathlib import Path, PurePosixPath
@@ -229,6 +230,7 @@ def _delimiter_range(masked: str, opening: int) -> tuple[int, int]:
 
 TEST_FILE_MODULE = re.compile(
     rf"(?m)^[ \t]*#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\][ \t]*\r?\n"
+    rf"(?:[ \t]*#\s*\[\s*path\s*=([^\]\r\n]+)\][ \t]*\r?\n)?"
     rf"[ \t]*(?:pub(?:\s*\([^)]*\))?[ \t]+)?mod[ \t]+({RUST_IDENTIFIER})[ \t]*;"
 )
 
@@ -238,16 +240,28 @@ TEST_FILE_MODULE = re.compile(
 _TEST_ONLY_FILES: set[PurePosixPath] = set()
 
 
-def _child_module_path(parent: PurePosixPath, name: str) -> PurePosixPath:
+def _child_module_path(parent: PurePosixPath, name: str, attribute: str | None = None) -> PurePosixPath:
+    if attribute is not None:
+        # `#[path]` on a file-level declaration is relative to the declaring file's directory.
+        return PurePosixPath(posixpath.normpath((parent.parent / attribute).as_posix()))
     directory = parent.parent if parent.name in ("mod.rs", "lib.rs", "main.rs") else parent.with_suffix("")
     return directory / f"{name}.rs"
 
 
-def _collect_test_only_files(sources: dict[PurePosixPath, str]) -> set[PurePosixPath]:
+def _collect_test_only_files(
+    sources: dict[PurePosixPath, str], originals: dict[PurePosixPath, str]
+) -> set[PurePosixPath]:
     found: set[PurePosixPath] = set()
     for path, source in sources.items():
         for match in TEST_FILE_MODULE.finditer(source):
-            child = _child_module_path(path, match.group(1))
+            # The masked text blanks the `#[path]` literal; offsets are preserved.
+            attribute = None
+            if match.start(1) >= 0:
+                literal = originals[path][match.start(1):match.end(1)].strip()
+                if not (len(literal) >= 2 and literal[0] == literal[-1] == '"'):
+                    continue
+                attribute = literal[1:-1]
+            child = _child_module_path(path, match.group(2), attribute)
             if child in sources:
                 found.add(child)
     return found
@@ -549,7 +563,7 @@ def check_root(root: Path) -> list[str]:
     # производственный файл тестовым и снимать с него проверки хранилища.
     masked_sources = {path: _mask_non_code(source) for path, source in sources.items()}
     _TEST_ONLY_FILES.clear()
-    _TEST_ONLY_FILES.update(_collect_test_only_files(masked_sources))
+    _TEST_ONLY_FILES.update(_collect_test_only_files(masked_sources, sources))
     diagnostics: list[str] = []
     for required_path in REQUIRED_PATHS:
         if required_path not in sources:

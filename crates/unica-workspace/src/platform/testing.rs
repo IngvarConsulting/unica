@@ -495,7 +495,7 @@ pub fn clear_execute_permission_for_test(_path: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         classify_file_link_fixture_result, create_file_link_fixture_for_test,
         file_identity_for_test, path_identity_for_test, set_unix_mode_for_test, unix_mode_for_test,
@@ -542,10 +542,20 @@ mod tests {
                 assert_eq!(fs::read_link(&target).unwrap(), source);
             }
             FileLinkFixtureOutcome::Unsupported => {
-                eprintln!("[SKIPPED FIXTURE] file links are unsupported on this host");
+                fs::remove_dir_all(&root).unwrap();
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "file links are unsupported on this host",
+                );
+                return;
             }
             FileLinkFixtureOutcome::WindowsPrivilegeUnavailable => {
-                eprintln!("[SKIPPED FIXTURE] Windows file-link privilege is unavailable");
+                fs::remove_dir_all(&root).unwrap();
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "Windows file-link privilege is unavailable",
+                );
+                return;
             }
         }
         fs::remove_dir_all(root).unwrap();
@@ -559,13 +569,15 @@ mod tests {
         fs::write(&source, b"source").unwrap();
         fs::hard_link(&source, &alias).unwrap();
 
-        let source_identity = file_identity_for_test(&source).unwrap();
-        let alias_identity = file_identity_for_test(&alias).unwrap();
+        let source_identity = file_identity_for_test(&source)
+            .unwrap()
+            .expect("supported platform must expose file identity");
+        let alias_identity = file_identity_for_test(&alias)
+            .unwrap()
+            .expect("supported platform must expose file identity");
 
         assert_eq!(source_identity, alias_identity);
-        if let Some(identity) = source_identity {
-            assert!(identity.contains("links=2"), "{identity}");
-        }
+        assert!(source_identity.contains("links=2"), "{source_identity}");
         fs::remove_dir_all(root).unwrap();
     }
 
