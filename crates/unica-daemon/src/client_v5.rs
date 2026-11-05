@@ -1174,7 +1174,7 @@ fn existing_endpoint_probe_deadline(outer_deadline: Instant) -> Result<Instant, 
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use std::io::{BufRead, Read};
     use std::net::{Ipv4Addr, Shutdown, TcpListener};

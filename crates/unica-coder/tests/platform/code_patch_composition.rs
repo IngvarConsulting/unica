@@ -1956,6 +1956,43 @@ fn staged_addressed_method_body_preserves_signature_neighbors_and_repeat() {
 }
 
 #[test]
+fn method_replacement_owns_supplied_documentation_and_repeats_without_duplicates() {
+    for eol in ["\n", "\r\n"] {
+        for bom in ["", "\u{feff}"] {
+            for (old, supplied, expected_doc) in [
+                ("// Old.\n// Old.\n", "// New.\n", "// New.\n"),
+                ("// Same.\n// Same.\n", "// Same.\n", "// Same.\n"),
+                ("", "// New.\n", "// New.\n"),
+                ("// Keep.\n", "", "// Keep.\n"),
+            ] {
+                let prefix =
+                    format!("{bom}// Module comment.\n\n#Region Methods\n#If Server Then\n");
+                let suffix =
+                    "#EndIf\n#EndRegion\n\n// Neighbor doc.\nProcedure Neighbor()\nEndProcedure\n";
+                let before = format!("{prefix}{old}&AtServer\nProcedure Base()\n    Value = 1;\nEndProcedure\n{suffix}").replace('\n', eol);
+                let input = format!(
+                    "{supplied}&AtServer\nProcedure Base()\n    Value = 2;\nEndProcedure\n"
+                );
+                let expected = format!("{prefix}{expected_doc}&AtServer\nProcedure Base()\n    Value = 2;\nEndProcedure\n{suffix}").replace('\n', eol);
+                let operation = CodePlanOperation::Replace(CodeReplaceArgs {
+                    at: unica_address::address::QualifiedAddress::parse(
+                        "main:CommonModule.Sample.Method.Base",
+                    )
+                    .unwrap(),
+                    anchor: None,
+                    text: input,
+                });
+                let post = plan_code_postimage(before.as_bytes(), &operation, 0).unwrap();
+                assert_eq!(post.after, expected.as_bytes());
+                let repeat = plan_code_postimage(&post.after, &operation, 0).unwrap();
+                assert!(repeat.no_op);
+                assert_eq!(repeat.after, post.after);
+            }
+        }
+    }
+}
+
+#[test]
 fn method_body_text_read_by_view_replaces_the_same_span_and_repeats_as_noop() {
     // `view …Method.Base.Body` отдаёт комментарий, директиву, объявление,
     // тело и окончание; тот же текст с правкой заменяет ровно этот участок.
@@ -3502,6 +3539,28 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
     }
     replaced_root.cleanup();
 
+    let generated = staged_code_fixture("guards-generated", b"Procedure Base()\nEndProcedure\n");
+    let mut staged = staged_code_admission(&generated, true)
+        .staged_state()
+        .unwrap();
+    assert_eq!(
+        staged
+            .read(Path::new(".build/unica/foreign"))
+            .unwrap_err()
+            .kind(),
+        ApplyStagingErrorKind::ContainmentIdentity
+    );
+    generated.cleanup();
+}
+
+#[test]
+fn staged_code_rejects_module_link() {
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
+        "Procedure Added()\nEndProcedure",
+        None,
+        None,
+    )];
     let linked = staged_code_fixture("guards-link", b"Procedure Base()\nEndProcedure\n");
     let link_admission = staged_code_admission(&linked, true);
     let module = linked.source.join("CommonModules/Sample/Ext/Module.bsl");
@@ -3509,7 +3568,16 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
         .source
         .join("CommonModules/Sample/Ext/RealModule.bsl");
     fs::rename(&module, &real).unwrap();
-    if create_file_link_fixture_for_test(&real, &module).unwrap() == FileLinkFixtureOutcome::Created
+    if !(create_file_link_fixture_for_test(&real, &module).unwrap()
+        == FileLinkFixtureOutcome::Created)
+    {
+        linked.cleanup();
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "staged code fixture needs file links",
+        );
+        return;
+    }
     {
         let error = plan_admitted_code(&link_admission, &linked.binding, &operation).unwrap_err();
         assert!(
@@ -3524,15 +3592,32 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
         );
     }
     linked.cleanup();
+}
 
+#[test]
+fn staged_code_rejects_support_marker_link() {
+    let operation = [staged_insert(
+        "main:CommonModule.Sample",
+        "Procedure Added()\nEndProcedure",
+        None,
+        None,
+    )];
     let linked_support =
         staged_code_fixture("guards-support-link", b"Procedure Base()\nEndProcedure\n");
     let support_admission = staged_code_admission(&linked_support, true);
     let real_support = linked_support.root.join("retained-support-marker.bin");
     fs::write(&real_support, b"short marker").unwrap();
     let support_marker = linked_support.source.join("Ext/ParentConfigurations.bin");
-    if create_file_link_fixture_for_test(&real_support, &support_marker).unwrap()
-        == FileLinkFixtureOutcome::Created
+    if !(create_file_link_fixture_for_test(&real_support, &support_marker).unwrap()
+        == FileLinkFixtureOutcome::Created)
+    {
+        linked_support.cleanup();
+        unica_process::test_support::skip_without_host_capability(
+            unica_process::test_support::HostCapability::Symlink,
+            "staged code fixture needs file links",
+        );
+        return;
+    }
     {
         let error = plan_admitted_code(&support_admission, &linked_support.binding, &operation)
             .unwrap_err();
@@ -3549,19 +3634,6 @@ fn staged_code_preserves_module_owner_support_format_and_preimage_guards() {
         assert!(!linked_support.root.join(".build/unica/state.json").exists());
     }
     linked_support.cleanup();
-
-    let generated = staged_code_fixture("guards-generated", b"Procedure Base()\nEndProcedure\n");
-    let mut staged = staged_code_admission(&generated, true)
-        .staged_state()
-        .unwrap();
-    assert_eq!(
-        staged
-            .read(Path::new(".build/unica/foreign"))
-            .unwrap_err()
-            .kind(),
-        ApplyStagingErrorKind::ContainmentIdentity
-    );
-    generated.cleanup();
 }
 
 #[test]
