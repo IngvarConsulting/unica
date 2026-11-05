@@ -5742,10 +5742,10 @@ pub(super) fn preflight_apply_operations_observed(
             && (!descriptor
                 .observation_type()
                 .is::<unica_forms::FormObservation>()
-                || descriptor.admits_context(&|_| {
-                    form_observation(operation.at())
-                        .map(|value| Box::new(value) as Box<dyn std::any::Any>)
-                }))
+                || descriptor.applies_with_observations(
+                    &site,
+                    &crate::domain::apply::observation_lookup(template_format, form_observation),
+                ))
         {
             continue;
         }
