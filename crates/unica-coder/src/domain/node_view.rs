@@ -284,6 +284,7 @@ mod tests {
     };
     use serde_json::{json, Map};
 
+    /// rule: CTR.SOURCE.LOGICAL-NODE-VIEW-SHAPE
     #[test]
     fn node_view_has_exactly_seven_common_slots_and_omits_empty_optional_slots() {
         let view = NodeView::new(
@@ -315,6 +316,7 @@ mod tests {
         }
     }
 
+    /// rule: CTR.SOURCE.LOGICAL-NODE-VIEW-SHAPE
     #[test]
     fn only_a_collection_adds_items_and_data_rows_do_not_gain_addresses() {
         let data = NodeViewData::Collection(CollectionView::new(

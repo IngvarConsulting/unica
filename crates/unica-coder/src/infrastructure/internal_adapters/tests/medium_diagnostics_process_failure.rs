@@ -48,6 +48,7 @@ impl ProcessRunner for FloodRunner {
     }
 }
 
+/// rule: INV.ANALYSIS.ANALYZER-PROCESS-FAILURE
 #[test]
 fn invalid_jsonl_does_not_stop_draining_owned_process_pipes() {
     if let Some(marker) = std::env::var_os(CHILD_MARKER) {

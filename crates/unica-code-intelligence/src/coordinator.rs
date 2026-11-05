@@ -1052,6 +1052,7 @@ mod tests {
         })
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn coordinator_preserves_the_replaceable_provider_identity_for_a_role() {
         let provider = Arc::new(StaticProvider {
@@ -1147,6 +1148,7 @@ mod tests {
         assert_eq!(failed.errors.len(), 3);
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn malformed_provider_subset_remains_useful_without_claiming_complete_coverage() {
         let section = ProviderSearchSection::partial(
@@ -1203,6 +1205,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn coordinator_preserves_provider_local_ranks_and_limit_claim() {
         let hits = (0..2).map(test_hit).collect();
@@ -1522,16 +1525,19 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
     #[test]
     fn search_executes_all_workers_past_the_former_provider_quota() {
         exercise_calls_past_provider_quota(false);
     }
 
+    /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
     #[test]
     fn read_executes_all_workers_past_the_former_provider_quota() {
         exercise_calls_past_provider_quota(true);
     }
 
+    /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
     #[test]
     fn coordinator_enforces_budget_when_provider_ignores_deadline_and_cancellation() {
         let lifecycle = Arc::new(ProviderWorkerLifecycle::new());
@@ -1678,6 +1684,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
     #[test]
     fn read_coordinator_enforces_deadline_for_non_cooperative_provider() {
         let lifecycle = Arc::new(ProviderWorkerLifecycle::new());

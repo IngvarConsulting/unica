@@ -151,6 +151,7 @@ impl ProviderDeadline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn provider_absence_is_distinct_from_expired_and_contracts_with_finite_deadlines() {
         let absent = ProviderDeadline::no_deadline();
@@ -172,6 +173,7 @@ mod tests {
         assert_eq!(absent.earlier(absent), absent);
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn provider_finite_extreme_budgets_preserve_remaining_without_instant_overflow() {
         static OBSERVED: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
@@ -189,6 +191,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn provider_relative_equality_compares_the_same_endpoint_with_different_starts() {
         let start = Instant::now();
