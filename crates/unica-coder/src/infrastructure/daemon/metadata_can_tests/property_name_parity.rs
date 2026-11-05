@@ -121,6 +121,7 @@ fn assert_read_profile(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture
     );
 }
 
+/// rule: INV.SOURCE.STRUCTURED-PROPERTY-NAMES
 #[test]
 fn dcs_and_xdto_final_props_have_explicit_roles_and_match_corresponding_can() {
     let fixture = Fixture::new("workspace-structured-property-names");
@@ -201,6 +202,7 @@ fn dcs_and_xdto_final_props_have_explicit_roles_and_match_corresponding_can() {
     );
 }
 
+/// rule: INV.SOURCE.STRUCTURED-PROPERTY-NAMES
 #[test]
 fn profile_guard_detects_unknown_props_changed_operands_and_wrong_anonymous_context() {
     let fixture = Fixture::new("workspace-structured-property-names");

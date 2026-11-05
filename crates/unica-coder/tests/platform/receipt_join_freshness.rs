@@ -36,6 +36,7 @@ mod tests {
         SystemTime::now() + TIMESTAMP_MARGIN + Duration::from_secs(1)
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn unchanged_sources_allow_the_join() {
         let root = workspace();
@@ -45,6 +46,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_file_edited_after_the_walk_started_forbids_the_join() {
         let root = workspace();
@@ -59,6 +61,7 @@ mod tests {
         assert!(!sources_unchanged_since(&hint(&root), since));
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_file_edited_within_the_margin_before_the_walk_forbids_the_join() {
         let root = workspace();
@@ -73,6 +76,7 @@ mod tests {
         assert!(!sources_unchanged_since(&hint(&root), since));
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn an_edited_project_file_forbids_the_join() {
         let root = workspace();

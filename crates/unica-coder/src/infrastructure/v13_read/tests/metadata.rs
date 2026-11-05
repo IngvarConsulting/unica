@@ -35,6 +35,7 @@ fn metadata_kind_branch_lists_registered_objects_with_canonical_addresses() {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn metadata_node_props_carry_the_observed_object_properties() {
     let fixture = RealReaderFixture::new();
@@ -810,6 +811,7 @@ fn metadata_attribute_fill_value_is_a_bounded_observed_fact() {
     }
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
     let fixture = RealReaderFixture::new();
@@ -984,6 +986,7 @@ fn an_unreadable_http_template_is_named_rather_than_reported_absent() {
     );
 }
 
+/// rule: INV.SOURCE.SERVICE-SEQUENCES-ARE-BRANCHES
 #[test]
 fn declared_service_kinds_finally_get_their_subject() {
     let fixture = RealReaderFixture::new();
@@ -1051,6 +1054,7 @@ fn declared_service_kinds_finally_get_their_subject() {
     );
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn every_reference_of_an_object_answers_in_one_relation_branch() {
     let fixture = RealReaderFixture::new();
@@ -1155,6 +1159,7 @@ fn every_reference_of_an_object_answers_in_one_relation_branch() {
     assert_eq!(refusal_codes(&inward), ["not_found"]);
 }
 
+/// rule: INV.SOURCE.DECLARATION-BRANCHES-FOLLOW-THE-NAME
 #[test]
 fn root_declarations_get_branches_and_only_the_named_one_is_addressable() {
     let fixture = RealReaderFixture::new();
@@ -1206,6 +1211,7 @@ fn root_declarations_get_branches_and_only_the_named_one_is_addressable() {
     assert_eq!(refusal_codes(&named), ["not_found"]);
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_beyond_first_page_answer_by_address() {
     let fixture = predefined_page_fixture();
@@ -1242,6 +1248,7 @@ fn predefined_items_beyond_first_page_answer_by_address() {
     assert_eq!(refusal_codes(&missing), ["not_found"]);
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_pages_preserve_complete_document_order() {
     let fixture = predefined_page_fixture();
@@ -1331,6 +1338,7 @@ fn predefined_page_fixture() -> RealReaderFixture {
     fixture
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
     let fixture = RealReaderFixture::new();
@@ -1382,6 +1390,7 @@ fn predefined_items_empty_inapplicable_and_unreadable_are_distinct() {
     assert!(unreadable.cursor.is_none());
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_cursor_replays_after_source_removal() {
     let fixture = predefined_page_fixture();
@@ -1413,6 +1422,7 @@ fn predefined_items_cursor_replays_after_source_removal() {
     assert_eq!(fresh.data.unwrap()["items"], json!([]));
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_refuse_the_snapshot_budget_and_read_a_large_file_whole() {
     let fixture = predefined_page_fixture();
@@ -1438,6 +1448,7 @@ fn predefined_items_refuse_the_snapshot_budget_and_read_a_large_file_whole() {
     assert!(result.ok);
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_checkpoint_preserves_cancellation_and_deadline() {
     use unica_metadata::MetadataKind;
@@ -1475,6 +1486,7 @@ fn predefined_items_checkpoint_preserves_cancellation_and_deadline() {
     }
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_other_owner_fields_survive_addressed_reads() {
     use unica_metadata::{MetadataType, MetadataTypeVariant};
@@ -1583,6 +1595,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
     );
 }
 
+/// rule: INV.SOURCE.PREDEFINED-ITEMS-ANSWER-BY-ADDRESS
 #[test]
 fn predefined_items_answer_by_address_with_the_count_from_the_reader() {
     let fixture = RealReaderFixture::new();

@@ -1,8 +1,5 @@
 ---
 id: INV.APP.PROCESS-CLEANUP-ONCE
-check:
-  - crates/unica-process/src/runtime_job.rs::system_process_drop_uses_no_second_window_after_cleanup_deadline_is_consumed
-  - crates/unica-process/src/runtime_job.rs::external_cancel_error_binds_system_drop_to_the_same_cleanup_deadline
 ---
 
 # Освобождение объекта процесса не начинает очистку заново

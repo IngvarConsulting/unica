@@ -1,22 +1,5 @@
 ---
 id: INV.APP.LITERAL-SEARCH
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_search_engines_agree_on_matches_order_and_addresses
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_module_scope_searches_only_the_selected_module_with_either_engine
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_search_reads_submodules_and_embedded_repositories
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::git_first_page_continues_by_the_walk_to_the_last_match
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::walk_literal_continuation_resumes_at_its_file
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::walk_pages_end_by_time_and_continue_without_loss
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_search_skips_publication_artifacts_and_names_an_unreadable_entry
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_search_ignores_the_retired_git_grep_timeout_key
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::first_literal_page_counts_the_whole_corpus_by_kind_and_module
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_volume_names_twenty_leading_modules_and_counts_the_rest
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::literal_volume_counts_uncovered_files_past_the_page_apart_from_its_coverage
-  - crates/unica-coder/src/infrastructure/daemon/v13_service.rs::cancelled_literal_search_answers_no_volume
-  - crates/unica-coder/tests/v13_search_integration.rs::literal_search_pages_past_two_hundred_matches_without_loss
-  - crates/unica-coder/tests/v13_search_integration.rs::canonical_search_is_source_scoped_and_rejects_legacy_call_shape
-  - crates/unica-coder/tests/v13_search_integration.rs::text_search_keeps_nested_module_order_across_pages
-  - crates/unica-navigation/src/result_store.rs::search_next_answer_rebinds_only_the_answer_and_replays_its_token
 ---
 
 # Буквальный поиск без роли доходит до последнего совпадения
