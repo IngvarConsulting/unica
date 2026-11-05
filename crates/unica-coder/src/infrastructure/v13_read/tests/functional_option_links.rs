@@ -59,6 +59,8 @@ fn install(f: &RealReaderFixture, kind: &str, name: &str, properties: &str) -> P
     );
     path
 }
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn functional_option_links_preserve_all_thirteen_declarations_and_target_kinds() {
     for (kind, name, refs, role) in [
@@ -100,6 +102,7 @@ fn functional_option_links_preserve_all_thirteen_declarations_and_target_kinds()
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-BRANCH-COUNT
 #[test]
 fn functional_option_empty_content_and_unavailable_parameter_use_are_distinct() {
     let f = RealReaderFixture::new();
@@ -163,6 +166,7 @@ fn functional_option_empty_content_and_unavailable_parameter_use_are_distinct() 
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn functional_declaration_entry_grammars_and_partial_lists_stay_independent() {
     for (kind,xml,role) in [
@@ -173,6 +177,7 @@ fn functional_declaration_entry_grammars_and_partial_lists_stay_independent() {
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-QUESTION-COMPLETENESS
 #[test]
 fn functional_declarations_preserve_dangling_targets_and_reject_extra_relation_tail() {
     for (kind, reference) in [
@@ -202,6 +207,7 @@ fn functional_declarations_preserve_dangling_targets_and_reject_extra_relation_t
     }
 }
 
+/// rule: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
 #[test]
 fn functional_declarations_refresh_owner_bytes_and_registration() {
     for kind in ["FunctionalOption", "FunctionalOptionsParameter"] {

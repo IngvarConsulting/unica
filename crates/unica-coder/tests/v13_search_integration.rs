@@ -264,6 +264,7 @@ fn completed_tool_result_bounds_observation_of_an_unfinished_task() {
     });
 }
 
+/// rule: INV.SOURCE.LARGE-CONFIGURATION-ROOT-VIEW
 #[test]
 fn canonical_view_reads_configuration_past_eight_mebibytes_with_many_registrations() {
     let root = tempfile::tempdir().expect("large configuration workspace");
@@ -461,6 +462,7 @@ fn initialize_body_mcp_as(mcp: &mut McpProcess, client: &str) {
     mcp.notify(json!({"jsonrpc":"2.0", "method":"notifications/initialized", "params":{}}));
 }
 
+/// rule: INV.APP.CODE-SEARCH-HIT-ADDRESS
 #[test]
 fn public_body_line_ranges_open_search_hits_and_refuse_line_edits() {
     let root = tempfile::tempdir().unwrap();
@@ -525,6 +527,7 @@ fn public_body_line_ranges_open_search_hits_and_refuse_line_edits() {
     mcp.finish();
 }
 
+/// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
 #[test]
 fn oversized_error_recovery_is_a_closed_size_refusal_without_poisoning_the_daemon() {
     let root = tempfile::tempdir().unwrap();
@@ -575,6 +578,8 @@ fn oversized_error_recovery_is_a_closed_size_refusal_without_poisoning_the_daemo
     mcp.finish();
 }
 
+/// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
+/// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
 #[test]
 fn public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_next() {
     let root = tempfile::tempdir().unwrap();
@@ -720,6 +725,8 @@ fn public_view_refuses_bsl_text_over_the_default_budget_whole_with_structural_ne
 /// целиком, другой — отказом; сводка модуля называет размер `Body` и
 /// помечает ветвь, не помещающуюся в бюджет. Наибольший бюджет известных
 /// хостов ограничивает текст для всех.
+/// rule: INV.SOURCE.MODULE-SUMMARY
+/// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
 #[test]
 fn public_view_budget_belongs_to_the_client_and_the_summary_marks_the_body() {
     let root = tempfile::tempdir().unwrap();
@@ -832,6 +839,10 @@ mod target_isolation;
 
 // Интеграционная цель — `medium` по `kind(test)`: идёт в очереди и на main,
 // на pull request не идёт. Отдельной джобы и выключателя больше нет.
+/// rule: INV.APP.CODE-SEARCH-SOURCE-BOUNDARIES
+/// rule: INV.APP.LITERAL-SEARCH
+/// rule: INV.WIRE.SEARCH-CORPUS
+/// rule: INV.WIRE.SEARCH-SELECTED-ROLE
 #[test]
 fn canonical_search_is_source_scoped_and_rejects_legacy_call_shape() {
     let root = tempfile::tempdir().expect("search integration root");
@@ -1461,6 +1472,7 @@ fn text_search_preserves_whole_line_regex_beyond_two_mebibytes() {
     mcp.finish();
 }
 
+/// rule: INV.WIRE.SEARCH-CORPUS
 #[test]
 fn unreadable_source_lines_keep_other_hits_and_truthful_coverage_across_pages() {
     let root = tempfile::tempdir().expect("overlong search root");
@@ -1579,6 +1591,7 @@ fn unreadable_source_lines_keep_other_hits_and_truthful_coverage_across_pages() 
     mcp.finish();
 }
 
+/// rule: INV.WIRE.SEARCH-CORPUS
 #[test]
 fn text_file_coverage_counts_all_uncovered_files_when_details_are_capped() {
     let root = tempfile::tempdir().expect("uncovered search root");
@@ -1644,6 +1657,7 @@ fn text_file_coverage_counts_all_uncovered_files_when_details_are_capped() {
     mcp.finish();
 }
 
+/// rule: INV.WIRE.SEARCH-CORPUS
 #[test]
 fn text_search_refuses_unvisited_depth_instead_of_claiming_complete_coverage() {
     let root = tempfile::tempdir().expect("deep search root");
@@ -1743,6 +1757,8 @@ fn scoped_text_search_does_not_need_a_projected_view_of_the_root() {
     mcp.finish();
 }
 
+/// rule: INV.APP.SEARCH-CURSOR-OWNER
+/// rule: INV.WIRE.SEARCH-CORPUS
 #[test]
 fn names_search_pages_all_ranked_matches_and_rejects_changed_answers() {
     let root = tempfile::tempdir().expect("names pages workspace");
@@ -2017,6 +2033,7 @@ fn hit_module(at: &str) -> &str {
 /// that module's `Body` shows the same line, also on a first line after a BOM.
 /// A file without a proven module owner keeps its hit, named by the scan
 /// ordinal and the reason, never by its path.
+/// rule: INV.WIRE.SEARCH-CORPUS
 #[test]
 fn text_hits_name_their_module_and_view_reads_the_same_line() {
     let root = tempfile::tempdir().expect("search integration root");
@@ -2221,6 +2238,7 @@ fn text_hits_name_their_module_and_view_reads_the_same_line() {
 /// names the module it was found in. The broad answer gives the same `at`,
 /// line, column and snippet as the search scoped to that very module, keeps
 /// full coverage, and `scope` still echoes the request.
+/// rule: INV.WIRE.SEARCH-CORPUS
 #[test]
 fn broad_text_search_scopes_name_the_module_of_every_hit() {
     let root = tempfile::tempdir().expect("search integration root");
@@ -2360,6 +2378,7 @@ fn text_search_enumerates_wide_and_aggregate_corpora_without_an_entry_quota() {
     }
 }
 
+/// rule: INV.APP.LITERAL-SEARCH
 #[test]
 fn text_search_keeps_nested_module_order_across_pages() {
     let root = tempfile::tempdir().unwrap();
@@ -2410,6 +2429,8 @@ fn text_search_keeps_nested_module_order_across_pages() {
 /// traversal order, a cursor replays its page while the delivered part is
 /// unchanged, and an edit before the cursor makes it stale instead of
 /// shifting matches.
+/// rule: INV.APP.LITERAL-SEARCH
+/// rule: INV.WIRE.SEARCH-CORPUS
 #[test]
 fn literal_search_pages_past_two_hundred_matches_without_loss() {
     for git in [false, true] {
