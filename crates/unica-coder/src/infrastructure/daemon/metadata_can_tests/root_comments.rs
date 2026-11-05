@@ -218,7 +218,8 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
                 6
             } else if kind == "WSReference" {
                 4
-            } else if kind == "StyleItem" {
+            } else if kind == "StyleItem" || kind == "Language" {
+                // Comment, its alias and Value or LanguageCode.
                 3
             } else if kind == "DocumentNumerator" {
                 // Five numerator scalars plus Comment and its alias.
