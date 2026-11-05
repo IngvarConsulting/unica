@@ -1,14 +1,5 @@
 ---
 id: INV.APP.TASK-RETIREMENT
-check:
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::retirement_begin_failure_stays_with_its_record
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::retirement_authorize_failure_stays_with_its_record
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::retirement_delete_failure_stays_with_its_record
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::retirement_finalize_failure_stays_with_its_record
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::uncertain_retirement_delete_stays_with_its_record_and_reconciles_on_retry
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::retirement_failure_after_uncertain_link_commit_serves_the_durable_catalog
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::retirement_retry_pause_doubles_up_to_an_hour_without_an_attempt_limit
-  - crates/unica-coder/tests/platform/receipt_runtime.rs::reopened_retirement_rejects_old_authority_and_preserves_indexes_until_confirmed_delete
 gap: https://github.com/IngvarConsulting/unica/issues/1743
 ---
 

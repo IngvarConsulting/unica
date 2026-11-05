@@ -392,6 +392,7 @@ mod medium_tests {
         let _ = fs::remove_dir_all(&context.workspace_root);
     }
 
+    /// rule: INV.APP.SUPPORT-STATE
     #[test]
     fn support_state_reader_rejects_edt_instead_of_claiming_not_supported() {
         let context = fixture("edt", "EDT", "CONFIGURATION");
@@ -410,6 +411,7 @@ mod medium_tests {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.SUPPORT-STATE
     #[test]
     fn platform_xml_configuration_support_distinguishes_absent_unreadable_and_invalid_marker() {
         let context = fixture("marker-matrix", "DESIGNER", "CONFIGURATION");
@@ -436,6 +438,7 @@ mod medium_tests {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.SUPPORT-STATE
     #[test]
     fn platform_xml_support_reader_rejects_marker_below_linked_ext_directory() {
         let context = fixture("linked-ext", "DESIGNER", "CONFIGURATION");
@@ -465,6 +468,7 @@ mod medium_tests {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.SUPPORT-STATE
     #[test]
     fn platform_xml_object_support_uses_the_resolved_descriptor_uuid() {
         let context = fixture("object-rule", "DESIGNER", "CONFIGURATION");

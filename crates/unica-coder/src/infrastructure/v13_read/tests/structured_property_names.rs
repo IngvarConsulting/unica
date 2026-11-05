@@ -1,5 +1,6 @@
 use super::*;
 
+/// rule: INV.SOURCE.STRUCTURED-PROPERTY-NAMES
 #[test]
 fn xdto_explicit_bounds_keep_their_xml_names_and_all_observed_facts() {
     let fixture = RealReaderFixture::new();

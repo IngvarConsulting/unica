@@ -1,10 +1,5 @@
 ---
 id: INV.APP.EVENT-SOURCE
-check:
-  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_event_source_family_and_constant_manager_choice_round_trip
-  - crates/unica-metadata/tests/request_contract.rs::source_parser_accepts_the_closed_nonempty_logical_event_source_algebra
-  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_check_requires_an_event_source_registration_and_descriptor_in_the_extension
-  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests.rs::canonical_check_requires_an_own_named_source_through_nested_defined_types
 ---
 
 # Источник подписки задаётся логическим типом

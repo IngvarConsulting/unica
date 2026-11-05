@@ -6459,6 +6459,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn maintenance_transition_invalidates_the_cursor_for_the_previous_answer() {
         use unica_code_intelligence::model::IndexMaintenanceEvidence;
@@ -6488,6 +6489,7 @@ mod medium_tests {
         assert_eq!(next.diagnostics[0]["code"], "stale_cursor");
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn provider_search_pages_all_received_hits_and_rejects_changed_answers() {
         let store = unica_navigation::result_store::SearchCursorStore::default();
@@ -6573,6 +6575,7 @@ mod medium_tests {
         assert!(cursor.is_none());
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn provider_limit_remains_visible_after_the_last_received_page() {
         let store = unica_navigation::result_store::SearchCursorStore::default();
@@ -6611,6 +6614,7 @@ mod medium_tests {
         assert_eq!(section["hits"][0]["rank"], 151);
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn late_oversized_provider_hit_refuses_before_first_cursor() {
         let store = unica_navigation::result_store::SearchCursorStore::default();
@@ -6649,6 +6653,7 @@ mod medium_tests {
         assert_eq!(result.diagnostics[0]["code"], "provider_failed");
     }
 
+    /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
     #[test]
     fn bsl_check_never_calls_a_truncated_analyzer_result_complete() {
         use unica_diagnostics::model::DiagnosticAction;
@@ -6684,6 +6689,7 @@ mod medium_tests {
     /// `check` модуля под базовой линией: доказанный фильтр — полный
     /// вердикт с названным фактом подавления; сломанная линия — отказ,
     /// который называет причину поставщика, а не «анализ не закончился».
+    /// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
     #[test]
     fn bsl_check_passes_under_a_proven_baseline_and_names_a_broken_one() {
         use unica_diagnostics::model::DiagnosticAction;
@@ -6805,6 +6811,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
     #[test]
     fn bsl_check_preserves_only_canonical_jsonl_failure_recovery() {
         use unica_diagnostics::model::DiagnosticAction;
@@ -6893,6 +6900,7 @@ mod medium_tests {
     /// A provider that did not run names which engine, what happened to it
     /// and what restores it; the provider's own text is never the reason
     /// (#1338).
+    /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
     #[test]
     fn bsl_check_names_why_the_engine_gave_no_result_and_how_to_recover() {
         use unica_diagnostics::model::DiagnosticAction;
@@ -7021,6 +7029,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
     #[test]
     fn bsl_check_sees_an_error_after_two_hundred_warnings() {
         use unica_address::source_target::TargetKind;
@@ -7195,6 +7204,7 @@ mod medium_tests {
             .unwrap()
     }
 
+    /// rule: INV.WIRE.RESOLVED-SOURCE-LOCATION
     #[test]
     fn resolve_exact_bsl_nodes_across_module_roles() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -7290,6 +7300,7 @@ mod medium_tests {
         result.data.unwrap()
     }
 
+    /// rule: INV.WIRE.RESOLVE-PATH-BATCH
     #[test]
     fn resolve_paths_translates_paths_and_lines_in_input_order() {
         let workspace = resolve_exact_workspace();
@@ -7348,6 +7359,7 @@ mod medium_tests {
         assert_eq!(items[6]["at"], "main:Catalog.Items");
     }
 
+    /// rule: INV.WIRE.RESOLVE-PATH-BATCH
     #[test]
     fn resolve_paths_refuses_only_the_failing_item() {
         let workspace = resolve_exact_workspace();
@@ -7426,6 +7438,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.WIRE.RESOLVE-PATH-BATCH
     #[test]
     fn resolve_paths_places_lines_by_the_method_range_resolve_names() {
         let workspace = resolve_exact_workspace();
@@ -7480,6 +7493,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.WIRE.RESOLVE-EXACT-BRIDGE
     #[test]
     fn resolve_paths_is_exclusive_with_at_and_path_and_takes_only_strings() {
         use crate::infrastructure::daemon::protocol::InvocationRequest;
@@ -7527,6 +7541,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.RESOLVED-SOURCE-LOCATION
     #[test]
     fn view_nested_regions_never_substitutes_the_final_name() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -7724,6 +7739,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.WIRE.RESOLVED-SOURCE-LOCATION
     #[test]
     fn resolve_exact_tree_children_use_their_containing_xml() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -7800,6 +7816,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.RESOLVED-SOURCE-LOCATION
     #[test]
     fn resolve_exact_method_spans_annotations_through_its_closing_line() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -7891,6 +7908,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
     #[test]
     fn body_line_view_and_resolve_share_absolute_byte_exact_ranges() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -7940,6 +7958,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
     #[test]
     fn body_line_ranges_refuse_file_eof_and_method_boundary_crossings() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -7962,6 +7981,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
     #[test]
     fn body_line_apply_refuses_before_staging_and_can_has_no_writes() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -8001,6 +8021,8 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn body_line_read_validates_the_tail_and_continuation_reopens_exact_bytes() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -8083,6 +8105,7 @@ mod medium_tests {
         assert!(refused.source_text.is_none());
     }
 
+    /// rule: INV.APP.CODE-SEARCH-HIT-ADDRESS
     #[test]
     fn body_line_provider_search_uses_current_spans_and_preserves_evidence() {
         use unica_address::source_target::{
@@ -8176,6 +8199,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.CODE-SEARCH-HIT-ADDRESS
     #[test]
     fn a_text_search_hit_opens_the_narrowest_body_line_address() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -8218,6 +8242,7 @@ mod medium_tests {
     /// an unreadable staged copy or private directory left beside the module
     /// right after apply does not refuse the search. An unreadable entry the
     /// search does need is named in the refusal.
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn literal_search_skips_publication_artifacts_and_names_an_unreadable_entry() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -8309,6 +8334,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.RESOLVED-SOURCE-LOCATION
     #[test]
     fn resolve_exact_module_body_numbers_lines_like_view() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -8351,6 +8377,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.RESOLVED-SOURCE-LOCATION
     #[test]
     fn resolve_exact_module_read_failures_are_never_successful_locations() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -8406,6 +8433,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.RESOLVED-SOURCE-LOCATION
     #[test]
     fn resolve_exact_cancelled_read_never_claims_a_location() {
         use crate::infrastructure::daemon::protocol::InvocationRequest;
@@ -8469,6 +8497,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.WIRE.RESOLVE-PATH-BATCH
     #[test]
     fn resolve_paths_cancelled_read_refuses_the_whole_call() {
         use crate::infrastructure::daemon::protocol::InvocationRequest;
@@ -8529,6 +8558,7 @@ mod medium_tests {
         assert!(result.data.is_none(), "{result:?}");
     }
 
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn literal_module_scope_searches_only_the_selected_module_with_either_engine() {
         use crate::infrastructure::daemon::protocol::InvocationRequest;
@@ -8693,6 +8723,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn canonical_role_search_preserves_typed_failure_without_private_provider_text() {
         use crate::infrastructure::daemon::protocol::InvocationRequest;
@@ -9103,6 +9134,7 @@ mod medium_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn provider_search_failure_requires_one_selected_section_and_yields_to_cancellation() {
         let selected = ProviderSearchSection::failed(
@@ -9250,6 +9282,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.SEARCH-SELECTED-ROLE
     #[test]
     fn public_role_search_runs_only_selected_provider_and_cannot_use_a_neighbor_success() {
         for selected_role in ProviderRole::ALL {
@@ -9297,6 +9330,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn public_role_search_surfaces_partial_provider_warning_and_hit() {
         use unica_code_intelligence::coordinator::CodeSearchExecution;
@@ -9358,6 +9392,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.WIRE.SEARCH-SELECTED-ROLE
     #[test]
     fn selected_role_search_does_not_start_a_provider_after_parent_cancellation() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -9519,6 +9554,7 @@ mod medium_tests {
     /// page read through Git and its continuation by the walk give the same
     /// pages, matches, order and addresses as the walk alone, wherever the
     /// Git page stops.
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn literal_search_engines_agree_on_matches_order_and_addresses() {
         let workspace = text_engine_workspace();
@@ -9603,6 +9639,8 @@ mod medium_tests {
     /// The first page of either engine carries the exact volume of the
     /// whole corpus, however small the page: counts by kind, the modules
     /// and the matches without an address. A continuation does not repeat it.
+    /// rule: INV.APP.LITERAL-SEARCH
+    /// rule: INV.WIRE.SEARCH-CORPUS
     #[test]
     fn first_literal_page_counts_the_whole_corpus_by_kind_and_module() {
         let workspace = text_engine_workspace();
@@ -9655,6 +9693,7 @@ mod medium_tests {
     /// A file left uncovered past the first page counts in the volume of
     /// the corpus, not in the coverage of that page; the page that reads
     /// it reports it. The configuration's own module counts as its kind.
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn literal_volume_counts_uncovered_files_past_the_page_apart_from_its_coverage() {
         let workspace = text_engine_workspace();
@@ -9692,6 +9731,7 @@ mod medium_tests {
     /// Past twenty modules the volume names the twenty with the most
     /// matches, a tie in traversal order, and the rest as one line; both
     /// engines count the same.
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn literal_volume_names_twenty_leading_modules_and_counts_the_rest() {
         let workspace = resolve_exact_workspace();
@@ -9757,6 +9797,7 @@ mod medium_tests {
 
     /// A search cancelled while it counts past its full page answers
     /// neither the volume nor the page: the refusal stays as before.
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn cancelled_literal_search_answers_no_volume() {
         let workspace = text_engine_workspace();
@@ -9783,6 +9824,7 @@ mod medium_tests {
     /// source root holding either is read by the walk: a match there that
     /// comes first in file order is on the first page, and the answer is
     /// the walk's own.
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn literal_search_reads_submodules_and_embedded_repositories() {
         let git = |directory: &std::path::Path, args: &[&str]| {
@@ -9856,6 +9898,7 @@ mod medium_tests {
 
     /// #2096: a match without a proven module names its file by an
     /// identifier, never by path, in either engine.
+    /// rule: INV.WIRE.SEARCH-CORPUS
     #[test]
     fn literal_search_hit_without_an_address_carries_no_path() {
         let workspace = text_engine_workspace();
@@ -9887,6 +9930,7 @@ mod medium_tests {
 
     /// #2095: the former `lexical` role is refused with the call that
     /// answers it; the literal search takes a regular expression itself.
+    /// rule: INV.WIRE.SEARCH-PROVIDER-ROLES
     #[test]
     fn retired_lexical_role_is_refused_with_the_search_without_a_role() {
         use crate::infrastructure::daemon::protocol::InvocationRequest;
@@ -9934,6 +9978,7 @@ mod medium_tests {
     /// walk at the same place: a replay repeats the page, an edit after the
     /// cursor is read, an edit of the delivered part is stale, and a corpus
     /// that now ends at the cursor ends the search.
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn git_first_page_continues_by_the_walk_to_the_last_match() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -10025,6 +10070,7 @@ mod medium_tests {
     /// instead of reading the corpus again: a replay repeats the page, an
     /// edit in that file before the cursor or its removal is stale, and
     /// files passed before it are not read again.
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn walk_literal_continuation_resumes_at_its_file() {
         use unica_execution::invocation_store::ToolIdentity;
@@ -10094,6 +10140,7 @@ mod medium_tests {
     /// A walk page ends at its time share of the response budget at a
     /// file boundary, even with no match yet, and the cursor carries the
     /// walk on from there: every match is reached, none repeats.
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn walk_pages_end_by_time_and_continue_without_loss() {
         let workspace = resolve_exact_workspace();
@@ -10143,6 +10190,7 @@ mod medium_tests {
     /// The former `lexical` deadline key stays accepted in `unica.toml` for
     /// one release and no longer limits the literal search: even a value the
     /// configuration would refuse leaves the search whole.
+    /// rule: INV.APP.LITERAL-SEARCH
     #[test]
     fn literal_search_ignores_the_retired_git_grep_timeout_key() {
         let workspace = text_engine_workspace();
