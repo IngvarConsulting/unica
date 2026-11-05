@@ -2432,8 +2432,14 @@ pub fn update_typed_element(
         })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
     if !update.input_settings.0.is_empty() {
-        let current_type = parse_typed_metadata_type_at_element(xml_text, range.clone())?;
-        let final_type = update.r#type.as_ref().unwrap_or(&current_type);
+        let current_type;
+        let final_type = match update.r#type.as_ref() {
+            Some(requested) => requested,
+            None => {
+                current_type = parse_typed_metadata_type_at_element(xml_text, range.clone())?;
+                &current_type
+            }
+        };
         let doc = Document::parse(xml_text).map_err(|_| {
             typed_diagnostic(
                 MetaDiagnosticCode::InvalidArguments,
@@ -4471,5 +4477,55 @@ mod prefixed_property_writer_tests {
             missing.is_empty(),
             "no owner template exercises {missing:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod input_settings_type_replacement_tests {
+    #[test]
+    fn explicit_type_and_input_settings_replace_legacy_type_without_parsing_it() {
+        for legacy in [
+            "<v8:TypeSet>cfg:Characteristic.Properties</v8:TypeSet>",
+            "<v8:TypeId>cc442f88-d708-4a83-af58-60c85a5d28a8</v8:TypeId>",
+        ] {
+            let before = format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" version="2.20"><Catalog><Properties><Name>Codes</Name></Properties><ChildObjects><Attribute><Properties><Name>Key</Name><Type>{legacy}</Type><Mask>before</Mask></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#
+            );
+            let input = unica_metadata::request::parse_element_update(
+                &serde_json::json!({"name":"Key", "type":{"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]}, "mask":"99"}),
+                "elements[0]",
+            ).unwrap();
+            let operation = unica_metadata::MetaEditOperation::update(
+                unica_metadata::MetaCollection::Attributes,
+                None,
+                vec![input],
+            )
+            .unwrap();
+            let unica_metadata::MetaEditOperation::Update { elements, .. } = operation else {
+                unreachable!()
+            };
+            let mut actual = before.clone();
+            super::update_typed_element(
+                &mut actual,
+                unica_metadata::MetaCollection::Attributes,
+                None,
+                &elements[0],
+                "ru",
+            )
+            .unwrap();
+            assert!(actual.contains("<Mask>99</Mask>"), "{actual}");
+            assert!(!actual.contains(legacy), "{actual}");
+            assert!(actual.contains("<v8:Type>xs:string</v8:Type>"), "{actual}");
+            let mut repeated = actual.clone();
+            super::update_typed_element(
+                &mut repeated,
+                unica_metadata::MetaCollection::Attributes,
+                None,
+                &elements[0],
+                "ru",
+            )
+            .unwrap();
+            assert_eq!(repeated, actual);
+        }
     }
 }
