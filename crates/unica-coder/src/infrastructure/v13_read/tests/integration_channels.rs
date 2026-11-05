@@ -30,6 +30,7 @@ fn install(fixture: &RealReaderFixture, body: &str) {
     );
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn integration_channels_expose_four_named_members_and_six_observed_properties_without_writes() {
     let fixture = RealReaderFixture::new();
@@ -151,6 +152,7 @@ fn integration_channels_distinguish_unknown_empty_and_partial_composition() {
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn integration_channel_property_damage_preserves_names_other_facts_and_neighbors() {
     for (from, to, key) in [
@@ -210,6 +212,7 @@ fn integration_channel_property_damage_preserves_names_other_facts_and_neighbors
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
 #[test]
 fn integration_channel_ambiguous_identity_never_picks_the_first_declaration() {
     let source = channels();

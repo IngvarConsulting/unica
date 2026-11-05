@@ -1,7 +1,5 @@
 ---
 id: INV.WIRE.NATIVE-TASK-CAPABILITY
-check:
-  - crates/unica-coder/src/interfaces/mcp.rs::native_task_projection_contract_is_capability_gated_durable_and_replay_free
 ---
 
 # Встроенные задания MCP доступны только клиенту с Tasks capability

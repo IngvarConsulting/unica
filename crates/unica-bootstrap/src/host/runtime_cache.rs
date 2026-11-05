@@ -218,6 +218,7 @@ mod tests {
         resolve_provider_state_root(&environment(pairs))
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn zcode_published_data_directory_outranks_host_homes() {
         for homes in [
@@ -243,6 +244,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn published_data_aliases_keep_existing_claude_priority() {
         for zcode in ["/data/claude", "/data/zcode"] {
@@ -264,6 +266,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn invalid_published_data_falls_through_to_the_next_ready_source() {
         for invalid in ["", "${ZCODE_PLUGIN_DATA}", "/data/${PLUGIN_DATA}"] {
@@ -304,6 +307,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn unexpanded_overrides_fall_through_to_zcode_data() {
         let values = [
@@ -327,6 +331,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn provider_state_explicit_override_outranks_every_host_source() {
         let root = resolve_provider_state(&[
@@ -488,6 +493,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn the_explicit_override_outranks_every_host_source() {
         let root = resolve(&[
@@ -502,6 +508,7 @@ mod tests {
         assert_eq!(root, PathBuf::from("/cache/unica"));
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn an_unexpanded_override_falls_through_to_the_host_chain() {
         // A host that does not understand the token passes it through literally;
@@ -532,6 +539,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn a_published_data_directory_outranks_every_home_directory() {
         let root = resolve(&[
@@ -544,6 +552,7 @@ mod tests {
         assert_eq!(root, PathBuf::from("/data/claude").join("runtimes"));
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn a_declared_host_home_is_used_as_it_stands() {
         let root = resolve(&[("CODEX_HOME", "/elsewhere/.codex"), ("HOME", "/home/user")]).unwrap();
@@ -556,6 +565,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn the_user_home_carries_the_host_state_directory() {
         let root = resolve(&[("HOME", "/home/user")]).unwrap();
@@ -569,6 +579,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn the_windows_user_home_is_the_last_resort() {
         let root = resolve(&[("USERPROFILE", "C:/Users/user")]).unwrap();
@@ -582,6 +593,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn the_posix_user_home_wins_over_the_windows_one() {
         let root = resolve(&[("HOME", "/home/user"), ("USERPROFILE", "C:/Users/user")]).unwrap();
@@ -595,6 +607,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn an_empty_environment_names_every_variable_that_would_help() {
         let error = resolve(&[]).unwrap_err();
@@ -605,6 +618,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.CACHE.OVERRIDE-PRIORITY
     #[test]
     fn an_unexpanded_override_alone_is_not_a_cache_root() {
         let error =

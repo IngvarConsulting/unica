@@ -1,7 +1,5 @@
 ---
 id: INV.PKG.PUBLIC-BINARY-NAME
-check:
-  - tests/ci/test_version_contract.py::VersionContractTests.test_public_runtime_binary_name_is_unica
 ---
 
 # Исполняемый файл ядра называется unica

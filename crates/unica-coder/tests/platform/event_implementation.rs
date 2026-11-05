@@ -255,6 +255,7 @@ fn owner_proof_distinguishes_unregistered_from_registered_inconsistent_descripto
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// rule: INV.SOURCE.EVENT-IMPLEMENTATION-PAIR
 #[test]
 fn staged_property_planner_composes_two_events_and_poisoned_batch_publishes_nothing() {
     let root = temp_root("staged-planner");
@@ -601,6 +602,7 @@ fn borrowed_available_accepts_all_call_types_and_base_form_only_stays_byte_exact
     std::fs::remove_dir_all(root).unwrap();
 }
 
+/// rule: INV.SOURCE.EVENT-IMPLEMENTATION-PAIR
 #[test]
 fn staged_missing_property_keeps_form_byte_exact_and_platform_creates_only_module() {
     let root = temp_root("missing-and-platform");
