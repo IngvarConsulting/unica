@@ -138,6 +138,7 @@ pub(crate) fn admit_text(text: &str) -> Result<(), u64> {
 mod tests {
     use super::MAX_SOURCE_TEXT_BYTES;
 
+    /// rule: INV.WIRE.SOURCE-TEXT-RESPONSE-BUDGET
     #[test]
     fn source_text_limit_is_the_largest_known_host_budget() {
         assert_eq!(MAX_SOURCE_TEXT_BYTES, unica_bootstrap::MAX_RESPONSE_BUDGET);
@@ -159,6 +160,7 @@ mod tests {
         text.finish()
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
     #[test]
     fn streamed_module_text_keeps_memory_bounded_and_counts_the_whole_size() {
         let mut text = super::ModuleTextAccumulator::default();
@@ -177,6 +179,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
     #[test]
     fn streamed_module_text_strips_repeated_bom_across_chunks_and_keeps_a_partial_one() {
         use super::ModuleText::Text;

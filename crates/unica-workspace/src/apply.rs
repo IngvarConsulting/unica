@@ -1606,6 +1606,7 @@ pub(crate) mod tests {
         crate::actor::workspace_cache_participant_authority_for_test(authority, &retained)
     }
 
+    /// rule: INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS
     #[test]
     pub(crate) fn retained_transaction_roles_require_explicit_roots_and_cache_authority() {
         let root = temp_root("closed-participant-roots");
@@ -1631,6 +1632,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS
     #[test]
     pub(crate) fn arbitrary_second_transaction_cannot_masquerade_as_actor_cache_authority() {
         let root = temp_root("closed-participant-authority");
@@ -1676,6 +1678,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS
     #[test]
     pub(crate) fn closed_transaction_rejects_physical_alias_and_second_cache_participant() {
         let root = temp_root("closed-participant-cardinality");
@@ -1721,6 +1724,7 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn read_only_absence_below_missing_parent_is_guarded_without_creating_it() {
         for occupied in [false, true] {
@@ -1753,6 +1757,7 @@ pub(crate) mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn enumerated_payload_changes_refuse_before_write_and_roll_back_late_writes() {
         for relative in ["", "Payload"] {
@@ -1840,6 +1845,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
     fn reference_scan_entry_budget_stops_incrementally_at_a_test_limit() {
         let root = temp_root("namespace-entry-budget");
@@ -1862,6 +1868,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
     fn reference_scan_depth_budget_stops_before_recursive_descent() {
         let root = temp_root("namespace-depth-budget");
@@ -1893,6 +1900,7 @@ pub(crate) mod tests {
         assert!(!error.to_string().contains("maximum depth"), "{error}");
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn reference_scan_keeps_content_guard_without_retaining_every_body() {
         let temp = tempfile::tempdir().unwrap();
@@ -1955,6 +1963,7 @@ pub(crate) mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn reference_guard_rejects_same_inode_same_size_mutation_without_writing() {
         let temp = tempfile::tempdir().unwrap();
@@ -1991,6 +2000,7 @@ pub(crate) mod tests {
     /// an identity and a fingerprint, re-proved by walking the route again.
     /// This resource invariant has no operation cutoff; the finite-deadline
     /// refusal is checked separately below.
+    /// rule: INV.APP.BOUNDED-OPEN-DESCRIPTORS
     #[test]
     fn reference_scan_descriptor_count_does_not_grow_with_inputs() {
         use crate::platform::testing::open_handle_count_for_test;
@@ -2053,6 +2063,7 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"after!");
     }
 
+    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
     fn reference_guard_preserves_finite_deadline_after_capture_without_writing() {
         let temp = tempfile::tempdir().unwrap();
@@ -2098,6 +2109,7 @@ pub(crate) mod tests {
     /// Without a held descriptor the saved plan still refuses a nested input
     /// that changed in place, was replaced by another file or lost its parent
     /// directory to another directory with the same bytes.
+    /// rule: INV.APP.BOUNDED-OPEN-DESCRIPTORS
     #[test]
     fn reference_guard_without_descriptors_rejects_nested_input_substitution() {
         enum Substitution {
@@ -2241,6 +2253,7 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(root.join("Owner.bsl")).unwrap(), b"before");
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn reference_guard_rechecks_identity_after_stream_and_rolls_back() {
         let temp = tempfile::tempdir().unwrap();
@@ -3257,6 +3270,7 @@ pub(crate) mod tests {
         guard.validate().unwrap();
     }
 
+    /// rule: INV.SOURCE.REVISION-EXCLUDES-GENERATED-DIRECTORY
     #[test]
     fn source_generated_guard_uses_each_retained_parent_case_policy() {
         let root = temp_root("per-directory-generated-policy");
@@ -3307,6 +3321,7 @@ pub(crate) mod tests {
 
     /// A file larger than the former 32 MiB staging bound is read whole: the
     /// configuration, not apply, decides its size (#1119).
+    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
     fn apply_stages_a_file_larger_than_the_former_read_bound() {
         const FORMER_BOUND: usize = 32 * 1024 * 1024;

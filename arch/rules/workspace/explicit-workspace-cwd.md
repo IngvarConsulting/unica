@@ -1,11 +1,5 @@
 ---
 id: INV.APP.EXPLICIT-WORKSPACE-CWD
-check:
-  - crates/unica-coder/src/infrastructure/workspace.rs::absolute_requested_cwd_does_not_read_process_cwd
-  - crates/unica-coder/src/infrastructure/workspace.rs::relative_requested_cwd_reports_launch_directory_failure
-  - crates/unica-coder/src/infrastructure/workspace.rs::missing_requested_cwd_reports_launch_directory_failure
-  - crates/unica-coder/src/infrastructure/workspace.rs::relative_requested_cwd_resolves_from_launch_directory
-  - tests/ci/test_unica_mcp_smoke.py::UnicaMcpSmokeTests.test_workspace_hint_survives_deleted_frontend_and_daemon_cwd
 ---
 
 # Явный абсолютный cwd не читает каталог процесса
