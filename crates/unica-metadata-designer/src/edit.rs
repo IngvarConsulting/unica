@@ -4164,6 +4164,35 @@ mod prefixed_property_writer_tests {
             .collect()
     }
 
+    #[test]
+    fn scalar_shell_keeps_the_qualified_name_and_only_namespace_declarations() {
+        use super::scalar_element_shell;
+        assert_eq!(
+            scalar_element_shell(
+                r#"<md:Comment xmlns:note="urn:a>b/c" note:x='1>2'>v</md:Comment>"#
+            ),
+            (
+                r#"<md:Comment xmlns:note="urn:a>b/c""#.to_string(),
+                "md:Comment"
+            )
+        );
+        assert_eq!(
+            scalar_element_shell("<md:Comment />"),
+            ("<md:Comment".to_string(), "md:Comment")
+        );
+        assert_eq!(
+            scalar_element_shell(r#"<Comment xmlns = "http://v8.1c.ru/8.3/MDClasses">v</Comment>"#),
+            (
+                r#"<Comment xmlns="http://v8.1c.ru/8.3/MDClasses""#.to_string(),
+                "Comment"
+            )
+        );
+        assert_eq!(
+            scalar_element_shell("<Comment>v</Comment>"),
+            ("<Comment".to_string(), "Comment")
+        );
+    }
+
     /// Every typed property writes the same change into a prefixed descriptor
     /// as into its default-namespace form: the element keeps the owner's
     /// prefix and stays in MDClasses, and a repeat is a no-op.
