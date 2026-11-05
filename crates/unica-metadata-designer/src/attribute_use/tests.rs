@@ -53,7 +53,11 @@ fn apply(
 #[test]
 fn header_use_cycle_preserves_every_other_byte_and_effects_and_noop() {
     let traits = include_str!("../../../../tests/fixtures/acceptance/workspace-attribute-use/src/ChartsOfCharacteristicTypes/Traits.xml");
-    for source in [catalog(), traits.into()] {
+    let non_hierarchical_traits = traits.replace(
+        "<Hierarchical>true</Hierarchical>",
+        "<Hierarchical>false</Hierarchical>",
+    );
+    for source in [catalog(), traits.into(), non_hierarchical_traits] {
         for eol in ["\n", "\r\n"] {
             let before = source.replace("\r\n", "\n").replace('\n', eol);
             let mut xml = before.clone();
