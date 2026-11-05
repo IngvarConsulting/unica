@@ -349,7 +349,11 @@ mod tests {
                 json!({"name":"P","newName":"Q"}),
                 "name",
             ),
-            ("field.set", json!({"field":"F","title":"T"}), "field"),
+            (
+                "field.set",
+                json!({"sourceField":"F","title":"T"}),
+                "sourceField",
+            ),
             ("field.set", json!({"dataPath":"F","title":"T"}), "dataPath"),
             (
                 "fieldRole.set",

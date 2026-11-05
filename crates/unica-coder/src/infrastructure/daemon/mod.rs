@@ -1,10 +1,10 @@
+#[cfg(test)]
+#[path = "../../../tests/platform/receipt_runtime.rs"]
+mod medium_receipt_runtime_tests;
 pub(crate) mod protocol;
 #[cfg(test)]
 #[path = "../../../tests/platform/receipt_join_freshness.rs"]
 mod receipt_join_freshness_tests;
-#[cfg(test)]
-#[path = "../../../tests/platform/receipt_runtime.rs"]
-mod receipt_runtime_tests;
 pub(crate) mod server;
 
 mod v13_artifact_build;
@@ -58,7 +58,7 @@ mod tests {
     }
 
     #[test]
-    fn injected_hidden_v13_service_executes_real_view_and_find_through_actor_capabilities() {
+    fn medium_injected_hidden_v13_service_executes_real_view_and_find_through_actor_capabilities() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         std::fs::create_dir_all(source.join("Catalogs")).unwrap();
@@ -476,7 +476,7 @@ mod tests {
     /// cancelling the Task never relaunch it, and a restarted daemon reads
     /// the same durable terminal instead of executing again.
     #[test]
-    fn daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it() {
+    fn medium_daemon_executes_one_canonical_invocation_and_poll_cancel_never_relaunches_it() {
         let workspace = tempfile::tempdir().unwrap();
         let executions = Arc::new(AtomicUsize::new(0));
         let (entered, entered_wait) = mpsc::channel();
@@ -913,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_invocation_authority_keeps_root_capabilities_without_a_tree_revision() {
+    fn medium_canonical_invocation_authority_keeps_root_capabilities_without_a_tree_revision() {
         canonical_service_boundary_exposes_no_raw_request_or_workspace_hint();
         canonical_service_reads_only_actor_bound_roots_and_persists_the_same_identity();
         actor_bound_publication_rejects_root_replacement_and_hides_staged_bytes();

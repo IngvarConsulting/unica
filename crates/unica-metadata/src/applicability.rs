@@ -55,7 +55,7 @@ impl OperationApplicability {
             Self::SupportRule => "`Kind.Name` or `Kind.Name.Form.F`",
             Self::SupportRestore => "`Kind.Name` or `Kind.Name.Form.F` in a configuration",
             Self::MetadataOrRoleOrSubsystem => {
-                "`Configuration`, `Kind.Name`, `Role.Name` or `Subsystem.Name`"
+                "`Configuration`, `Kind.Name`, `CommonForm.Name.Metadata`, `Role.Name` or `Subsystem.Name[.Subsystem.Child]`"
             }
             Self::MetadataAttributeContainer => {
                 "`Kind.Name` of a kind with attributes or `Kind.Name.TabularSection.T`"

@@ -621,7 +621,7 @@
                 "property": {
                   "name": "Value",
                   "type": "tns:Agent1721Value",
-                  "minOccurs": 0
+                  "lowerBound": 0
                 }
               }
             }
@@ -1250,7 +1250,7 @@
                 "property": {
                   "name": "Value",
                   "type": "tns:Agent1721Value",
-                  "minOccurs": 0
+                  "lowerBound": 0
                 }
               }
             }

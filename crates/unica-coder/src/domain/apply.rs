@@ -3,7 +3,7 @@ use unica_bsl::operations::CodeOperation;
 use unica_bsl::profile::PlatformProfile;
 use unica_dcs::operations::Primitive;
 use unica_forms::operations::FormOperation;
-use unica_forms::FormItemRole;
+use unica_forms::{FormItemRole, FormObservation};
 
 use unica_metadata::event::EventOperation;
 use unica_metadata::MetadataKind;
@@ -432,16 +432,36 @@ pub(crate) trait OperationDescriptorExt {
 
 pub(crate) fn observation_lookup<'a>(
     template: &'a dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
-    item: &'a dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    item: &'a dyn Fn(&QualifiedAddress) -> Option<FormObservation>,
 ) -> impl Fn(&QualifiedAddress, unica_operations::ObservationType) -> Option<Box<dyn std::any::Any>> + 'a
 {
     move |at, requested| {
         if requested.is::<TemplateFormat>() {
             template(at).map(|value| Box::new(value) as Box<dyn std::any::Any>)
-        } else if requested.is::<FormItemRole>() {
+        } else if requested.is::<FormObservation>() {
             item(at).map(|value| Box::new(value) as Box<dyn std::any::Any>)
         } else {
             None
+        }
+    }
+}
+
+/// The same registry observations with the closed Color profile owned by
+/// metadata. The caller obtains it from retained descriptor bytes.
+pub(crate) fn observation_lookup_with_style_properties<'a>(
+    template: &'a dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
+    item: &'a dyn Fn(&QualifiedAddress) -> Option<FormObservation>,
+    color: &'a dyn Fn(
+        &QualifiedAddress,
+    ) -> Option<unica_metadata::style_color::StyleItemPropertiesObservation>,
+) -> impl Fn(&QualifiedAddress, unica_operations::ObservationType) -> Option<Box<dyn std::any::Any>> + 'a
+{
+    let ordinary = observation_lookup(template, item);
+    move |at, requested| {
+        if requested.is::<unica_metadata::style_color::StyleItemPropertiesObservation>() {
+            color(at).map(|value| Box::new(value) as Box<dyn std::any::Any>)
+        } else {
+            ordinary(at, requested)
         }
     }
 }
@@ -453,8 +473,10 @@ impl OperationDescriptorExt for OperationDescriptor {
                 .admits_context(&|_| format.map(|value| Box::new(value) as Box<dyn std::any::Any>))
     }
     fn admits_form_item(self, role: Option<FormItemRole>) -> bool {
-        !self.observation_type().is::<FormItemRole>()
-            || self.admits_context(&|_| role.map(|value| Box::new(value) as Box<dyn std::any::Any>))
+        !self.observation_type().is::<FormObservation>()
+            || self.admits_context(&|_| {
+                role.map(|value| Box::new(FormObservation::Item(value)) as Box<dyn std::any::Any>)
+            })
     }
     fn applies_to_node(
         self,
@@ -462,7 +484,10 @@ impl OperationDescriptorExt for OperationDescriptor {
         format: Option<TemplateFormat>,
         role: Option<FormItemRole>,
     ) -> bool {
-        self.applies_with_observations(site, &observation_lookup(&|_| format, &|_| role))
+        self.applies_with_observations(
+            site,
+            &observation_lookup(&|_| format, &|_| role.map(FormObservation::Item)),
+        )
     }
     /// Ближайший узел по цепочке предков `at` (до корня набора включительно),
     /// где операция исполнима. Туда ведёт `next` отказа «не тот узел».
@@ -492,7 +517,9 @@ impl OperationDescriptorExt for OperationDescriptor {
         self.nearest_ancestor_with_observations(
             site,
             context,
-            &observation_lookup(template_format, form_item),
+            &observation_lookup(template_format, &|at| {
+                form_item(at).map(FormObservation::Item)
+            }),
         )
     }
 }
@@ -548,6 +575,7 @@ operation_descriptors!(
     (FormOperation::ItemRemove),
     (FormOperation::ItemMove),
     (FormOperation::AttributeAdd),
+    (FormOperation::ColumnAdd),
     (FormOperation::CommandAdd),
     (FormOperation::EventBind),
     (FormOperation::PropsSet),
@@ -684,7 +712,9 @@ impl OperationRegistryExt for OperationRegistry {
         self.nearest_ancestor_with_observations(
             name,
             site,
-            &observation_lookup(template_format, form_item),
+            &observation_lookup(template_format, &|at| {
+                form_item(at).map(FormObservation::Item)
+            }),
         )
     }
 }
@@ -709,7 +739,9 @@ impl RetiredOperationExt for unica_operations::recovery::RetiredOperation {
         self.replacement_with_observations(
             site,
             context,
-            &observation_lookup(template_format, form_item),
+            &observation_lookup(template_format, &|at| {
+                form_item(at).map(FormObservation::Item)
+            }),
         )
     }
 }
@@ -778,11 +810,19 @@ mod tests {
         ] {
             let at = address(raw);
             let site = operation_site(&at, traits).unwrap();
-            assert!(registry.copyable_skeletons(&site).is_empty(), "{raw}");
+            let comment_descriptor = raw == "main:CommonForm.Main.Metadata";
+            assert_eq!(
+                registry.copyable_skeletons(&site).len(),
+                usize::from(comment_descriptor),
+                "{raw}"
+            );
             for operation in registry.descriptors() {
-                assert!(
-                    !operation.applies_at(&site),
-                    "{} must not write through {raw}",
+                assert_eq!(
+                    operation.applies_at(&site),
+                    comment_descriptor
+                        && operation.operation::<PropertiesOperation>()
+                            == Some(PropertiesOperation::Set),
+                    "{} applicability at {raw}",
                     operation.name()
                 );
             }
@@ -1145,6 +1185,11 @@ mod tests {
             (
                 SourceSetKind::Configuration,
                 "main:Subsystem.Sales.Subsystem.Child",
+                true,
+            ),
+            (
+                SourceSetKind::Configuration,
+                "main:Subsystem.Sales.Interface",
                 false,
             ),
         ] {
@@ -1330,6 +1375,32 @@ mod tests {
     }
 
     #[test]
+    fn contextual_column_creation_keeps_form_and_metadata_families_separate() {
+        let registry = operation_registry();
+        let traits =
+            source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
+        let at = QualifiedAddress::parse("main:Catalog.Items.Form.Main.Attribute.Rows").unwrap();
+        let site = operation_site(&at, traits).unwrap();
+        let descriptor = registry.lookup_at("column.add", &site).unwrap();
+        assert_eq!(
+            descriptor.operation::<FormOperation>(),
+            Some(FormOperation::ColumnAdd)
+        );
+        assert_eq!(
+            descriptor.operation::<unica_metadata::apply_operations::MetadataOperation>(),
+            None
+        );
+        let at = QualifiedAddress::parse("main:DocumentJournal.Orders").unwrap();
+        let site = operation_site(&at, traits).unwrap();
+        let descriptor = registry.lookup_at("column.add", &site).unwrap();
+        assert_eq!(descriptor.operation::<FormOperation>(), None);
+        assert_eq!(
+            descriptor.operation::<unica_metadata::apply_operations::MetadataOperation>(),
+            Some(unica_metadata::apply_operations::MetadataOperation::ColumnAdd)
+        );
+    }
+
+    #[test]
     fn contextual_registration_rejects_missing_and_mismatched_typed_operations() {
         let metadata = unica_metadata::apply_operations::MetadataOperation::ALL
             .iter()
@@ -1343,6 +1414,7 @@ mod tests {
             FormOperation::descriptor(FormOperation::ItemRemove),
             FormOperation::descriptor(FormOperation::ItemMove),
             FormOperation::descriptor(FormOperation::AttributeAdd),
+            FormOperation::descriptor(FormOperation::ColumnAdd),
             FormOperation::descriptor(FormOperation::CommandAdd),
             FormOperation::descriptor(FormOperation::EventBind),
         ];
@@ -1429,6 +1501,7 @@ mod tests {
             "item.remove",
             "item.move",
             "attribute.add",
+            "column.add",
             "command.add",
             "event.bind",
             "props.set",
@@ -1524,6 +1597,7 @@ mod tests {
         // имя одно, семейство выбирает адрес. Других повторов в реестре нет.
         const SHARED_NAMES: &[(&str, OperationFamily)] = &[
             ("attribute.add", OperationFamily::Metadata),
+            ("column.add", OperationFamily::Metadata),
             ("command.add", OperationFamily::Metadata),
             ("props.set", OperationFamily::Properties),
         ];
@@ -2236,7 +2310,7 @@ mod tests {
 
         let data_set = address("main:Report.Sales.Template.Schema.DataSet.Main");
         let data_site = operation_site(&data_set, traits).unwrap();
-        let args = json!({"values": {"field": "Amount", "title": "x"}});
+        let args = json!({"values": {"dataPath": "Amount", "title": "x"}});
         let redirect = registry
             .retired_argument_redirect("field.set", &data_site, args.as_object().unwrap())
             .unwrap();
@@ -2729,8 +2803,8 @@ mod tests {
             (
                 "field.set",
                 format!("{schema}.DataSet.Main"),
-                json!({"values": {"field": "Amount", "title": "x"}}),
-                "values.field",
+                json!({"values": {"dataPath": "Amount", "title": "x"}}),
+                "values.dataPath",
                 format!("{schema}.DataSet.Main.Field.Amount"),
             ),
             (
@@ -2798,7 +2872,7 @@ mod tests {
             .retired_argument_redirect(
                 "field.set",
                 &site,
-                json!({"values": {"field": "Owner.Code", "title": "x"}})
+                json!({"values": {"dataPath": "Owner.Code", "title": "x"}})
                     .as_object()
                     .unwrap(),
             )

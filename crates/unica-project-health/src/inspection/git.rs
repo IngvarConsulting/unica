@@ -2847,4 +2847,4 @@ fn repo_path(repository_root: &Path, path: &Path) -> Option<String> {
 
 #[cfg(test)]
 #[path = "../../tests/platform/project_health_git.rs"]
-mod tests;
+mod medium_tests;
