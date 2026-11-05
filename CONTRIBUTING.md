@@ -9,23 +9,83 @@
 
 ## Рекомендуемое окружение
 
+Разработка идёт на Windows, macOS и Linux. Что уже готово на хосте,
+показывает одна команда; она ничего не ставит и печатает команду установки
+недостающего для текущей ОС:
+
+```sh
+python3 scripts/dev/host-preflight.py
+```
+
+Скрипт запускается любым Python 3.8+, на Windows — `py scripts/dev/host-preflight.py`.
+Он проверяет `git` с именем и почтой, `gh` и его авторизацию, Python 3.12
+с пакетами из `tests/ci/requirements.txt`, кодировку, Rust с компонентами
+и `cargo-nextest`, компилятор C (на Windows — MSVC Build Tools), свободное
+место и платформу 1С. Ключ `--copies N` считает место на N рабочих копий
+со сборкой, каждой нужно 5–12 ГБ, и показывает, сколько сборок Rust хост
+держит одновременно: одну на 4 логических ядра. Платформа 1С нужна только для проверок
+на живой платформе; её отсутствие готовность не снимает.
+
 ### Python 3.12
 
 Минимальная поддерживаемая версия для локальной разработки и сборки —
 [Python 3.12](https://www.python.org/downloads/). Используйте ту же ветку
 интерпретатора, на которой выполняются команды проверки проекта.
 
-После установки убедитесь, что интерпретатор доступен из shell, в котором
-работает агент:
+| ОС | Установка |
+| --- | --- |
+| Windows | `winget install --id Python.Python.3.12 -e` |
+| macOS | `brew install python@3.12` |
+| Linux | `sudo apt install python3.12 python3.12-venv` или пакет дистрибутива |
+
+Команды проекта записаны как `python3.12`. На Windows в PowerShell и Git Bash
+вместо него вызывайте `py -3.12`: `python3.12` там нет, а `python` и `python3`
+могут вести на заглушку Microsoft Store. Пакеты для проверок:
 
 ```sh
-python3.12 --version
-python3.12 -m pip --version
+python3.12 -m pip install -r tests/ci/requirements.txt
 ```
 
-В Windows PowerShell используйте `py -3.12`; в Git Bash допустима команда
-`python`, если она выводит версию 3.12. Локальный installer на Windows
-запускается из Git Bash, как описано в [основном README](README.md#разработка).
+Python из Homebrew и системный Python Debian и Ubuntu запрещают такую
+установку (PEP 668). Там сначала создайте и активируйте окружение;
+в нём команда `python3.12` остаётся прежней:
+
+```sh
+python3.12 -m venv "$HOME/.venvs/unica"
+. "$HOME/.venvs/unica/bin/activate"
+```
+
+Агент запускает каждую команду в новой оболочке, поэтому добавьте
+`$HOME/.venvs/unica/bin` в начало `PATH` в профиле оболочки, а не только
+активируйте окружение.
+
+На macOS без Command Line Tools `python3` — заглушка, которая предлагает
+их поставить; выполните `xcode-select --install` до `host-preflight.py`.
+
+На Windows задайте `PYTHONUTF8=1` постоянно и перезапустите оболочку
+и приложение агента:
+
+```sh
+setx PYTHONUTF8 1
+```
+
+Без этого Python открывает текстовые файлы в кодовой странице ANSI
+(cp1251 при русской локали), и скрипты проекта падают на UTF-8 или искажают
+вывод. На macOS и Linux нужна локаль UTF-8, например `LANG=C.UTF-8`.
+Локальный installer на Windows запускается из Git Bash, как описано
+в [основном README](README.md#разработка).
+
+### GitHub CLI и Git
+
+| ОС | Установка |
+| --- | --- |
+| Windows | `winget install --id GitHub.cli -e` и `winget install --id Git.Git -e` |
+| macOS | `brew install gh`; Git даёт `xcode-select --install` |
+| Linux | `sudo apt install git`; `gh` — по [инструкции GitHub](https://github.com/cli/cli/blob/trunk/docs/install_linux.md) |
+
+После установки выполните `gh auth login` и задайте `git config --global user.name`
+и `user.email`. На Windows winget добавляет `gh` в PATH только новым оболочкам;
+уже открытое приложение агента нужно перезапустить.
 
 ### Rust
 
@@ -36,10 +96,31 @@ python3.12 -m pip --version
 rustup toolchain install stable --profile default
 rustup default stable
 rustup component add rustfmt clippy rust-analyzer rust-src
+cargo install cargo-nextest --locked
 ```
 
-На Windows дополнительно нужны Microsoft C++ Build Tools с MSVC toolchain и
-Windows SDK. После установки проверьте окружение:
+На Windows `rustup` ставится командой `winget install --id Rustlang.Rustup -e`,
+на macOS и Linux — установщиком с [rustup.rs](https://rustup.rs/). Версию
+`cargo-nextest`, которой пользуется CI, задаёт шаг `taiki-e/install-action`
+в `.github/workflows/unica-plugin-release.yml`; её можно передать
+в `--version`.
+
+Rust нужен компилятор C и компоновщик. На Windows это Microsoft C++ Build
+Tools с MSVC toolchain и Windows SDK, около 7 ГБ:
+
+```sh
+winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+`link.exe` в PATH Git Bash — утилита Git, а не компоновщик MSVC; наличие
+Build Tools показывает `host-preflight.py`. На macOS нужны Command Line Tools
+(`xcode-select --install`), на Linux — `build-essential` или его аналог.
+
+Каталог сборки по умолчанию — `target/` внутри рабочей копии. Если
+`CARGO_TARGET_DIR` задан глобально, переопределите его для каждой копии:
+копии разных ревизий с общим каталогом дают ложные ошибки компиляции.
+
+После установки проверьте окружение:
 
 ```sh
 rustc --version
@@ -622,18 +703,16 @@ npx @modelcontextprotocol/inspector -e UNICA_PROVIDER_STATE_DIR="$STATE" "$UNICA
 
 ## Самопроверка
 
-При настройке, изменении окружения или сбое запуска проверьте Python командой
-для своей оболочки:
+При настройке, изменении окружения или сбое запуска сначала выполните
+`host-preflight.py` из [рекомендуемого окружения](#рекомендуемое-окружение).
+Python отдельно проверяет команда для своей ОС:
 
 ```sh
 # macOS или Linux
 python3.12 --version
 
-# Windows PowerShell
+# Windows, PowerShell или Git Bash
 py -3.12 --version
-
-# Windows Git Bash; вывод должен начинаться с Python 3.12
-python --version
 ```
 
 Для проверки доступности Rust-инструментов выполните:
@@ -661,8 +740,18 @@ rust-analyzer --version
 сценарии:
 
 ```sh
+export UNICA_PROPERTIES_AGENT_BINARY=/absolute/path/to/immutable/unica
+export UNICA_XDTO_AGENT_BINARY="$UNICA_PROPERTIES_AGENT_BINARY"
+export UNICA_EVENT_DATA_AGENT_BINARY="$UNICA_PROPERTIES_AGENT_BINARY"
 python3.12 -m unittest discover -s tests/agent_evaluation -p 'test_*.py'
 ```
+
+Полный discovery требует явно выбранный неизменяемый бинарь текущей сборки.
+Перед командой задайте абсолютные пути: `UNICA_PROPERTIES_AGENT_BINARY`
+для `test_props`, `UNICA_XDTO_AGENT_BINARY` для `test_xdto` и
+`UNICA_EVENT_DATA_AGENT_BINARY` для `test_event_data`. Все три переменные
+могут указывать на одну неизменяемую копию проверяемого бинаря. Эти тесты
+не собирают его сами и не подставляют другую сборку при отсутствии переменной.
 
 Для прогона нужны установленный Codex CLI и действующая авторизация.
 Команда приёмки проверена с `0.163.0-alpha.10.2`: CLI должен поддерживать
@@ -691,3 +780,17 @@ python3.12 -m unittest tests.agent_evaluation.test_codex_cli
 или пропущенными. Агент и отдельный reviewer работают с подготовленным пакетом
 текущей сборки; протокол и физический результат сохраняются в
 `.session-temp/acceptance-agent/`.
+
+Сценарий видимости данных при записи документа (`S-630-event-data-visibility`)
+запускается отдельно с неизменяемым бинарём текущего кандидата и установленной
+справкой платформы линии 8.3.27:
+
+```sh
+UNICA_EVENT_DATA_AGENT_BINARY=/absolute/path/to/candidate/unica \
+  python3.12 -m unittest tests.agent_evaluation.test_event_data
+```
+
+Он проверяет чтение обоих навыков событий и проведения, полного модуля и
+официальных страниц через MCP, отсутствие изменений исходников и карты проекта,
+а затем передаёт ответ отдельному reviewer-у. Документ в базе не выполняется;
+объяснение по коду и справке не считается наблюдением значений при исполнении.

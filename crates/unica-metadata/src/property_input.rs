@@ -39,10 +39,17 @@ pub struct ConfigurationPropertyChanges {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WsReferencePropertyChanges {
+    pub location_url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesIntent {
+    DocumentNumerator(crate::document_numerator::DocumentNumeratorChanges),
     Metadata(MetaPropertyChanges),
     FunctionalOption(FunctionalOptionPropertyChanges),
     Role(RolePropertyChanges),
+    WSReference(WsReferencePropertyChanges),
     Subsystem(SubsystemPropertyChanges),
     Configuration(ConfigurationPropertyChanges),
     StyleItem(crate::style_color::StyleItemColor),
@@ -291,6 +298,29 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::DocumentNumerator => {
+                    use crate::document_numerator::DocumentNumeratorChanges;
+                    PropertiesIntent::DocumentNumerator(DocumentNumeratorChanges {
+                        number_type: values_reader
+                            .field("NumberType", false)?
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        number_length: values_reader
+                            .field("NumberLength", true)?
+                            .and_then(json_u32),
+                        number_allowed_length: values_reader
+                            .field("NumberAllowedLength", false)?
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        number_periodicity: values_reader
+                            .field("NumberPeriodicity", false)?
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
+                        check_unique: values_reader
+                            .field("CheckUnique", false)?
+                            .and_then(Value::as_bool),
+                    })
+                }
                 PropertiesSite::StyleItem => {
                     let value = values_reader
                         .field("Value", false)?
@@ -324,6 +354,18 @@ fn decode_with_contract(
                         )?;
                     }
                     PropertiesIntent::Metadata(changes)
+                }
+                PropertiesSite::WSReference => {
+                    PropertiesIntent::WSReference(WsReferencePropertyChanges {
+                        location_url: values_reader
+                            .string(DescriptorProperty::LocationUrl)?
+                            .ok_or_else(|| {
+                                invalid(
+                                    format!("{path}.values.LocationURL"),
+                                    "LocationURL is required",
+                                )
+                            })?,
+                    })
                 }
                 PropertiesSite::FunctionalOption => {
                     PropertiesIntent::FunctionalOption(FunctionalOptionPropertyChanges {
@@ -383,6 +425,35 @@ mod tests {
 
     fn decode(site: PropertiesSite, args: Value) -> DecodeResult<PropertiesIntent> {
         decode_properties(PropertiesOperation::Set, site, &args, "ops[7].args")
+    }
+
+    #[test]
+    fn document_numerator_properties_have_a_closed_addressed_write_profile() {
+        let address = unica_address::address::QualifiedAddress::resolve_input(
+            "main:DocumentNumerator.Sales",
+            &["main"],
+        )
+        .unwrap();
+        let site = PropertiesSite::from_address(&address)
+            .expect("an existing document numerator has a property write profile");
+        for values in [
+            json!({"NumberType":"Number"}),
+            json!({"NumberLength":9}),
+            json!({"NumberAllowedLength":"Variable"}),
+            json!({"NumberPeriodicity":"Month"}),
+            json!({"CheckUnique":false}),
+        ] {
+            decode(site, json!({"values":values})).unwrap();
+        }
+        for values in [
+            json!({"Name":"Renamed"}),
+            json!({"NumberType":"Unknown"}),
+            json!({"NumberLength":-1}),
+            json!({"CheckUnique":"false"}),
+            json!({}),
+        ] {
+            assert!(decode(site, json!({"values":values})).is_err());
+        }
     }
 
     #[test]

@@ -45,6 +45,50 @@ The normative rules here are development standards, not platform evidence:
 - **`ОбработкаПроведения` and `ОбработкаУдаленияПроведения`** are covered by
   `document-posting.md`, not here.
 
+## Diagnosing A Document Query Mismatch
+
+Start with the exact object class and handler, its caller, and subscriptions on
+the same event. A form handler, an object handler and a direct procedure call
+are different entry points. Establish the platform version, write mode and
+transaction context before assigning a cause.
+
+Read the class-qualified event pages through `unica.docs` with
+`source: "platform-help"`. For a document, use `ДокументОбъект.ПередЗаписью`,
+`ДокументОбъект.ПриЗаписи`, `ДокументОбъект.ОбработкаПроведения` and
+`РежимЗаписиДокумента.Проведение`. Form callbacks need their own pages:
+`ПередЗаписьюНаСервере` is outside the platform write transaction, whereas
+`ПриЗаписиНаСервере` follows object `ПриЗаписи` before that transaction ends.
+Check the returned version and read each full page. A search hit, another
+platform version, or a development standard does not establish this timing.
+
+For a synthetic `Document.VisibilityProbe` with a `Marker` attribute, compare
+an ordinary query by the same `Ссылка` at three points:
+
+- In object `ПередЗаписью`, compare the pending object value with the state
+  before this write. Earlier writes in an outer transaction may already be
+  visible, so “before this write” does not mean “last committed version”.
+- At entry to `ОбработкаПроведения`, the document has already been written in
+  the same transaction. A query of that document is not inherently one write
+  behind. Check the actual reference, parameter values, selected field,
+  filters, helper calls and subscriptions before diagnosing a reported old value.
+- After `Marker` is changed in memory inside the posting handler, the object
+  may differ from its last saved state. Identify the last actual write; the
+  handler name alone does not prove equality between memory and the query.
+
+Record the observation point, object reference, object value, query parameters
+and returned value together. Trace the form-to-object conversion separately;
+form data may be absent, cached, or different from the server object. If those
+observations are missing, name the explanation as a hypothesis and state the
+comparison that would confirm or refute it. Do not patch code from the symptom
+alone or claim a runtime reproduction that has not run.
+
+Keep the document row separate from register movements: a record set built in
+memory does not establish what a register query can see. Verify its write flags
+and actual write point. Other sessions may wait on locks or observe a different
+committed state; visibility there is not proved by a query in the writer's own
+transaction. [Transactions and responsible reads](transactions-locks.md) own
+transaction control and locking; this example adds no new transaction shape.
+
 ## Conditional Fill Checking Has One Correct Shape
 
 `#std463` is specific about how conditional requiredness is expressed. Build a
