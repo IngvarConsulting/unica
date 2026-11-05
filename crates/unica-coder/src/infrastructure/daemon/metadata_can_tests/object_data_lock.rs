@@ -113,11 +113,11 @@ fn verify_owners(owners: &[(&str, &str, &str)]) {
 }
 
 #[test]
-fn object_data_lock_preserves_constants_documents_and_registers() {
+fn medium_object_data_lock_preserves_constants_documents_and_registers() {
     verify_owners(&OWNERS[..7]);
 }
 #[test]
-fn object_data_lock_preserves_charts_processes_and_exchange() {
+fn medium_object_data_lock_preserves_charts_processes_and_exchange() {
     verify_owners(&OWNERS[7..]);
 }
 

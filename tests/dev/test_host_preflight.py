@@ -66,7 +66,8 @@ class FakeHost(PREFLIGHT.Host):
         }
         self.executables = {Path(VSWHERE)} if system == "Windows" else set()
         self.dirs: dict = {}
-        self.free = 40 * GIB
+        self.free = 120 * GIB
+        self.sizes: dict = {}
         self.cores = 8
         self.memory = 32 * GIB
         self.encoding = "UTF-8"
@@ -90,6 +91,9 @@ class FakeHost(PREFLIGHT.Host):
 
     def child_dirs(self, path):
         return self.dirs.get(Path(path), [])
+
+    def dir_size(self, path):
+        return self.sizes.get(Path(path), 0)
 
     def cpu_count(self):
         return self.cores
@@ -176,14 +180,14 @@ class HostPreflightTests(unittest.TestCase):
     def test_missing_msvc_adds_its_size_to_the_disk_need(self) -> None:
         host = FakeHost("Windows")
         host.executables = set()
-        host.free = 15 * GIB
+        host.free = 40 * GIB
         disk = by_name(run(host))["disk"]
         self.assertEqual(disk.status, PREFLIGHT.WARN)
         self.assertIn("7 GB for MSVC", disk.detail)
 
     def test_disk_scales_with_planned_copies(self) -> None:
         host = FakeHost("Linux")
-        host.free = 30 * GIB
+        host.free = 110 * GIB
         self.assertEqual(PREFLIGHT.check_disk(host, REPO, 2, False).status, PREFLIGHT.OK)
         self.assertEqual(PREFLIGHT.check_disk(host, REPO, 4, False).status, PREFLIGHT.WARN)
         self.assertEqual(PREFLIGHT.check_disk(host, REPO, 7, False).status, PREFLIGHT.MISSING)
@@ -200,10 +204,10 @@ class HostPreflightTests(unittest.TestCase):
     def test_build_capacity_is_the_smaller_of_cores_and_disk(self) -> None:
         host = FakeHost("Linux")
         host.cores = 16
-        host.free = 30 * GIB
+        host.free = 110 * GIB
         check = PREFLIGHT.check_capacity(host, REPO, 2)
         self.assertEqual(check.status, PREFLIGHT.OK)
-        self.assertIn("at most 2 parallel Rust builds (1 per 4 cores: 4; 12 GB free disk each: 2)", check.detail)
+        self.assertIn("at most 2 parallel Rust builds (1 per 4 cores: 4; 50 GB free disk each: 2)", check.detail)
         host.memory = None
         self.assertIn("RAM unknown", PREFLIGHT.check_capacity(host, REPO, 1).detail)
 
@@ -211,6 +215,54 @@ class HostPreflightTests(unittest.TestCase):
         host = FakeHost("Linux")
         host.free = 3 * GIB
         self.assertIn("at most 1 parallel Rust build", PREFLIGHT.check_capacity(host, REPO, 1).detail)
+
+    def test_disk_below_the_floor_warns_even_when_copies_fit(self) -> None:
+        host = FakeHost("Linux")
+        host.free = 45 * GIB
+        check = PREFLIGHT.check_disk(host, REPO, 1, False)
+        self.assertEqual(check.status, PREFLIGHT.WARN)
+        self.assertIn("below 50 GB a single test build can fill the disk", check.detail)
+        host.free = 50 * GIB
+        self.assertEqual(PREFLIGHT.check_disk(host, REPO, 1, False).status, PREFLIGHT.OK)
+
+    def test_dev_debuginfo_recommends_line_tables_on_every_os(self) -> None:
+        fixes = {
+            "Windows": "setx CARGO_PROFILE_DEV_DEBUG line-tables-only",
+            "Darwin": '$HOME/.zshrc',
+            "Linux": '$HOME/.bashrc',
+        }
+        for system, fix in fixes.items():
+            with self.subTest(system=system):
+                host = FakeHost(system)
+                check = by_name(run(host))["dev debuginfo"]
+                self.assertEqual(check.status, PREFLIGHT.WARN)
+                self.assertFalse(check.required)
+                self.assertIn(fix, check.fix[0])
+                host.env["CARGO_PROFILE_DEV_DEBUG"] = "line-tables-only"
+                self.assertEqual(by_name(run(host))["dev debuginfo"].status, PREFLIGHT.OK)
+
+    def test_build_dirs_are_listed_largest_first(self) -> None:
+        host = FakeHost("Windows")
+        root = Path(r"C:\cargo-target")
+        host.dirs[root] = [root / "worker-1", root / "worker-2"]
+        host.sizes = {root / "worker-1": 26 * GIB, root / "worker-2": 50 * GIB}
+        check = by_name(run(host))["build dirs"]
+        self.assertEqual(check.status, PREFLIGHT.OK)
+        self.assertIn("76.0 GB under", check.detail)
+        self.assertIn("worker-2 50.0 GB, worker-1 26.0 GB", check.detail)
+        host.free = 20 * GIB
+        check = by_name(run(host))["build dirs"]
+        self.assertEqual(check.status, PREFLIGHT.WARN)
+        self.assertEqual(check.fix, ["py -3.12 scripts/dev/prune-build-caches.py"])
+
+    def test_build_root_follows_the_os_and_the_option(self) -> None:
+        host = FakeHost("Linux")
+        host.env["HOME"] = "/home/dev"
+        self.assertEqual(PREFLIGHT.default_build_root(host), Path("/home/dev/cargo-target"))
+        other = Path("/data/builds")
+        host.dirs[other] = [other / "w1"]
+        checks = PREFLIGHT.run_checks(host, REPO, 1, [], other)
+        self.assertIn("w1 0.0 GB", by_name(checks)["build dirs"].detail)
 
     def test_package_hint_uses_venv_where_system_python_refuses_pip(self) -> None:
         host = FakeHost("Darwin")
