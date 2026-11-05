@@ -216,7 +216,7 @@ fn capability_unavailable(message: &str) -> unica_metadata::request::MetaFailure
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) mod medium_tests {
     use super::*;
 
     use crate::application::ports::{

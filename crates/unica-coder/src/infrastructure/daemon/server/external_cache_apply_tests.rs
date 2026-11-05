@@ -23,7 +23,7 @@ fn tree_entries(root: &Path) -> Vec<std::path::PathBuf> {
 #[test]
 fn canonical_apply_preserves_external_cache_authority_from_preview_to_execution() {
     const CHILD: &str = "UNICA_EXTERNAL_CACHE_APPLY_TEST_CHILD";
-    const TEST: &str = "infrastructure::daemon::server::external_cache_apply_tests::canonical_apply_preserves_external_cache_authority_from_preview_to_execution";
+    const TEST: &str = "infrastructure::daemon::server::medium_external_cache_apply_tests::canonical_apply_preserves_external_cache_authority_from_preview_to_execution";
     let Ok(mode) = std::env::var(CHILD) else {
         // Only the selected child sees this cache override. Concurrent tests
         // cannot inherit the fixture's environment.

@@ -5,6 +5,12 @@ use std::collections::HashSet;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum MetaPropertyKey {
+    FullTextSearch,
+    SearchStringModeOnInputByString,
+    FullTextSearchOnInputByString,
+    ChoiceDataGetModeOnInputByString,
+    CreateOnInput,
+    ChoiceHistoryOnInput,
     Type,
     Synonym,
     Comment,
@@ -17,8 +23,11 @@ pub enum MetaPropertyKey {
     ClientOrdinaryApplication,
     CodeAllowedLength,
     CodeMask,
+    CodeSeries,
     CodeType,
     Correspondence,
+    DataLockControlMode,
+    CreateTaskInPrivilegedMode,
     DefaultPresentation,
     DependenceOnCalculationTypes,
     Description,
@@ -45,6 +54,7 @@ pub enum MetaPropertyKey {
     PostInPrivilegedMode,
     Posting,
     Predefined,
+    PredefinedDataUpdate,
     Privileged,
     QuickChoice,
     RealTimePosting,
@@ -125,6 +135,38 @@ pub struct MetadataPropertySpec {
     pub allowed_kinds: &'static [MetadataKind],
     pub enum_values: &'static [&'static str],
     pub string_pattern: Option<&'static str>,
+    /// Owners whose existing enum element `props.set` rewrites in place.
+    pub in_place: InPlace,
+}
+
+/// Owners whose existing element of an enum property is written in place:
+/// the single direct element must hold a confirmed value, and only its text
+/// changes, keeping the qualified element and its namespace declarations.
+/// Other owners use the general property writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InPlace {
+    Never,
+    /// Every owner the property allows.
+    Always,
+    /// Only these owners.
+    Owners(&'static [MetadataKind]),
+}
+
+impl MetadataPropertySpec {
+    /// Whether `props.set` rewrites this property of `kind` in place.
+    pub fn in_place(&self, kind: MetadataKind) -> bool {
+        self.allowed_kinds.contains(&kind)
+            && match self.in_place {
+                InPlace::Never => false,
+                InPlace::Always => true,
+                InPlace::Owners(owners) => owners.contains(&kind),
+            }
+    }
+
+    const fn written_in_place(mut self, in_place: InPlace) -> Self {
+        self.in_place = in_place;
+        self
+    }
 }
 
 const fn property(
@@ -141,6 +183,7 @@ const fn property(
         allowed_kinds,
         enum_values: &[],
         string_pattern: None,
+        in_place: InPlace::Never,
     }
 }
 
@@ -185,6 +228,7 @@ const fn enum_property(
         allowed_kinds,
         enum_values,
         string_pattern: None,
+        in_place: InPlace::Never,
     }
 }
 
@@ -202,10 +246,26 @@ const fn patterned_string_property(
         allowed_kinds,
         enum_values: &[],
         string_pattern: Some(string_pattern),
+        in_place: InPlace::Never,
     }
 }
 
+const CHOICE_MODE_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Enum,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ExchangePlan,
+];
+const CODE_ALLOWED_LENGTH_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::ExchangePlan,
+];
 const CATALOG_KINDS: &[MetadataKind] = &[MetadataKind::Catalog];
+const BUSINESS_PROCESS_KINDS: &[MetadataKind] = &[MetadataKind::BusinessProcess];
 const DOCUMENT_KINDS: &[MetadataKind] = &[MetadataKind::Document];
 const INFORMATION_REGISTER_KINDS: &[MetadataKind] = &[MetadataKind::InformationRegister];
 const ACCUMULATION_REGISTER_KINDS: &[MetadataKind] = &[MetadataKind::AccumulationRegister];
@@ -222,6 +282,8 @@ const EVENT_SUBSCRIPTION_KINDS: &[MetadataKind] = &[MetadataKind::EventSubscript
 const WEB_SERVICE_SESSION_KINDS: &[MetadataKind] =
     &[MetadataKind::HTTPService, MetadataKind::WebService];
 
+const NUMBER_PERIODICITY_KINDS: &[MetadataKind] =
+    &[MetadataKind::Document, MetadataKind::BusinessProcess];
 const DOCUMENT_NUMBER_KINDS: &[MetadataKind] = &[
     MetadataKind::Document,
     MetadataKind::BusinessProcess,
@@ -234,6 +296,8 @@ const CODE_KINDS: &[MetadataKind] = &[
     MetadataKind::ChartOfCalculationTypes,
     MetadataKind::ExchangePlan,
 ];
+const CODE_TYPE_KINDS: &[MetadataKind] =
+    &[MetadataKind::Catalog, MetadataKind::ChartOfCalculationTypes];
 const DESCRIPTION_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
     MetadataKind::ChartOfAccounts,
@@ -310,6 +374,11 @@ const INCLUDE_HELP_KINDS: &[MetadataKind] = &[
 
 const CHOICE_MODE_VALUES: &[&str] = &["BothWays", "FromForm", "QuickChoice"];
 const CODE_ALLOWED_LENGTH_VALUES: &[&str] = &["Variable", "Fixed"];
+const CATALOG_CODE_SERIES_VALUES: &[&str] = &[
+    "WholeCatalog",
+    "WithinOwnerSubordination",
+    "WithinSubordination",
+];
 const CODE_TYPE_VALUES: &[&str] = &["String", "Number"];
 const DEFAULT_PRESENTATION_VALUES: &[&str] = &["AsDescription", "AsCode"];
 const DEPENDENCE_VALUES: &[&str] = &["DontUse", "OnActionPeriod"];
@@ -339,7 +408,87 @@ const REUSE_SESSIONS_VALUES: &[&str] = &["DontUse", "AutoUse"];
 const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "ToItems"];
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
+const DATA_LOCK_CONTROL_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::Constant,
+    MetadataKind::InformationRegister,
+    MetadataKind::AccumulationRegister,
+    MetadataKind::AccountingRegister,
+    MetadataKind::CalculationRegister,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::BusinessProcess,
+    MetadataKind::Task,
+    MetadataKind::ExchangePlan,
+];
+const OBJECT_DATA_LOCK_CONTROL_VALUES: &[&str] = &["Automatic", "Managed"];
+const PREDEFINED_DATA_UPDATE_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+];
+const PREDEFINED_DATA_UPDATE_VALUES: &[&str] = &["Auto", "AutoUpdate", "DontAutoUpdate"];
+
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
+    enum_property(
+        "CodeSeries",
+        "CodeSeries",
+        MetaPropertyKey::CodeSeries,
+        CATALOG_KINDS,
+        CATALOG_CODE_SERIES_VALUES,
+    )
+    .written_in_place(InPlace::Always),
+    enum_property(
+        "FullTextSearch",
+        "FullTextSearch",
+        MetaPropertyKey::FullTextSearch,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Use", "DontUse"],
+    )
+    .written_in_place(InPlace::Always),
+    enum_property(
+        "SearchStringModeOnInputByString",
+        "SearchStringModeOnInputByString",
+        MetaPropertyKey::SearchStringModeOnInputByString,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Begin", "AnyPart"],
+    )
+    .written_in_place(InPlace::Always),
+    enum_property(
+        "FullTextSearchOnInputByString",
+        "FullTextSearchOnInputByString",
+        MetaPropertyKey::FullTextSearchOnInputByString,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Use", "DontUse"],
+    )
+    .written_in_place(InPlace::Always),
+    enum_property(
+        "ChoiceDataGetModeOnInputByString",
+        "ChoiceDataGetModeOnInputByString",
+        MetaPropertyKey::ChoiceDataGetModeOnInputByString,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Directly", "Background"],
+    )
+    .written_in_place(InPlace::Always),
+    enum_property(
+        "CreateOnInput",
+        "CreateOnInput",
+        MetaPropertyKey::CreateOnInput,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Auto", "Use", "DontUse"],
+    )
+    .written_in_place(InPlace::Always),
+    enum_property(
+        "ChoiceHistoryOnInput",
+        "ChoiceHistoryOnInput",
+        MetaPropertyKey::ChoiceHistoryOnInput,
+        &[MetadataKind::Catalog, MetadataKind::Document],
+        &["Auto", "DontUse"],
+    )
+    .written_in_place(InPlace::Always),
     property(
         "Type",
         MetaPropertyKey::Type,
@@ -386,9 +535,16 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "ChoiceMode",
         "ChoiceMode",
         MetaPropertyKey::ChoiceMode,
-        CATALOG_KINDS,
+        CHOICE_MODE_KINDS,
         CHOICE_MODE_VALUES,
-    ),
+    )
+    .written_in_place(InPlace::Owners(&[
+        MetadataKind::Enum,
+        MetadataKind::ChartOfCharacteristicTypes,
+        MetadataKind::ChartOfCalculationTypes,
+        MetadataKind::ChartOfAccounts,
+        MetadataKind::ExchangePlan,
+    ])),
     property(
         "ClientManagedApplication",
         MetaPropertyKey::ClientManagedApplication,
@@ -405,9 +561,14 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "CodeAllowedLength",
         "CodeAllowedLength",
         MetaPropertyKey::CodeAllowedLength,
-        CATALOG_KINDS,
+        CODE_ALLOWED_LENGTH_KINDS,
         CODE_ALLOWED_LENGTH_VALUES,
-    ),
+    )
+    .written_in_place(InPlace::Owners(&[
+        MetadataKind::ChartOfCharacteristicTypes,
+        MetadataKind::ChartOfCalculationTypes,
+        MetadataKind::ExchangePlan,
+    ])),
     property(
         "CodeMask",
         MetaPropertyKey::CodeMask,
@@ -418,7 +579,7 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "CodeType",
         "CodeType",
         MetaPropertyKey::CodeType,
-        CATALOG_KINDS,
+        CODE_TYPE_KINDS,
         CODE_TYPE_VALUES,
     ),
     property(
@@ -427,6 +588,14 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyValueKind::Boolean,
         ACCOUNTING_REGISTER_KINDS,
     ),
+    enum_property(
+        "DataLockControlMode",
+        "DataLockControlMode",
+        MetaPropertyKey::DataLockControlMode,
+        DATA_LOCK_CONTROL_KINDS,
+        OBJECT_DATA_LOCK_CONTROL_VALUES,
+    )
+    .written_in_place(InPlace::Always),
     enum_property(
         "DefaultPresentation",
         "DefaultPresentation",
@@ -530,16 +699,21 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "NumberAllowedLength",
         "NumberAllowedLength",
         MetaPropertyKey::NumberAllowedLength,
-        DOCUMENT_KINDS,
+        DOCUMENT_NUMBER_KINDS,
         NUMBER_ALLOWED_LENGTH_VALUES,
-    ),
+    )
+    .written_in_place(InPlace::Owners(&[
+        MetadataKind::BusinessProcess,
+        MetadataKind::Task,
+    ])),
     enum_property(
         "NumberPeriodicity",
         "NumberPeriodicity",
         MetaPropertyKey::NumberPeriodicity,
-        DOCUMENT_KINDS,
+        NUMBER_PERIODICITY_KINDS,
         NUMBER_PERIODICITY_VALUES,
-    ),
+    )
+    .written_in_place(InPlace::Owners(&[MetadataKind::BusinessProcess])),
     enum_property(
         "NumberType",
         "NumberType",
@@ -574,6 +748,12 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         CALCULATION_REGISTER_PERIODICITY_VALUES,
     ),
     property(
+        "CreateTaskInPrivilegedMode",
+        MetaPropertyKey::CreateTaskInPrivilegedMode,
+        MetaPropertyValueKind::Boolean,
+        BUSINESS_PROCESS_KINDS,
+    ),
+    property(
         "PostInPrivilegedMode",
         MetaPropertyKey::PostInPrivilegedMode,
         MetaPropertyValueKind::Boolean,
@@ -586,6 +766,14 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         DOCUMENT_KINDS,
         POSTING_VALUES,
     ),
+    enum_property(
+        "PredefinedDataUpdate",
+        "PredefinedDataUpdate",
+        MetaPropertyKey::PredefinedDataUpdate,
+        PREDEFINED_DATA_UPDATE_KINDS,
+        PREDEFINED_DATA_UPDATE_VALUES,
+    )
+    .written_in_place(InPlace::Always),
     property(
         "Predefined",
         MetaPropertyKey::Predefined,
@@ -876,6 +1064,35 @@ mod tests {
     use super::*;
     use crate::{MetaDiagnosticCode, MetadataKind};
 
+    #[test]
+    fn in_place_writes_only_confirmed_enum_elements_of_allowed_owners() {
+        for spec in METADATA_PROPERTY_SPECS {
+            if spec.in_place == InPlace::Never {
+                continue;
+            }
+            assert!(
+                spec.value_kind == MetaPropertyValueKind::String && !spec.enum_values.is_empty(),
+                "{}: only an enum value can be confirmed before an in-place write",
+                spec.public_name
+            );
+            if let InPlace::Owners(owners) = spec.in_place {
+                assert!(
+                    !owners.is_empty(),
+                    "{}: use InPlace::Never",
+                    spec.public_name
+                );
+                for owner in owners {
+                    assert!(
+                        spec.allowed_kinds.contains(owner),
+                        "{}: in-place owner {} is not an allowed owner",
+                        spec.public_name,
+                        owner.as_str()
+                    );
+                }
+            }
+        }
+    }
+
     fn assert_property_kind_matrix(
         property_name: &str,
         value: MetaPropertyValue,
@@ -892,6 +1109,90 @@ mod tests {
                 "{property_name} for {}",
                 kind.as_str()
             );
+        }
+    }
+
+    #[test]
+    fn catalog_code_series_has_a_closed_value_and_owner_matrix() {
+        for value in [
+            "WholeCatalog",
+            "WithinOwnerSubordination",
+            "WithinSubordination",
+        ] {
+            assert_property_kind_matrix(
+                "CodeSeries",
+                MetaPropertyValue::String(value.into()),
+                &[MetadataKind::Catalog],
+            );
+        }
+        for value in ["WholeChartOfAccounts", "WithinOwner", "", "wholeCatalog"] {
+            assert!(
+                MetaPropertyChanges::convert(
+                    MetadataKind::Catalog,
+                    vec![MetaPropertyInput::new(
+                        "CodeSeries",
+                        MetaPropertyValue::String(value.into())
+                    )],
+                )
+                .is_err(),
+                "{value}"
+            );
+        }
+        assert!(MetaPropertyChanges::convert(
+            MetadataKind::Catalog,
+            vec![MetaPropertyInput::new(
+                "CodeSeries",
+                MetaPropertyValue::Boolean(true)
+            )],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn create_task_privileged_mode_is_boolean_and_business_process_only() {
+        for value in [false, true] {
+            assert_property_kind_matrix(
+                "CreateTaskInPrivilegedMode",
+                MetaPropertyValue::Boolean(value),
+                &[MetadataKind::BusinessProcess],
+            );
+        }
+        assert!(MetaPropertyChanges::convert(
+            MetadataKind::BusinessProcess,
+            vec![MetaPropertyInput::new(
+                "CreateTaskInPrivilegedMode",
+                MetaPropertyValue::String("true".into())
+            )],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn code_type_keeps_its_closed_enum_and_argument_type_for_both_supported_owners() {
+        for kind in [MetadataKind::Catalog, MetadataKind::ChartOfCalculationTypes] {
+            for value in ["String", "Number"] {
+                assert!(MetaPropertyChanges::convert(
+                    kind,
+                    vec![MetaPropertyInput::new(
+                        "CodeType",
+                        MetaPropertyValue::String(value.into())
+                    )]
+                )
+                .is_ok());
+            }
+            for value in [
+                MetaPropertyValue::Boolean(true),
+                MetaPropertyValue::UnsignedInteger(9),
+                MetaPropertyValue::String("Unknown".into()),
+            ] {
+                let error = MetaPropertyChanges::convert(
+                    kind,
+                    vec![MetaPropertyInput::new("CodeType", value)],
+                )
+                .expect_err("CodeType keeps its exact value kind and enum");
+                assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+                assert_eq!(error.field.as_deref(), Some("values.CodeType"));
+            }
         }
     }
 
@@ -1148,7 +1449,14 @@ mod tests {
             (
                 "ChoiceMode",
                 MetaPropertyValue::String("FromForm".into()),
-                &[Catalog],
+                &[
+                    Catalog,
+                    Enum,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ChartOfAccounts,
+                    ExchangePlan,
+                ],
             ),
             (
                 "ClientManagedApplication",
@@ -1163,7 +1471,12 @@ mod tests {
             (
                 "CodeAllowedLength",
                 MetaPropertyValue::String("Fixed".into()),
-                &[Catalog],
+                &[
+                    Catalog,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ExchangePlan,
+                ],
             ),
             (
                 "CodeLength",
@@ -1184,12 +1497,61 @@ mod tests {
             (
                 "CodeType",
                 MetaPropertyValue::String("Number".into()),
-                &[Catalog],
+                &[Catalog, ChartOfCalculationTypes],
             ),
             (
                 "Correspondence",
                 MetaPropertyValue::Boolean(true),
                 &[AccountingRegister],
+            ),
+            (
+                "FullTextSearch",
+                MetaPropertyValue::String("Use".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "SearchStringModeOnInputByString",
+                MetaPropertyValue::String("Begin".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "FullTextSearchOnInputByString",
+                MetaPropertyValue::String("Use".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "ChoiceDataGetModeOnInputByString",
+                MetaPropertyValue::String("Directly".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "CreateOnInput",
+                MetaPropertyValue::String("Auto".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "ChoiceHistoryOnInput",
+                MetaPropertyValue::String("Auto".into()),
+                &[Catalog, Document],
+            ),
+            (
+                "DataLockControlMode",
+                MetaPropertyValue::String("Managed".into()),
+                &[
+                    Catalog,
+                    Document,
+                    Constant,
+                    InformationRegister,
+                    AccumulationRegister,
+                    AccountingRegister,
+                    CalculationRegister,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    BusinessProcess,
+                    Task,
+                    ExchangePlan,
+                ],
             ),
             (
                 "DefaultPresentation",
@@ -1272,7 +1634,7 @@ mod tests {
             (
                 "NumberAllowedLength",
                 MetaPropertyValue::String("Fixed".into()),
-                &[Document],
+                &[Document, BusinessProcess, Task],
             ),
             (
                 "NumberLength",
@@ -1282,7 +1644,7 @@ mod tests {
             (
                 "NumberPeriodicity",
                 MetaPropertyValue::String("Month".into()),
-                &[Document],
+                &[Document, BusinessProcess],
             ),
             (
                 "NumberType",
@@ -1313,6 +1675,16 @@ mod tests {
                 "Posting",
                 MetaPropertyValue::String("Deny".into()),
                 &[Document],
+            ),
+            (
+                "PredefinedDataUpdate",
+                MetaPropertyValue::String("AutoUpdate".into()),
+                &[
+                    Catalog,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                ],
             ),
             (
                 "Predefined",

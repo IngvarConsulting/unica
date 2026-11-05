@@ -1,0 +1,711 @@
+{
+  "id": "S-1655-object-data-lock",
+  "issue": 1655,
+  "area": "Метаданные",
+  "task": "Изменить режим блокировок Catalog и регистра, сохраняя конфигурацию, поля и модули; проверить конфликт.",
+  "workspace": "tests/fixtures/acceptance/workspace-object-data-lock",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/DataLockControlMode/enum",
+          "eq": [
+            "Automatic",
+            "Managed"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "6f74c957b3e2e828c8cabff51fd8addfe26ab7cbe3c8b3c75e07caf6583c87e7"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataLockControlMode": "Managed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}DataLockControlMode",
+          "eq": [
+            "Managed"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataLockControlMode",
+          "eq": "Managed"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataLockControlMode": "Managed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}DataLockControlMode",
+          "eq": [
+            "Managed"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataLockControlMode",
+          "eq": "Managed"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataLockControlMode": "Automatic"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_2"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}Properties/{*}DataLockControlMode",
+          "eq": [
+            "Automatic"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataLockControlMode",
+          "eq": "Automatic"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        },
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "6f74c957b3e2e828c8cabff51fd8addfe26ab7cbe3c8b3c75e07caf6583c87e7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/DataLockControlMode/enum",
+          "eq": [
+            "Automatic",
+            "Managed"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataLockControlMode": "Managed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}DataLockControlMode",
+          "eq": [
+            "Managed"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataLockControlMode",
+          "eq": "Managed"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataLockControlMode": "Managed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}DataLockControlMode",
+          "eq": [
+            "Managed"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataLockControlMode",
+          "eq": "Managed"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_2": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataLockControlMode": "Automatic"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_2"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}DataLockControlMode",
+          "eq": [
+            "Automatic"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataLockControlMode",
+          "eq": "Automatic"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DataLockControlMode": "Managed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Changed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "changed": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Catalogs/Codes.xml; input `Catalogs/Codes.xml`: source write target; the plan retains its original state to prevent overwriting",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "1bf62d96859b90525180783385f6972f5ed3d69b2e64ae85bb527ba66387223f"
+        }
+      ]
+    }
+  ]
+}

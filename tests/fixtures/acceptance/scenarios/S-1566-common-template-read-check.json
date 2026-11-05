@@ -91,7 +91,7 @@
           "eq": "SpreadsheetDocument"
         },
         {
-          "pointer": "/data/props/synonym",
+          "pointer": "/data/props/Synonym",
           "eq": "Общий Print"
         }
       ],
@@ -259,8 +259,8 @@
           "eq": "Bad"
         },
         {
-          "pointer": "/data/props/synonym",
-          "eq": null
+          "pointer": "/data/props/Synonym",
+          "absent": true
         },
         {
           "pointer": "/data/props/format",
@@ -425,7 +425,7 @@
           "eq": "HTMLDocument"
         },
         {
-          "pointer": "/data/props/synonym",
+          "pointer": "/data/props/Synonym",
           "eq": "Общий Html"
         },
         {
@@ -466,8 +466,8 @@
           "eq": "Empty"
         },
         {
-          "pointer": "/data/props/synonym",
-          "eq": null
+          "pointer": "/data/props/Synonym",
+          "absent": true
         },
         {
           "pointer": "/data/limits",
