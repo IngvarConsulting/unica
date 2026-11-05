@@ -138,7 +138,8 @@ fn recover_from_live_daemon(
         identity.clone(),
         std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
         SCENARIO_IDLE_GRACE,
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     owner.recover_invocation_receipt(key)
 }
 
@@ -153,7 +154,8 @@ fn read_task_from_live_daemon(
         identity.clone(),
         std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
         SCENARIO_IDLE_GRACE,
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     match api {
         ScenarioTaskApi::NativeWait => owner.wait_task(task_id, SCENARIO_TASK_POLL_INTERVAL_MS),
         ScenarioTaskApi::NativeGet
@@ -1293,7 +1295,8 @@ fn run_direct_load(
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-load-anchor"),
             SCENARIO_IDLE_GRACE,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         let runtime = control
             .runtime()
             .ok_or_else(|| "direct load daemon did not publish its runtime owner".to_owned())?;
@@ -2816,7 +2819,8 @@ fn exchange_once(
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
             SCENARIO_IDLE_GRACE,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         let response = exchange(&mut owner);
         drop(owner);
         response
@@ -2870,7 +2874,8 @@ fn exchange_once_retaining_actor(
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
             SCENARIO_IDLE_GRACE,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         let response = exchange(&mut owner)?;
         drop(owner);
         Ok((response, actor))
@@ -4904,7 +4909,8 @@ fn exchange_ack_and_expect_disconnect(
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
             SCENARIO_IDLE_GRACE,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         let result = owner.acknowledge_invocation_receipt(key, terminal_digest);
         drop(owner);
         match result {
@@ -4940,7 +4946,8 @@ fn exchange_submit_and_expect_disconnect(
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
             SCENARIO_IDLE_GRACE,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         let result = owner.submit_invocation(invocation);
         drop(owner);
         match result {
@@ -5205,7 +5212,8 @@ impl PendingSubmit {
             identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
             SCENARIO_IDLE_GRACE,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         owner.submit_invocation(invocation)
     }
 
@@ -5359,7 +5367,8 @@ fn spawn_additional_submit_client(
             client_identity,
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
             SCENARIO_IDLE_GRACE,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         owner.submit_invocation_with_timeout_for_test(invocation, SCENARIO_BULK_SNAPSHOT_TIMEOUT)
     });
     SpawnedSubmitClient {
@@ -5381,7 +5390,8 @@ fn acknowledge_on_live_daemon(
         identity.clone(),
         std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
         SCENARIO_IDLE_GRACE,
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     owner.acknowledge_invocation_receipt(key, terminal_digest)
 }
 
@@ -5395,7 +5405,8 @@ fn cancel_on_live_daemon(
         identity.clone(),
         std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
         SCENARIO_IDLE_GRACE,
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     owner.cancel_invocation(key)
 }
 
@@ -5454,7 +5465,8 @@ fn start_blocked_submit(
             client_identity.clone(),
             std::path::PathBuf::from("unused-existing-v5-scenario-endpoint"),
             SCENARIO_IDLE_GRACE,
-        )?;
+        )
+        .map_err(|error| error.to_string())?;
         let response = owner
             .submit_invocation_with_timeout_for_test(invocation, SCENARIO_BULK_SNAPSHOT_TIMEOUT)?;
         drop(owner);

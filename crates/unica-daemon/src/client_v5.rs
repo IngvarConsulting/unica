@@ -82,6 +82,8 @@ impl V5ObservationInterrupt {
 pub enum V5TransportError {
     SessionPoisoned,
     RequestNotSent(String),
+    /// The spawned daemon exhausted its readiness window before any request was sent.
+    SpawnReadinessExpired(String),
     /// The serialized frame, newline included, exceeds the daemon request
     /// bound. Like `RequestNotSent`, no byte was written; unlike it, the same
     /// call will never fit.
@@ -96,7 +98,9 @@ impl fmt::Display for V5TransportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SessionPoisoned => formatter.write_str("protocol-v5 owner session is poisoned"),
-            Self::RequestNotSent(error) | Self::ResponseLost(error) => formatter.write_str(error),
+            Self::RequestNotSent(error)
+            | Self::SpawnReadinessExpired(error)
+            | Self::ResponseLost(error) => formatter.write_str(error),
             Self::RequestTooLarge {
                 frame_bytes,
                 limit_bytes,
@@ -289,7 +293,7 @@ impl V5DaemonProcessOwner {
         core_identity: CoreIdentity,
         executable: PathBuf,
         idle_grace: Duration,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, V5TransportError> {
         let deadline = Instant::now() + CONNECT_TIMEOUT;
         Self::connect_or_spawn_before(state_root, core_identity, executable, idle_grace, deadline)
     }
@@ -300,45 +304,68 @@ impl V5DaemonProcessOwner {
         executable: PathBuf,
         idle_grace: Duration,
         deadline: Instant,
-    ) -> Result<Self, String> {
-        remaining(deadline, "discovery")?;
+    ) -> Result<Self, V5TransportError> {
+        remaining(deadline, "discovery").map_err(V5TransportError::RequestNotSent)?;
         if core_identity != CoreIdentity::production_v5() {
-            return Err("protocol-v5 client requires the exact production-v5 identity".to_string());
+            return Err(V5TransportError::RequestNotSent(
+                "protocol-v5 client requires the exact production-v5 identity".to_string(),
+            ));
         }
-        let state = DaemonStateDirectory::open(state_root, &core_identity)?;
-        if let Some(record) = state.read_v5_endpoint_record()? {
+        let state = DaemonStateDirectory::open(state_root, &core_identity)
+            .map_err(V5TransportError::RequestNotSent)?;
+        if let Some(record) = state
+            .read_v5_endpoint_record()
+            .map_err(V5TransportError::RequestNotSent)?
+        {
             if record.core_identity() != &core_identity {
-                return Err("protocol-v5 endpoint belongs to a foreign core identity".to_string());
+                return Err(V5TransportError::RequestNotSent(
+                    "protocol-v5 endpoint belongs to a foreign core identity".to_string(),
+                ));
             }
-            let probe_deadline = existing_endpoint_probe_deadline(deadline)?;
+            let probe_deadline = existing_endpoint_probe_deadline(deadline)
+                .map_err(V5TransportError::RequestNotSent)?;
             match Self::connect_classified_before(record, probe_deadline) {
                 Ok(owner) => return Ok(owner),
-                Err(ConnectionFailure::Rejected(message)) => return Err(message),
+                Err(ConnectionFailure::Rejected(message)) => {
+                    return Err(V5TransportError::RequestNotSent(message))
+                }
                 Err(ConnectionFailure::Unavailable(_)) => {}
             }
         }
 
-        remaining(deadline, "spawn lock")?;
+        remaining(deadline, "spawn lock").map_err(V5TransportError::RequestNotSent)?;
         let lock_deadline = deadline.min(Instant::now() + SPAWN_LOCK_TIMEOUT);
-        let _spawn_lock = state.acquire_spawn_lock_before(lock_deadline)?;
-        if let Some(record) = state.read_v5_endpoint_record()? {
+        let _spawn_lock = state
+            .acquire_spawn_lock_before(lock_deadline)
+            .map_err(V5TransportError::RequestNotSent)?;
+        if let Some(record) = state
+            .read_v5_endpoint_record()
+            .map_err(V5TransportError::RequestNotSent)?
+        {
             if record.core_identity() != &core_identity {
-                return Err("protocol-v5 endpoint belongs to a foreign core identity".to_string());
+                return Err(V5TransportError::RequestNotSent(
+                    "protocol-v5 endpoint belongs to a foreign core identity".to_string(),
+                ));
             }
-            let probe_deadline = existing_endpoint_probe_deadline(deadline)?;
+            let probe_deadline = existing_endpoint_probe_deadline(deadline)
+                .map_err(V5TransportError::RequestNotSent)?;
             match Self::connect_classified_before(record, probe_deadline) {
                 Ok(owner) => return Ok(owner),
-                Err(ConnectionFailure::Rejected(message)) => return Err(message),
+                Err(ConnectionFailure::Rejected(message)) => {
+                    return Err(V5TransportError::RequestNotSent(message))
+                }
                 Err(ConnectionFailure::Unavailable(_)) => {}
             }
         }
 
         // Proving the build reads the executable; spend that before the
         // readiness window is measured, not out of it.
-        super::identity::verify_executable_build(&executable, &core_identity)?;
+        super::identity::verify_executable_build(&executable, &core_identity)
+            .map_err(V5TransportError::RequestNotSent)?;
         // Readiness and failure cleanup share the caller's deadline. Reserve
         // part of even a short recovery window instead of adding a new grace.
-        let startup_budget = remaining(deadline, "spawn")?;
+        let startup_budget =
+            remaining(deadline, "spawn").map_err(V5TransportError::RequestNotSent)?;
         let cleanup_reserve = (startup_budget / 3).min(STARTUP_CLEANUP_TIMEOUT);
         let readiness_deadline = deadline - cleanup_reserve;
         // Under the spawn lock no other frontend starts a daemon here: a reason
@@ -350,8 +377,12 @@ impl V5DaemonProcessOwner {
             &core_identity,
             idle_grace,
         );
-        let mut child = ManagedStartupChild::spawn_configured_before(command, deadline)
-            .map_err(|error| format!("failed to spawn protocol-v5 daemon: {error}"))?;
+        let mut child =
+            ManagedStartupChild::spawn_configured_before(command, deadline).map_err(|error| {
+                V5TransportError::RequestNotSent(format!(
+                    "failed to spawn protocol-v5 daemon: {error}"
+                ))
+            })?;
         Self::await_startup_before(
             &mut child,
             &state,
@@ -367,43 +398,58 @@ impl V5DaemonProcessOwner {
         core_identity: &CoreIdentity,
         readiness_deadline: Instant,
         deadline: Instant,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, V5TransportError> {
         let expected_pid = child.id();
         let mut endpoint = StartupEndpointObservation::new(expected_pid);
 
         let readiness = loop {
             if let Err(error) = remaining(readiness_deadline, "spawn readiness") {
-                break Err(error);
+                break Err(V5TransportError::SpawnReadinessExpired(error));
             }
             let child_status = match child.try_wait_status() {
                 Ok(status) => status,
-                Err(error) => break Err(error),
+                Err(error) => break Err(V5TransportError::RequestNotSent(error)),
             };
             if let Some(status) = child_status {
-                break Err(exited_before_readiness(state, expected_pid, status));
+                break Err(V5TransportError::RequestNotSent(exited_before_readiness(
+                    state,
+                    expected_pid,
+                    status,
+                )));
             }
             let record = match state.read_v5_endpoint_record() {
                 Ok(record) => record,
-                Err(error) => break Err(error),
+                Err(error) => break Err(V5TransportError::RequestNotSent(error)),
             };
             if let Some(record) = record {
                 if record.core_identity() != core_identity {
-                    break Err(
-                        "protocol-v5 endpoint belongs to a foreign core identity".to_string()
-                    );
+                    break Err(V5TransportError::RequestNotSent(
+                        "protocol-v5 endpoint belongs to a foreign core identity".to_string(),
+                    ));
                 }
                 if record.pid() == expected_pid {
                     let child_status = match child.try_wait_status() {
                         Ok(status) => status,
-                        Err(error) => break Err(error),
+                        Err(error) => break Err(V5TransportError::RequestNotSent(error)),
                     };
                     if let Some(status) = child_status {
-                        break Err(exited_before_readiness(state, expected_pid, status));
+                        break Err(V5TransportError::RequestNotSent(exited_before_readiness(
+                            state,
+                            expected_pid,
+                            status,
+                        )));
                     }
                     if endpoint.observe(&record) {
-                        match Self::connect_classified_before(record, readiness_deadline) {
+                        let connection =
+                            Self::connect_classified_before(record, readiness_deadline);
+                        if let Err(error) = remaining(readiness_deadline, "spawn readiness") {
+                            break Err(V5TransportError::SpawnReadinessExpired(error));
+                        }
+                        match connection {
                             Ok(owner) => break Ok(owner),
-                            Err(ConnectionFailure::Rejected(message)) => break Err(message),
+                            Err(ConnectionFailure::Rejected(message)) => {
+                                break Err(V5TransportError::RequestNotSent(message))
+                            }
                             Err(ConnectionFailure::Unavailable(_)) => {}
                         }
                     }
@@ -411,13 +457,14 @@ impl V5DaemonProcessOwner {
             }
             let retry_budget = match remaining(readiness_deadline, "spawn readiness") {
                 Ok(remaining) => remaining,
-                Err(error) => break Err(error),
+                Err(error) => break Err(V5TransportError::SpawnReadinessExpired(error)),
             };
             std::thread::sleep(RETRY_INTERVAL.min(retry_budget));
         };
 
         match readiness {
-            Ok(owner) => finish_ready_startup(owner, child, state, &endpoint, deadline),
+            Ok(owner) => finish_ready_startup(owner, child, state, &endpoint, deadline)
+                .map_err(V5TransportError::RequestNotSent),
             Err(error) => {
                 let cleanup = child.terminate_bounded(
                     deadline
@@ -425,7 +472,7 @@ impl V5DaemonProcessOwner {
                         .min(STARTUP_CLEANUP_TIMEOUT),
                 );
                 let endpoint_cleanup = endpoint.cleanup(state);
-                let mut diagnostic = error;
+                let mut diagnostic = String::new();
                 if let Err(cleanup) = cleanup {
                     diagnostic.push_str(&format!(
                         "; protocol-v5 daemon startup cleanup failed: {cleanup}"
@@ -435,7 +482,15 @@ impl V5DaemonProcessOwner {
                     diagnostic
                         .push_str(&format!("; protocol-v5 endpoint cleanup failed: {cleanup}"));
                 }
-                Err(diagnostic)
+                Err(match error {
+                    V5TransportError::SpawnReadinessExpired(message) => {
+                        V5TransportError::SpawnReadinessExpired(format!("{message}{diagnostic}"))
+                    }
+                    V5TransportError::RequestNotSent(message) => {
+                        V5TransportError::RequestNotSent(format!("{message}{diagnostic}"))
+                    }
+                    error => error,
+                })
             }
         }
     }
@@ -1516,7 +1571,7 @@ mod tests {
                 deadline,
             ) {
                 Ok(_) => panic!("an exiting child cannot become ready"),
-                Err(message) => message,
+                Err(message) => message.to_string(),
             };
             assert!(message.contains("exited before readiness"), "{message}");
             let state_path = state.path().display().to_string();
@@ -1544,7 +1599,7 @@ mod tests {
             deadline,
         );
         assert!(
-            matches!(outcome, Err(message) if message.contains("deadline expired during spawn readiness")),
+            matches!(outcome, Err(V5TransportError::SpawnReadinessExpired(_))),
             "unexpected startup outcome"
         );
         assert!(
@@ -1556,6 +1611,102 @@ mod tests {
             "failed startup left its child alive"
         );
         assert!(state.read_v5_endpoint_record().unwrap().is_none());
+    }
+
+    #[test]
+    fn startup_handshake_timeout_is_expiry_but_early_rejection_is_not() {
+        use unica_process::test_support::{long_running_command, wait_for_process_exit};
+        for reject in [false, true] {
+            let (_root, state) = state_directory();
+            let fixture = long_running_command();
+            let mut command = std::process::Command::new(fixture.program);
+            command.args(fixture.args);
+            let mut child = ManagedStartupChild::spawn_configured(command).unwrap();
+            let pid = child.id();
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let record = V5EndpointRecord::new(
+                CoreIdentity::production_v5(),
+                listener.local_addr().unwrap().port(),
+            )
+            .unwrap();
+            let mut record = serde_json::to_value(record).unwrap();
+            record["pid"] = serde_json::json!(pid);
+            let record: V5EndpointRecord = serde_json::from_value(record).unwrap();
+            state.publish_v5_endpoint_record(&record).unwrap();
+            let peer = thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut hello = Vec::new();
+                BufReader::new(&stream)
+                    .read_until(b'\n', &mut hello)
+                    .unwrap();
+                if reject {
+                    stream.write_all(b"{malformed}\n").unwrap();
+                }
+                let mut trailing = Vec::new();
+                let _ = stream.read_to_end(&mut trailing);
+                let request: V5ClientRequest = serde_json::from_slice(&hello).unwrap();
+                assert!(matches!(request, V5ClientRequest::Hello { .. }));
+                assert!(trailing.is_empty(), "startup sent an invocation");
+            });
+            let started = Instant::now();
+            let deadline = started + Duration::from_secs(5);
+            let result = V5DaemonProcessOwner::await_startup_before(
+                &mut child,
+                &state,
+                &CoreIdentity::production_v5(),
+                started + Duration::from_secs(1),
+                deadline,
+            );
+            if reject {
+                assert!(matches!(result, Err(V5TransportError::RequestNotSent(_))));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(V5TransportError::SpawnReadinessExpired(_))
+                ));
+            }
+            assert!(Instant::now() < deadline);
+            assert!(wait_for_process_exit(pid, Duration::from_secs(5)));
+            assert!(state.read_v5_endpoint_record().unwrap().is_none());
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_readiness_preserves_expiry_when_cleanup_cannot_confirm_exit() {
+        use unica_process::test_support::{
+            long_running_command, reap_runtime_authority_test_child, wait_for_process_exit,
+            ManualStartupTerminationProbe,
+        };
+        let (_root, state) = state_directory();
+        let fixture = long_running_command();
+        let mut command = std::process::Command::new(fixture.program);
+        command.args(fixture.args);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut child = ManagedStartupChild::spawn_configured_before(command, deadline).unwrap();
+        let pid = child.id();
+        let probe = ManualStartupTerminationProbe::new(Duration::from_secs(10));
+        child.install_termination_probe_for_test(&probe);
+        let result = V5DaemonProcessOwner::await_startup_before(
+            &mut child,
+            &state,
+            &CoreIdentity::production_v5(),
+            Instant::now(),
+            deadline,
+        );
+        let returned_before_deadline = Instant::now() < deadline;
+        drop(child);
+        reap_runtime_authority_test_child(pid);
+        let Err(V5TransportError::SpawnReadinessExpired(message)) = result else {
+            panic!("failed cleanup must preserve readiness expiry");
+        };
+        assert!(message.contains("startup cleanup failed"), "{message}");
+        assert!(returned_before_deadline, "cleanup replenished the deadline");
+        assert_eq!(probe.attempt_count(), 1);
+        assert!(wait_for_process_exit(pid, Duration::from_secs(5)));
     }
 
     #[test]
