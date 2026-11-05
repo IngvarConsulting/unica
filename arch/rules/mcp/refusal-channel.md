@@ -1,13 +1,5 @@
 ---
 id: INV.WIRE.V13-REFUSAL-CHANNEL
-check:
-  - crates/unica-execution-contract/src/invocation.rs::refusal_envelope::a_refusal_carries_code_outcome_and_message_and_nothing_else
-  - crates/unica-execution-contract/src/invocation.rs::refusal_envelope::a_detail_overrides_the_default_outcome_of_its_code
-  - crates/unica-execution-contract/src/invocation.rs::refusal_envelope::every_code_answers_with_one_of_the_six_outcomes
-  - crates/unica-execution-contract/src/invocation.rs::refusal_envelope::the_six_outcomes_are_spelled_as_published_on_the_wire
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_refusals_answer_one_diagnostics_channel_from_the_closed_code_set
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::saved_apply_token_survives_temporary_named_root_validation_failure
-  - crates/unica-execution-contract/src/source_text_budget.rs::refusal_diagnostics_fill_the_budget_and_count_the_rest
 ---
 
 # Отказ передаётся через diagnostics с закрытым кодом и исходом

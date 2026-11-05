@@ -2141,6 +2141,7 @@ mod tests {
         assert_eq!(site.eol, LineEnding::Lf);
     }
 
+    /// rule: INV.SOURCE.CODE-PATCH-EOL
     #[test]
     fn code_patch_rejects_lone_cr_instead_of_inventing_or_gaining_an_eol_policy() {
         let args = arguments(json!({"method": "First"}), "after");
@@ -2253,6 +2254,7 @@ mod tests {
         assert!(line_column("Я", 1).is_err());
     }
 
+    /// rule: INV.SOURCE.CODE-PATCH-EOL
     #[test]
     fn unified_diff_round_trips_crlf_and_missing_terminal_eol() {
         let before = "Procedure Run()\r\nEndProcedure";

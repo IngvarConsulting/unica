@@ -1,7 +1,5 @@
 ---
 id: INV.SOURCE.ROOT-POLICY-OWNERSHIP
-check:
-  - crates/unica-coder/src/infrastructure/platform_xml_owner.rs::container_scoped_versioned_roots_never_become_standalone_owners
 ---
 
 # Версия дочернего XML не делает его владельцем формата

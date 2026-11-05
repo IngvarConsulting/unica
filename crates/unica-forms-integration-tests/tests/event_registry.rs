@@ -829,6 +829,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn module_event_applicability_covers_every_approved_role_family() {
         use unica_address::address::QualifiedAddress;
@@ -966,6 +967,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn module_catalog_covers_the_task12_direct_owner_role_matrix_exactly() {
         use unica_address::address::NodeKind;
@@ -998,6 +1000,7 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn form_event_applicability_preserves_every_logical_owner_family() {
         let owners = std::iter::once(FormEventOwnerKind::Form)
@@ -1046,6 +1049,7 @@ mod tests {
         assert_eq!(observed_keys, expected_keys);
     }
 
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn form_applicability_variants_have_exact_closed_event_additions_and_counts() {
         let base_context = projection_context(
@@ -1308,6 +1312,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn event_catalog_entries_have_exact_bilingual_shape_context_and_provenance() {
         let fixture = platform_event_catalog_fixture();
@@ -1340,6 +1345,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn every_catalog_has_unique_semantic_event_ids_not_generic_storage_names() {
         let fixture = platform_event_catalog_fixture();
@@ -1375,6 +1381,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn form_catalog_execution_contexts_distinguish_client_and_server_callbacks() {
         let form = form_event_catalog_8_3_27(FormEventOwnerKind::Form);
@@ -1415,6 +1422,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn checked_event_catalog_is_a_closed_immutable_8_3_27_set() {
         use sha2::{Digest, Sha256};
@@ -1461,6 +1469,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.PLATFORM.MODULE-EVENT-CATALOG
     #[test]
     fn checked_event_fixture_is_non_skipping_closed_partition_evidence() {
         let fixture = platform_event_catalog_fixture();
@@ -1647,6 +1656,7 @@ mod tests {
 
     const INPUT: FormEventOwnerKind = FormEventOwnerKind::Element(FormElementKind::InputField);
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn item_parameter_follows_the_help_and_the_dump_evidence() {
         assert_eq!(
@@ -1708,6 +1718,7 @@ mod tests {
         .is_empty());
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn handler_signature_puts_the_item_first_only_where_the_platform_passes_it() {
         let signature = |context: &FormEventContext,
@@ -1775,6 +1786,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn form_kind_selects_one_variant_of_each_event() {
         // The object form of a catalog writes; a form without a persistent
@@ -1803,6 +1815,7 @@ mod tests {
         assert_eq!(activation.forms, [Vec::<String>::new()]);
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn foreign_signature_needs_a_strictly_better_unambiguous_match_and_another_count() {
         let start_choice = [
@@ -1869,6 +1882,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn a_tie_is_broken_by_the_only_leader_with_the_handler_parameter_count() {
         // `Элемент`, `Текст` and `СтандартнаяОбработка` score 3 with
@@ -1886,6 +1900,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
     #[test]
     fn extra_required_parameters_are_counted_against_every_known_list() {
         assert_eq!(

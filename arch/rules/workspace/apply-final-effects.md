@@ -1,7 +1,5 @@
 ---
 id: INV.APP.REQUEST-LEVEL-APPLY-EFFECT-RECONCILIATION
-check:
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::request_level_reconciliation_drops_cancelled_effect_before_deduplication
 ---
 
 # События применения описывают итоговые изменения запроса
