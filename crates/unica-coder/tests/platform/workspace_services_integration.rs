@@ -188,6 +188,10 @@ mod medium_tests {
     use unica_workspace::test_support as testing;
     use unica_workspace::test_support::supports_retained_root_replacement_test;
 
+    mod readiness_before_preparation {
+        include!("../workspace_service_support/readiness_before_preparation.rs");
+    }
+
     const SNAPSHOT_MODULE: &str = "CommonModules/SearchProbe/Ext/Module.bsl";
     const SNAPSHOT_BEFORE: &str = "Procedure AcceptanceExistingSymbol1306() Export\nEndProcedure\n";
     const SNAPSHOT_AFTER: &str = "Procedure AcceptanceChangedSymbol978() Export\nEndProcedure\n";
