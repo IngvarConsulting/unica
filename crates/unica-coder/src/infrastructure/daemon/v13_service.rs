@@ -520,7 +520,6 @@ impl CanonicalV13ReadService {
             }
             Ok(planned) => planned,
         };
-        let borrowing = effects.borrowing().to_vec();
         let plan_details = effects
             .details()
             .map(|(key, rows)| (key, rows.to_vec()))
@@ -606,10 +605,6 @@ impl CanonicalV13ReadService {
         if !operations.is_empty() {
             result.data.as_mut().expect("apply data exists")["operations"] =
                 serde_json::Value::Array(operations);
-        }
-        if !borrowing.is_empty() {
-            result.data.as_mut().expect("apply data exists")["borrowing"] =
-                serde_json::json!(borrowing);
         }
         for (key, rows) in plan_details {
             debug_assert!(
@@ -4019,6 +4014,7 @@ fn owning_metadata_address(address: &QualifiedAddress) -> String {
 const PLAN_DETAIL_KEYS: &[unica_source_contract::proposal::PlanDetailKey] = &[
     unica_xdto::results::XDTO_OBJECTS,
     unica_metadata::EXCHANGE_CONTENT,
+    unica_metadata::BORROWING,
 ];
 
 /// Fields the apply answer writes itself; a family section cannot take them.
@@ -4031,7 +4027,6 @@ const APPLY_DATA_FIELDS: &[&str] = &[
     "planHash",
     "effects",
     "cache",
-    "borrowing",
     "executionToken",
 ];
 
@@ -6197,6 +6192,7 @@ mod medium_plan_detail_key_tests {
 
     #[test]
     fn registered_plan_detail_sections_are_unique_and_leave_answer_fields_alone() {
+        assert!(PLAN_DETAIL_KEYS.contains(&PlanDetailKey::new("borrowing")));
         assert_eq!(
             plan_detail_key_errors(PLAN_DETAIL_KEYS),
             Vec::<String>::new()

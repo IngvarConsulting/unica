@@ -1470,7 +1470,9 @@ pub(crate) fn plan_hidden_v13_apply(
     effects
         .set_details(unica_metadata::EXCHANGE_CONTENT, &exchange_content)
         .map_err(detail_error)?;
-    effects.set_borrowing(borrowing);
+    effects
+        .set_details(unica_metadata::BORROWING, &borrowing)
+        .map_err(detail_error)?;
     Ok((staged, effects))
 }
 
