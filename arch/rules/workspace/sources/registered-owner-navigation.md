@@ -1,18 +1,5 @@
 ---
 id: INV.SOURCE.LOGICAL-READER-PARITY
-check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests/command_root_facts.rs::command_root_relations_prove_picture_and_parameter_targets_without_companion_dependency
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::review_rejects_direct_typed_owner_absent_from_configuration_inventory
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::review_rejects_orphan_nested_module_owners_not_registered_by_parent
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::registered_physical_child_with_wrong_descriptor_fails_direct_and_parent_navigation
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::registered_top_level_owner_without_descriptor_fails_kind_branch_and_direct_view
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::configuration_root_view_opens_no_object_descriptor
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::streamed_configuration_root_view_opens_no_object_descriptor
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::orphan_and_missing_physical_children_fail_closed_across_reader_families
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::external_parent_childobjects_are_the_only_nested_owner_authority
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::unregistered_top_level_descriptors_cannot_enter_any_typed_reader_family
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::object_commands_are_registered_inline_without_descriptor_files
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::add_in_templates_stop_addressing_at_the_template_without_reading_the_payload
 ---
 
 # Файл становится логическим объектом только через регистрацию владельца

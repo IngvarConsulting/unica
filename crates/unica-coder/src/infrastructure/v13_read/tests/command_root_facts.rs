@@ -25,6 +25,7 @@ fn install(f: &RealReaderFixture, kind: &str, name: &str, properties: &str) -> P
     );
     path
 }
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn command_root_facts_preserve_kind_specific_xml_without_default_values() {
     let f = RealReaderFixture::new();
@@ -76,6 +77,7 @@ fn command_group_profile_preserves_comment_and_rejects_command_only_fields() {
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn command_root_facts_keep_independent_picture_fields_and_type_failures_local() {
     for (picture,expected) in [
@@ -93,6 +95,8 @@ fn command_root_facts_keep_independent_picture_fields_and_type_failures_local() 
     }
 }
 
+/// rule: INV.SOURCE.LOGICAL-READER-PARITY
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn command_root_relations_prove_picture_and_parameter_targets_without_companion_dependency() {
     let f = RealReaderFixture::new();
@@ -185,6 +189,7 @@ fn command_root_facts_refresh_properties_and_return_whole_compounds() {
     );
 }
 
+/// rule: INV.SOURCE.RETAINED-LOGICAL-PUBLICATION
 #[test]
 fn command_root_relations_refresh_registration_and_recovery_in_the_same_service() {
     let f = RealReaderFixture::new();

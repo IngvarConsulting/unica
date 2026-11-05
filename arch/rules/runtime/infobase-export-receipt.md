@@ -1,15 +1,5 @@
 ---
 id: INV.RUNTIME.V13-INFOBASE-EXPORTS
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::runner_015_provider_receipt_replaces_selection_for_all_three_operations
-  - crates/unica-coder/src/application/v13/tool_catalog.rs::v13_infobase_exports_are_implemented_with_closed_agent_facing_arguments
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::v5_infobase_exports_prepare_before_source_admission_and_run_without_a_revision_gate
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::preview_is_non_mutating_and_returns_no_revision_or_raw_command
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::apply_repeats_preflight_and_returns_an_independent_file_receipt
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::direct_export_executes_without_a_previous_preview_or_revision
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::apply_rejects_a_runner_receipt_for_a_different_output
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::parser_rejects_provider_controls_and_output_escape
-  - crates/unica-coder/src/infrastructure/daemon/v13_infobase_exports.rs::cfe_and_dt_invocations_use_only_their_closed_runner_arguments
 gap: https://github.com/IngvarConsulting/unica/issues/974
 ---
 

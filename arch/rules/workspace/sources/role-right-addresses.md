@@ -1,11 +1,5 @@
 ---
 id: INV.SOURCE.ROLE-RIGHT-ADDRESSES
-check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::role_merges_access_by_canonical_object_and_keeps_rls_under_that_right
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::ambiguous_short_role_alias_is_rejected_and_canonical_aliases_work
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::review_role_canonical_encoding_cannot_collapse_distinct_kind_name_pairs
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::review_role_rejects_non_platform_metadata_node_kinds
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::configuration_level_rights_are_readable_role_objects
 ---
 
 # Права роли адресуются по виду и имени объекта
