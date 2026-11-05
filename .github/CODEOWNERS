@@ -1,0 +1,7 @@
+# Paths whose changes need the code owner's review. Other paths have no
+# owner: any maintainer approves them.
+/arch/rules/** @zeegin
+/.github/** @zeegin
+/scripts/ci/** @zeegin
+/.config/** @zeegin
+/.agents/skills/** @zeegin
