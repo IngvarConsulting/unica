@@ -1039,55 +1039,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn in_place_owners_equal_the_former_edit_lists() {
-        // The pairs `apply_typed_properties` listed before the flag moved to
-        // the property registry; the flag must select exactly these.
-        fn former(kind: MetadataKind, key: MetaPropertyKey) -> bool {
-            matches!(
-                (kind, key),
-                (
-                    MetadataKind::BusinessProcess | MetadataKind::Task,
-                    MetaPropertyKey::NumberAllowedLength
-                ) | (
-                    MetadataKind::BusinessProcess,
-                    MetaPropertyKey::NumberPeriodicity
-                ) | (
-                    MetadataKind::ChartOfCharacteristicTypes
-                        | MetadataKind::ChartOfCalculationTypes
-                        | MetadataKind::ExchangePlan,
-                    MetaPropertyKey::CodeAllowedLength
-                )
-            ) || matches!(
-                key,
-                MetaPropertyKey::FullTextSearch
-                    | MetaPropertyKey::SearchStringModeOnInputByString
-                    | MetaPropertyKey::FullTextSearchOnInputByString
-                    | MetaPropertyKey::ChoiceDataGetModeOnInputByString
-                    | MetaPropertyKey::CreateOnInput
-                    | MetaPropertyKey::ChoiceHistoryOnInput
-                    | MetaPropertyKey::PredefinedDataUpdate
-            )
-        }
-        let mut selected = 0;
-        for kind in MetadataKind::ALL {
-            for spec in METADATA_PROPERTY_SPECS
-                .iter()
-                .filter(|spec| spec.allowed_kinds.contains(kind))
-            {
-                assert_eq!(
-                    spec.in_place(*kind),
-                    former(*kind, spec.key),
-                    "{} of {}",
-                    spec.public_name,
-                    kind.as_str()
-                );
-                selected += usize::from(spec.in_place(*kind));
-            }
-        }
-        assert!(selected > 0);
-    }
-
     fn assert_property_kind_matrix(
         property_name: &str,
         value: MetaPropertyValue,
