@@ -6,6 +6,7 @@ fn args(values: Value) -> Value {
 
 #[test]
 fn functional_option_properties_publish_exact_values_and_preserve_other_bytes() {
+    mixed_comment_properties_preserve_bytes_and_noop();
     let runtime = runtime();
     let fixture = Fixture::new("workspace-functional-option");
     let path = fixture.source.join("FunctionalOptions/ByConstant.xml");
@@ -79,6 +80,7 @@ fn functional_option_properties_publish_exact_values_and_preserve_other_bytes() 
 
 #[test]
 fn functional_option_invalid_inputs_and_stale_storage_write_nothing() {
+    mixed_comment_refusals_and_comment_only_with_invalid_storage();
     let runtime = runtime();
     let fixture = Fixture::new("workspace-functional-option");
     let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
@@ -140,4 +142,166 @@ fn functional_option_invalid_inputs_and_stale_storage_write_nothing() {
         unica_workspace::test_support::tree_snapshot(&fixture.source),
         raced
     );
+}
+
+fn mixed_comment_properties_preserve_bytes_and_noop() {
+    let runtime = runtime();
+    let fixture = Fixture::new("workspace-functional-option");
+    let path = fixture.source.join("FunctionalOptions/ByConstant.xml");
+    let original = std::fs::read_to_string(&path).unwrap();
+    let original = format!(
+        "\u{feff}{}",
+        original
+            .trim_start_matches('\u{feff}')
+            .replace("\r\n", "\n")
+            .replace("\n", "\r\n")
+            .replacen("<Name>", "\n<Name>", 1)
+    );
+    std::fs::write(&path, &original).unwrap();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let values = json!({"comment":"Текст & <>\r\n\t", "location":"Catalog.Options.Attribute.Enabled", "privilegedGetMode":false});
+    let preview = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        args(values.clone()),
+    );
+    assert!(preview.ok, "{preview:?}");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        before
+    );
+    let result = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"executionToken":preview.data.unwrap()["executionToken"]}),
+    );
+    assert!(result.ok, "{result:?}");
+    let expected = original
+        .replace(
+            "<Comment>Preserve issue 1650 comment</Comment>",
+            "<Comment>Текст &amp; &lt;&gt;&#13;&#10;&#9;</Comment>",
+        )
+        .replace(
+            "<Location>Constant.Enabled</Location>",
+            "<Location>Catalog.Options.Attribute.Enabled</Location>",
+        )
+        .replace(
+            "<PrivilegedGetMode>true</PrivilegedGetMode>",
+            "<PrivilegedGetMode>false</PrivilegedGetMode>",
+        );
+    assert_eq!(std::fs::read(&path).unwrap(), expected.as_bytes());
+    let node = view(&runtime, &fixture, "main:FunctionalOption.ByConstant");
+    assert_eq!(node["props"]["Comment"], values["comment"]);
+    assert_eq!(node["props"]["Location"], values["location"]);
+    assert_eq!(node["props"]["PrivilegedGetMode"], false);
+    for (relative, bytes) in before {
+        if relative != Path::new("FunctionalOptions/ByConstant.xml") {
+            assert_eq!(std::fs::read(fixture.source.join(relative)).unwrap(), bytes);
+        }
+    }
+    let published = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    publish(&runtime, &fixture, args(values.clone()));
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        published
+    );
+    // Even a mixed no-op must retain the storage descriptor preimage.
+    let preview = call(&runtime, &fixture, ToolIdentity::Apply, args(values));
+    assert!(preview.ok, "{preview:?}");
+    assert!(preview.data.as_ref().unwrap()["executionToken"].is_string());
+    let storage = fixture.source.join("Catalogs/Options.xml");
+    let text = std::fs::read_to_string(&storage).unwrap();
+    let changed = text.replace("<Comment/>", "<Comment>Concurrent</Comment>");
+    assert_ne!(
+        changed, text,
+        "the storage race must actually change its preimage"
+    );
+    std::fs::write(&storage, changed).unwrap();
+    let raced = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    let stale = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"executionToken":preview.data.unwrap()["executionToken"]}),
+    );
+    assert!(!stale.ok, "{stale:?}");
+    assert!(
+        stale
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "stale_revision"),
+        "{stale:?}"
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.source),
+        raced
+    );
+}
+
+fn mixed_comment_refusals_and_comment_only_with_invalid_storage() {
+    let runtime = runtime();
+    let fixture = Fixture::new("workspace-functional-option");
+    let path = fixture.source.join("FunctionalOptions/ByConstant.xml");
+    let original = std::fs::read_to_string(&path).unwrap();
+    for comment in [
+        "<Comment/><Comment/>",
+        "<Comment><Nested/></Comment>",
+        "<Comment xmlns=\"foreign\"/>",
+        "",
+    ] {
+        std::fs::write(
+            &path,
+            original.replace("<Comment>Preserve issue 1650 comment</Comment>", comment),
+        )
+        .unwrap();
+        let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+        let rejected = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            args(
+                json!({"Location":"Catalog.Options.Attribute.Enabled", "PrivilegedGetMode":false, "Comment":"bad"}),
+            ),
+        );
+        assert!(!rejected.ok, "{rejected:?}");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
+    }
+    std::fs::write(&path, &original).unwrap();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.source);
+    for values in [
+        json!({"Location":"Catalog.Options.Attribute.Enabled", "Comment":"a", "comment":"b"}),
+        json!({"Unknown":"x"}),
+        json!({"Synonym":"x"}),
+        json!({"Name":"x"}),
+    ] {
+        let rejected = call(&runtime, &fixture, ToolIdentity::Apply, args(values));
+        assert!(!rejected.ok, "{rejected:?}");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
+    }
+    for (from, to) in [
+        ("Constant.Enabled", "Constant.Missing"),
+        ("<Location>Constant.Enabled</Location>", ""),
+        (
+            "<PrivilegedGetMode>true</PrivilegedGetMode>",
+            "<PrivilegedGetMode>invalid</PrivilegedGetMode>",
+        ),
+    ] {
+        let source = original.replace(from, to);
+        std::fs::write(&path, &source).unwrap();
+        publish(&runtime, &fixture, args(json!({"Comment":"independent"})));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            source.replace("Preserve issue 1650 comment", "independent")
+        );
+        let node = view(&runtime, &fixture, "main:FunctionalOption.ByConstant");
+        assert_eq!(node["props"]["Comment"], "independent");
+    }
 }
