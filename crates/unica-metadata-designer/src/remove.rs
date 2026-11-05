@@ -1103,7 +1103,7 @@ struct MetaRemovePattern {
 }
 
 enum MetaRemoveFinder {
-    Exact(memmem::Finder<'static>),
+    Exact(Box<memmem::Finder<'static>>),
     Bsl(regex::Regex),
 }
 
@@ -1131,9 +1131,9 @@ impl MetaRemovePatterns {
                                 .expect("escaped metadata reference is a valid regex"),
                         )
                     } else {
-                        MetaRemoveFinder::Exact(
+                        MetaRemoveFinder::Exact(Box::new(
                             memmem::Finder::new(pattern.as_bytes()).into_owned(),
-                        )
+                        ))
                     },
                     open_end: pattern.ends_with('.'),
                     bare: pattern.ends_with('.') && !pattern[..pattern.len() - 1].contains('.'),
