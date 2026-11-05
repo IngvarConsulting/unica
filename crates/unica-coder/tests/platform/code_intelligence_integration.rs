@@ -50,7 +50,7 @@ fn location_path(location: &SourceLocation) -> &str {
     }
 }
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         git_grep_bsl_pathspecs, location_path, parse_call_graph_answer, rlm_search_unready_error,
         BslAnalyzerProvider, BslToolClient, GitGrepProvider, RlmProvider, RlmSearchAttempt,

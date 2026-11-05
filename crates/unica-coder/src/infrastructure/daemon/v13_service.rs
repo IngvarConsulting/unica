@@ -5742,10 +5742,10 @@ pub(super) fn preflight_apply_operations_observed(
             && (!descriptor
                 .observation_type()
                 .is::<unica_forms::FormObservation>()
-                || descriptor.admits_context(&|_| {
-                    form_observation(operation.at())
-                        .map(|value| Box::new(value) as Box<dyn std::any::Any>)
-                }))
+                || descriptor.applies_with_observations(
+                    &site,
+                    &crate::domain::apply::observation_lookup(template_format, form_observation),
+                ))
         {
             continue;
         }
@@ -6191,7 +6191,7 @@ fn view_error_result(
 }
 
 #[cfg(test)]
-mod plan_detail_key_tests {
+mod medium_plan_detail_key_tests {
     use super::{plan_detail_key_errors, PLAN_DETAIL_KEYS};
     use unica_source_contract::proposal::PlanDetailKey;
 
@@ -6219,7 +6219,7 @@ mod plan_detail_key_tests {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::TextEngine;
     use serde_json::json;
     use std::path::PathBuf;

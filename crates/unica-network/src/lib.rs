@@ -292,7 +292,7 @@ fn tls_config() -> Result<(Arc<rustls::ClientConfig>, TrustSource), NetworkError
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
