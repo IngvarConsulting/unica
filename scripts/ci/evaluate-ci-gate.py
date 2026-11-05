@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -297,7 +298,9 @@ def expected_results(
         "success" if values["assessment_required"] and is_manual else "skipped"
     )
     expected["probe-thin-bootstrap"] = "success" if package_pipeline and is_manual else "skipped"
-    expected.update({job: "success" if is_tag else "skipped" for job in PUBLISH_JOBS})
+    # Alpha собирается запуском на теге: тег от токена прогона не будит push.
+    is_alpha = is_manual and re.fullmatch(r"refs/tags/v\d+\.\d+\.\d+-alpha\.\d+", ref) is not None
+    expected.update({job: "success" if is_tag or is_alpha else "skipped" for job in PUBLISH_JOBS})
     if scope == "validation":
         for job in DELIVERY_ONLY:
             expected.pop(job)

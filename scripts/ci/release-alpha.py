@@ -9,8 +9,10 @@
 отказывает: такой alpha был бы младше своего выпуска.
 
 `prune` оставляет последние опубликованные alpha и удаляет остальные вместе с
-тегами. Сначала удаляется тег: если правило репозитория его защищает, релиз
-остаётся целым и отказ называет, что поправить.
+тегами. У обычного релиза сначала удаляется тег: если правило репозитория его
+защищает, релиз остаётся целым и отказ называет, что поправить. Тег неизменяемого
+релиза GitHub может не отдать: тогда удаляется релиз, а тег остаётся. Номер от
+этого не страдает, он только растёт.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -30,6 +33,8 @@ ALPHA = re.compile(r"\Av(?P<core>\d+\.\d+\.\d+)-alpha\.(?P<number>0|[1-9]\d*)\Z"
 CORE = re.compile(r'(?m)^\[workspace\.package\](?:\n(?!\[).*)*?\nversion = "(\d+\.\d+\.\d+)')
 RELEASE_WORKFLOW = "unica-plugin-release.yml"
 KEEP = 2
+DISPATCH_ATTEMPTS = 5
+DISPATCH_PAUSE = 15
 RULE_HINT = (
     "удаление тега запрещено правилом репозитория: в ruleset тегов нужно исключение "
     "refs/tags/v*-alpha.*"
@@ -65,7 +70,7 @@ def gh_api(path: str, *, method: str = "GET") -> object:
     completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", check=False)
     if completed.returncode != 0:
         detail = f"{completed.stdout} {completed.stderr}".strip()
-        if "Repository rule violations" in detail or "HTTP 403" in detail:
+        if "Repository rule violations" in detail:
             raise RuleRefused(detail)
         raise AlphaError(f"gh api {method} {path}: {detail}")
     if not completed.stdout.strip():
@@ -130,7 +135,7 @@ def plan_next(core: str, head: str, tags: list[str], parent_of: Callable[[str], 
     return Plan(f"v{core}-alpha.{max(numbers, default=0) + 1}", f"срез {head[:7]}")
 
 
-def publish(root: Path, repo: str, *, force: bool, dry_run: bool, gh: Gh = gh_api, runner=run) -> str | None:
+def publish(root: Path, repo: str, *, force: bool, dry_run: bool, gh: Gh = gh_api, runner=run, pause=time.sleep) -> str | None:
     head = runner(["git", "rev-parse", "HEAD"], cwd=root).strip()
     core = core_version((root / "Cargo.toml").read_text(encoding="utf-8"))
     plan = plan_next(core, head, version_tags(repo, gh), lambda tag: tag_parent(repo, tag, gh), force=force)
@@ -152,7 +157,17 @@ def publish(root: Path, repo: str, *, force: bool, dry_run: bool, gh: Gh = gh_ap
     runner(["git", *identity, "tag", "--annotate", plan.tag, "--message", f"Срез main {head}"], cwd=root)
     runner(["git", "push", "origin", f"refs/tags/{plan.tag}"], cwd=root, env=push_env())
     # Тег, поставленный токеном прогона, не будит `on: push`: сборку запускает сам выпуск.
-    runner(["gh", "workflow", "run", RELEASE_WORKFLOW, "--repo", repo, "--ref", plan.tag, "-f", "profile=main"], cwd=root)
+    # Сразу после push GitHub может ещё не видеть тег.
+    dispatch = ["gh", "workflow", "run", RELEASE_WORKFLOW, "--repo", repo, "--ref", plan.tag, "-f", "profile=main"]
+    for attempt in range(DISPATCH_ATTEMPTS):
+        try:
+            runner(dispatch, cwd=root)
+            break
+        except AlphaError as error:
+            if attempt == DISPATCH_ATTEMPTS - 1:
+                # Срез уже занят этим тегом: повтор выпуска его пропустит.
+                raise AlphaError(f"{plan.tag} поставлен, сборка не запущена, запустите её: {' '.join(dispatch)}. {error}") from error
+            pause(DISPATCH_PAUSE)
     print(f"запущена сборка {plan.tag}")
     return plan.tag
 
@@ -195,12 +210,24 @@ def prune(repo: str, *, keep: int, dry_run: bool, gh: Gh = gh_api) -> list[str]:
         if dry_run:
             print(f"проба: удалился бы {tag}")
             continue
+        release = releases.get(tag)
+        immutable = release is not None and release.get("immutable") is True
+        if immutable:
+            gh(f"repos/{repo}/releases/{release['id']}", method="DELETE")
         try:
             gh(f"repos/{repo}/git/refs/tags/{tag}", method="DELETE")
-        except RuleRefused as error:
-            raise RuleRefused(f"{tag}: {RULE_HINT}. Ответ GitHub: {error}") from error
-        if tag in releases:
-            gh(f"repos/{repo}/releases/{releases[tag]['id']}", method="DELETE")
+        except AlphaError as error:
+            # Обычный релиз ещё цел, и отказ чинится настройкой. Без релиза —
+            # остался тег неизменяемого выпуска: чинить нечего.
+            if release is not None and not immutable and isinstance(error, RuleRefused):
+                raise RuleRefused(f"{tag}: {RULE_HINT}. Ответ GitHub: {error}") from error
+            if release is not None and not immutable:
+                raise
+            print(f"::warning::{tag}: релиз удалён, тег остаётся: {error}")
+            deleted.append(tag)
+            continue
+        if release is not None and not immutable:
+            gh(f"repos/{repo}/releases/{release['id']}", method="DELETE")
         deleted.append(tag)
         print(f"удалён {tag}")
     if not stale:

@@ -1462,6 +1462,10 @@ jobs:
         with:
           generate_release_notes: true
           body: ${{ steps.alpha-notes.outputs.body }}
+          # Неизменяемый релиз принимает файлы только до публикации, а действие
+          # публикует предвыпуск сразу, если не просить черновик. Стабильный
+          # выпуск оно само ведёт через черновик.
+          draft: ${{ contains(github.ref_name, '-') }}
           # Предвыпуск не должен выглядеть последним релизом: его ищут те, кто
           # ищет свежее, а он существует только для замеров.
           prerelease: ${{ contains(github.ref_name, '-') }}
@@ -1475,6 +1479,11 @@ jobs:
             dist/runtime/unica-runtime-*.tar.gz
             dist/runtime/unica-runtime-*.json
             dist/full/unica-full-*.tar.gz
+      - name: Publish the prerelease draft
+        if: ${{ contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease
       # Новый выпуск уже опубликован: отказ удаления виден в прогоне и ему не мешает.
       - name: Remove old alpha releases
         if: ${{ contains(github.ref_name, '-alpha.') }}

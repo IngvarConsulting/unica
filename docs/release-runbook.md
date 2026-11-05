@@ -442,10 +442,16 @@ commits. The commit's parent is the slice; the release description names it as
   be older than the release, so the script refuses until `main` raises the version.
 - **Retention.** After a publication the build runs
   `release-alpha.py prune`: the two newest published alphas stay, older ones go
-  with their tags, and so do older tags whose build never published. The tag is
-  deleted first, so a refusal leaves the release intact. The `released version
-  tags` ruleset must exclude `refs/tags/v*-alpha.*`; without that the step fails
-  with that message and the new alpha stays published.
+  with their tags, and so do older tags whose build never published. The
+  `released version tags` ruleset must exclude `refs/tags/v*-alpha.*`. On a
+  mutable release the tag goes first, so a refusal leaves the release intact and
+  the step fails with that message; the new alpha stays published. An immutable
+  release is deleted first, and if GitHub keeps its tag, the tag stays with a
+  warning: a kept tag holds no assets and `N` only grows.
+- **Immutable releases.** Assets can be uploaded only before publication, so every
+  prerelease goes up as a draft and a separate step publishes it. A failed run
+  before that step can be rerun: it continues the draft. After publication a
+  failure means a new number.
 
 The page `alpha.html` on the site shows the latest alpha. It is given out as a
 direct link: nothing on the site links to it and it is closed to search robots.

@@ -202,6 +202,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"count={len(started)}")
     # Линии, чей прогон этой ночи прошёл: по ним ночь выпускает alpha.
     print(f"green={' '.join(o['line'] for o in outcomes if o['conclusion'] == 'success')}")
+    # Alpha собирается из того коммита, что проверила ночь, а не из вершины к её концу.
+    print(f"main_sha={next((d['sha'] for d in decisions if d['line'] == 'main'), '')}")
     return 0
 
 

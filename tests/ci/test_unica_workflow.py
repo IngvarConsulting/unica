@@ -936,6 +936,15 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIs(cleanup["continue-on-error"], True)
         self.assertGreater(steps.index(cleanup), steps.index(release))
 
+    def test_a_prerelease_uploads_into_a_draft_and_publishes_after_it(self) -> None:
+        # Неизменяемый релиз после публикации файлов не принимает.
+        publish = job(self.release, "publish-release-assets")
+        release = steps_using(publish, "softprops/action-gh-release")[0]
+        self.assertEqual(normalized(release["with"]["draft"]), "${{ contains(github.ref_name, '-') }}")
+        finish = step_named(publish, "Publish the prerelease draft")
+        self.assertIn("--draft=false", finish["run"])
+        self.assertGreater(publish["steps"].index(finish), publish["steps"].index(release))
+
     def test_a_green_night_of_main_starts_the_one_alpha_path(self) -> None:
         nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-nightly.yml").read_text(encoding="utf-8"))
         alpha = nightly["jobs"]["alpha"]
@@ -947,7 +956,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("workflow_call", triggers)
         self.assertIn("workflow_dispatch", triggers)
         checkout = steps_using(manual["jobs"]["publish"], "actions/checkout")[0]
-        self.assertEqual(checkout["with"]["ref"], "main")
+        self.assertEqual(checkout["with"]["ref"], "${{ inputs.sha || 'main' }}")
 
     def test_conditional_pipeline_breaks_transitive_skip_propagation(self) -> None:
         dependencies = {

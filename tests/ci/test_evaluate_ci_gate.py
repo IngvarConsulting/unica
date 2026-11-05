@@ -784,6 +784,21 @@ class RunnerTopologyGateTests(unittest.TestCase):
                          {**validation_only, "build-tools": "skipped"}, scope="validation")
         self.assertIn("build-tools", stray.unexpected)
 
+    def test_only_an_alpha_tag_expects_publication_from_a_manual_run(self) -> None:
+        # Тег от токена прогона не будит push: alpha собирается запуском на теге
+        # и публикуется. Ручной запуск на любом другом теге не публикует ничего.
+        gate = load_gate_module()
+        outputs = classification(**ALL_ENABLED)
+        for ref, expected in (
+            ("refs/tags/v0.15.0-alpha.3", "success"),
+            ("refs/tags/v0.15.0-rc.1", "skipped"),
+            ("refs/heads/main", "skipped"),
+        ):
+            with self.subTest(ref=ref):
+                result = evaluate(gate, "workflow_dispatch", ref, outputs, code_results())
+                for job in gate.PUBLISH_JOBS:
+                    self.assertEqual(result.expected[job], expected)
+
     def test_profile_runners_match_the_lane_verifier(self) -> None:
         gate = load_gate_module()
         lanes = load_lanes_module()

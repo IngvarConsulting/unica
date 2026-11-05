@@ -29,9 +29,10 @@ jobs:
   lines:
     name: Перечислить сдвинувшиеся линии, запустить large и забрать результаты
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 320
     outputs:
       green: ${{ steps.nightly.outputs.green }}
+      main_sha: ${{ steps.nightly.outputs.main_sha }}
     # Запуск workflow на линии — запись в Actions; права джобы заменяют права
     # workflow целиком, поэтому `contents: read` повторён.
     permissions:
@@ -72,3 +73,5 @@ jobs:
       contents: write
       actions: write
     uses: ./.github/workflows/unica-alpha.yml
+    with:
+      sha: ${{ needs.lines.outputs.main_sha }}
