@@ -1,0 +1,219 @@
+{
+  "id": "S-965-retained-readonly-type",
+  "issue": 965,
+  "area": "Свойства метаданных",
+  "task": "Сохранить исходный readOnly TypeSet при независимой правке комментария и синонима, исполнить сохранённый план и отказать зависимой записи FillValue без изменения исходников",
+  "workspace": "tests/fixtures/acceptance/workspace-metadata-values",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "characteristicTypes",
+                "metadataPath": "ChartOfCharacteristicTypes.Properties"
+              }
+            ],
+            "mutationCapability": "readOnly"
+          }
+        }
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Values.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.Value",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "comment": "Independent comment",
+                "synonym": "Independent synonym"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "token": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Values.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Values.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Attribute[@uuid=\"c38560bd-f077-54d3-bfaa-7db00a8c6acd\"]/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Type/{http://v8.1c.ru/8.1/data/core}TypeSet",
+          "eq": [
+            "cfg:Characteristic.Properties"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.Value"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type",
+          "eq": {
+            "variants": [
+              {
+                "kind": "characteristicTypes",
+                "metadataPath": "ChartOfCharacteristicTypes.Properties"
+              }
+            ],
+            "mutationCapability": "readOnly"
+          }
+        },
+        {
+          "pointer": "/data/props/comment",
+          "eq": "Independent comment"
+        },
+        {
+          "pointer": "/data/props/synonym",
+          "eq": "Independent synonym"
+        }
+      ],
+      "captures": {
+        "after": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Values.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.Value",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "fillValue": {
+                  "kind": "boolean",
+                  "value": true
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "existing metadata type is outside the public mutation algebra"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "fixCall"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Values.xml",
+          "eq": "$capture.after"
+        }
+      ],
+      "refusal": "bad_value: existing metadata type is outside the public mutation algebra"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Values.Attribute.Value",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "comment": "Independent comment",
+                "synonym": "Independent synonym"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Values.xml",
+          "eq": "$capture.after"
+        }
+      ]
+    }
+  ]
+}

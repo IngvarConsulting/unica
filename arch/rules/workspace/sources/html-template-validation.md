@@ -6,7 +6,7 @@ check:
   - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::html_template_accepts_every_declared_language_page
   - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::html_template_page_accepts_registered_utf8_html_without_xml_grammar
   - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::html_template_page_rejects_non_utf8_bytes
-gap: https://github.com/IngvarConsulting/unica/issues/965
+  - crates/unica-coder/src/infrastructure/daemon/server/html_template_tests.rs::canonical_html_property_edits_preserve_authored_page_bytes_with_and_without_bom
 ---
 
 # HTML-страница макета не обязана быть корректным XML
@@ -16,8 +16,7 @@ gap: https://github.com/IngvarConsulting/unica/issues/965
 HTML DOCTYPE, HTML-сущности и незакрытые по правилам XML элементы.
 
 При изменении другого свойства макета байты страницы сохраняются без
-нормализации. Существующие проверки валидатора не закрывают эту проверку
-сохранения при публикации.
+нормализации.
 
 Это проверка состава и кодировки, а не правильности HTML-разметки,
 внешних ресурсов или результата в браузере.

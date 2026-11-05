@@ -1,3 +1,6 @@
+#[path = "metadata_can_tests/retained_readonly_type.rs"]
+mod retained_readonly_type;
+
 #[path = "metadata_can_tests/number_settings.rs"]
 mod number_settings;
 
