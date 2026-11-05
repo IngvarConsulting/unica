@@ -1262,7 +1262,6 @@ pub fn parse_attribute_add(
     };
     let items = required_array(args, "items", op_index)?.to_vec();
     let mut legacy = json!({"op": "add", "collection": "attributes", "elements": items});
-    let in_section = section.is_some();
     if let Some(section) = section {
         legacy["scope"] = json!({"tabularSection": section});
     }
@@ -1279,12 +1278,7 @@ pub fn parse_attribute_add(
         },
         op_index,
     )?;
-    // Табличная часть названа адресом: её отсутствие — «не найден» по `at`.
-    Ok(if in_section {
-        addressed_edit(edit, AddressedFields::Items)
-    } else {
-        edit
-    })
+    Ok(addressed_edit(edit, AddressedFields::Items))
 }
 pub fn parse_attribute_set(
     args: &Map<String, Value>,
@@ -1437,6 +1431,7 @@ pub fn parse_member_add(
         },
         op_index,
     )
+    .map(|edit| addressed_edit(edit, AddressedFields::Items))
 }
 #[derive(Debug, Clone, Copy)]
 pub enum AddressedMemberChange {
