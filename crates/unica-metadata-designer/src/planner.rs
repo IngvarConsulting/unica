@@ -2167,7 +2167,13 @@ fn stage_template_add(
     use unica_metadata::MetaTemplateKind;
     let (owner_relative, owner_preimage, owner_source) =
         owner_descriptor_and_text(staged, authority, owner, op_index)?;
-    let mut owner_text = owner_source.clone();
+    // The registration writes `<Template>` in the default namespace; a
+    // prefixed owner is edited in that form and restored before writing.
+    let (mut owner_text, owner_form) =
+        unica_xml_format::prefix_form::PrefixForm::normalize(&owner_source).map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                .at_path(format!("ops[{op_index}].args.at"))
+        })?;
     let templates_dir = owner_relative.with_extension("").join("Templates");
     let lang = unica_source_designer::language::staged_text_language(
         staged,
@@ -2245,6 +2251,10 @@ fn stage_template_add(
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
     }
+    let owner_text = owner_form.restore(&owner_text).map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+            .at_path(format!("ops[{op_index}].args.at"))
+    })?;
     let owner_postimage = unica_source_designer::registration::preserve_descriptor_image(
         &owner_preimage,
         &owner_source,
@@ -2274,6 +2284,11 @@ fn stage_template_set(
     let at_path = format!("ops[{op_index}].args.at");
     let (owner_relative, _, owner_source) =
         owner_descriptor_and_text(staged, authority, owner, op_index)?;
+    let owner_source = unica_xml_format::prefix_form::PrefixForm::normalize(&owner_source)
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+        })?
+        .0;
     if !owner_source.contains(&format!("<Template>{name}</Template>")) {
         return Err(ApplyPlanError::new(
             ApplyPlanErrorKind::NotFound,
@@ -2307,6 +2322,13 @@ fn stage_template_set(
         .at_path(at_path.clone())
     })?;
     let source_text = text.clone();
+    // The template descriptor is edited in the default-namespace spelling and
+    // gets its own prefix back before writing.
+    let (normalized, template_form) = unica_xml_format::prefix_form::PrefixForm::normalize(&text)
+        .map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+    })?;
+    text = normalized;
     let string_value = |key: &str| -> Result<Option<String>, ApplyPlanError> {
         match values.get(key) {
             None => Ok(None),
@@ -2371,6 +2393,9 @@ fn stage_template_set(
             .at_path(at_path.clone())
         })?;
     }
+    let text = template_form.restore(&text).map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+    })?;
     let postimage = unica_source_designer::registration::preserve_descriptor_image(
         &preimage,
         &source_text,

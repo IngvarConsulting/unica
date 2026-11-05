@@ -39,6 +39,31 @@ fn unprefixed(source: &str) -> String {
         .replacen(&format!("xmlns:md=\"{MD}\""), &format!("xmlns=\"{MD}\""), 1)
 }
 
+/// New elements get fresh UUIDs in each run; compare everything else.
+fn masked_uuids(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let is_hex = |byte: &u8| byte.is_ascii_hexdigit();
+    let mut text = String::with_capacity(source.len());
+    let mut at = 0;
+    while at < source.len() {
+        let candidate = &bytes[at..(at + 36).min(bytes.len())];
+        let uuid = candidate.len() == 36
+            && candidate.iter().enumerate().all(|(index, byte)| match index {
+                8 | 13 | 18 | 23 => *byte == b'-',
+                _ => is_hex(byte),
+            });
+        if uuid {
+            text.push_str("UUID");
+            at += 36;
+        } else {
+            let ch = source[at..].chars().next().unwrap();
+            text.push(ch);
+            at += ch.len_utf8();
+        }
+    }
+    text
+}
+
 fn element_names(source: &str) -> Vec<(Option<String>, String)> {
     let doc = roxmltree::Document::parse(source.trim_start_matches('\u{feff}')).unwrap();
     doc.descendants()
@@ -352,7 +377,7 @@ fn every_metadata_write_keeps_the_owner_prefix() {
         }
         if element_names(&prefixed_text) != element_names(&plain_text) {
             problems.push(format!("{path:?}: element namespaces differ"));
-        } else if unprefixed(&prefixed_text) != plain_text {
+        } else if masked_uuids(&unprefixed(&prefixed_text)) != masked_uuids(&plain_text) {
             problems.push(format!("{path:?}: bytes differ once the prefix is removed"));
         }
     }
