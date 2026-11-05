@@ -64,7 +64,7 @@ fn change_quick_choice(
 }
 
 #[test]
-fn quick_choice_is_boolean_preserves_forms_and_refuses_damaged_source() {
+fn medium_quick_choice_is_boolean_preserves_forms_and_refuses_damaged_source() {
     let (fixture, runtime) = choice_owners(true);
     for (kind, directory) in OWNERS {
         let at = format!("main:{kind}.Codes");

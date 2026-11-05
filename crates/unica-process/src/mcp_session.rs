@@ -786,7 +786,7 @@ impl PersistentMcpSession {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
 
     #[test]

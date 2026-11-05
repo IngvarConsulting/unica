@@ -1,0 +1,6 @@
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20">
+  <Configuration uuid="16230000-0000-4000-8000-000000000010">
+    <Properties><Name>WsdlReadFixture</Name><Version>1.0</Version><CompatibilityMode>Version8_3_27</CompatibilityMode></Properties>
+    <ChildObjects><WSReference>Client</WSReference></ChildObjects>
+  </Configuration>
+</MetaDataObject>

@@ -6,7 +6,7 @@ check:
   - crates/unica-bsl-types/src/page_tests.rs::a_property_reads_its_type_and_use_and_a_type_page_its_collection
   - crates/unica-bsl-types/src/page_tests.rs::types_named_in_text_are_language_types_or_stay_unknown
   - crates/unica-bsl-types/src/page_tests.rs::an_array_element_is_named_in_the_same_sentence_only
-  - crates/unica-bsl-types/src/cache.rs::tests::a_catalog_is_kept_per_user_build_and_generator_and_stale_when_the_help_changes
+  - crates/unica-bsl-types/src/cache.rs::medium_tests::a_catalog_is_kept_per_user_build_and_generator_and_stale_when_the_help_changes
 gap: https://github.com/IngvarConsulting/unica/issues/2238
 ---
 

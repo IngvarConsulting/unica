@@ -74,7 +74,7 @@ use unica_network::test_support::{ConnectProxy, TestRoot, TlsStand};
 
 #[cfg(target_os = "linux")]
 const CHILD: &str =
-    "infrastructure::platform::network_trust_tests::docs_network_trust_child_process";
+    "infrastructure::platform::medium_network_trust_tests::docs_network_trust_child_process";
 
 #[cfg(target_os = "linux")]
 /// Ответ сервера стандартов: конверт JSON-RPC с одним результатом.

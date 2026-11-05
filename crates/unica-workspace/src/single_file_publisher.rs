@@ -1674,7 +1674,7 @@ impl Drop for StageGuard {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         cleanup_publication_artifact, create_stage_with_candidates, publish,
         with_before_bound_cleanup_hook, with_before_commit_hook,
@@ -2439,16 +2439,13 @@ mod tests {
     }
 
     #[test]
-    fn replace_preserves_unix_mode_0600() {
+    fn replace_preserves_portable_permissions() {
         let root = unique_temp_root("preserve-mode-0600");
         let target = root.join("existing.bin");
         let original = b"original";
         let replacement = b"replacement";
         fs::write(&target, original).unwrap();
-        let unix_mode_supported = set_unix_mode_for_test(&target, 0o600).unwrap();
-        if unix_mode_supported {
-            assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o600));
-        }
+
         let original_permissions = portable_permissions(&fs::metadata(&target).unwrap());
 
         let report = publish(PublishRequest {
@@ -2463,23 +2460,54 @@ mod tests {
         assert_eq!(report.effect, PublishEffect::Replaced);
         assert_eq!(fs::read(&target).unwrap(), replacement);
         assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
-        if unix_mode_supported {
-            assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o600));
-        }
+
         assert!(publication_debris(&root).is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn read_only_target_is_rejected_unchanged() {
+    fn replace_preserves_unix_mode_0600() {
+        let root = unique_temp_root("preserve-mode-0600");
+        let target = root.join("existing.bin");
+        let original = b"original";
+        let replacement = b"replacement";
+        fs::write(&target, original).unwrap();
+        if !set_unix_mode_for_test(&target, 0o600).unwrap() {
+            fs::remove_dir_all(&root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::UnixPermissionBits,
+                "exact Unix permission modes are unavailable",
+            );
+            return;
+        }
+        assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o600));
+        let original_permissions = portable_permissions(&fs::metadata(&target).unwrap());
+
+        let report = publish(PublishRequest {
+            target: &target,
+            replacement,
+            mode: PublishMode::ReplaceExisting {
+                expected_preimage: original,
+            },
+        })
+        .expect("replacement must preserve the target permissions");
+
+        assert_eq!(report.effect, PublishEffect::Replaced);
+        assert_eq!(fs::read(&target).unwrap(), replacement);
+        assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
+        assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o600));
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn portable_read_only_target_is_rejected_unchanged() {
         let root = unique_temp_root("read-only");
         let target = root.join("existing.bin");
         let original = b"original";
         fs::write(&target, original).unwrap();
-        let unix_mode_supported = set_unix_mode_for_test(&target, 0o400).unwrap();
-        if unix_mode_supported {
-            assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o400));
-        } else {
+
+        {
             let mut permissions = fs::metadata(&target).unwrap().permissions();
             permissions.set_readonly(true);
             fs::set_permissions(&target, permissions).unwrap();
@@ -2499,9 +2527,43 @@ mod tests {
         assert!(error.cleanup_warnings().is_empty());
         assert_eq!(fs::read(&target).unwrap(), original);
         assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
-        if unix_mode_supported {
-            assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o400));
+
+        assert!(publication_debris(&root).is_empty());
+        prepare_file_for_removal(&target).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_only_target_is_rejected_unchanged() {
+        let root = unique_temp_root("read-only");
+        let target = root.join("existing.bin");
+        let original = b"original";
+        fs::write(&target, original).unwrap();
+        if !set_unix_mode_for_test(&target, 0o400).unwrap() {
+            fs::remove_dir_all(&root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::UnixPermissionBits,
+                "exact Unix permission modes are unavailable",
+            );
+            return;
         }
+        assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o400));
+        let original_permissions = portable_permissions(&fs::metadata(&target).unwrap());
+
+        let error = publish(PublishRequest {
+            target: &target,
+            replacement: original,
+            mode: PublishMode::ReplaceExisting {
+                expected_preimage: original,
+            },
+        })
+        .expect_err("read-only replacement target must be rejected");
+
+        assert!(matches!(error.kind(), PublishErrorKind::ReadOnly { .. }));
+        assert!(error.cleanup_warnings().is_empty());
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert!(original_permissions.matches(&fs::metadata(&target).unwrap()));
+        assert_eq!(unix_mode_for_test(&target).unwrap(), Some(0o400));
         assert!(publication_debris(&root).is_empty());
         prepare_file_for_removal(&target).unwrap();
         fs::remove_dir_all(root).unwrap();
@@ -2691,11 +2753,26 @@ mod tests {
         assert!(hard_link_permissions.matches(&fs::metadata(&hard_link).unwrap()));
         assert!(hard_link_permissions.matches(&fs::metadata(&hard_link_alias).unwrap()));
 
+        assert!(publication_debris(&root).is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn create_only_rejects_existing_symlink_without_touching_referent() {
+        let root = unique_temp_root("create-only-existing-link");
         let referent = root.join("referent.bin");
         let link = root.join("link.bin");
         fs::write(&referent, b"referent").unwrap();
         let referent_permissions = portable_permissions(&fs::metadata(&referent).unwrap());
-        if create_file_link_fixture(&referent, &link) {
+        if !create_file_link_fixture(&referent, &link) {
+            fs::remove_dir_all(&root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "creating an existing link target needs the symlink privilege",
+            );
+            return;
+        }
+        {
             let original_link = fs::read_link(&link).unwrap();
             let link_permissions = portable_permissions(&fs::symlink_metadata(&link).unwrap());
             assert_create_only_rejected(&link);
