@@ -583,7 +583,7 @@ fn append_byte_tail(
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};

@@ -2493,7 +2493,7 @@ mod tests {
     }
 
     #[test]
-    fn production_links_reserve_and_materialize_past_4096_and_reopen() {
+    fn medium_production_links_reserve_and_materialize_past_4096_and_reopen() {
         let root = tempfile::tempdir().unwrap();
         let root_path = physical_root(&root);
         let identities = seed_reservation_snapshot(&root_path, 4096);
@@ -2534,7 +2534,7 @@ mod tests {
     }
 
     #[test]
-    fn real_snapshot_over_8mib_can_reopen_mutate() {
+    fn medium_real_snapshot_over_8mib_can_reopen_mutate() {
         let root = tempfile::tempdir().unwrap();
         let root_path = physical_root(&root);
         seed_reservation_snapshot(&root_path, 13000);

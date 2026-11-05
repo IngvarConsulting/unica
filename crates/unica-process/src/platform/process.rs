@@ -3842,7 +3842,7 @@ fn retain_tail(captured: &mut CapturedOutput, chunk: &[u8], limit: usize) {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     #[cfg(windows)]
     use super::{assert_windows_runtime_process_tree_semantics_for_test, ProcessTree};
     use super::{
@@ -4047,7 +4047,7 @@ mod tests {
                 let mut child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4205,7 +4205,7 @@ mod tests {
                 let mut child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4231,7 +4231,7 @@ mod tests {
                 let child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4263,7 +4263,7 @@ mod tests {
                     Command::new(std::env::current_exe().unwrap())
                         .args([
                             "--exact",
-                            "platform::process::tests::managed_child_test_helper",
+                            "platform::process::medium_tests::managed_child_test_helper",
                             "--ignored",
                             "--nocapture",
                         ])
@@ -4308,7 +4308,7 @@ mod tests {
                 let grandchild = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4328,7 +4328,7 @@ mod tests {
                 let grandchild = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4355,7 +4355,7 @@ mod tests {
                 command
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4401,7 +4401,7 @@ mod tests {
                 let child = Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -4647,7 +4647,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -4686,7 +4686,7 @@ mod tests {
             program: std::env::current_exe().map_err(|error| error.to_string())?,
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -4710,7 +4710,7 @@ mod tests {
                 program: std::env::current_exe().map_err(|error| error.to_string())?,
                 args: vec![
                     "--exact".into(),
-                    "platform::process::tests::managed_child_test_helper".into(),
+                    "platform::process::medium_tests::managed_child_test_helper".into(),
                     "--ignored".into(),
                     "--nocapture".into(),
                 ],
@@ -4755,7 +4755,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -4959,7 +4959,7 @@ mod tests {
             let status = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::linux_runtime_descendant_probe_distinguishes_zombie_from_live_process",
+                    "platform::process::medium_tests::linux_runtime_descendant_probe_distinguishes_zombie_from_live_process",
                     "--nocapture",
                 ])
                 .env(HARNESS_ENV, "1")
@@ -5079,7 +5079,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5291,7 +5291,7 @@ mod tests {
             let status = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::runtime_sentinel_preserves_a_meaningful_inherited_fd198",
+                    "platform::process::medium_tests::runtime_sentinel_preserves_a_meaningful_inherited_fd198",
                     "--nocapture",
                 ])
                 .env(RUNTIME_SENTINEL_FD198_HARNESS_ENV, "1")
@@ -5350,7 +5350,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::runtime_preexisting_fd198_helper",
+                "platform::process::medium_tests::runtime_preexisting_fd198_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5532,7 +5532,7 @@ mod tests {
                 descendant
                     .args([
                         "--exact",
-                        "platform::process::tests::runtime_runner_style_sentinel_helper",
+                        "platform::process::medium_tests::runtime_runner_style_sentinel_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -5580,7 +5580,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::runtime_runner_style_sentinel_helper",
+                "platform::process::medium_tests::runtime_runner_style_sentinel_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5646,7 +5646,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5710,7 +5710,7 @@ mod tests {
             command
                 .args([
                     "--exact",
-                    "platform::process::tests::managed_child_test_helper",
+                    "platform::process::medium_tests::managed_child_test_helper",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -5876,7 +5876,7 @@ mod tests {
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -5935,7 +5935,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -5960,7 +5960,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6322,7 +6322,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6360,7 +6360,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6402,7 +6402,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6431,7 +6431,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6474,7 +6474,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -6533,7 +6533,7 @@ mod tests {
                 Command::new(std::env::current_exe().unwrap())
                     .args([
                         "--exact",
-                        "platform::process::tests::managed_child_test_helper",
+                        "platform::process::medium_tests::managed_child_test_helper",
                         "--ignored",
                         "--nocapture",
                     ])
@@ -6550,7 +6550,7 @@ mod tests {
                 program: std::env::current_exe().unwrap(),
                 args: vec![
                     "--exact".into(),
-                    "platform::process::tests::managed_child_test_helper".into(),
+                    "platform::process::medium_tests::managed_child_test_helper".into(),
                     "--ignored".into(),
                     "--nocapture".into(),
                 ],
@@ -7197,7 +7197,7 @@ mod tests {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::managed_child_test_helper",
+                    "platform::process::medium_tests::managed_child_test_helper",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -7247,7 +7247,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7276,7 +7276,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7313,7 +7313,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7420,7 +7420,7 @@ mod tests {
             Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
-                    "platform::process::tests::managed_child_test_helper",
+                    "platform::process::medium_tests::managed_child_test_helper",
                     "--ignored",
                     "--nocapture",
                 ])
@@ -7626,7 +7626,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7680,7 +7680,7 @@ mod tests {
             program: std::env::current_exe().unwrap(),
             args: vec![
                 "--exact".into(),
-                "platform::process::tests::managed_child_test_helper".into(),
+                "platform::process::medium_tests::managed_child_test_helper".into(),
                 "--ignored".into(),
                 "--nocapture".into(),
             ],
@@ -7744,7 +7744,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7771,7 +7771,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7804,7 +7804,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7838,7 +7838,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7880,7 +7880,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7907,7 +7907,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7954,7 +7954,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])
@@ -7996,7 +7996,7 @@ mod tests {
         command
             .args([
                 "--exact",
-                "platform::process::tests::managed_child_test_helper",
+                "platform::process::medium_tests::managed_child_test_helper",
                 "--ignored",
                 "--nocapture",
             ])

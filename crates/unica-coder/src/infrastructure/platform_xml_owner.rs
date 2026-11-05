@@ -756,7 +756,7 @@ pub(crate) fn source_set_owner_from_bytes(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) mod medium_tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
     use unica_workspace::test_support::{
