@@ -783,6 +783,7 @@ fn registrar_scan_checkpoint_distinguishes_deadline_and_cancellation() {
     assert_eq!(cancellation.kind(), std::io::ErrorKind::Interrupted);
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn platform_incomplete_borrowed_metadata_keeps_local_observations() {
     use unica_metadata::MetaInfoPropertyValue;
@@ -844,6 +845,7 @@ fn platform_incomplete_borrowed_metadata_keeps_local_observations() {
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn missing_write_mode_does_not_claim_complete_registrar_evidence() {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/platform_8_3_27/incomplete_borrowed/extension-information-register.xml");

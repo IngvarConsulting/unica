@@ -1,17 +1,5 @@
 ---
 id: INV.WORKSPACE.HOST-CONTEXT
-check:
-  - crates/unica-coder/tests/host_workspace_context.rs::stdio_call_uses_host_workspace_instead_of_plugin_cwd
-  - crates/unica-coder/tests/host_workspace_context.rs::two_frontends_and_interleaved_calls_keep_their_workspace_on_one_daemon
-  - crates/unica-coder/tests/host_workspace_context.rs::startup_project_environment_and_request_override_are_forwarded
-  - crates/unica-coder/tests/host_workspace_context.rs::required_or_malformed_context_never_falls_back_to_process_cwd
-  - crates/unica-coder/tests/host_workspace_context.rs::conflicting_startup_project_environments_refuse_workspace_selection
-  - crates/unica-coder/tests/host_workspace_context.rs::client_roots_override_stale_startup_environment_on_every_call
-  - crates/unica-bootstrap/src/host/workspace_context.rs::first_client_root_outranks_stale_launch_environment_but_not_request_metadata
-  - crates/unica-bootstrap/src/host/workspace_context.rs::a_supplied_root_satisfies_required_context_and_a_malformed_one_never_falls_back
-  - crates/unica-coder/tests/host_workspace_context.rs::view_names_the_channel_that_chose_the_workspace_and_hints_only_for_stale_ones
-  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::workspace_origin_is_named_next_to_every_workspace_root
-  - crates/unica-daemon/src/protocol_v5.rs::workspace_origin_is_not_part_of_the_strict_submit_receipt_identity
 ---
 
 # Рабочую папку вызова передаёт приложение-хост

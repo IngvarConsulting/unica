@@ -13,9 +13,11 @@ SPEC.loader.exec_module(checker)
 
 class ComponentBoundaryTests(unittest.TestCase):
     def test_real_workspace_retains_component_direction(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         self.assertEqual(checker.check(ROOT), [])
 
     def test_owner_edges_reject_hidden_concrete_dependencies(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         invalid = (
             ("unica-operations", "unica-forms"),
             ("unica-analysis-services", "unica-adapter-rlm"),
@@ -93,6 +95,7 @@ class ComponentBoundaryTests(unittest.TestCase):
         # workspace, другие семейства и composition; кодек — только своё
         # семейство и нейтральные порты. Workspace и кодек вместе видит лишь
         # пакет межкомпонентных тестов семьи.
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         refused = (
             ("unica-dcs", "unica-dcs-designer"),
             ("unica-dcs", "unica-source-designer"),
@@ -121,6 +124,7 @@ class ComponentBoundaryTests(unittest.TestCase):
                 self.assertEqual(checker.edge_errors(owner, target, kind), [])
 
     def test_composition_selects_the_dcs_codec_in_one_place(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         call = "let data = unica_dcs_designer::schema::parse_dcs_info_xml(&text, support)?;\n"
         for path in (
             "crates/unica-coder/src/infrastructure/native_operations/dcs.rs",
@@ -141,6 +145,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             "crates/unica-coder/src/lib.rs", "use unica_dcs::codec::DcsCodec;\n"), [])
 
     def test_target_specific_alias_cannot_hide_a_composition_backedge(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "Cargo.toml").write_text('[workspace]\nmembers=["family", "coder"]\n')
@@ -152,6 +157,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             self.assertIn("dev-dependencies -> unica-coder", "\n".join(checker.check(root)))
 
     def test_workspace_owner_depends_only_on_a_closed_list(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         for target in sorted(checker.WORKSPACE_DEPENDENCIES):
             for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
                 with self.subTest(target=target, kind=kind):
@@ -169,6 +175,7 @@ class ComponentBoundaryTests(unittest.TestCase):
                     self.assertTrue(checker.edge_errors("unica-workspace", target, kind))
 
     def test_cycles_through_the_workspace_owner_are_rejected_for_every_edge_kind(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         owner = "unica-workspace"
         self.assertEqual(checker.cycle_errors({owner: {"b"}, "b": {"c"}, "c": set()}, owner), [])
         # A cycle elsewhere is outside this guard.
@@ -207,6 +214,7 @@ class ComponentBoundaryTests(unittest.TestCase):
                 checker.check(root)
 
     def test_workspace_inherited_parser_alias_keeps_the_upstream_boundary(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "Cargo.toml").write_text('[workspace]\nmembers=["coder"]\n[workspace.dependencies]\nraw={package="syntax",git="https://example.invalid/analyzer"}\n')

@@ -165,6 +165,7 @@ mod medium_tests {
     }
 
     /// Verifies that an absolute caller path never depends on the launch directory.
+    /// rule: INV.APP.EXPLICIT-WORKSPACE-CWD
     #[test]
     fn absolute_requested_cwd_does_not_read_process_cwd() {
         let root = temp_root("unica-workspace-absolute-cwd");
@@ -181,6 +182,7 @@ mod medium_tests {
     }
 
     /// Verifies the classified failure when a relative path cannot be anchored.
+    /// rule: INV.APP.EXPLICIT-WORKSPACE-CWD
     #[test]
     fn relative_requested_cwd_reports_launch_directory_failure() {
         let error = discover_workspace_with_current_dir(
@@ -204,6 +206,7 @@ mod medium_tests {
     }
 
     /// Verifies the classified failure when neither caller nor process provides a path.
+    /// rule: INV.APP.EXPLICIT-WORKSPACE-CWD
     #[test]
     fn missing_requested_cwd_reports_launch_directory_failure() {
         let error = discover_workspace_with_current_dir(None, None, || {
@@ -223,6 +226,7 @@ mod medium_tests {
     }
 
     /// Verifies that relative caller paths are anchored to the launch directory.
+    /// rule: INV.APP.EXPLICIT-WORKSPACE-CWD
     #[test]
     fn relative_requested_cwd_resolves_from_launch_directory() {
         let root = temp_root("unica-workspace-relative-cwd");
@@ -239,6 +243,7 @@ mod medium_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// rule: INV.CACHE.WORKTREE-ISOLATION
     #[test]
     fn git_worktree_boundary_prevents_parent_workspace_discovery() {
         let root = temp_root("unica-workspace-worktree-boundary");
@@ -274,6 +279,7 @@ mod medium_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// rule: INV.CACHE.WORKSPACE-ROOT
     #[test]
     fn v8project_yaml_in_ancestor_defines_workspace_root() {
         let root = temp_root("unica-workspace-discovery");
@@ -311,6 +317,7 @@ mod medium_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// rule: INV.CACHE.WORKSPACE-EPOCH
     #[test]
     fn workspace_epoch_tracks_head_inside_a_linked_worktree() {
         let root = temp_root("unica-workspace-worktree-epoch");

@@ -1,7 +1,5 @@
 ---
 id: INV.SAFETY.APPLY-SUPPORT-GATE
-check:
-  - crates/unica-coder/src/infrastructure/native_operations/apply_families/mod.rs::locked_vendor_objects_refuse_every_family_before_staging
 ---
 
 # Применение правок соблюдает запрет редактирования объекта поставщика
