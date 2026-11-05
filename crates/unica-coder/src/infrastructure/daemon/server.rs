@@ -904,6 +904,20 @@ impl V5CanonicalInvocationRuntime {
         clock: Arc<dyn Clock>,
         workspace_actors: WorkspaceActorRegistry,
     ) -> Self {
+        Self::with_workspace_actors_and_delivery_desk(
+            service,
+            clock,
+            workspace_actors,
+            Arc::new(unica_artifact_delivery::desk::DeliveryDesk::default()),
+        )
+    }
+
+    fn with_workspace_actors_and_delivery_desk(
+        service: Arc<dyn CanonicalInvocationService>,
+        clock: Arc<dyn Clock>,
+        workspace_actors: WorkspaceActorRegistry,
+        deliveries: Arc<unica_artifact_delivery::desk::DeliveryDesk>,
+    ) -> Self {
         let check_snapshots = service
             .check_snapshots()
             .unwrap_or_else(detached_check_snapshots);
@@ -918,12 +932,28 @@ impl V5CanonicalInvocationRuntime {
             ),
             check_snapshots,
             workspace_actors,
-            deliveries: Arc::new(unica_artifact_delivery::desk::DeliveryDesk::default()),
+            deliveries,
             provider_hosts: Arc::new(ProviderHostOwner::default()),
             runtime_resources: Arc::new(RuntimeResourceOwner::default()),
             #[cfg(test)]
             runtime_service: None,
         }
+    }
+
+    #[cfg(test)]
+    fn with_delivery_downloader_before_construction_for_test(
+        service: Arc<dyn CanonicalInvocationService>,
+        clock: Arc<dyn Clock>,
+        downloader: Arc<dyn unica_artifact_delivery::Downloader>,
+    ) -> Self {
+        Self::with_workspace_actors_and_delivery_desk(
+            service,
+            clock,
+            crate::infrastructure::source_workspace::actor_registry(),
+            Arc::new(
+                unica_artifact_delivery::desk::DeliveryDesk::with_downloader_for_test(downloader),
+            ),
+        )
     }
 
     /// The same runtime over a registry with a test policy: capacity or
@@ -3731,6 +3761,10 @@ pub(crate) mod actor_capacity_tests {
         );
         assert_eq!(named.data.as_ref().unwrap()["title"], "Owner255");
     }
+    mod opaque_rlm_analysis_tests {
+        include!("opaque_rlm_analysis_tests.rs");
+    }
+
     fn bootstrap_runtime() -> V5CanonicalInvocationRuntime {
         V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock))
     }
@@ -4219,8 +4253,11 @@ pub(crate) mod actor_capacity_tests {
             downloader: Arc<dyn unica_artifact_delivery::Downloader>,
         ) -> Self {
             let canonical = Arc::new(
-                V5CanonicalInvocationRuntime::new(Arc::clone(&service), Arc::new(TokioClock))
-                    .with_delivery_downloader_for_test(downloader),
+                V5CanonicalInvocationRuntime::with_delivery_downloader_before_construction_for_test(
+                    Arc::clone(&service),
+                    Arc::new(TokioClock),
+                    downloader,
+                ),
             );
             Self::over(canonical, service)
         }

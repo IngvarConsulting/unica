@@ -1,3 +1,13 @@
+// Monotonic across threads; isolated-process tests can observe preparation
+// attempts even when a cold engine fails before an executable is acquired.
+#[cfg(any(test, feature = "test-support"))]
+static INDEX_START_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(any(test, feature = "test-support"))]
+pub fn preparation_attempts_for_test() -> usize {
+    INDEX_START_ATTEMPTS.load(std::sync::atomic::Ordering::Acquire)
+}
+
 use crate::environment::RlmEnvironment;
 use unica_analysis_services::backend::BackgroundTaskTracker;
 use unica_analysis_services::protocol::IndexMaintenanceStatus;
@@ -487,6 +497,8 @@ impl<'a> WorkspaceIndexService<'a> {
         source_root: &Path,
         cancellation: &CancellationToken,
     ) -> IndexStartReport {
+        #[cfg(any(test, feature = "test-support"))]
+        INDEX_START_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         #[cfg(any(test, feature = "test-support"))]
         observe_isolated_build_start(source_root);
         if cancellation.is_cancelled() {

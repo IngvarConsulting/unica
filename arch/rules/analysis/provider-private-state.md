@@ -1,7 +1,8 @@
 ---
 id: INV.APP.PROVIDER-PRIVATE-STATE
-check: []
-gap: https://github.com/IngvarConsulting/unica/issues/966
+check:
+  - crates/unica-coder/src/infrastructure/daemon/opaque_rlm_analysis_tests.rs::canonical_analysis_uses_supported_mcp_with_opaque_format_a
+  - crates/unica-coder/src/infrastructure/daemon/opaque_rlm_analysis_tests.rs::canonical_analysis_uses_supported_mcp_with_opaque_format_b
 ---
 
 # Формат индекса поставщика не становится форматом данных Unica
@@ -15,5 +16,9 @@ Unica обращается к индексу анализа кода через 
 только с поддерживаемым контрактом поставщика для объединения и обновления;
 его полезность должна быть подтверждена измерением.
 
-Текущая проверка отсутствия строк SQLite в исходниках не доказывает эту
-границу целиком. Содержательная проверка рабочего маршрута указана в `gap`.
+Проверки проходят канонический анализ, сервис рабочего пространства и
+управляемый MCP-процесс поставщика с двумя закрытыми форматами индекса.
+Поставщик сам читает свою неизменяемую сборку; Unica получает результаты
+через его интерфейс. Снимок рабочего дерева проверяет сохранность индекса
+и отсутствие копирования. Это проверка границы, а не совместимости
+с конкретной версией внешнего анализатора.

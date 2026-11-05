@@ -1690,6 +1690,9 @@ impl Drop for InFlightGuard {
 
 #[cfg(test)]
 mod tests {
+    mod engine_boundaries {
+        include!("mcp_engine_boundaries_tests.rs");
+    }
     use super::*;
     use crate::application::{ResultContract, ToolExecution};
     use crate::interfaces::daemon_router::remaining_invocation_budget;

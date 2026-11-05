@@ -1,3 +1,13 @@
+// Monotonic across threads; isolated-process tests can observe preparation
+// attempts even when a cold engine fails before an executable is acquired.
+#[cfg(any(test, feature = "test-support"))]
+static TRANSPORT_START_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(any(test, feature = "test-support"))]
+pub fn preparation_attempts_for_test() -> usize {
+    TRANSPORT_START_ATTEMPTS.load(std::sync::atomic::Ordering::Acquire)
+}
+
 use crate::environment::BslEnvironment;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -110,6 +120,8 @@ fn start_bsl_transport(
     cancellation: &CancellationToken,
     environment: &dyn BslEnvironment,
 ) -> Result<PersistentMcpSession, String> {
+    #[cfg(any(test, feature = "test-support"))]
+    TRANSPORT_START_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
     if cancellation.is_cancelled() {
         return Err(cancelled_error("persistent MCP start stopped"));
     }

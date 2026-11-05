@@ -173,8 +173,20 @@ fn wait_for_record_with_connector(
     )
 }
 
+pub(crate) fn with_opaque_rlm_for_test(
+    context: &WorkspaceContext,
+    format: u8,
+    call: impl FnOnce(),
+) {
+    tests::opaque_rlm_contract::with_provider(context, format, call);
+}
+
 #[cfg(test)]
 mod tests {
+    pub(super) mod opaque_rlm_contract {
+        include!("../workspace_service_support/opaque_rlm_contract.rs");
+    }
+
     use super::*;
     use std::fs;
     use std::path::Path;

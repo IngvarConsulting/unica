@@ -1,7 +1,7 @@
 ---
 id: INV.WIRE.ENGINE-FREE-HANDSHAKE
-check: []
-gap: https://github.com/IngvarConsulting/unica/issues/966
+check:
+  - crates/unica-coder/src/interfaces/mcp_engine_boundaries_tests.rs::engine_free_mcp_construction_and_discovery_with_cold_engines
 ---
 
 # Открытие MCP и список инструментов не запускают анализаторы
