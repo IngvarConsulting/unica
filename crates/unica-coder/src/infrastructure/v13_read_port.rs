@@ -105,6 +105,9 @@ pub(crate) struct MetadataLocalRead {
     pub(crate) info: unica_metadata::validation_subject::MetaLocalInfo,
     /// `None` — набор не вида `extension`: заимствования там не бывает.
     pub(crate) borrowing: Option<unica_metadata_designer::xml_model::MetaBorrowing>,
+    /// Точное состояние поддержки объекта: его отдаёт `view` (#2158), а
+    /// `info.support` остаётся грубым статусом для проверок.
+    pub(crate) support_state: ObjectSupportState,
     /// Идентификатор объекта из того же описания: состав подсистемы может
     /// назвать объект им, а не именем.
     pub(crate) uuid: Option<uuid::Uuid>,
@@ -1002,11 +1005,10 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<MetadataLocalRead, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
-        let support = metadata_support_status(self.object_support_with_descriptor(
-            target,
-            Some(&descriptor),
-            checkpoint,
-        )?);
+        let support_data =
+            self.object_support_with_descriptor(target, Some(&descriptor), checkpoint)?;
+        let support_state = support_data.state;
+        let support = metadata_support_status(support_data);
         // Заимствование отвечает только в наборе вида `extension`: в
         // конфигурации его не бывает, и разбирать дескриптор ради `own` у
         // каждого объекта незачем.
@@ -1078,6 +1080,7 @@ impl ProviderReadAuthority {
         Ok(MetadataLocalRead {
             info,
             borrowing,
+            support_state,
             uuid: descriptor_uuid(&descriptor),
         })
     }
@@ -2068,6 +2071,14 @@ impl ProviderReadAuthority {
         self.object_support_with_descriptor(target, None, checkpoint)
     }
 
+    /// The parsed support marker of the source set; `None` when it is absent.
+    pub(crate) fn support_marker(
+        &self,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<Option<Arc<SupportState>>, ViewError> {
+        self.support_state(checkpoint)
+    }
+
     /// A caller that already holds the descriptor bytes passes them in so the
     /// support lookup does not read the same file a second time.
     fn object_support_with_descriptor(
@@ -2531,6 +2542,24 @@ fn form_support_rule(
         )
     })?;
     Ok(object_support_rule(state.object_rule(&uuid)))
+}
+
+/// Support state of an object whose descriptor `uuid` the caller already
+/// holds: a collection lists its members without reading them again.
+pub(crate) fn object_support_by_uuid(
+    state: &SupportState,
+    uuid: Option<&str>,
+) -> Result<ObjectSupportState, ViewError> {
+    if state.removed() || !state.global_editing_enabled() {
+        return Ok(object_support_from_state(Some(state), None).state);
+    }
+    let uuid = uuid.ok_or_else(|| {
+        ViewError::detailed(
+            RefusalDetail::SourceUnreadable,
+            "metadata descriptor has no support-state UUID evidence",
+        )
+    })?;
+    Ok(object_support_from_state(Some(state), object_support_rule(state.object_rule(uuid))).state)
 }
 
 fn object_support_rule(rule: Option<u8>) -> Option<ObjectSupportState> {
