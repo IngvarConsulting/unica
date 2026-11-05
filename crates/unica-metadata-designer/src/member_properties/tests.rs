@@ -272,8 +272,19 @@ fn nested_optional_fact_damage_is_local_and_missing_never_infers_defaults() {
                     "{owner} {tag}: {item:?}"
                 );
                 assert!(!item.properties.iter().any(|property| property.name == *tag));
-                assert_eq!(item.property_limits.len(), 1, "{owner} {tag}: {item:?}");
-                assert!(item.property_limits[0].contains(&format!(".properties.{tag}")));
+                let (own, other): (Vec<_>, Vec<_>) = item
+                    .property_limits
+                    .iter()
+                    .partition(|limit| limit.contains(".properties."));
+                assert_eq!(own.len(), 1, "{owner} {tag}: {item:?}");
+                assert!(own[0].contains(&format!(".properties.{tag}")));
+                // The information register flag reader also names its own
+                // field for the same damaged fact, and nothing else.
+                assert!(
+                    other.iter().all(|limit| owner == "InformationRegister"
+                        && limit.contains(&format!("dimension {tag} is not"))),
+                    "{owner} {tag}: {item:?}"
+                );
                 assert!(item.incomplete);
             }
             let item = observed(&fields.replace(&original, ""));
