@@ -159,7 +159,12 @@ pub fn patch_for_source(
             .replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;");
-        replacements.push((node.range(), format!("{opening}>{escaped}</{qualified}>")));
+        let replacement = if escaped.is_empty() {
+            format!("{opening}/>")
+        } else {
+            format!("{opening}>{escaped}</{qualified}>")
+        };
+        replacements.push((node.range(), replacement));
     }
     replacements.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
     let mut result = source.to_string();
@@ -457,6 +462,47 @@ mod tests {
             ],
         };
         assert_eq!(patch(&before, "ОбластьДанных", &same).unwrap(), before);
+        for (field, reference) in [
+            (
+                DescriptorProperty::DataSeparationValue,
+                "SessionParameter.Value",
+            ),
+            (
+                DescriptorProperty::DataSeparationUse,
+                "SessionParameter.Use",
+            ),
+            (
+                DescriptorProperty::ConditionalSeparation,
+                "Constant.Condition",
+            ),
+        ] {
+            for prefix in ["", "md:"] {
+                let tag = field.names()[0];
+                let opening = if prefix.is_empty() {
+                    format!("<{tag}")
+                } else {
+                    format!("<md:{tag} xmlns:md=\"{MD}\"")
+                };
+                let populated = format!("{opening}>{reference}</{prefix}{tag}>");
+                let original = before.replacen(&format!("<{tag}/>"), &populated, 1);
+                let changes = CommonAttributePropertyChanges {
+                    changes: vec![(field, String::new())],
+                };
+                let expected = before.replacen(&format!("<{tag}/>"), &format!("{opening}/>"), 1);
+                let after = patch(&original, "ОбластьДанных", &changes).unwrap();
+                assert_eq!(after, expected);
+                assert_eq!(patch(&after, "ОбластьДанных", &changes).unwrap(), after);
+                let expanded = before.replacen(
+                    &format!("<{tag}/>"),
+                    &format!("{opening}></{prefix}{tag}>"),
+                    1,
+                );
+                assert_eq!(
+                    patch(&expanded, "ОбластьДанных", &changes).unwrap(),
+                    expanded
+                );
+            }
+        }
     }
 
     #[test]
