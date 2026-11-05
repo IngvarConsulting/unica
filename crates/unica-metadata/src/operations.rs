@@ -3164,6 +3164,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.METADATA-MUTATION-VALIDITY
     #[test]
     fn tabular_standard_attribute_names_are_rejected_by_all_name_constructors() {
         let owner = MetadataAddress::parse(

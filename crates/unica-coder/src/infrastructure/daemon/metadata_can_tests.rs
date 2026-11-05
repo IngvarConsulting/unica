@@ -819,6 +819,7 @@ fn changed_paths(
     )
 }
 
+/// rule: INV.SOURCE.EMBEDDED-HELP-CREATE
 #[test]
 fn canonical_help_saved_execute_creates_the_facet_and_preserves_neighbors_and_refusals() {
     let fixture = Fixture::new("workspace-resolve");
@@ -1001,6 +1002,7 @@ fn check_status(result: &DomainResult) -> &str {
 
 /// INV.SOURCE.OBSERVED-TYPE-CAPABILITY: UUID записывается каноническим
 /// `attribute.add` как `v8:UUID` и читается `view` тем же изменяемым вариантом.
+/// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 #[test]
 fn canonical_uuid_attribute_round_trips_as_an_editable_observed_type() {
     let fixture = Fixture::blank();
@@ -1067,6 +1069,7 @@ fn canonical_uuid_attribute_round_trips_as_an_editable_observed_type() {
 /// INV.APP.META-OBSERVATION: посторонний файл в каталоге формы не скрывает
 /// справочник и его форму в `view`, а `check` того же узла называет форму
 /// ошибкой `provider_unavailable` логическим адресом.
+/// rule: INV.APP.META-OBSERVATION
 #[test]
 fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unavailable() {
     let fixture = Fixture::blank();
@@ -1137,6 +1140,7 @@ fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unav
 /// по непустому представлению списка, а не по синониму, и предупреждает о
 /// представлении, повторяющем синоним. Обе находки — предупреждения с полем и
 /// языком, вердикт остаётся `passed`.
+/// rule: INV.APP.META-FINDINGS
 #[test]
 fn canonical_check_reports_list_presentation_findings_with_field_and_language() {
     let long = "Текст длиной не менее тридцати девяти символов";
@@ -1222,6 +1226,7 @@ fn canonical_check_reports_list_presentation_findings_with_field_and_language() 
 /// INV.SOURCE.EVENT-DEFINED-TYPE: `check` подписки раскрывает определяемый
 /// тип источника вместе с вложенным определяемым типом до классов событий;
 /// цикл и неподходящий член остаются ошибками у `relations.source`.
+/// rule: INV.SOURCE.EVENT-DEFINED-TYPE
 #[test]
 fn canonical_check_expands_nested_defined_type_event_sources() {
     let fixture = Fixture::new("workspace-event-source-order");
@@ -1371,6 +1376,7 @@ fn subscription_source(fixture: &Fixture) -> Vec<(String, String)> {
 /// справочников в конфигурации; явный выбор класса менеджера константы
 /// сохраняется в XML. Повторная та же замена — пустой план: типизированный
 /// читатель возвращает записанный источник.
+/// rule: INV.APP.EVENT-SOURCE
 #[test]
 fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
     let fixture = event_source_without_catalogs();
@@ -1468,6 +1474,7 @@ fn canonical_event_source_family_and_constant_manager_choice_round_trip() {
 /// буквальную версию `2.20`; старый формат и численно равные написания
 /// отклоняются до плана без записи, событий и артефактов, а отказ по старому
 /// формату предлагает повторную выгрузку платформой 8.3.27.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
 #[test]
 fn canonical_apply_refuses_inexact_export_format_and_offers_platform_reexport() {
     let args = json!({"at":"main:Catalog.Products","ops":[{"op":"attribute.add","args":{"items":[{"name":"Extra"}]}}]});
@@ -1635,6 +1642,8 @@ fn finding<'a>(diagnostics: &'a [Value], code: &str, field: &str) -> &'a Value {
 /// синтаксически допустимый, но немоделируемый тип реквизита и константы —
 /// предупреждение `validation_warning` у своего поля при итоге `passed`;
 /// `view` называет его в пределах узла, остальные сведения сохраняются.
+/// rule: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
+/// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 #[test]
 fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
     let runtime = runtime();
@@ -1691,6 +1700,7 @@ fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
 
 /// INV.SOURCE.OBSERVED-TYPE-CAPABILITY: повреждённый квалификатор остаётся
 /// ошибкой, а не превращается в предупреждение о неподдержанном типе.
+/// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 #[test]
 fn canonical_broken_qualifier_stays_an_error_in_check_and_view() {
     let runtime = runtime();
@@ -1747,6 +1757,7 @@ fn canonical_broken_qualifier_stays_an_error_in_check_and_view() {
 /// INV.SOURCE.METADATA-OBJECT-FACTS: пустой нетипизированный `FillValue` —
 /// диагностика, а не молчаливое «значение не задано»; тип реквизита
 /// по-прежнему читается.
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn canonical_bare_fill_value_is_a_diagnostic_not_an_absent_value() {
     let runtime = runtime();
@@ -1790,6 +1801,7 @@ fn canonical_bare_fill_value_is_a_diagnostic_not_an_absent_value() {
 /// член и класс, несовместимый с событием, отклоняют план без записи;
 /// описания определяемых типов входят во входы плана, и их правка после
 /// плана делает токен устаревшим.
+/// rule: INV.SOURCE.EVENT-DEFINED-TYPE
 #[test]
 fn canonical_apply_expands_defined_type_event_sources_before_publication() {
     let at = "main:EventSubscription.CorpusEventSubscription";
@@ -1950,6 +1962,7 @@ fn canonical_borrowed_and_unchanged_event_sources_publish_without_a_recheck() {
 /// планировщик: недопустимый итог не получает токена, а попытка исполнить
 /// те же входы без предпросмотра (`dryRun: false`) отклоняется. В обоих
 /// случаях исходники не меняются (#959).
+/// rule: INV.SOURCE.MUTATION-PREVIEW-VALIDATION
 #[test]
 fn canonical_wire_apply_refuses_removing_the_last_required_register_field_without_writes() {
     let runtime = runtime();
@@ -2196,6 +2209,7 @@ fn canonical_unknown_type_set_stays_an_error() {
 /// #1941, INV.SOURCE.METADATA-OBJECT-FACTS: повреждённое свойство табличной
 /// части и её реквизита из профиля их свойств `check` называет ошибкой у поля
 /// элемента так же, как `view` называет её в пределах узла.
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn canonical_check_reports_a_duplicated_tabular_attribute_property() {
     let runtime = runtime();
@@ -2416,6 +2430,7 @@ fn canonical_check_accepts_a_common_binary_template_without_data() {
 
 /// #2057: the same bilingual standard row name is rejected before a batch
 /// can publish earlier changes; headers retain their independent namespace.
+/// rule: INV.SOURCE.METADATA-MUTATION-VALIDITY
 #[test]
 fn tabular_standard_names_refuse_add_copy_and_rename_without_source_writes() {
     let fixture = Fixture::new("workspace-tabular-attribute-copy");

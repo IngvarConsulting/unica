@@ -498,6 +498,8 @@ fn info_returns_the_constant_value_type_in_kind_specific_details() {
     );
 }
 
+/// rule: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
+/// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 #[test]
 fn info_localizes_an_unmodelled_constant_type_with_the_warning_code() {
     let workspace = create_info_workspace("constant-unmodelled-type");
@@ -1226,6 +1228,7 @@ fn info_rejects_duplicate_direct_metadata_objects_before_publishing_memberships(
     );
 }
 
+/// rule: INV.APP.META-OBSERVATION
 #[test]
 fn info_preserves_local_structure_when_child_resource_evidence_is_unavailable() {
     let workspace = create_info_workspace("child-evidence-unavailable");
@@ -1428,6 +1431,8 @@ fn info_observes_every_typed_mutation_field() {
     );
 }
 
+/// rule: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
+/// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 #[test]
 fn info_localizes_an_unknown_but_valid_platform_type_as_a_warning() {
     let workspace = create_info_workspace("unknown-platform-type");
@@ -1454,6 +1459,7 @@ fn info_localizes_an_unknown_but_valid_platform_type_as_a_warning() {
         }));
 }
 
+/// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 #[test]
 fn info_keeps_a_broken_qualifier_in_the_error_severity_branch() {
     let workspace = create_info_workspace("broken-type-qualifier");
@@ -1535,6 +1541,7 @@ fn uuid_writer_round_trips_through_meta_edit_and_info() {
     assert!(descriptor.contains("<v8:Type>v8:UUID</v8:Type>"));
 }
 
+/// rule: INV.SOURCE.METADATA-OBJECT-FACTS
 #[test]
 fn info_marks_bare_fill_value_incomplete_with_diagnostic() {
     let workspace = create_info_workspace("malformed-optional-fill-value");
