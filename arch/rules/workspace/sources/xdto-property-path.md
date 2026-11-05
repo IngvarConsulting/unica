@@ -1,15 +1,5 @@
 ---
 id: INV.SOURCE.XDTO-PROPERTY-PATH
-check:
-  - crates/unica-coder/src/infrastructure/native_operations/xdto.rs::staged_xdto_property_chain_comes_from_the_address
-  - crates/unica-coder/src/infrastructure/native_operations/xdto.rs::staged_xdto_args_are_closed_typed_and_report_exact_paths
-  - crates/unica-coder/src/infrastructure/v13_read/tests.rs::xdto_properties_are_read_at_any_depth
-  - crates/unica-coder/src/domain/apply.rs::retired_names_with_a_dot_route_to_escaped_addresses
-  - crates/unica-xdto-designer/src/writer.rs::xdto_writer_rejects_every_invalid_property_path_shape
-  - crates/unica-xdto-designer/src/writer.rs::xdto_writer_addresses_a_dotted_property_identity_with_an_escape
-  - crates/unica-xdto-designer/src/writer.rs::xdto_writer_separates_only_unescaped_property_path_dots
-  - crates/unica-xdto/src/operations.rs::property_rename_takes_its_target_from_the_address_and_only_the_new_name_from_values
-  - crates/unica-coder/src/infrastructure/daemon/xdto_can_tests/global_properties.rs::xdto_global_references_write_read_repeat_and_preserve_other_bytes
 ---
 
 # Вложенное свойство XDTO задаётся адресом

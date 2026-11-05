@@ -93,6 +93,7 @@ fn preview(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture, ops: Value
     result
 }
 
+/// rule: INV.SOURCE.XDTO-PROPERTY-PATH
 #[test]
 fn xdto_global_references_write_read_repeat_and_preserve_other_bytes() {
     let fixture = fixture();

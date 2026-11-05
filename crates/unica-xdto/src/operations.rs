@@ -1618,6 +1618,7 @@ mod tests {
         assert_eq!(args.property.min_occurs, Some(1));
     }
 
+    /// rule: INV.SOURCE.XDTO-PROPERTY-PATH
     #[test]
     fn property_rename_takes_its_target_from_the_address_and_only_the_new_name_from_values() {
         let operation = XdtoOperation::RenameProperty;
