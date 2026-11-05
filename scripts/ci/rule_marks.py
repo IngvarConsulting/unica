@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import tomllib
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,7 @@ class RustItem:
     is_test: bool
     marks: tuple[str, ...]
     target: str | None = None  # `#[path]` модуля-файла или путь `include!`
+    mark_lines: tuple[int, ...] = ()
 
 
 def rule_ids(root: Path) -> set[str]:
@@ -103,6 +105,7 @@ def rust_items(source: str) -> list[RustItem]:
         cursor = index - 1
         is_test = False
         marks: list[str] = []
+        lines_of_marks.clear()
         while cursor >= 0:
             text = raw_lines[cursor].strip()
             if not text:
@@ -111,6 +114,7 @@ def rust_items(source: str) -> list[RustItem]:
                 if m := RUST_MARK.match(raw_lines[cursor]):
                     if not text.startswith("//!"):
                         marks.append(m.group(1))
+                        lines_of_marks.append(cursor)
                 cursor -= 1
                 continue
             if text.startswith("#[") or text.endswith("]") or text.startswith("#!"):
@@ -124,6 +128,7 @@ def rust_items(source: str) -> list[RustItem]:
             is_test = True
         return cursor + 1, is_test, tuple(reversed(marks))
 
+    lines_of_marks: list[int] = []
     token = re.compile(r"\{|\}|\bmod\s+(\w+)\s*(\{|;)|\bfn\s+(\w+)|\b(\w+)!\s*[(\[{]")
     for m in token.finditer(code):
         text = m.group(0)
@@ -145,25 +150,27 @@ def rust_items(source: str) -> list[RustItem]:
                 attribute = next(
                     (
                         found.group(1)
-                        for text_line in raw_lines[head:line]
+                        for text_line in [*raw_lines[head:line], raw_lines[line].split("mod ")[0]]
                         if (found := re.search(r'#\[\s*path\s*=\s*"([^"]+)"', text_line))
                     ),
                     None,
                 )
-                items.append(RustItem("modfile", m.group(1), modules, line, head, False, marks, attribute))
+                items.append(RustItem("modfile", m.group(1), modules, line, head, False, marks, attribute, tuple(lines_of_marks)))
                 continue
-            items.append(RustItem("mod", m.group(1), modules, line, head, False, marks))
+            items.append(RustItem("mod", m.group(1), modules, line, head, False, marks, None, tuple(lines_of_marks)))
             depth += 1
             stack.append((m.group(1), depth))
             continue
         if m.group(3):
             head, is_test, marks = header(line)
-            items.append(RustItem("fn", m.group(3), modules, line, head, is_test, marks))
+            items.append(RustItem("fn", m.group(3), modules, line, head, is_test, marks, None, tuple(lines_of_marks)))
             continue
         if m.group(4) == "include":
-            found = re.match(r'\s*(?:concat!\s*\(\s*env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*)?"([^"]+)"', source[m.end():m.end() + 300])
+            found = re.match(r'\s*(concat!\s*\(\s*env!\s*\(\s*"CARGO_MANIFEST_DIR"\s*\)\s*,\s*)?"([^"]+)"', source[m.end():m.end() + 300])
             if found:
-                items.append(RustItem("include", found.group(1), modules, line, line, False, (), found.group(1)))
+                # Путь от каталога пакета отмечен префиксом `@crate`.
+                target = ("@crate" if found.group(1) else "") + found.group(2)
+                items.append(RustItem("include", found.group(2), modules, line, line, False, (), target))
         elif m.group(4) and m.group(4) not in {"macro_rules", "include", "include_str", "concat", "format", "vec", "assert", "assert_eq", "assert_ne", "println", "panic", "write", "writeln", "json", "matches", "debug_assert"}:
             # Имя теста — первый аргумент вызова макроса.
             rest = source[m.end():m.end() + 400]
@@ -171,7 +178,7 @@ def rust_items(source: str) -> list[RustItem]:
             first = re.match(r"(\w+)", rest)
             if first:
                 head, _, marks = header(line)
-                items.append(RustItem("macro", first.group(1), modules, line, head, False, marks))
+                items.append(RustItem("macro", first.group(1), modules, line, head, False, marks, None, tuple(lines_of_marks)))
         # открывающая скобка вызова учитывается следующим совпадением `{`
         if text.endswith("{"):
             depth += 1
@@ -198,28 +205,49 @@ def file_marks(source: str) -> tuple[str, ...]:
 
 
 
+def rust_mark_usage(source: str) -> tuple[set[tuple[str, tuple[str, ...], str]], set[int], list[int]]:
+    """Тесты с правилами, использованные строки пометок и все строки пометок файла."""
+
+    items = rust_items(source)
+    lines = source.splitlines()
+    all_lines = [index for index, line in enumerate(lines) if RUST_MARK.match(line)]
+    tests = []
+    for item in items:
+        if (item.kind == "fn" and item.is_test) or (
+            item.kind == "macro" and (name := _macro_name(source, item)) and macro_generates_tests(source, name)
+        ):
+            tests.append(item)
+    used: set[int] = set()
+    found: set[tuple[str, tuple[str, ...], str]] = set()
+    file_lines = []
+    for index, line in enumerate(lines):
+        text = line.strip()
+        if text.startswith("//!"):
+            if RUST_MARK.match(line):
+                file_lines.append(index)
+        elif text and not text.startswith("//") and not text.startswith("#!"):
+            break
+    module_items = [item for item in items if item.kind == "mod" and item.marks]
+    for test in tests:
+        marks = set(test.marks)
+        used |= set(test.mark_lines)
+        if file_lines:
+            marks |= {RUST_MARK.match(lines[index]).group(1) for index in file_lines}
+            used |= set(file_lines)
+        for module in module_items:
+            path = module.modules + (module.name,)
+            if test.modules[: len(path)] == path:
+                marks |= set(module.marks)
+                used |= set(module.mark_lines)
+        found |= {(rule, test.modules, test.name) for rule in marks}
+    return found, used, all_lines
+
+
 def rust_marked_pairs(path: str, source: str) -> set[tuple[str, str]]:
     """Пары (правило, адрес) из пометок одного Rust-файла."""
 
-    items = rust_items(source)
-    module_marks: dict[tuple[str, ...], tuple[str, ...]] = {}
-    for item in items:
-        if item.kind == "mod" and item.marks:
-            module_marks[item.modules + (item.name,)] = item.marks
-    whole = file_marks(source)
-    pairs = set()
-    for item in items:
-        testlike = (item.kind == "fn" and item.is_test) or (
-            item.kind == "macro" and _macro_name(source, item) and macro_generates_tests(source, _macro_name(source, item))
-        )
-        if not testlike:
-            continue
-        marks = set(item.marks) | set(whole)
-        for size in range(1, len(item.modules) + 1):
-            marks |= set(module_marks.get(item.modules[:size], ()))
-        address = "::".join((path, *item.modules, item.name))
-        pairs |= {(rule, address) for rule in marks}
-    return pairs
+    found, _, _ = rust_mark_usage(source)
+    return {(rule, "::".join((path, *modules, name))) for rule, modules, name in found}
 
 
 def _macro_name(source: str, item: RustItem) -> str | None:
@@ -277,8 +305,36 @@ def marked_pairs(root: Path) -> set[tuple[str, str]]:
     return pairs
 
 
+def python_mark_usage(source: str) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
+    """Пометки Python: (правило, строка) на тестах и вне тестов."""
+
+    used, stray = [], []
+    tree = _parse(source)
+    owners: dict[ast.AST, bool] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            tests = [
+                item
+                for item in node.body
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name.startswith("test")
+            ]
+            owners[node] = bool(tests)
+            for item in tests:
+                owners[item] = True
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        doc = ast.get_docstring(node)
+        if not doc:
+            continue
+        line = node.body[0].lineno if node.body else 0
+        target = used if owners.get(node, False) else stray
+        target.extend((rule, line) for rule in PYTHON_MARK.findall(doc))
+    return used, stray
+
+
 def stray_marks(root: Path) -> list[str]:
-    """Пометки, не относящиеся ни к одному тесту, и неизвестные правила."""
+    """Пометки с неизвестным правилом и пометки, не относящиеся к тесту."""
 
     ids = rule_ids(root)
     problems = []
@@ -288,18 +344,17 @@ def stray_marks(root: Path) -> list[str]:
             continue
         relative = path.relative_to(root).as_posix()
         if path.suffix == ".rs":
-            found = {m.group(1) for line in text.splitlines() if (m := RUST_MARK.match(line))}
-            used = {rule for rule, _ in rust_marked_pairs(relative, text)}
+            _, used_lines, all_lines = rust_mark_usage(text)
+            lines = text.splitlines()
+            marks = [(RUST_MARK.match(lines[index]).group(1), index + 1, index in used_lines) for index in all_lines]
         else:
-            found = set()
-            for node in ast.walk(_parse(text)):
-                if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-                    found |= set(PYTHON_MARK.findall(ast.get_docstring(node) or ""))
-            used = {rule for rule, _ in python_marked_pairs(relative, text)}
-        for rule in sorted(found - ids):
-            problems.append(f"{relative}: rule {rule} is not defined in arch/rules")
-        for rule in sorted((found & ids) - used):
-            problems.append(f"{relative}: rule {rule} is marked, but not on a test")
+            used, stray = python_mark_usage(text)
+            marks = [(rule, line, True) for rule, line in used] + [(rule, line, False) for rule, line in stray]
+        for rule, line, on_test in sorted(marks, key=lambda mark: (mark[1], mark[0])):
+            if rule not in ids:
+                problems.append(f"{relative}:{line}: rule {rule} is not defined in arch/rules")
+            elif not on_test:
+                problems.append(f"{relative}:{line}: rule {rule} is marked, but not on a test")
     return problems
 
 
@@ -514,6 +569,29 @@ def _rust_module_path(relative: str) -> tuple[str, tuple[str, ...]] | None:
     return package, ()
 
 
+def _declared_targets(crate: Path, package: str) -> list[tuple[Path, str]]:
+    """Корни целей `tests/` и `src/bin/`: `[[test]]`/`[[bin]]` и автообнаружение Cargo."""
+
+    manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
+    roots: list[tuple[Path, str]] = []
+    declared: set[Path] = set()
+    for section, directory in (("test", "tests"), ("bin", "src/bin")):
+        for target in manifest.get(section, []):
+            name = target.get("name")
+            path = crate / target.get("path", f"{directory}/{name}.rs")
+            if name:
+                roots.append((path, f"{package}::{name}"))
+                declared.add(path.resolve())
+    autotests = manifest.get("package", {}).get("autotests", True)
+    for section, directory, automatic in (("test", "tests", autotests), ("bin", "src/bin", True)):
+        if not automatic:
+            continue
+        for path in sorted((crate / directory).glob("*.rs")):
+            if path.resolve() not in declared:
+                roots.append((path, f"{package}::{path.stem}"))
+    return roots
+
+
 def crate_modules(root: Path) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
     """Модульные пути файлов: обход крейта от корней по `mod`, `#[path]`, `include!`.
 
@@ -530,8 +608,7 @@ def crate_modules(root: Path) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
         for name in ("src/lib.rs", "src/main.rs"):
             if (crate / name).is_file():
                 roots.append((crate / name, package))
-        roots += [(path, f"{package}::{path.stem}") for path in sorted((crate / "tests").glob("*.rs"))]
-        roots += [(path, f"{package}::{path.stem}") for path in sorted((crate / "src/bin").glob("*.rs"))]
+        roots += _declared_targets(crate, package)
         seen: set[tuple[Path, tuple[str, ...]]] = set()
         queue: list[tuple[Path, str, tuple[str, ...], bool]] = [(path, target, (), True) for path, target in roots]
         while queue:
@@ -556,15 +633,21 @@ def crate_modules(root: Path) -> dict[str, list[tuple[str, tuple[str, ...]]]]:
                         # `#[path]` отсчитывается от каталога файла, а внутри
                         # встроенного модуля — от каталога этого модуля.
                         anchor = child_dir.joinpath(*item.modules) if item.modules else path.parent
-                        queue.append((anchor / item.target, target, modules, item.target.endswith("mod.rs")))
+                        # Файл по `#[path]` держит дочерние модули в своём
+                        # каталоге, как `mod.rs`.
+                        queue.append((anchor / item.target, target, modules, True))
                     else:
                         directory = child_dir.joinpath(*item.modules)
                         for candidate, owns in ((directory / f"{item.name}.rs", False), (directory / item.name / "mod.rs", True)):
                             if candidate.is_file():
                                 queue.append((candidate, target, modules, owns))
                                 break
-                elif item.kind == "include" and item.target and not item.target.startswith("/"):
-                    queue.append((path.parent / item.target, target, base + item.modules, False))
+                elif item.kind == "include" and item.target:
+                    if item.target.startswith("@crate"):
+                        included = crate / item.target[len("@crate"):].lstrip("/")
+                    else:
+                        included = path.parent / item.target
+                    queue.append((included, target, base + item.modules, False))
     return result
 
 
@@ -573,6 +656,7 @@ class RuleIndex:
 
     def __init__(self, root: Path):
         self.rust: list[tuple[str, tuple[str, ...], tuple[str, ...], str, str | None]] = []
+        self.by_name: dict[str, list[tuple[str, tuple[str, ...], tuple[str, ...], str, str | None]]] = {}
         self.python: dict[tuple[str, str, str], set[str]] = {}
         placed = crate_modules(root)
         for rule, address in marked_pairs(root):
@@ -595,6 +679,8 @@ class RuleIndex:
             # стоит в модуле со своим именем; его имя должно быть в пути.
             stem = Path(path).stem if "/src/" in path and Path(path).stem not in ("lib", "main", "mod") else None
             self.rust.append((package, modules, tuple(names), rule, stem))
+        for mark in self.rust:
+            self.by_name.setdefault(mark[2][-1], []).append(mark)
         self.unknown = [line for line in stray_marks(root) if "is not defined in arch/rules" in line]
 
     _cache: dict[Path, "RuleIndex"] = {}
@@ -617,13 +703,11 @@ class RuleIndex:
         name = full_name[len(binary) + 2:] if full_name.startswith(binary + "::") else full_name
         segments = tuple(name.split("::"))
         exact, suffix = set(), set()
-        for package, modules, names, rule, stem in self.rust:
-            # Цель интеграционного теста может называться не по файлу
-            # (`[[test]] name`): тогда остаётся сравнение по концу пути.
+        for package, modules, names, rule, stem in self.by_name.get(segments[-1], []):
             base = package.split("::")[0]
             if binary != base and not binary.startswith(base + "::"):
                 continue
-            if segments == modules + names and (binary == package or "::" in package):
+            if binary == package and segments == modules + names:
                 exact.add(rule)
             elif stem != "" and segments[-len(names):] == names and (stem is None or stem in segments[: -len(names)]):
                 suffix.add(rule)

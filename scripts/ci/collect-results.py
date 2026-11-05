@@ -46,6 +46,7 @@ from site_fetch import fetch  # noqa: E402
 # переименование в одном месте красит тест. Linux исполняет всё в `Unica CI`,
 # остальные ОС — каждая в своей джобе `Rust (<runner>)`.
 REPO_ROOT = Path(__file__).resolve().parents[2]
+MAIN_LINE = "main"
 GATE_JOB = "Unica CI"
 OS_JOB = "Rust ({runner})"
 RUST_LANES = ("ordinary", "receipt", "vendor")
@@ -630,15 +631,17 @@ def collect(artifacts: Path, out_root: Path, jobs: Path | None, fallback_line: s
                 by_line[key[0]]["filled"] += fill_from_site(
                     site, key[0], run, set(), out_root / key[0], conclusions, Path(work), routing_skip=skip,
                 )
-    # Тест сам называет правило пометкой `rule: <ID>`; метка отчёта берётся
-    # из исходников той же ревизии. Неизвестное правило останавливает сбор.
-    index = rule_marks.RuleIndex.cached(REPO_ROOT)
-    if index.unknown:
-        raise SystemExit(
-            "пометки rule называют правила, которых нет в arch/rules:\n" + "\n".join(index.unknown)
-        )
-    for line in by_line:
-        rule_marks.label_rules(out_root / line, index)
+    # Тест сам называет правило пометкой `rule: <ID>`. Сайт собирается из
+    # дерева main, поэтому метку `rule` получают только результаты линии
+    # main: у релизных линий пометки могли разойтись с main. Неизвестное
+    # правило останавливает сбор.
+    if MAIN_LINE in by_line:
+        index = rule_marks.RuleIndex.cached(REPO_ROOT)
+        if index.unknown:
+            raise SystemExit(
+                "пометки rule называют правила, которых нет в arch/rules:\n" + "\n".join(index.unknown)
+            )
+        rule_marks.label_rules(out_root / MAIN_LINE, index)
     for line, stats in by_line.items():
         stats["runners"] = sorted(stats["runners"])
         run = dict(stats.pop("run"))

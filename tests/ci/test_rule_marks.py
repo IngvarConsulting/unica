@@ -106,22 +106,28 @@ class RuleMarkReadingTests(unittest.TestCase):
             (root / "crates/a/src/lib.rs").write_text(RUST.replace("INV.A.MACRO", "INV.A.GONE"), encoding="utf-8")
             (root / "tests/ci").mkdir(parents=True)
             (root / "tests/ci/test_x.py").write_text(PYTHON.replace("INV.A.TWO", "INV.A.HELPER"), encoding="utf-8")
+            def line(text: str, needle: str) -> int:
+                return text.splitlines().index(needle) + 1
+
+            rust = RUST.replace("INV.A.MACRO", "INV.A.GONE")
+            python = PYTHON.replace("INV.A.TWO", "INV.A.HELPER")
+            # A used mark of the same rule elsewhere does not hide this one.
             self.assertEqual(
                 rule_marks.stray_marks(root),
                 [
-                    "crates/a/src/lib.rs: rule INV.A.GONE is not defined in arch/rules",
-                    "tests/ci/test_x.py: rule INV.A.HELPER is not defined in arch/rules",
+                    f"crates/a/src/lib.rs:{line(rust, '// rule: INV.A.GONE')}: rule INV.A.GONE is not defined in arch/rules",
+                    f"crates/a/src/lib.rs:{line(rust, 'fn not_a_test() {}') - 1}: rule INV.A.TWO is marked, but not on a test",
+                    f"tests/ci/test_x.py:{line(python, '        ' + chr(34) * 3 + 'rule: INV.A.HELPER' + chr(34) * 3)}: rule INV.A.HELPER is not defined in arch/rules",
                 ],
             )
             (root / "tests/ci/test_x.py").write_text(PYTHON, encoding="utf-8")
-            (root / "crates/a/src/lib.rs").write_text(
-                RUST.replace("/// rule: INV.A.TWO\n    #[test]", "#[test]"), encoding="utf-8"
-            )
+            rust = RUST.replace("// rule: INV.A.MACRO\n", "").replace("/// rule: INV.A.TWO\nfn not_a_test", "fn not_a_test")
+            (root / "crates/a/src/lib.rs").write_text(rust + "\n/// rule: INV.A.ONE\nmod outside;\n", encoding="utf-8")
             self.assertEqual(
                 rule_marks.stray_marks(root),
                 [
-                    "crates/a/src/lib.rs: rule INV.A.TWO is marked, but not on a test",
-                    "tests/ci/test_x.py: rule INV.A.TWO is marked, but not on a test",
+                    f"crates/a/src/lib.rs:{len(rust.splitlines()) + 2}: rule INV.A.ONE is marked, but not on a test",
+                    f"tests/ci/test_x.py:{line(PYTHON, '        ' + chr(34) * 3 + 'rule: INV.A.TWO' + chr(34) * 3)}: rule INV.A.TWO is marked, but not on a test",
                 ],
             )
 
@@ -225,6 +231,42 @@ class RuleLabelTests(unittest.TestCase):
                 index.rules_for(entry("python", "ci", "test_x.Suite.test_doc")), ["INV.A.CLASS", "INV.A.ONE"]
             )
             self.assertEqual(index.rules_for(entry("python", "ci", "test_x.Suite.helper")), [])
+
+
+    def test_module_tree_follows_path_attributes_includes_and_declared_test_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rule(root, "INV.A.ONE")
+            crate = root / "crates/pkg"
+            (crate / "src/impl").mkdir(parents=True)
+            (crate / "tests").mkdir(parents=True)
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "pkg"\n\n[[test]]\nname = "other_name"\npath = "tests/flow.rs"\n', encoding="utf-8"
+            )
+            (crate / "src/lib.rs").write_text(
+                '#[path = "impl/server.rs"] mod server;\n'
+                'mod inc { include!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/included.rs")); }\n',
+                encoding="utf-8",
+            )
+            # A `#[path]` file keeps its child modules next to itself.
+            (crate / "src/impl/server.rs").write_text("mod child;\n", encoding="utf-8")
+            (crate / "src/impl/child.rs").write_text("/// rule: INV.A.ONE\n#[test]\nfn t() {}\n", encoding="utf-8")
+            (crate / "src/included.rs").write_text("/// rule: INV.A.ONE\n#[test]\nfn inc_t() {}\n", encoding="utf-8")
+            (crate / "tests/flow.rs").write_text("/// rule: INV.A.ONE\n#[test]\nfn works() {}\n", encoding="utf-8")
+            (crate / "tests/second.rs").write_text("#[test]\nfn works() {}\n", encoding="utf-8")
+            index = rule_marks.RuleIndex(root)
+
+            def rules(binary: str, name: str) -> list[str]:
+                return index.rules_for(
+                    {"fullName": f"{binary}::{name}", "labels": [{"name": "language", "value": "rust"}, {"name": "suite", "value": binary}]}
+                )
+
+            self.assertEqual(rules("pkg", "server::child::t"), ["INV.A.ONE"])
+            self.assertEqual(rules("pkg", "inc::inc_t"), ["INV.A.ONE"])
+            self.assertEqual(rules("pkg::other_name", "works"), ["INV.A.ONE"])
+            # Another target of the same package with the same test name stays unlabelled.
+            self.assertEqual(rules("pkg::second", "works"), [])
+            self.assertEqual(rules("pkg", "works"), [])
 
 
 class RepositoryRuleMarkTests(unittest.TestCase):

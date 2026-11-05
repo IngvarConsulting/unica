@@ -10,6 +10,10 @@
     python scripts/dev/rule-marks.py pairs
         Напечатать пары «правило, тест» из пометок.
 
+    python scripts/dev/rule-marks.py tests <ID>
+        Напечатать тесты правила: точное совпадение ID, без тестов правил,
+        чей ID начинается так же.
+
     python scripts/dev/rule-marks.py verify
         Найти пометки с неизвестным правилом или не над тестом.
 """
@@ -32,12 +36,19 @@ def main(argv: list[str] | None = None) -> int:
     migrate = commands.add_parser("migrate")
     migrate.add_argument("--report", type=Path)
     commands.add_parser("pairs")
+    tests = commands.add_parser("tests")
+    tests.add_argument("rule")
     commands.add_parser("verify")
     args = parser.parse_args(argv)
 
     if args.command == "pairs":
         for rule, address in sorted(rule_marks.marked_pairs(ROOT)):
             print(f"{rule}\t{address}")
+        return 0
+    if args.command == "tests":
+        for rule, address in sorted(rule_marks.marked_pairs(ROOT)):
+            if rule == args.rule:
+                print(address)
         return 0
     if args.command == "verify":
         problems = rule_marks.stray_marks(ROOT)
