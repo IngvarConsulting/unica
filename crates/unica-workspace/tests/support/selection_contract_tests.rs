@@ -685,3 +685,213 @@ pub fn retained_selection_pass_rejects_inconsistent_regular_repeat(
         "project source-map changed during retained actor admission"
     );
 }
+
+pub fn actor_admission_distinguishes_presence_identity_from_exact_content(
+    discovery: Arc<dyn unica_source_contract::read::SourceMapDiscovery>,
+) {
+    use std::io::Write;
+    for mutation in ["bytes", "replacement", "absent", "directory", "exact-yaml"] {
+        let root = configured_workspace("unica-selection-presence-identity");
+        let marker = root.path().join("src/Configuration.xml");
+        let yaml = root.path().join("v8project.yaml");
+        let mut config = std::fs::read(&yaml).unwrap();
+        config.extend_from_slice(b"# first\n");
+        write(&yaml, &config);
+        let admission = super::discover_project_source_admission(
+            root.path(),
+            Arc::clone(&discovery),
+            &mut || Ok(()),
+        )
+        .unwrap();
+        let identity =
+            crate::platform::filesystem::file_identity(&std::fs::File::open(&marker).unwrap())
+                .unwrap();
+        match mutation {
+            "bytes" => {
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(&marker)
+                    .unwrap();
+                file.write_all(b"changed bytes, same presence marker")
+                    .unwrap();
+                file.sync_all().unwrap();
+                assert_eq!(
+                    crate::platform::filesystem::file_identity(&file).unwrap(),
+                    identity
+                );
+            }
+            "replacement" => {
+                let replacement = root.path().join("replacement.xml");
+                write(&replacement, std::fs::read(&marker).unwrap());
+                assert_ne!(
+                    crate::platform::filesystem::file_identity(
+                        &std::fs::File::open(&replacement).unwrap()
+                    )
+                    .unwrap(),
+                    identity
+                );
+                std::fs::rename(&marker, root.path().join("retained-old.xml")).unwrap();
+                std::fs::rename(replacement, &marker).unwrap();
+            }
+            "absent" | "directory" => {
+                std::fs::rename(&marker, root.path().join("retained-old.xml")).unwrap();
+                if mutation == "directory" {
+                    std::fs::create_dir(&marker).unwrap();
+                }
+            }
+            "exact-yaml" => {
+                let mut file = std::fs::OpenOptions::new().write(true).open(&yaml).unwrap();
+                let yaml_identity = crate::platform::filesystem::file_identity(&file).unwrap();
+                let changed = String::from_utf8(config.clone())
+                    .unwrap()
+                    .replace("# first", "# later");
+                assert_eq!(changed.len(), config.len());
+                file.write_all(changed.as_bytes()).unwrap();
+                file.sync_all().unwrap();
+                assert_eq!(
+                    crate::platform::filesystem::file_identity(&file).unwrap(),
+                    yaml_identity
+                );
+                assert_eq!(file.metadata().unwrap().len(), config.len() as u64);
+            }
+            _ => unreachable!(),
+        }
+        let before = crate::test_support::tree_snapshot(root.path());
+        let result = admission.evidence.validate(
+            ProviderDeadline::from_budget(std::time::Duration::from_secs(5)),
+            &CancellationToken::new(),
+        );
+        if mutation == "bytes" {
+            result.expect("presence-only byte edits must retain the admitted map");
+        } else {
+            assert_eq!(
+                result.unwrap_err().kind(),
+                SourceSelectionEvidenceErrorKind::Changed,
+                "{mutation}"
+            );
+        }
+        assert_eq!(
+            crate::test_support::tree_snapshot(root.path()),
+            before,
+            "validation writes nothing after external {mutation}"
+        );
+    }
+}
+
+pub fn actor_admission_rejects_a_probe_interrupted_after_real_descriptor_read(
+    discovery: Arc<dyn unica_source_contract::read::SourceMapDiscovery>,
+) {
+    use unica_source_contract::read::{
+        SelectionDirectoryObservation, SelectionMembershipEntry, SelectionRegularObservation,
+        SourceDirectory, SourceMapDiscovery, SourceSelectionReadPass,
+    };
+    struct InterruptedDiscovery {
+        real: Arc<dyn SourceMapDiscovery>,
+        fired: Arc<AtomicBool>,
+    }
+    struct InterruptedPass<'a> {
+        real: &'a mut dyn SourceSelectionReadPass,
+        fired: Arc<AtomicBool>,
+    }
+    impl SourceSelectionReadPass for InterruptedPass<'_> {
+        fn workspace_path(&self) -> &Path {
+            self.real.workspace_path()
+        }
+        fn remaining_member_budget(&self) -> Option<usize> {
+            self.real.remaining_member_budget()
+        }
+        fn observe_regular(
+            &mut self,
+            relative: &Path,
+            max: usize,
+            checkpoint: &mut dyn FnMut() -> Result<(), String>,
+        ) -> Result<SelectionRegularObservation, String> {
+            self.real.observe_regular(relative, max, checkpoint)
+        }
+        fn observe_regular_unbounded(
+            &mut self,
+            relative: &Path,
+            checkpoint: &mut dyn FnMut() -> Result<(), String>,
+        ) -> Result<SelectionRegularObservation, String> {
+            if relative != Path::new("epf/ConfigDumpInfo.xml") {
+                return self.real.observe_regular_unbounded(relative, checkpoint);
+            }
+            let fired = Arc::clone(&self.fired);
+            let _hook = install_regular_exact_after_read_hook(move || {
+                fired.store(true, Ordering::Release);
+            });
+            let fired = Arc::clone(&self.fired);
+            self.real.observe_regular_unbounded(relative, &mut || {
+                checkpoint()?;
+                if fired.load(Ordering::Acquire) {
+                    Err("injected checkpoint failure after descriptor read".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        }
+        fn observe_regular_presence(
+            &mut self,
+            relative: &Path,
+            checkpoint: &mut dyn FnMut() -> Result<(), String>,
+        ) -> Result<SelectionRegularObservation, String> {
+            self.real.observe_regular_presence(relative, checkpoint)
+        }
+        fn observe_directory(
+            &mut self,
+            relative: &Path,
+            checkpoint: &mut dyn FnMut() -> Result<(), String>,
+        ) -> Result<SelectionDirectoryObservation, String> {
+            self.real.observe_directory(relative, checkpoint)
+        }
+        fn observe_membership_with_limit(
+            &mut self,
+            relative: &Path,
+            directory: &SourceDirectory,
+            max: Option<usize>,
+            checkpoint: &mut dyn FnMut() -> Result<(), String>,
+        ) -> Result<Vec<SelectionMembershipEntry>, String> {
+            self.real
+                .observe_membership_with_limit(relative, directory, max, checkpoint)
+        }
+    }
+    impl SourceMapDiscovery for InterruptedDiscovery {
+        fn discover(
+            &self,
+            pass: &mut dyn SourceSelectionReadPass,
+            checkpoint: &mut dyn FnMut() -> Result<(), String>,
+        ) -> Result<unica_source_contract::ProjectSourceMap, String> {
+            self.real.discover(
+                &mut InterruptedPass {
+                    real: pass,
+                    fired: Arc::clone(&self.fired),
+                },
+                checkpoint,
+            )
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    write(&root.path().join("v8project.yaml"), "format: DESIGNER\nsource-set:\n  - name: processors\n    type: EXTERNAL_DATA_PROCESSORS\n    path: epf\n");
+    write(
+        &root.path().join("epf/ConfigDumpInfo.xml"),
+        "<MetaDataObject><ExternalDataProcessor/></MetaDataObject>",
+    );
+    let before = crate::test_support::tree_snapshot(root.path());
+    let fired = Arc::new(AtomicBool::new(false));
+    let wrapped = Arc::new(InterruptedDiscovery {
+        real: discovery,
+        fired: Arc::clone(&fired),
+    });
+    let error = super::discover_project_source_admission(root.path(), wrapped, &mut || Ok(()))
+        .expect_err("an interrupted descriptor probe must not issue admission");
+    assert!(
+        fired.load(Ordering::Acquire),
+        "the real descriptor reader was never reached"
+    );
+    assert!(
+        error.contains("injected checkpoint failure after descriptor read"),
+        "{error}"
+    );
+    assert_eq!(crate::test_support::tree_snapshot(root.path()), before);
+}

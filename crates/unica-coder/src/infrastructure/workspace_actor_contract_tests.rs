@@ -799,3 +799,8 @@ fn native_path_identities_do_not_share_actor_state() {
         unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
     }
 }
+
+#[test]
+fn apply_selection_presence_markers_bind_identity_but_not_unread_bytes() {
+    unica_workspace::actor::policy_contract_tests::apply_selection_presence_markers_bind_identity_but_not_unread_bytes(policies());
+}

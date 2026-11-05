@@ -1,6 +1,9 @@
 ---
 id: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 check:
+  - crates/unica-source-integration-tests/tests/selection.rs::actor_admission_distinguishes_presence_identity_from_exact_content
+  - crates/unica-source-integration-tests/tests/selection.rs::actor_admission_rejects_a_probe_interrupted_after_real_descriptor_read
+  - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_selection_presence_markers_bind_identity_but_not_unread_bytes
   - crates/unica-source-integration-tests/tests/project_sources.rs::actor_health_accepts_yaml_input_past_eight_mib_and_binds_late_bytes
   - crates/unica-source-integration-tests/tests/selection.rs::retained_selection_pass_rejects_inconsistent_regular_repeat
   - crates/unica-workspace/src/selection_evidence.rs::retained_selection_pass_rejects_inconsistent_directory_repeat
@@ -19,7 +22,6 @@ check:
   - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::apply_selection_late_change_rolls_back_source_cache_revision_and_receipt
   - crates/unica-source-integration-tests/tests/selection.rs::published_replacement_of_a_retained_source_map_file_passes_the_final_gate
   - crates/unica-coder/src/infrastructure/workspace_actor_contract_tests.rs::unchanged_selection_input_replaced_after_writes_refuses_and_rolls_back
-gap: https://github.com/IngvarConsulting/unica/issues/987
 ---
 
 # Изменение применяется к той карте исходников, по которой его подготовили
@@ -47,5 +49,5 @@ gap: https://github.com/IngvarConsulting/unica/issues/987
 по-прежнему значимы. Для содержательно читаемых входов сравниваются байты.
 
 Проба без завершённого наблюдения закрывает допуск: ошибку нельзя принять
-за доказанное отсутствие файла. Проверка этих двух условий на полном пути
-актора остаётся в `gap`.
+за доказанное отсутствие файла. Проверки проходят настоящий допуск и
+повторную проверку подготовленной публикации актора.
