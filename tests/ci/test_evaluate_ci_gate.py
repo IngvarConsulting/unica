@@ -707,7 +707,7 @@ class RunnerTopologyGateTests(unittest.TestCase):
     """Очередь и PR без `ci:full` — одна Linux-джоба; `main`, релиз и `ci:full` ждут macOS."""
 
     def test_queue_runs_linux_only_and_rejects_a_macos_runner_list(self) -> None:
-        # A merge group never waits for a macOS runner (owner's decision, 05.11.2026).
+        # A merge group never waits for a macOS runner.
         gate = load_gate_module()
         outputs = classification(**ALL_ENABLED)
         ok = evaluate(gate, "merge_group", "refs/heads/queue", outputs, code_results(**{"os-jobs": "skipped"}),

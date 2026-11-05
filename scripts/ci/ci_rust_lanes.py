@@ -27,9 +27,9 @@ spec.loader.exec_module(runner)
 LANES = ("ordinary", "receipt", "vendor")
 LINUX = "ubuntu-latest"
 HOSTS = (LINUX, "macos-15", "windows-latest")
-# The queue runs on Linux only: a merge group never waits for a macOS runner
-# (owner's decision, 05.11.2026). macOS runs the complete suite nightly, in
-# `main` and release runs and in pull requests labelled `ci:full`.
+# The queue runs on Linux only: a merge group never waits for a macOS runner.
+# macOS runs the complete suite nightly, in `main` and release runs and in
+# pull requests labelled `ci:full`.
 # macos-14 is comparison-only history; it is not a current HOSTS entry.
 # Earlier queue inventories ran only the platform facades on macOS (profile
 # `queue-platform`); a baseline of that shape stays a narrowed selection.

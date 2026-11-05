@@ -810,7 +810,7 @@ class PreviousInventoryTests(unittest.TestCase):
                 raise error
 
     def former_macos_queue(self, **options):
-        """Queue inventory from before 05.11.2026: Linux and a macOS job."""
+        """Queue inventory of the former layout: Linux and a macOS job."""
         baseline = self.previous("main", **options)
         baseline["inventory"]["profile"] = "queue"
         return baseline

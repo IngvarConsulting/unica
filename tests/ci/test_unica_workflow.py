@@ -1088,7 +1088,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(gate["outputs"]["runners"], "${{ steps.runners.outputs.runners }}")
         # Две полосы: pull request и очередь — ubuntu, обе ОС — на push и по
         # кнопке; ci:full возвращает macOS на следующем прогоне pull request.
-        # Очередь macOS не ждёт (решение владельца, 05.11.2026).
+        # Очередь macOS не ждёт.
         runners = step_by_id(gate, "runners")
         self.assertIn('runners=["ubuntu-latest", "macos-15", "windows-latest"]', runners["run"])
         self.assertIn('runners=["ubuntu-latest"]', runners["run"])
