@@ -1,0 +1,4845 @@
+{
+  "id": "S-1671-auxiliary-forms",
+  "issue": 1671,
+  "area": "Назначения форм",
+  "task": "Назначить и заменить семь вспомогательных назначений пяти видов владельцев через preview/token, проверить view/can, no-op, отказы и конфликт сохранённого плана; сохранить основные формы и все ресурсы.",
+  "workspace": "tests/fixtures/acceptance/workspace-auxiliary-forms",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Support.Can.form.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/auxiliaryFolderForm/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Support.Can.form.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/auxiliaryFolderChoiceForm/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts.Can.form.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/auxiliaryRecordForm/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Can.form.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/auxiliaryForm/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport.Can.form.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/auxiliarySettingsForm/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor.Can.form.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/auxiliaryForm/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentJournal.Entries.Can.form.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/auxiliaryForm/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Support",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryFolderForm": "FolderA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token7": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "dc045fc84f20a118e44ca17d2b97c6084faa6115ca6a911431018be75340ea28"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "1b25f70fb454ba593c0e5c849eefde5669d95888394d4de78855de9a9432f286"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "b69d2c2c7f0885f6f54b98818da71212b4df807546830263250a1a22cf34e858"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "73812f056f2f2975685a7c1bd971c9eefce5d6a750d2d4ed2444703364d1c177"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token7"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "2ea57b8116e9d78ba58ab34b0b45c5a23622857355c9881403e3ec2d91b21674"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "1b25f70fb454ba593c0e5c849eefde5669d95888394d4de78855de9a9432f286"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "b69d2c2c7f0885f6f54b98818da71212b4df807546830263250a1a22cf34e858"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "73812f056f2f2975685a7c1bd971c9eefce5d6a750d2d4ed2444703364d1c177"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Support"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryFolderForm",
+          "eq": "Catalog.Support.Form.FolderA"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Support",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryFolderChoiceForm": "FolderChoiceA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token10": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "2ea57b8116e9d78ba58ab34b0b45c5a23622857355c9881403e3ec2d91b21674"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "1b25f70fb454ba593c0e5c849eefde5669d95888394d4de78855de9a9432f286"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "b69d2c2c7f0885f6f54b98818da71212b4df807546830263250a1a22cf34e858"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "73812f056f2f2975685a7c1bd971c9eefce5d6a750d2d4ed2444703364d1c177"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token10"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "1b25f70fb454ba593c0e5c849eefde5669d95888394d4de78855de9a9432f286"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "b69d2c2c7f0885f6f54b98818da71212b4df807546830263250a1a22cf34e858"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "73812f056f2f2975685a7c1bd971c9eefce5d6a750d2d4ed2444703364d1c177"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Support"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryFolderChoiceForm",
+          "eq": "Catalog.Support.Form.FolderChoiceA"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Facts",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryRecordForm": "RecordA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token13": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "1b25f70fb454ba593c0e5c849eefde5669d95888394d4de78855de9a9432f286"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "b69d2c2c7f0885f6f54b98818da71212b4df807546830263250a1a22cf34e858"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "73812f056f2f2975685a7c1bd971c9eefce5d6a750d2d4ed2444703364d1c177"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token13"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "b69d2c2c7f0885f6f54b98818da71212b4df807546830263250a1a22cf34e858"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "73812f056f2f2975685a7c1bd971c9eefce5d6a750d2d4ed2444703364d1c177"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryRecordForm",
+          "eq": "InformationRegister.Facts.Form.RecordA"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "MainA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token16": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "b69d2c2c7f0885f6f54b98818da71212b4df807546830263250a1a22cf34e858"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "73812f056f2f2975685a7c1bd971c9eefce5d6a750d2d4ed2444703364d1c177"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token16"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "68fe9a0e1abd53189ee7901c3da4b6192ec692aea2203b0d49dc20ad567c9e96"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "73812f056f2f2975685a7c1bd971c9eefce5d6a750d2d4ed2444703364d1c177"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryForm",
+          "eq": "Report.CorpusReport.Form.MainA"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliarySettingsForm": "SettingsA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token19": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "68fe9a0e1abd53189ee7901c3da4b6192ec692aea2203b0d49dc20ad567c9e96"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "73812f056f2f2975685a7c1bd971c9eefce5d6a750d2d4ed2444703364d1c177"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token19"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "73812f056f2f2975685a7c1bd971c9eefce5d6a750d2d4ed2444703364d1c177"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliarySettingsForm",
+          "eq": "Report.CorpusReport.Form.SettingsA"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DataProcessor.Processor",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "MainA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token22": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "73812f056f2f2975685a7c1bd971c9eefce5d6a750d2d4ed2444703364d1c177"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token22"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryForm",
+          "eq": "DataProcessor.Processor.Form.MainA"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentJournal.Entries",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "ListA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token25": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "e17edad4f64c44cc1f27496baa6dc40ed190c4f97ce22c7121a3728fa3c97c9d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token25"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentJournal.Entries"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryForm",
+          "eq": "DocumentJournal.Entries.Form.ListA"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Support",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryFolderForm": "main:Catalog.Support.Form.FolderB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token28": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d4f9208d30c28d8e58c0b253006ed85b8c681eb47e14d7232ed8548001108f4a"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token28"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d65d777480cc5e40ac238e039006e2bde1517d98492da9f1c732c5d9f131cf37"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Support"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryFolderForm",
+          "eq": "Catalog.Support.Form.FolderB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Support",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryFolderChoiceForm": "main:Catalog.Support.Form.FolderChoiceB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token31": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d65d777480cc5e40ac238e039006e2bde1517d98492da9f1c732c5d9f131cf37"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token31"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Support"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryFolderChoiceForm",
+          "eq": "Catalog.Support.Form.FolderChoiceB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Facts",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryRecordForm": "main:InformationRegister.Facts.Form.RecordB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token34": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "703d6083404dfdbbb2b7f3dab9d1c449c770042d9778f24ee5386c919be96dfa"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token34"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryRecordForm",
+          "eq": "InformationRegister.Facts.Form.RecordB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "main:Report.CorpusReport.Form.MainB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token37": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e635a3697e8ed06e2e06f055f02a6614ed744d8513775ecceb6f154214cc29b8"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token37"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "74447d373e63144870f4f93361e3b68c5dc427627ebc1bb2e471c8c9fcab41e0"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryForm",
+          "eq": "Report.CorpusReport.Form.MainB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliarySettingsForm": "main:Report.CorpusReport.Form.SettingsB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token40": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "74447d373e63144870f4f93361e3b68c5dc427627ebc1bb2e471c8c9fcab41e0"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token40"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliarySettingsForm",
+          "eq": "Report.CorpusReport.Form.SettingsB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DataProcessor.Processor",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "main:DataProcessor.Processor.Form.MainB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token43": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "b7fb7e8eea229c01e238dbf0b91cb19461a34c127892e1b7ab6cee0627c6b285"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token43"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryForm",
+          "eq": "DataProcessor.Processor.Form.MainB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentJournal.Entries",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "main:DocumentJournal.Entries.Form.ListB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token46": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "d8ab64b69255312510da22c4c806592c7e21045e74f908a36b752e3b0262eea8"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token46"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentJournal.Entries"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryForm",
+          "eq": "DocumentJournal.Entries.Form.ListB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Support",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryFolderForm": "main:Catalog.Support.Form.FolderB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "token49": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token49"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Support"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryFolderForm",
+          "eq": "Catalog.Support.Form.FolderB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Support",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryFolderChoiceForm": "main:Catalog.Support.Form.FolderChoiceB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "token52": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token52"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Support"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryFolderChoiceForm",
+          "eq": "Catalog.Support.Form.FolderChoiceB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Facts",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryRecordForm": "main:InformationRegister.Facts.Form.RecordB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "token55": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token55"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Facts"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryRecordForm",
+          "eq": "InformationRegister.Facts.Form.RecordB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "main:Report.CorpusReport.Form.MainB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "token58": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token58"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryForm",
+          "eq": "Report.CorpusReport.Form.MainB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliarySettingsForm": "main:Report.CorpusReport.Form.SettingsB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "token61": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token61"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.CorpusReport"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliarySettingsForm",
+          "eq": "Report.CorpusReport.Form.SettingsB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DataProcessor.Processor",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "main:DataProcessor.Processor.Form.MainB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "token64": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token64"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.Processor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryForm",
+          "eq": "DataProcessor.Processor.Form.MainB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentJournal.Entries",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "main:DocumentJournal.Entries.Form.ListB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "token67": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token67"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DocumentJournal.Entries"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryForm",
+          "eq": "DocumentJournal.Entries.Form.ListB"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA.xml",
+          "kind": "sha256",
+          "eq": "32108672a1ca32ab91b3501317e7ec13b89508c367a60a91fcf1d422e280319b"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB.xml",
+          "kind": "sha256",
+          "eq": "60672c42fd5d4b9948bda55438d90eb362ca21528daba5390b5004496a0e2e88"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA.xml",
+          "kind": "sha256",
+          "eq": "d066052cd3c88e3f396f5b351bd80b065e645f5e5267f619e02181b2021324c2"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB.xml",
+          "kind": "sha256",
+          "eq": "b6967b1679d08a6f4fae58f6406d73fc2126d9c20772093561791852e4f78b35"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "450adc2fecb138565c69d4fd9fe78318e0f38526a2d9749df56d526e150a0b83"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "11051ccabedc03d6994b86f4d3e7b08b01db4f56bc792ec07243cfc42381934f"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "ffd75c2a2561cd543c365588ea098c230a7826a04d23f40b83aa28088e342861"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "2beca04cda022b126a371c53f7765eff6543cf120e764a893049d00036eff5e3"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA.xml",
+          "kind": "sha256",
+          "eq": "8d224929c6cbf3efa5fbdca157e67a3fd0e49d43efac563624fffdb5ca8c989b"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB.xml",
+          "kind": "sha256",
+          "eq": "bf61af1a108351ac455eeb61fe97dba1ab1388218733dd7e6071bd5c482fc9cb"
+        },
+        {
+          "path": "src/Documents/Support.xml",
+          "kind": "sha256",
+          "eq": "dfdfef3f74753658fd8bcf565bb9d243a7bdd34b3314655fb6942cd1a57a6174"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA.xml",
+          "kind": "sha256",
+          "eq": "0e7fb4f756505cad70804a24881cdd4349fa6a8a48b247b51e990b3b2439721c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB.xml",
+          "kind": "sha256",
+          "eq": "ebe62f791b76e23e99598e2ab04ae9897b3282ede76478c402f67d6a7e586340"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "35e83785b83ee1b3a18e41400c0ccc21a12f0a9bb814a91b7abd13bcfb2c0795"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "efba63ff11e02c01c2a7855657c25b44da352847b97f3f5d505e76c34345a268"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA.xml",
+          "kind": "sha256",
+          "eq": "0b63c345503fb92ffd91d30179575fffea381ec8fe18db64412ddec57c9ac6d0"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB.xml",
+          "kind": "sha256",
+          "eq": "6a86a94777717c33433380b7c6e0e187de19c2a888a7ab2e29f87c0c9becd34e"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "Missing"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "refusal": "not_found: form `Missing` is not a form of `Report.CorpusReport`",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA.xml",
+          "kind": "sha256",
+          "eq": "32108672a1ca32ab91b3501317e7ec13b89508c367a60a91fcf1d422e280319b"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB.xml",
+          "kind": "sha256",
+          "eq": "60672c42fd5d4b9948bda55438d90eb362ca21528daba5390b5004496a0e2e88"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA.xml",
+          "kind": "sha256",
+          "eq": "d066052cd3c88e3f396f5b351bd80b065e645f5e5267f619e02181b2021324c2"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB.xml",
+          "kind": "sha256",
+          "eq": "b6967b1679d08a6f4fae58f6406d73fc2126d9c20772093561791852e4f78b35"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "450adc2fecb138565c69d4fd9fe78318e0f38526a2d9749df56d526e150a0b83"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "11051ccabedc03d6994b86f4d3e7b08b01db4f56bc792ec07243cfc42381934f"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "ffd75c2a2561cd543c365588ea098c230a7826a04d23f40b83aa28088e342861"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "2beca04cda022b126a371c53f7765eff6543cf120e764a893049d00036eff5e3"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA.xml",
+          "kind": "sha256",
+          "eq": "8d224929c6cbf3efa5fbdca157e67a3fd0e49d43efac563624fffdb5ca8c989b"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB.xml",
+          "kind": "sha256",
+          "eq": "bf61af1a108351ac455eeb61fe97dba1ab1388218733dd7e6071bd5c482fc9cb"
+        },
+        {
+          "path": "src/Documents/Support.xml",
+          "kind": "sha256",
+          "eq": "dfdfef3f74753658fd8bcf565bb9d243a7bdd34b3314655fb6942cd1a57a6174"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA.xml",
+          "kind": "sha256",
+          "eq": "0e7fb4f756505cad70804a24881cdd4349fa6a8a48b247b51e990b3b2439721c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB.xml",
+          "kind": "sha256",
+          "eq": "ebe62f791b76e23e99598e2ab04ae9897b3282ede76478c402f67d6a7e586340"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "35e83785b83ee1b3a18e41400c0ccc21a12f0a9bb814a91b7abd13bcfb2c0795"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "efba63ff11e02c01c2a7855657c25b44da352847b97f3f5d505e76c34345a268"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA.xml",
+          "kind": "sha256",
+          "eq": "0b63c345503fb92ffd91d30179575fffea381ec8fe18db64412ddec57c9ac6d0"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB.xml",
+          "kind": "sha256",
+          "eq": "6a86a94777717c33433380b7c6e0e187de19c2a888a7ab2e29f87c0c9becd34e"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "main:DataProcessor.Processor.Form.MainA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "refusal": "bad_value: use a form of this owner, or a compatible CommonForm in the same source set for a supported slot",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA.xml",
+          "kind": "sha256",
+          "eq": "32108672a1ca32ab91b3501317e7ec13b89508c367a60a91fcf1d422e280319b"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB.xml",
+          "kind": "sha256",
+          "eq": "60672c42fd5d4b9948bda55438d90eb362ca21528daba5390b5004496a0e2e88"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA.xml",
+          "kind": "sha256",
+          "eq": "d066052cd3c88e3f396f5b351bd80b065e645f5e5267f619e02181b2021324c2"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB.xml",
+          "kind": "sha256",
+          "eq": "b6967b1679d08a6f4fae58f6406d73fc2126d9c20772093561791852e4f78b35"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "450adc2fecb138565c69d4fd9fe78318e0f38526a2d9749df56d526e150a0b83"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "11051ccabedc03d6994b86f4d3e7b08b01db4f56bc792ec07243cfc42381934f"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "ffd75c2a2561cd543c365588ea098c230a7826a04d23f40b83aa28088e342861"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "2beca04cda022b126a371c53f7765eff6543cf120e764a893049d00036eff5e3"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA.xml",
+          "kind": "sha256",
+          "eq": "8d224929c6cbf3efa5fbdca157e67a3fd0e49d43efac563624fffdb5ca8c989b"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB.xml",
+          "kind": "sha256",
+          "eq": "bf61af1a108351ac455eeb61fe97dba1ab1388218733dd7e6071bd5c482fc9cb"
+        },
+        {
+          "path": "src/Documents/Support.xml",
+          "kind": "sha256",
+          "eq": "dfdfef3f74753658fd8bcf565bb9d243a7bdd34b3314655fb6942cd1a57a6174"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA.xml",
+          "kind": "sha256",
+          "eq": "0e7fb4f756505cad70804a24881cdd4349fa6a8a48b247b51e990b3b2439721c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB.xml",
+          "kind": "sha256",
+          "eq": "ebe62f791b76e23e99598e2ab04ae9897b3282ede76478c402f67d6a7e586340"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "35e83785b83ee1b3a18e41400c0ccc21a12f0a9bb814a91b7abd13bcfb2c0795"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "efba63ff11e02c01c2a7855657c25b44da352847b97f3f5d505e76c34345a268"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA.xml",
+          "kind": "sha256",
+          "eq": "0b63c345503fb92ffd91d30179575fffea381ec8fe18db64412ddec57c9ac6d0"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB.xml",
+          "kind": "sha256",
+          "eq": "6a86a94777717c33433380b7c6e0e187de19c2a888a7ab2e29f87c0c9becd34e"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryFolderForm": "MainA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "refusal": "bad_value: unknown form slot `auxiliaryFolderForm` for this owner; use defaultForm, auxiliaryForm, defaultSettingsForm, auxiliarySettingsForm, defaultVariantForm",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA.xml",
+          "kind": "sha256",
+          "eq": "32108672a1ca32ab91b3501317e7ec13b89508c367a60a91fcf1d422e280319b"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB.xml",
+          "kind": "sha256",
+          "eq": "60672c42fd5d4b9948bda55438d90eb362ca21528daba5390b5004496a0e2e88"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA.xml",
+          "kind": "sha256",
+          "eq": "d066052cd3c88e3f396f5b351bd80b065e645f5e5267f619e02181b2021324c2"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB.xml",
+          "kind": "sha256",
+          "eq": "b6967b1679d08a6f4fae58f6406d73fc2126d9c20772093561791852e4f78b35"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "450adc2fecb138565c69d4fd9fe78318e0f38526a2d9749df56d526e150a0b83"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "11051ccabedc03d6994b86f4d3e7b08b01db4f56bc792ec07243cfc42381934f"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "ffd75c2a2561cd543c365588ea098c230a7826a04d23f40b83aa28088e342861"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "2beca04cda022b126a371c53f7765eff6543cf120e764a893049d00036eff5e3"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA.xml",
+          "kind": "sha256",
+          "eq": "8d224929c6cbf3efa5fbdca157e67a3fd0e49d43efac563624fffdb5ca8c989b"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB.xml",
+          "kind": "sha256",
+          "eq": "bf61af1a108351ac455eeb61fe97dba1ab1388218733dd7e6071bd5c482fc9cb"
+        },
+        {
+          "path": "src/Documents/Support.xml",
+          "kind": "sha256",
+          "eq": "dfdfef3f74753658fd8bcf565bb9d243a7bdd34b3314655fb6942cd1a57a6174"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA.xml",
+          "kind": "sha256",
+          "eq": "0e7fb4f756505cad70804a24881cdd4349fa6a8a48b247b51e990b3b2439721c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB.xml",
+          "kind": "sha256",
+          "eq": "ebe62f791b76e23e99598e2ab04ae9897b3282ede76478c402f67d6a7e586340"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "35e83785b83ee1b3a18e41400c0ccc21a12f0a9bb814a91b7abd13bcfb2c0795"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "efba63ff11e02c01c2a7855657c25b44da352847b97f3f5d505e76c34345a268"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA.xml",
+          "kind": "sha256",
+          "eq": "0b63c345503fb92ffd91d30179575fffea381ec8fe18db64412ddec57c9ac6d0"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB.xml",
+          "kind": "sha256",
+          "eq": "6a86a94777717c33433380b7c6e0e187de19c2a888a7ab2e29f87c0c9becd34e"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": 17
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "refusal": "bad_value: ops[0].args.values.auxiliaryForm: expected \"string\"; `form.set` writes only the arguments listed at `main:Report.CorpusReport.Can.form.set`",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA.xml",
+          "kind": "sha256",
+          "eq": "32108672a1ca32ab91b3501317e7ec13b89508c367a60a91fcf1d422e280319b"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB.xml",
+          "kind": "sha256",
+          "eq": "60672c42fd5d4b9948bda55438d90eb362ca21528daba5390b5004496a0e2e88"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA.xml",
+          "kind": "sha256",
+          "eq": "d066052cd3c88e3f396f5b351bd80b065e645f5e5267f619e02181b2021324c2"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB.xml",
+          "kind": "sha256",
+          "eq": "b6967b1679d08a6f4fae58f6406d73fc2126d9c20772093561791852e4f78b35"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "450adc2fecb138565c69d4fd9fe78318e0f38526a2d9749df56d526e150a0b83"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "11051ccabedc03d6994b86f4d3e7b08b01db4f56bc792ec07243cfc42381934f"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "ffd75c2a2561cd543c365588ea098c230a7826a04d23f40b83aa28088e342861"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "2beca04cda022b126a371c53f7765eff6543cf120e764a893049d00036eff5e3"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA.xml",
+          "kind": "sha256",
+          "eq": "8d224929c6cbf3efa5fbdca157e67a3fd0e49d43efac563624fffdb5ca8c989b"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB.xml",
+          "kind": "sha256",
+          "eq": "bf61af1a108351ac455eeb61fe97dba1ab1388218733dd7e6071bd5c482fc9cb"
+        },
+        {
+          "path": "src/Documents/Support.xml",
+          "kind": "sha256",
+          "eq": "dfdfef3f74753658fd8bcf565bb9d243a7bdd34b3314655fb6942cd1a57a6174"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA.xml",
+          "kind": "sha256",
+          "eq": "0e7fb4f756505cad70804a24881cdd4349fa6a8a48b247b51e990b3b2439721c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB.xml",
+          "kind": "sha256",
+          "eq": "ebe62f791b76e23e99598e2ab04ae9897b3282ede76478c402f67d6a7e586340"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "35e83785b83ee1b3a18e41400c0ccc21a12f0a9bb814a91b7abd13bcfb2c0795"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "efba63ff11e02c01c2a7855657c25b44da352847b97f3f5d505e76c34345a268"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA.xml",
+          "kind": "sha256",
+          "eq": "0b63c345503fb92ffd91d30179575fffea381ec8fe18db64412ddec57c9ac6d0"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB.xml",
+          "kind": "sha256",
+          "eq": "6a86a94777717c33433380b7c6e0e187de19c2a888a7ab2e29f87c0c9becd34e"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "main:CommonForm.Absent"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "refusal": "bad_value: CommonForm is supported only by Report defaultForm/defaultSettingsForm/defaultVariantForm and Constant defaultForm",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA.xml",
+          "kind": "sha256",
+          "eq": "32108672a1ca32ab91b3501317e7ec13b89508c367a60a91fcf1d422e280319b"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB.xml",
+          "kind": "sha256",
+          "eq": "60672c42fd5d4b9948bda55438d90eb362ca21528daba5390b5004496a0e2e88"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA.xml",
+          "kind": "sha256",
+          "eq": "d066052cd3c88e3f396f5b351bd80b065e645f5e5267f619e02181b2021324c2"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB.xml",
+          "kind": "sha256",
+          "eq": "b6967b1679d08a6f4fae58f6406d73fc2126d9c20772093561791852e4f78b35"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "450adc2fecb138565c69d4fd9fe78318e0f38526a2d9749df56d526e150a0b83"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "11051ccabedc03d6994b86f4d3e7b08b01db4f56bc792ec07243cfc42381934f"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "ffd75c2a2561cd543c365588ea098c230a7826a04d23f40b83aa28088e342861"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "2beca04cda022b126a371c53f7765eff6543cf120e764a893049d00036eff5e3"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA.xml",
+          "kind": "sha256",
+          "eq": "8d224929c6cbf3efa5fbdca157e67a3fd0e49d43efac563624fffdb5ca8c989b"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB.xml",
+          "kind": "sha256",
+          "eq": "bf61af1a108351ac455eeb61fe97dba1ab1388218733dd7e6071bd5c482fc9cb"
+        },
+        {
+          "path": "src/Documents/Support.xml",
+          "kind": "sha256",
+          "eq": "dfdfef3f74753658fd8bcf565bb9d243a7bdd34b3314655fb6942cd1a57a6174"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA.xml",
+          "kind": "sha256",
+          "eq": "0e7fb4f756505cad70804a24881cdd4349fa6a8a48b247b51e990b3b2439721c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB.xml",
+          "kind": "sha256",
+          "eq": "ebe62f791b76e23e99598e2ab04ae9897b3282ede76478c402f67d6a7e586340"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "35e83785b83ee1b3a18e41400c0ccc21a12f0a9bb814a91b7abd13bcfb2c0795"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "efba63ff11e02c01c2a7855657c25b44da352847b97f3f5d505e76c34345a268"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA.xml",
+          "kind": "sha256",
+          "eq": "0b63c345503fb92ffd91d30179575fffea381ec8fe18db64412ddec57c9ac6d0"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB.xml",
+          "kind": "sha256",
+          "eq": "6a86a94777717c33433380b7c6e0e187de19c2a888a7ab2e29f87c0c9becd34e"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryForm": "MainA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.CorpusReport",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "concurrent owner edit"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "edit": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "efd31be60830a739e4af9a7e67126a2c4ca5b59456d708890f70ef5e47d535cc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.edit"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e80f75928f285de81f0d6d2339b9215589e9a8ce7c6bb336b06aad3e8b95bbfc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "stale_revision"
+        }
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Reports/CorpusReport.xml; input `Reports/CorpusReport.xml`: source write target; the plan retains its original state to prevent",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Support.xml",
+          "kind": "sha256",
+          "eq": "d6bfe384397d4ced88d769fd94d5d4ff1f5815303643fd195cb94ed09932f370"
+        },
+        {
+          "path": "src/InformationRegisters/Facts.xml",
+          "kind": "sha256",
+          "eq": "2b905aeed6fc3b045dfe150caffe8fd7594f474aec2e87ebdbb8e9b4c5d5a032"
+        },
+        {
+          "path": "src/Reports/CorpusReport.xml",
+          "kind": "sha256",
+          "eq": "e80f75928f285de81f0d6d2339b9215589e9a8ce7c6bb336b06aad3e8b95bbfc"
+        },
+        {
+          "path": "src/DataProcessors/Processor.xml",
+          "kind": "sha256",
+          "eq": "f444f06bb1e85810419c6c431b46bbfec331f567fddabcd299bdb90b077ae106"
+        },
+        {
+          "path": "src/DocumentJournals/Entries.xml",
+          "kind": "sha256",
+          "eq": "75e0756d50865bcf10114bb75841103e3d0cbbe35a1be995984b56819bf4c228"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderA.xml",
+          "kind": "sha256",
+          "eq": "32108672a1ca32ab91b3501317e7ec13b89508c367a60a91fcf1d422e280319b"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "cd0cef2231e259a2713cbe59dcfc14fe8d7b3f085b7e35b4a71d18887a5d0e5f"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderB.xml",
+          "kind": "sha256",
+          "eq": "60672c42fd5d4b9948bda55438d90eb362ca21528daba5390b5004496a0e2e88"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceA.xml",
+          "kind": "sha256",
+          "eq": "d066052cd3c88e3f396f5b351bd80b065e645f5e5267f619e02181b2021324c2"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6e8c88a82cf5aafa8eefed0576c98c46e80205c12f31f2a59ebd9da4c5fd38ac"
+        },
+        {
+          "path": "src/Catalogs/Support/Forms/FolderChoiceB.xml",
+          "kind": "sha256",
+          "eq": "b6967b1679d08a6f4fae58f6406d73fc2126d9c20772093561791852e4f78b35"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "450adc2fecb138565c69d4fd9fe78318e0f38526a2d9749df56d526e150a0b83"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "11051ccabedc03d6994b86f4d3e7b08b01db4f56bc792ec07243cfc42381934f"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "ffd75c2a2561cd543c365588ea098c230a7826a04d23f40b83aa28088e342861"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "b4160f49a937bfa7878a75df9e8385bf979585fb63130c5d30fac0e797f47b0c"
+        },
+        {
+          "path": "src/DataProcessors/Processor/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "2beca04cda022b126a371c53f7765eff6543cf120e764a893049d00036eff5e3"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListA.xml",
+          "kind": "sha256",
+          "eq": "8d224929c6cbf3efa5fbdca157e67a3fd0e49d43efac563624fffdb5ca8c989b"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "c2ac12b3c32883a709427b01d7541234e4145c674ca9e403c881827b7e14bb38"
+        },
+        {
+          "path": "src/DocumentJournals/Entries/Forms/ListB.xml",
+          "kind": "sha256",
+          "eq": "bf61af1a108351ac455eeb61fe97dba1ab1388218733dd7e6071bd5c482fc9cb"
+        },
+        {
+          "path": "src/Documents/Support.xml",
+          "kind": "sha256",
+          "eq": "dfdfef3f74753658fd8bcf565bb9d243a7bdd34b3314655fb6942cd1a57a6174"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordA.xml",
+          "kind": "sha256",
+          "eq": "0e7fb4f756505cad70804a24881cdd4349fa6a8a48b247b51e990b3b2439721c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "ad0826c8dc5fb95653567414ba091dd76dec0692834b6ffedff2f87acded4e7c"
+        },
+        {
+          "path": "src/InformationRegisters/Facts/Forms/RecordB.xml",
+          "kind": "sha256",
+          "eq": "ebe62f791b76e23e99598e2ab04ae9897b3282ede76478c402f67d6a7e586340"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainA.xml",
+          "kind": "sha256",
+          "eq": "35e83785b83ee1b3a18e41400c0ccc21a12f0a9bb814a91b7abd13bcfb2c0795"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "29fb536cc0ac220d5583725f50b417e8dc32b8d80f552d284efed31997750ccc"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/MainB.xml",
+          "kind": "sha256",
+          "eq": "efba63ff11e02c01c2a7855657c25b44da352847b97f3f5d505e76c34345a268"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsA.xml",
+          "kind": "sha256",
+          "eq": "0b63c345503fb92ffd91d30179575fffea381ec8fe18db64412ddec57c9ac6d0"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "e9c0c75a4eac117590324ce0ace8e074697dd8bbb30c94b53c32ac927a74b6e5"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "0dcb492d1f6bf8f0e85e45569cb0c7c414a6c268a43078144f507a2e0d3ea828"
+        },
+        {
+          "path": "src/Reports/CorpusReport/Forms/SettingsB.xml",
+          "kind": "sha256",
+          "eq": "6a86a94777717c33433380b7c6e0e187de19c2a888a7ab2e29f87c0c9becd34e"
+        }
+      ]
+    }
+  ]
+}
