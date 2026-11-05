@@ -82,6 +82,7 @@ fn dcs_info_overview_does_not_duplicate_structured_support() {
     );
 }
 
+/// rule: INV.SOURCE.DCS-READ-FACTS
 #[test]
 fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
     // The owner's support state is an input of the read, so the fixture passes
