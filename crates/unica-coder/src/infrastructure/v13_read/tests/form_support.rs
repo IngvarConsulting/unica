@@ -1,6 +1,7 @@
 use super::*;
 use serde_json::Value;
 
+/// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn canonical_form_support_keeps_own_rule_and_owner_prohibition() {
     use unica_metadata_designer::support::support_root_uuid_from_bytes;
@@ -50,6 +51,7 @@ fn canonical_form_support_keeps_own_rule_and_owner_prohibition() {
     }
 }
 
+/// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn canonical_form_support_unknown_is_not_safe_and_absence_has_a_reason() {
     for (marker, support, reason, safe) in [
@@ -83,6 +85,7 @@ fn canonical_form_support_unknown_is_not_safe_and_absence_has_a_reason() {
     }
 }
 
+/// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn canonical_form_support_common_form_has_no_invented_owner_in_configuration_or_extension() {
     for extension in [false, true] {
@@ -108,6 +111,7 @@ fn canonical_form_support_common_form_has_no_invented_owner_in_configuration_or_
     }
 }
 
+/// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn canonical_form_support_refuses_invalid_marker_and_missing_uuid_even_when_globally_locked() {
     for case in ["invalid", "directory", "missingUuid"] {
@@ -136,6 +140,7 @@ fn canonical_form_support_refuses_invalid_marker_and_missing_uuid_even_when_glob
     }
 }
 
+/// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn canonical_form_support_facts_do_not_depend_on_editing_policy() {
     for policy in ["deny", "warn", "off"] {
@@ -159,6 +164,7 @@ fn canonical_form_support_facts_do_not_depend_on_editing_policy() {
     }
 }
 
+/// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn canonical_form_support_unknown_owner_does_not_turn_editable_child_into_safe() {
     let fixture = RealReaderFixture::new();
@@ -192,6 +198,7 @@ fn canonical_form_support_unknown_owner_does_not_turn_editable_child_into_safe()
     );
 }
 
+/// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn canonical_form_support_refuses_linked_marker_and_ext() {
     use unica_workspace::test_support::{
@@ -234,6 +241,7 @@ fn canonical_form_support_refuses_linked_marker_and_ext() {
     }
 }
 
+/// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn canonical_form_support_details_do_not_change_legacy_payload() {
     use unica_metadata::support_state::{ObjectSupportData, ObjectSupportState};
