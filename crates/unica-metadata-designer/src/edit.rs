@@ -1753,22 +1753,12 @@ pub fn apply_typed_properties(
                 )
             }
             (MetaPropertyKey::Key, MetaPropertyValue::String(value)) => {
-                // Literal CR is normalized by XML readers; character references
-                // preserve the requested value independently of file line endings.
+                // XML readers normalize literal CR; references preserve the requested value.
                 let escaped = unica_xml_format::text::escape_xml(value).replace('\r', "&#13;");
-                // A declaration local to the old leaf disappears on replacement.
-                // Bind the emitted leaf against its parent's inherited default.
-                let namespace = if properties.lookup_namespace_uri(None)
-                    == Some("http://v8.1c.ru/8.3/MDClasses")
-                {
-                    ""
-                } else {
-                    " xmlns=\"http://v8.1c.ru/8.3/MDClasses\""
-                };
                 if value.is_empty() {
-                    format!("{indent}<Key{namespace}/>")
+                    format!("{indent}{opening}/>")
                 } else {
-                    format!("{indent}<Key{namespace}>{escaped}</Key>")
+                    format!("{indent}{opening}>{escaped}</{qname}>")
                 }
             }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
