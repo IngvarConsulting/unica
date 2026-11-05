@@ -156,3 +156,10 @@ fn symlink_targets_are_rejected() {
         unica_source_designer::registration::cf_edit_add_child_object_text,
     );
 }
+
+#[test]
+fn post_validation_rollback_preserves_unix_modes() {
+    if let Err(skip) = unica_workspace::compile_transaction::contract_tests::post_validation_rollback_preserves_unix_modes(unica_source_designer::registration::cf_edit_add_child_object_text) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}

@@ -1017,6 +1017,66 @@ fn stage_support_state(
     Ok(())
 }
 
+/// Removing an owned form also removes its entries from the configuration's
+/// home page. The product composition calls this after the form codec has
+/// staged its own resources, within the same retained proposal.
+pub fn stage_removed_form_home_page(
+    staged: &mut ApplyProposal<'_>,
+    authority: &dyn ApplySourceAuthority,
+    owner: &MetadataAddress,
+    form: &str,
+    op_index: usize,
+    provisional: &mut Vec<ProvisionalApplyEffect>,
+) -> Result<(), ApplyPlanError> {
+    use crate::remove::{meta_remove_composition_image, remove_home_page_form_entries};
+    use unica_source_contract::SourceSetKind;
+    if !matches!(
+        authority.source_kind(),
+        SourceSetKind::Configuration | SourceSetKind::Extension
+    ) {
+        return Ok(());
+    }
+    let relative = PathBuf::from(HOME_PAGE_RELATIVE);
+    let at_path = format!("ops[{op_index}].args.at");
+    let Some(preimage) = staged
+        .read(&relative)
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+    else {
+        return Ok(());
+    };
+    let invalid = |message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path(at_path.clone())
+    };
+    let text = std::str::from_utf8(&preimage)
+        .map_err(|error| invalid(format!("HomePageWorkArea.xml is not UTF-8: {error}")))?
+        .trim_start_matches('\u{feff}');
+    let qualified = format!("{}.Form.{form}", owner.as_str());
+    let property = "HomePageWorkArea";
+    let (updated, removed) = remove_home_page_form_entries(text, &qualified).map_err(invalid)?;
+    if removed == 0 {
+        return Ok(());
+    }
+    staged
+        .replace(
+            &relative,
+            &preimage,
+            meta_remove_composition_image(&preimage, updated),
+        )
+        .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?;
+    let configuration = format!("{}:Configuration", authority.source_set_name());
+    let removed_form = format!("{}:{qualified}", authority.source_set_name());
+    provisional.push(ProvisionalApplyEffect::single(
+        relative,
+        DomainEvent::new(DomainEventKind::ConfigXmlChanged, "Configuration".to_string()),
+        op_index,
+    ).with_warning(json!({
+        "code":"composition_cleaned", "at":at_path, "count":1,
+        "entries":[{"at":configuration,"property":property}],
+        "message":format!("the removal also takes `{removed_form}` out of `{configuration}` → {property}"),
+    })));
+    Ok(())
+}
+
 /// Replaces the panel layout or the home page of the configuration root. An
 /// unchanged model writes nothing; a home page names only forms and roles
 /// that exist in the staged set, since 8.3.27 refuses to load the rest.
