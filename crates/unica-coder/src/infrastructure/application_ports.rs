@@ -1476,7 +1476,7 @@ fn code_intelligence_context(
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         canonical_v13_docs_search, documentation_context, documentation_registry,
         normalize_code_intelligence_read_request, project_platform_version,
@@ -3333,7 +3333,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod engine_map_tests {
+mod medium_engine_map_tests {
     use super::engine_for;
     use crate::application::tools;
 

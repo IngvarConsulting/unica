@@ -121,7 +121,7 @@ pub(super) fn verify_owner_only_acl(file: &File, owner_uid: libc::uid_t) -> io::
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use std::{ffi::OsStr, fs, os::unix::fs::PermissionsExt, process::Command};
 
     #[test]
