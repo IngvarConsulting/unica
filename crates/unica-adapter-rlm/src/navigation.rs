@@ -470,7 +470,7 @@ fn readiness_message(readiness: IndexReadiness) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{operation_for_request, RlmNavigationAdapter, RlmNavigationClient};
     use crate::index::IndexReadiness;
     use crate::session::{WorkspaceServiceRlmCall, WorkspaceServiceRlmOutput};

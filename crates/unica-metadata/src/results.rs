@@ -121,6 +121,12 @@ pub struct MetaElementData {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub master: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub main_filter: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deny_incomplete_values: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub fill_value: Option<MetaFillValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub addressing_dimension: Option<String>,

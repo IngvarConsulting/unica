@@ -2591,10 +2591,32 @@ pub(crate) mod tests {
             .unwrap_err()
             .contains("normal"));
 
+        std::fs::hard_link(root.join("Ext/real/a.txt"), root.join("Ext/real/b.txt")).unwrap();
+        assert!(state
+            .read(Path::new("Ext/real/a.txt"))
+            .unwrap_err()
+            .contains("hard-link"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn apply_staged_state_rejects_directory_links_and_retained_link_races() {
+        let root = temp_root("invalid-link-targets");
+        std::fs::create_dir_all(root.join("Ext/real")).unwrap();
+        std::fs::write(root.join("Ext/real/a.txt"), b"same inode").unwrap();
+        let mut state = staged(&root);
         let link_outcome =
             create_directory_link_fixture_for_test(root.join("Ext/real"), root.join("Ext/link"))
                 .unwrap();
-        if link_outcome == FileLinkFixtureOutcome::Created {
+        if link_outcome != FileLinkFixtureOutcome::Created {
+            std::fs::remove_dir_all(&root).unwrap();
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::Symlink,
+                "staged source escape fixture needs directory links",
+            );
+            return;
+        }
+        {
             assert!(state
                 .read(Path::new("Ext/link/a.txt"))
                 .unwrap_err()
@@ -2674,11 +2696,6 @@ pub(crate) mod tests {
             );
             std::fs::remove_dir_all(external).unwrap();
         }
-        std::fs::hard_link(root.join("Ext/real/a.txt"), root.join("Ext/real/b.txt")).unwrap();
-        assert!(state
-            .read(Path::new("Ext/real/a.txt"))
-            .unwrap_err()
-            .contains("hard-link"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
