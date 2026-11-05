@@ -59,6 +59,7 @@ fn start(owner: &mut ExecutionCoordinator, key: &Key, capability: &OwnerCapabili
     }
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn acceptance_pending_ids_are_unique_across_groups_before_any_commit() {
     let mut coordinator = owner(1);
@@ -103,6 +104,7 @@ fn acceptance_pending_ids_are_unique_across_groups_before_any_commit() {
     assert_eq!(coordinator.catalog().unwrap().records().len(), 1);
 }
 
+/// rule: INV.APP.EXECUTION-DELIVERY
 #[test]
 fn acceptance_primary_ack_does_not_drop_an_active_alias_or_factual_result() {
     let mut coordinator = owner(1);
@@ -157,6 +159,7 @@ fn acceptance_primary_ack_does_not_drop_an_active_alias_or_factual_result() {
     assert_eq!(reopened.holder_count(&primary), 0);
 }
 
+/// rule: INV.APP.EXECUTION-DELIVERY
 #[test]
 fn acceptance_both_ack_expose_orders_obey_confirmed_public_promises() {
     for expose_first in [false, true] {
@@ -254,6 +257,7 @@ fn acceptance_cancel_and_expose_pending_commits_do_not_discard_factual_mutation(
     );
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn acceptance_unknown_begin_never_grants_run_and_recovery_never_replays() {
     let mut coordinator = owner(1);
@@ -341,6 +345,7 @@ fn task_permit(owner: &mut ExecutionCoordinator, key: &Key) -> TaskPublicationPe
     }
 }
 
+/// rule: INV.APP.EXECUTION-DELIVERY
 #[test]
 fn acceptance_delivery_choice_does_not_ack_a_late_direct_or_lose_built_direct() {
     let mut coordinator = owner(1);
@@ -368,6 +373,7 @@ fn acceptance_delivery_choice_does_not_ack_a_late_direct_or_lose_built_direct() 
     assert_eq!(direct.direct(), Some(&result));
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn acceptance_writable_capabilities_cannot_be_cloned() {
     trait AmbiguousIfClone<A> {
@@ -422,6 +428,7 @@ fn attach(owner: &mut ExecutionCoordinator, primary: &Key, alias: Key) -> Member
     }
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn acceptance_last_cancel_and_attach_are_ordered_by_confirmed_membership() {
     for attach_first in [false, true] {
@@ -480,6 +487,7 @@ fn acceptance_last_cancel_and_attach_are_ordered_by_confirmed_membership() {
     }
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn acceptance_retired_membership_cannot_cancel_its_successor() {
     let mut coordinator = owner(1);
@@ -524,6 +532,7 @@ const ORDERS: [[usize; 3]; 6] = [
     [2, 1, 0],
 ];
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn acceptance_submit_cancel_begin_permutations_never_replay() {
     // Begin can be requested only after an AcceptedPermit is delivered. In
@@ -582,6 +591,7 @@ fn acceptance_submit_cancel_begin_permutations_never_replay() {
     }
 }
 
+/// rule: INV.APP.EXECUTION-AUTHORITY
 #[test]
 fn acceptance_cancel_outcome_expose_permutations_preserve_factual_mutation() {
     // Once Begin commits, cancellation is intent; it cannot replace the
@@ -661,6 +671,7 @@ fn acceptance_cancel_outcome_expose_permutations_preserve_factual_mutation() {
     }
 }
 
+/// rule: INV.APP.EXECUTION-DELIVERY
 #[test]
 fn acceptance_observer_and_wrong_owner_cannot_release_primary_payload() {
     let mut coordinator = owner(1);

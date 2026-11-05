@@ -623,6 +623,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.SERVICE-MUTATION-INVALIDATION
     #[test]
     fn canonical_saved_apply_cancel_finishes_before_the_real_helper_ack_is_released() {
         use crate::infrastructure::daemon::server::actor_capacity_tests::V5Submission;
@@ -724,6 +725,7 @@ mod medium_tests {
         helper.stop_and_verify();
     }
 
+    /// rule: INV.RUNTIME.SERVICE-MUTATION-INVALIDATION
     #[test]
     fn canonical_saved_apply_cancel_before_dispatch_or_between_records_keeps_unknown_old_results() {
         use crate::infrastructure::daemon::server::actor_capacity_tests::V5Submission;
@@ -898,6 +900,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.SERVICE-MUTATION-INVALIDATION
     #[test]
     fn canonical_saved_apply_notifies_live_helpers_once_and_restarts_the_warmed_analyzer() {
         for line_ending in ["\n", "\r\n"] {
@@ -1217,6 +1220,7 @@ mod medium_tests {
         drop(cleanup);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-MUTATION-INVALIDATION
     #[test]
     fn failed_helper_invalidation_preserves_the_published_receipt_and_unknown_old_results() {
         for line_ending in ["\n", "\r\n"] {
@@ -1506,6 +1510,7 @@ mod medium_tests {
         assert_eq!(serde_json::to_value(request).unwrap(), wire);
     }
 
+    /// rule: INV.PERF.SERVICE-CALLER-BUDGET
     #[test]
     fn rlm_readiness_protocol_roundtrips_full_positive_i64_seconds() {
         let wire = json!({
@@ -1707,6 +1712,7 @@ mod medium_tests {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.PERSISTENT-PROVIDER-CWD
     #[test]
     fn bsl_analyzer_child_does_not_run_from_inside_the_workspace() {
         let context = test_context("bsl-analyzer-external-cwd");
@@ -1769,6 +1775,7 @@ mod medium_tests {
         assert_ne!(first_cache, second_cache);
     }
 
+    /// rule: INV.CACHE.STATE-OUTSIDE-SOURCE
     #[test]
     fn bsl_analyzer_cache_stays_outside_a_workspace_wide_source_root() {
         let mut context = test_context("bsl-analyzer-workspace-cache");
@@ -2233,6 +2240,8 @@ mod medium_tests {
         )
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    /// rule: INV.RLM.MAINTENANCE-STATUS
     #[test]
     fn real_index_queue_and_worker_state_reach_serialized_search_and_navigation() {
         let context = test_context("maintenance-pipeline");
@@ -2352,6 +2361,8 @@ mod medium_tests {
         assert!(!wire.to_string().contains("PRIVATE-EXECUTOR"));
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    /// rule: INV.RLM.MAINTENANCE-STATUS
     #[test]
     fn maintenance_queue_execution_and_failure_keep_the_published_index_readable() {
         let context = test_context("maintenance-preserves-readable-index");
@@ -2472,6 +2483,7 @@ mod medium_tests {
         cleanup(&context);
     }
 
+    /// rule: INV.RLM.MAINTENANCE-STATUS
     #[test]
     fn dropped_index_job_is_not_reported_as_running() {
         struct DroppingRunner;
@@ -2854,6 +2866,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.SERVICE-LIFETIME
     #[test]
     fn workspace_service_never_stops_under_a_request_longer_than_its_idle_time() {
         let context = test_context("idle-under-request");
@@ -2957,6 +2970,7 @@ mod medium_tests {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-REQUEST-FRAMING
     #[test]
     fn workspace_service_request_lines_are_bounded_and_resynchronize() {
         let mut bytes = vec![b'x'; SERVICE_REQUEST_LINE_LIMIT + 1];
@@ -2972,6 +2986,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.RUNTIME.SERVICE-REQUEST-FRAMING
     #[test]
     fn workspace_service_header_deadline_is_aggregate_across_drip_bytes() {
         struct DripReader {
@@ -3006,6 +3021,7 @@ mod medium_tests {
         assert_eq!(error.kind(), ErrorKind::TimedOut);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-REQUEST-FRAMING
     #[test]
     fn workspace_service_header_timeout_is_connection_local() {
         let (handler_started_tx, handler_started_rx) = mpsc::sync_channel(0);
@@ -5032,6 +5048,7 @@ fn main() {
         );
     }
 
+    /// rule: INV.RUNTIME.SERVICE-CONTROL-CAPACITY
     #[test]
     fn slow_general_headers_cannot_exhaust_control_capacity() {
         let mut server = WorkspaceAdmissionTestServer::start("header-control-reserve");
@@ -5229,6 +5246,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.RUNTIME.SERVICE-CONTROL-CAPACITY
     #[test]
     fn workspace_service_admission_ninth_work_runs_with_exact_cancel_ping_and_shutdown() {
         let mut server = WorkspaceAdmissionTestServer::start("admission-nine-workers");
@@ -5264,6 +5282,7 @@ fn main() {
         assert!(other.is_cancelled());
     }
 
+    /// rule: INV.RUNTIME.SERVICE-CONTROL-CAPACITY
     #[test]
     fn workspace_service_admission_sixty_fifth_partial_header_reaches_handler_and_executes_work() {
         let mut server = WorkspaceAdmissionTestServer::start("admission-65-headers");
@@ -5296,6 +5315,7 @@ fn main() {
         assert!(send_test_request(&server.record, ServiceRequestKind::Shutdown).ok);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-CONTROL-CAPACITY
     #[test]
     fn workspace_service_admission_ninth_control_delivers_exact_cancel_with_all_old_slots_held() {
         let mut server = WorkspaceAdmissionTestServer::start("admission-nine-controls");
@@ -5363,6 +5383,7 @@ fn main() {
         drop(other_work);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-CONTROL-CAPACITY
     #[test]
     fn workspace_service_concurrent_work_preserves_control_path() {
         let (context, record, _runtime, executor, server) =
@@ -5413,6 +5434,8 @@ fn main() {
         assert!(!identity.test_record_path().exists());
     }
 
+    /// rule: INV.RUNTIME.SERVICE-LIFETIME
+    /// rule: INV.RUNTIME.SERVICE-SHUTDOWN
     #[test]
     fn workspace_service_control_path_shutdown_cancels_all_and_rejects_new_work() {
         let (context, record, runtime, executor, server) =
@@ -5662,6 +5685,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
     fn workspace_service_detached_caller_keeps_work_and_exact_cancel_ownership() {
         let mut server = WorkspaceAdmissionTestServer::start("detached-exact-control");
@@ -5709,11 +5733,13 @@ fn main() {
         assert!(other_token.is_cancelled());
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
     fn workspace_service_half_closed_caller_receives_late_success_without_cancel() {
         assert_workspace_caller_completion(None);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
     fn workspace_service_monitor_failures_preserve_worker_and_report_real_error_after_completion() {
         for point in [
@@ -5875,6 +5901,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
     fn workspace_service_control_path_drains_disconnected_worker_before_cleanup() {
         let (context, record, runtime, executor, server) =
@@ -6196,6 +6223,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-RECORD-OWNERSHIP
     #[test]
     fn workspace_service_cleanup_preserves_replacement_record() {
         let context = test_context("cleanup-owner-race");
@@ -6216,6 +6244,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-RECORD-OWNERSHIP
     #[test]
     fn workspace_service_record_cleanup_serializes_concurrent_replacement() {
         let context = test_context("cleanup-serialized-race");
@@ -6287,6 +6316,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-RECORD-OWNERSHIP
     #[test]
     fn workspace_service_last_access_update_cannot_overwrite_replacement() {
         let context = test_context("last-access-serialized-race");
@@ -6543,6 +6573,7 @@ fn main() {
 
     /// #2189: a call out of time is cancelled at the analyzer, and the next
     /// call is answered by the same warm process.
+    /// rule: INV.LSP.MCP-PRIORITY
     #[test]
     fn an_expired_analyzer_call_keeps_the_warm_process_for_the_next_one() {
         let (context, runtime, pid_file, log_file) = stalling_runtime("expired-call");
@@ -6571,6 +6602,7 @@ fn main() {
 
     /// #2189, mcp-priority: an editor's call holding the analyzer gives way to
     /// an MCP call, which is answered without waiting for it to finish.
+    /// rule: INV.LSP.MCP-PRIORITY
     #[test]
     fn an_mcp_call_cancels_a_yielding_call_that_holds_the_analyzer() {
         let (context, runtime, pid_file, log_file) = stalling_runtime("yielding-call");
@@ -7811,6 +7843,7 @@ fn main() {
         assert_eq!(deadline.remaining(&clock), None);
     }
 
+    /// rule: INV.PERF.SERVICE-OPERATION-DEADLINE
     #[test]
     fn cancellable_connector_cancel_control_uses_one_aggregate_500ms_budget() {
         let clock = ManualClock::default();
@@ -7844,6 +7877,7 @@ fn main() {
         );
     }
 
+    /// rule: INV.PERF.SERVICE-OPERATION-DEADLINE
     #[test]
     fn control_flush_success_cannot_cross_aggregate_500ms_budget() {
         let clock = ManualClock::default();
@@ -8185,6 +8219,7 @@ fn main() {
         }
     }
 
+    /// rule: INV.PERF.SERVICE-OPERATION-DEADLINE
     #[test]
     fn service_request_kind_deadline_matrix_is_exhaustive() {
         let work = [
@@ -8393,6 +8428,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
     fn cancellable_connector_sends_cancel_on_a_separate_connection() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -8856,6 +8892,7 @@ fn main() {
         cleanup(&other_workspace);
     }
 
+    /// rule: INV.APP.HIDDEN-SERVICES
     #[test]
     fn hidden_service_identity_distinguishes_user_core_daemon_from_workspace_helpers() {
         use unica_daemon::identity::{CoreIdentity, DaemonStateDirectory};
@@ -8900,6 +8937,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.PERF.WORKSPACE-SERVICE-REUSE
     #[test]
     fn service_record_is_reusable_only_for_matching_live_build_and_paths() {
         let context = test_context("record");
@@ -9239,6 +9277,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.WORKSPACE-SERVICE-STARTUP-DIAGNOSTIC
     #[test]
     fn startup_failure_reports_exit_status_and_bounded_stderr_tail() {
         let context = test_context("startup-failure-diagnostic");
@@ -9280,6 +9319,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.WORKSPACE-SERVICE-STARTUP-DIAGNOSTIC
     #[test]
     fn startup_stderr_tail_stays_bounded_after_lossy_utf8_decoding() {
         let context = test_context("startup-stderr-invalid-utf8");
@@ -9301,6 +9341,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.APP.WORKSPACE-SERVICE-STARTUP-DIAGNOSTIC
     #[test]
     fn startup_failure_reports_live_child_without_assuming_deadline_expired() {
         let context = test_context("startup-failure-live-child");
@@ -9361,6 +9402,7 @@ fn main() {
         thread::sleep(Duration::from_secs(30));
     }
 
+    /// rule: INV.RUNTIME.SERVICE-LIFETIME
     #[test]
     fn service_config_uses_defaults_and_env_overrides() {
         std::env::remove_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS");
@@ -9374,6 +9416,7 @@ fn main() {
         std::env::remove_var("UNICA_WORKSPACE_SERVICE_IDLE_SECS");
     }
 
+    /// rule: INV.RUNTIME.SERVICE-TOKEN
     #[test]
     fn service_protocol_rejects_invalid_token_and_accepts_ping() {
         let context = test_context("protocol");
@@ -9399,6 +9442,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.PERF.WORKSPACE-SERVICE-REUSE
     #[test]
     fn manager_reuses_matching_live_record_without_spawning() {
         let context = test_context("reuse");
@@ -9534,6 +9578,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-STARTUP-OWNERSHIP
     #[test]
     fn manager_waits_for_peer_spawn_lock_release_before_reusing_record() {
         let context = test_context("peer-lock");
@@ -9570,6 +9615,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-STARTUP-OWNERSHIP
     #[test]
     fn manager_spawn_lock_wait_observes_cancellation_and_shared_deadline() {
         let context = test_context("peer-lock-deadline");
@@ -9641,6 +9687,7 @@ fn main() {
         )));
     }
 
+    /// rule: INV.RUNTIME.SERVICE-STARTUP-OWNERSHIP
     #[test]
     fn spawn_wait_ignores_live_record_not_owned_by_spawned_child() {
         let context = test_context("spawn-wait-owned-record");
@@ -9669,6 +9716,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-OPERATION-CANCELLATION
     #[test]
     fn manager_generates_unique_uuid_operation_ids_for_bsl_and_rlm() {
         let context = test_context("operation-ids");
@@ -9733,6 +9781,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.PERF.SERVICE-CALLER-BUDGET
     #[test]
     fn rlm_request_preserves_caller_budget_above_service_default() {
         let context = test_context("rlm-caller-budget");
@@ -9778,6 +9827,7 @@ fn main() {
         assert_eq!(wire_timeout, budget);
     }
 
+    /// rule: INV.PERF.SERVICE-CALLER-BUDGET
     #[test]
     fn rlm_request_preserves_budget_beyond_u64_max_milliseconds() {
         let context = test_context("rlm-caller-budget-beyond-u64-millis");
@@ -9822,6 +9872,7 @@ fn main() {
         assert_eq!(wire_timeout, budget);
     }
 
+    /// rule: INV.PERF.SERVICE-CALLER-BUDGET
     #[test]
     fn bsl_request_preserves_budget_beyond_u64_max_milliseconds() {
         let context = test_context("bsl-caller-budget-beyond-u64-millis");
@@ -9867,6 +9918,7 @@ fn main() {
         assert_eq!(wire_timeout, budget);
     }
 
+    /// rule: INV.PERF.SERVICE-CALLER-BUDGET
     #[test]
     fn rlm_readiness_preserves_caller_budget_above_service_default() {
         let context = test_context("rlm-readiness-caller-budget");
@@ -10075,6 +10127,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn manager_retries_bsl_request_once_after_transport_reset() {
         let context = test_context("bsl-transport-reset-retry");
@@ -10168,6 +10221,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn manager_passes_remaining_budget_and_fresh_token_to_retry_spawn() {
         let context = test_context("bsl-retry-spawn-budget-token");
@@ -10374,6 +10428,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn manager_stops_after_one_transport_retry() {
         let context = test_context("bsl-transport-reset-twice");
@@ -10411,6 +10466,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn manager_does_not_retry_unknown_bsl_tool_after_ambiguous_reset() {
         let context = test_context("unknown-bsl-tool-no-retry");
@@ -10445,6 +10501,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn manager_does_not_retry_typed_bsl_failure() {
         let context = test_context("typed-bsl-failure-no-retry");
@@ -10479,6 +10536,7 @@ fn main() {
         cleanup(&context);
     }
 
+    /// rule: INV.RUNTIME.SERVICE-READ-RETRY
     #[test]
     fn transport_retry_classifier_excludes_terminal_errors() {
         assert_eq!(duration_timeout_millis(Duration::ZERO), 1);

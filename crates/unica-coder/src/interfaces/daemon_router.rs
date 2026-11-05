@@ -1336,6 +1336,7 @@ mod medium_tests {
         task
     }
 
+    /// rule: INV.APP.DIRECT-RESPONSE-RECOVERY
     #[test]
     fn direct_terminal_is_projected_before_it_is_acknowledged_with_the_exact_digest() {
         let fake = FakeDaemon::start(Box::new(|raw, request| match request {
@@ -1393,6 +1394,7 @@ mod medium_tests {
         assert_eq!(invocation.workspace_hint(), fake.workspace_hint());
     }
 
+    /// rule: INV.APP.DIRECT-RESPONSE-RECOVERY
     #[test]
     fn failed_and_cancelled_direct_terminals_answer_closed_errors_after_acknowledgement() {
         use unica_execution::invocation_store_v5::V5SafeFailureReason;
@@ -1467,6 +1469,8 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.DIRECT-RESPONSE-RECOVERY
+    /// rule: INV.APP.RECEIPT-ACKNOWLEDGEMENT
     #[test]
     fn malformed_direct_receipt_is_recovered_by_key_and_only_the_strict_one_is_acknowledged() {
         let fake = FakeDaemon::start(Box::new(|raw, request| match request {
@@ -1526,6 +1530,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.DIRECT-RESPONSE-RECOVERY
     #[test]
     fn lost_submit_response_follows_replaced_endpoint_without_resubmitting() {
         use unica_daemon::identity::{CoreIdentity, DaemonStateDirectory};
@@ -1579,6 +1584,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.DIRECT-RESPONSE-RECOVERY
     #[test]
     fn lost_submit_response_is_recovered_by_the_exact_key_without_a_second_submission() {
         let fake = FakeDaemon::start(Box::new(|raw, request| match request {
@@ -1632,6 +1638,7 @@ mod medium_tests {
     /// An answer to the submit that trickles in byte by byte does not renew
     /// the frontend's deadline: the call ends within its own window plus the
     /// recovery budget, long before the trickle would finish.
+    /// rule: INV.WIRE.DAEMON-RESPONSE-TIME
     #[test]
     fn a_trickling_submit_answer_does_not_renew_the_frontend_deadline() {
         use std::io::Write as _;
@@ -1682,6 +1689,8 @@ mod medium_tests {
     /// more, or an answer cut before its line ends, leaves the submit session
     /// unusable: the frontend recovers that same receipt by key on a fresh
     /// session and never submits again.
+    /// rule: INV.APP.DIRECT-RESPONSE-RECOVERY
+    /// rule: INV.WIRE.DAEMON-RESPONSE-SIZE
     #[test]
     fn submit_answer_at_the_frame_limit_is_read_and_one_byte_over_or_cut_is_recovered() {
         use std::io::Write as _;
@@ -1749,6 +1758,7 @@ mod medium_tests {
     /// A first submit is never answered with a pending receipt. If one is,
     /// the frontend refuses with the closed `receipt_pending` and neither
     /// submits again nor starts a recovery of its own.
+    /// rule: INV.WIRE.DAEMON-INITIAL-SUBMIT-RESULT
     #[test]
     fn a_first_submit_answered_receipt_pending_is_a_closed_refusal_without_resubmit() {
         let frames = Arc::new(AtomicUsize::new(0));
@@ -1783,6 +1793,8 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.APP.DIRECT-RESPONSE-RECOVERY
+    /// rule: INV.WIRE.DAEMON-INITIAL-SUBMIT-RESULT
     #[test]
     fn pending_receipt_is_polled_until_its_original_budget_settles() {
         let recoveries = Arc::new(AtomicUsize::new(0));
@@ -1827,6 +1839,9 @@ mod medium_tests {
         assert_eq!(fake.submissions(), 1);
     }
 
+    /// rule: INV.APP.DIRECT-RESPONSE-RECOVERY
+    /// rule: INV.WIRE.DAEMON-INITIAL-SUBMIT-RESULT
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn pending_receipt_beyond_the_frontend_cutoff_is_the_reserved_task_not_a_retry() {
         let fake = FakeDaemon::start(Box::new(move |_, request| {
@@ -1878,6 +1893,7 @@ mod medium_tests {
         assert!(!refusal.message.contains("Task"), "{}", refusal.message);
     }
 
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn a_lost_submit_is_the_queued_task_reserved_for_the_call() {
         let fake = FakeDaemon::start(Box::new(|_, request| match request {
@@ -1901,6 +1917,7 @@ mod medium_tests {
         assert_is_the_reserved_task(&task, &fake);
     }
 
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn a_daemon_refusing_the_connection_needs_a_person_not_a_repeat() {
         // The anchor stands; every further session is dropped right after its
@@ -1927,6 +1944,7 @@ mod medium_tests {
         assert_eq!(fake.submissions(), 0);
     }
 
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn a_call_whose_connection_never_stood_was_not_delivered() {
         // A handshake slower than the whole host budget: no frame of the
@@ -1977,6 +1995,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn recovery_without_a_receipt_fences_the_exact_key_and_answers_not_delivered() {
         let fake = FakeDaemon::start(Box::new(|_, request| match request {
@@ -2025,6 +2044,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn recovery_without_a_receipt_whose_fence_meets_the_call_names_its_task() {
         // The frame overtook the fence: the cancel finds the call's own
@@ -2093,6 +2113,7 @@ mod medium_tests {
         }))
     }
 
+    /// rule: INV.APP.DAEMON-INVOCATION-HANDOFF
     #[test]
     fn response_lost_at_the_cutoff_is_recovered_into_the_handed_off_task() {
         let fake = lost_cutoff_fake(false);
@@ -2126,6 +2147,7 @@ mod medium_tests {
 
     /// Recovery answers only with the Task reserved for the exact key: a Task
     /// of another invocation is a protocol refusal, never this call's Task.
+    /// rule: INV.APP.DAEMON-INVOCATION-HANDOFF
     #[test]
     fn a_recovered_task_of_another_key_is_refused() {
         let fake = lost_cutoff_fake(true);
@@ -2140,6 +2162,8 @@ mod medium_tests {
         assert_eq!(fake.submissions(), 1, "recovery never resubmits");
     }
 
+    /// rule: INV.APP.DAEMON-INVOCATION-HANDOFF
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn recovery_window_closing_answers_the_task_reserved_for_the_call() {
         let fake = FakeDaemon::start(Box::new(move |_, request| match request {
@@ -2276,6 +2300,7 @@ mod medium_tests {
         assert!(past.endpoint_generation_hash.is_none());
     }
 
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn a_lost_task_the_daemon_does_not_know_answers_task_not_found() {
         // The answer is lost before the daemon could be asked: the call is
@@ -2312,6 +2337,8 @@ mod medium_tests {
         daemon.finish();
     }
 
+    /// rule: INV.APP.DAEMON-INVOCATION-HANDOFF
+    /// rule: INV.WIRE.DAEMON-INITIAL-SUBMIT-RESULT
     #[test]
     fn live_daemon_hands_inline_work_over_the_cutoff_to_a_task_the_same_attempt_completes() {
         let service = Arc::new(ScriptedService {
@@ -2380,6 +2407,7 @@ mod medium_tests {
         daemon.finish();
     }
 
+    /// rule: INV.APP.DAEMON-INVOCATION-HANDOFF
     #[test]
     fn live_daemon_hands_a_failing_inline_attempt_over_the_cutoff_and_the_task_fails_once() {
         // The production runtime (no `receipt-ledger-test-support` feature) owns
@@ -2459,6 +2487,9 @@ mod medium_tests {
         daemon.finish();
     }
 
+    /// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
+    /// rule: INV.APP.NEW-INVOCATION-IDENTITY
+    /// rule: INV.APP.RECEIPT-ACKNOWLEDGEMENT
     #[test]
     fn live_daemon_executes_once_and_compacts_the_acknowledged_receipt_to_a_tombstone() {
         let service = Arc::new(ScriptedService {
@@ -2519,6 +2550,7 @@ mod medium_tests {
     /// #1309: a call far above the former 16 KiB frame reaches the service and
     /// runs; one above the request bound never leaves the frontend and is
     /// refused with the limit and its own size, not a bare `invalid_request`.
+    /// rule: INV.WIRE.DAEMON-REQUEST-FRAMING
     #[test]
     fn live_daemon_runs_a_large_call_and_refuses_one_above_the_bound_unsent() {
         use unica_daemon::protocol_v5::MAX_V5_REQUEST_LINE_BYTES;
@@ -2584,6 +2616,7 @@ mod medium_tests {
         daemon.finish();
     }
 
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
     fn live_daemon_failure_is_delivered_as_the_closed_reason_without_its_text() {
         // A workspace that changed under the call keeps that cause and its
@@ -2625,6 +2658,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
     #[test]
     fn live_daemon_hands_slow_work_off_to_a_task_that_get_wait_and_cancel_observe() {
         // Known-long work is handed off before execution, so the Task path is
@@ -2821,6 +2855,8 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn lost_submit_names_its_task_and_a_retry_joins_it_instead_of_running_again() {
         let service = GatedService::new();
@@ -2863,6 +2899,7 @@ mod medium_tests {
         daemon.finish();
     }
 
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn a_read_whose_answer_was_lost_inline_is_readable_by_its_task_id() {
         // Inline work that ends directly: its answer is lost and no Task
@@ -2893,6 +2930,7 @@ mod medium_tests {
         daemon.finish();
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn only_an_identical_read_joins_and_a_mutation_never_does() {
         let service = GatedService::new();
@@ -2941,6 +2979,7 @@ mod medium_tests {
         daemon.finish();
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn one_holder_cancelling_leaves_the_shared_work_to_the_others_until_all_cancel() {
         let service = GatedService::new();
@@ -3043,6 +3082,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn holder_cancel_before_completion_stays_cancelled_at_the_same_epoch() {
         use unica_execution_contract::invocation::InvocationStatus;
@@ -3099,6 +3139,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn shared_completion_before_holder_cancel_keeps_result_at_the_same_epoch() {
         use unica_execution_contract::invocation::InvocationStatus;
@@ -3135,6 +3176,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_joined_holder_keeps_the_result_after_another_holder_cancelled() {
         let service = GatedService::new();
@@ -3162,6 +3204,7 @@ mod medium_tests {
         daemon.finish();
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn an_exact_repeat_of_a_call_with_its_own_receipt_never_becomes_a_joiner() {
         let service = GatedService::gating_mutations(false);
@@ -3255,6 +3298,7 @@ mod medium_tests {
         receipt_key_for(invocation, &V5DaemonClient::from(daemon.owner())).unwrap()
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn an_external_edit_after_the_leader_started_makes_the_repeat_run_fresh() {
         let service = GatedService::new();
@@ -3292,6 +3336,7 @@ mod medium_tests {
         daemon.finish();
     }
 
+    /// rule: INV.APP.READ-CALL-JOINING
     #[test]
     fn a_frame_that_arrives_cancelled_never_leads_identical_reads() {
         let service = Arc::new(ScriptedService {
@@ -3335,6 +3380,7 @@ mod medium_tests {
     /// Task, never with a pending receipt: inline, known as long, or failing.
     /// Each call runs once. Past its cutoff the answer is the Task, as the
     /// handoff tests show through the router.
+    /// rule: INV.WIRE.DAEMON-INITIAL-SUBMIT-RESULT
     #[test]
     fn a_first_submit_is_answered_directly_or_by_its_task_never_pending() {
         let failure = unica_execution_contract::invocation::InvocationFailure::new(
@@ -3387,6 +3433,8 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.DAEMON-INITIAL-SUBMIT-RESULT
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn a_fenced_frame_never_runs_and_a_held_one_is_answered_by_its_state() {
         let service = GatedService::new();
@@ -3437,6 +3485,7 @@ mod medium_tests {
         daemon.finish();
     }
 
+    /// rule: INV.WIRE.LOST-SUBMIT-TASK-ID
     #[test]
     fn the_task_id_of_a_call_still_inline_can_be_cancelled() {
         let service = Arc::new(ScriptedService {

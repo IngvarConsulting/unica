@@ -1346,6 +1346,7 @@ mod tests {
         assert_eq!(error, "duplicate code intelligence search role: semantic");
     }
 
+    /// rule: INV.APP.PROVIDER-NEUTRAL
     #[test]
     fn registry_resolves_an_executable_provider_for_read_capabilities() {
         let registry = CodeIntelligenceRegistry::new(vec![
@@ -1507,6 +1508,7 @@ mod tests {
         assert!(provider_deadline.remaining().unwrap() > Duration::from_secs(119));
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn search_section_serializes_role_provenance_completeness_and_logical_location() {
         use unica_address::source_target::{
@@ -1576,6 +1578,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn timed_out_section_serializes_a_machine_readable_terminal_reason() {
         let section = ProviderSearchSection::timed_out(
@@ -1598,6 +1601,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn section_rejects_an_invalid_terminal_reason_contract() {
         let invalid_terminations = [
@@ -1660,6 +1664,7 @@ mod tests {
         assert_eq!(error, "empty search section must carry an exact zero count");
     }
 
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
     #[test]
     fn partial_section_requires_proven_hits_and_diagnostics() {
         let identity = ProviderIdentity::new(ProviderRole::Semantic, "replacement-semantic");

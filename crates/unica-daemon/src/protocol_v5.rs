@@ -1343,6 +1343,7 @@ mod medium_tests {
         )
     }
 
+    /// rule: CTR.WIRE.DAEMON-INVOCATION-PROTOCOL
     #[test]
     fn strict_v5_server_response_round_trips_the_cr0_invocation_algebra() {
         let frames = [
@@ -1376,6 +1377,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: CTR.WIRE.DAEMON-INVOCATION-PROTOCOL
     #[test]
     fn strict_v5_server_response_rejects_unknown_kinds_extra_fields_and_invalid_enums() {
         let cases = [
@@ -1447,6 +1449,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.WIRE.DAEMON-RECEIPT-KEY
     #[test]
     fn strict_v5_direct_receipt_rejects_a_terminal_digest_mismatch() {
         let frame = format!(
@@ -1494,6 +1497,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: CTR.WIRE.NATIVE-TASK-PROJECTION
     #[test]
     fn strict_v5_direct_receipt_restores_a_legacy_result_without_new_delivery_admission() {
         use unica_execution::receipt_ledger::ReceiptTerminalOutcome;
@@ -1632,6 +1636,7 @@ mod medium_tests {
         ]
     }
 
+    /// rule: INV.WIRE.DAEMON-REQUEST-FRAMING
     #[test]
     fn bounded_v5_reader_rejects_oversized_empty_and_unterminated_frames() {
         let mut exact = vec![b'x'; MAX_V5_REQUEST_LINE_BYTES - 1];
@@ -1814,6 +1819,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn no_deadline_frame_keeps_its_consumed_prefix_across_socket_polling() {
         use unica_work_control::operation_deadline::OperationDeadline;
@@ -1839,6 +1845,7 @@ mod medium_tests {
         assert!(reader.steps.is_empty());
     }
 
+    /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn finite_frame_expiry_checks_the_original_anchor_before_consuming_the_suffix() {
         use unica_work_control::operation_deadline::OperationDeadline;
@@ -1883,6 +1890,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: CTR.WIRE.DAEMON-INVOCATION-PROTOCOL
     #[test]
     fn strict_v5_client_decoder_round_trips_every_closed_request_kind() {
         for (expected_kind, frame) in valid_request_frames() {
@@ -1895,6 +1903,7 @@ mod medium_tests {
 
     /// Источник каталога объясняет его вызывающему и в идентичность запроса
     /// не входит: тот же каталог из другого канала — тот же ключ квитанции.
+    /// rule: INV.WORKSPACE.HOST-CONTEXT
     #[test]
     fn workspace_origin_is_not_part_of_the_strict_submit_receipt_identity() {
         let frame = |origin: &str| {
@@ -1923,6 +1932,7 @@ mod medium_tests {
         );
     }
 
+    /// rule: INV.WIRE.DAEMON-RECEIPT-KEY
     #[test]
     fn strict_decoded_submit_derives_the_frozen_application_receipt_key() {
         let frame = format!(
@@ -1985,6 +1995,7 @@ mod medium_tests {
         assert_eq!(request.hello_protocol_version(), Some(3));
     }
 
+    /// rule: CTR.WIRE.DAEMON-INVOCATION-PROTOCOL
     #[test]
     fn strict_v5_client_decoder_rejects_unknown_missing_cross_variant_and_invalid_values() {
         let invalid = [

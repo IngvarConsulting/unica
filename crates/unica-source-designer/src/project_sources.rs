@@ -2317,6 +2317,7 @@ mod tests {
         "    type: CONFIGURATION\n",
         "    path: src\n"
     );
+    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
     #[test]
     fn health_yaml_visitor_retains_a_selected_value_past_two_mib() {
         let padding = "x".repeat(2 * 1024 * 1024 + 1);

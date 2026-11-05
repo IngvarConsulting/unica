@@ -233,6 +233,7 @@ mod tests {
             .map(|choice| choice.variable)
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn https_proxy_wins_over_all_proxy_and_lowercase_over_uppercase() {
         let both = settings(&[
@@ -300,6 +301,7 @@ mod tests {
             .is_err());
     }
 
+    /// rule: INV.PKG.NETWORK-PROXY-ROUTING
     #[test]
     fn no_proxy_matches_hosts_and_subdomains_but_not_lookalikes() {
         let settings = settings(&[

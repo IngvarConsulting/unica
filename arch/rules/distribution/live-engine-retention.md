@@ -1,6 +1,5 @@
 ---
 id: INV.PKG.LIVE-ENGINE-RETENTION
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/926
 ---
 

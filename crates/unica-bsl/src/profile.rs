@@ -153,6 +153,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
     #[test]
     fn service_bot_websocket_and_absent_grpc_capabilities_are_not_conflated() {
         let profile = PlatformProfile::v8_3_27();
