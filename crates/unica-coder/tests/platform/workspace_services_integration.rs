@@ -9118,7 +9118,7 @@ fn main() {
         command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::startup_failure_child_fixture",
+                "infrastructure::workspace_services::medium_tests::startup_failure_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -9185,7 +9185,7 @@ fn main() {
         owned_command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "infrastructure::workspace_services::medium_tests::spawn_cleanup_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -9214,7 +9214,7 @@ fn main() {
         replaced_command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "infrastructure::workspace_services::medium_tests::spawn_cleanup_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -9251,7 +9251,7 @@ fn main() {
         command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::startup_failure_child_fixture",
+                "infrastructure::workspace_services::medium_tests::startup_failure_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
@@ -9313,7 +9313,7 @@ fn main() {
         command
             .args([
                 "--exact",
-                "infrastructure::workspace_services::tests::spawn_cleanup_child_fixture",
+                "infrastructure::workspace_services::medium_tests::spawn_cleanup_child_fixture",
                 "--ignored",
                 "--nocapture",
             ])
