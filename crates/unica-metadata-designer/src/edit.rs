@@ -1415,6 +1415,12 @@ pub fn apply_typed_properties(
         let kind_scoped_enum = matches!(
             (kind, key),
             (
+                MetadataKind::BusinessProcess | MetadataKind::Task,
+                MetaPropertyKey::NumberAllowedLength
+            ) | (
+                MetadataKind::BusinessProcess,
+                MetaPropertyKey::NumberPeriodicity
+            ) | (
                 MetadataKind::ChartOfCharacteristicTypes
                     | MetadataKind::ChartOfCalculationTypes
                     | MetadataKind::ExchangePlan,
