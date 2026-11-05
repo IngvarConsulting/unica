@@ -25,6 +25,7 @@ pub enum MetaPropertyKey {
     CodeMask,
     CodeType,
     Correspondence,
+    DataLockControlMode,
     CreateTaskInPrivilegedMode,
     DefaultPresentation,
     DependenceOnCalculationTypes,
@@ -248,6 +249,14 @@ const fn patterned_string_property(
     }
 }
 
+const CHOICE_MODE_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Enum,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ExchangePlan,
+];
 const CODE_ALLOWED_LENGTH_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
     MetadataKind::ChartOfCharacteristicTypes,
@@ -393,6 +402,22 @@ const REUSE_SESSIONS_VALUES: &[&str] = &["DontUse", "AutoUse"];
 const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "ToItems"];
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
+const DATA_LOCK_CONTROL_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Document,
+    MetadataKind::Constant,
+    MetadataKind::InformationRegister,
+    MetadataKind::AccumulationRegister,
+    MetadataKind::AccountingRegister,
+    MetadataKind::CalculationRegister,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::BusinessProcess,
+    MetadataKind::Task,
+    MetadataKind::ExchangePlan,
+];
+const OBJECT_DATA_LOCK_CONTROL_VALUES: &[&str] = &["Automatic", "Managed"];
 const PREDEFINED_DATA_UPDATE_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
     MetadataKind::ChartOfAccounts,
@@ -496,9 +521,16 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "ChoiceMode",
         "ChoiceMode",
         MetaPropertyKey::ChoiceMode,
-        CATALOG_KINDS,
+        CHOICE_MODE_KINDS,
         CHOICE_MODE_VALUES,
-    ),
+    )
+    .written_in_place(InPlace::Owners(&[
+        MetadataKind::Enum,
+        MetadataKind::ChartOfCharacteristicTypes,
+        MetadataKind::ChartOfCalculationTypes,
+        MetadataKind::ChartOfAccounts,
+        MetadataKind::ExchangePlan,
+    ])),
     property(
         "ClientManagedApplication",
         MetaPropertyKey::ClientManagedApplication,
@@ -542,6 +574,14 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyValueKind::Boolean,
         ACCOUNTING_REGISTER_KINDS,
     ),
+    enum_property(
+        "DataLockControlMode",
+        "DataLockControlMode",
+        MetaPropertyKey::DataLockControlMode,
+        DATA_LOCK_CONTROL_KINDS,
+        OBJECT_DATA_LOCK_CONTROL_VALUES,
+    )
+    .written_in_place(InPlace::Always),
     enum_property(
         "DefaultPresentation",
         "DefaultPresentation",
@@ -1359,7 +1399,14 @@ mod tests {
             (
                 "ChoiceMode",
                 MetaPropertyValue::String("FromForm".into()),
-                &[Catalog],
+                &[
+                    Catalog,
+                    Enum,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ChartOfAccounts,
+                    ExchangePlan,
+                ],
             ),
             (
                 "ClientManagedApplication",
@@ -1436,6 +1483,25 @@ mod tests {
                 "ChoiceHistoryOnInput",
                 MetaPropertyValue::String("Auto".into()),
                 &[Catalog, Document],
+            ),
+            (
+                "DataLockControlMode",
+                MetaPropertyValue::String("Managed".into()),
+                &[
+                    Catalog,
+                    Document,
+                    Constant,
+                    InformationRegister,
+                    AccumulationRegister,
+                    AccountingRegister,
+                    CalculationRegister,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    BusinessProcess,
+                    Task,
+                    ExchangePlan,
+                ],
             ),
             (
                 "DefaultPresentation",
