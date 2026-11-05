@@ -172,7 +172,7 @@
         },
         {
           "pointer": "/data/props/support",
-          "eq": "supported"
+          "eq": "notSupported"
         },
         {
           "pointer": "/data/props/location",

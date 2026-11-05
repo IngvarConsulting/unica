@@ -27,6 +27,8 @@ pub enum NodeKind {
     EventSubscription,
     ScheduledJob,
     Schedule,
+    /// Read-only semantic declarations of a WSReference's local WSDL.
+    Definition,
     SettingsStorage,
     FunctionalOption,
     FunctionalOptionsParameter,
@@ -62,6 +64,7 @@ pub enum NodeKind {
     ExternalReport,
     WebSocketClient,
     Attribute,
+    AddressingAttribute,
     StandardAttribute,
     TabularSection,
     Dimension,
@@ -195,6 +198,7 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Schedule, &["Расписание"]),
     spelling(NodeKind::WebSocketClient, &[]),
     spelling(NodeKind::Attribute, &["Реквизит"]),
+    spelling(NodeKind::AddressingAttribute, &["РеквизитАдресации"]),
     spelling(NodeKind::StandardAttribute, &["СтандартныйРеквизит"]),
     spelling(NodeKind::TabularSection, &["ТабличнаяЧасть"]),
     spelling(NodeKind::Dimension, &["Измерение"]),
@@ -236,6 +240,7 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Namespace, &["ПространствоИмен"]),
     spelling(NodeKind::Type, &["Тип"]),
     spelling(NodeKind::Property, &["Свойство"]),
+    spelling(NodeKind::Definition, &["Определение"]),
     spelling(NodeKind::Relation, &["Связь"]),
     spelling(NodeKind::Characteristic, &["Характеристика"]),
     spelling(
@@ -281,7 +286,11 @@ impl NodeKind {
     pub const fn takes_name(self) -> bool {
         !matches!(
             self,
-            Self::Configuration | Self::Interface | Self::Metadata | Self::Schedule
+            Self::Configuration
+                | Self::Interface
+                | Self::Metadata
+                | Self::Schedule
+                | Self::Definition
         )
     }
 
@@ -370,6 +379,7 @@ impl NodeKind {
             Self::WebService => "WebService",
             Self::HttpService => "HTTPService",
             Self::WsReference => "WSReference",
+            Self::Definition => "Definition",
             Self::EventSubscription => "EventSubscription",
             Self::ScheduledJob => "ScheduledJob",
             Self::Schedule => "Schedule",
@@ -407,6 +417,7 @@ impl NodeKind {
             Self::ExternalReport => "ExternalReport",
             Self::WebSocketClient => "WebSocketClient",
             Self::Attribute => "Attribute",
+            Self::AddressingAttribute => "AddressingAttribute",
             Self::StandardAttribute => "StandardAttribute",
             Self::TabularSection => "TabularSection",
             Self::Dimension => "Dimension",

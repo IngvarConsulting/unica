@@ -10,7 +10,8 @@
 платформы допускает OS-cfg (`tests/platform/`, фасады `src/platform/`);
 в остальных местах — helper с именем возможности ОС.
 
-Страж ищет ранний выход рядом с пробой возможности в обход helper. Места,
+Страж ищет ранний выход рядом с пробой возможности и условно скрытые
+проверки, включая локальные псевдонимы результата пробы. Места,
 найденные до механизма, перечислены ниже. Их переводят пакетами по крейтам,
 и каждый пакет удаляет свои строки: устаревшая строка роняет страж так же,
 как новое место.
@@ -25,14 +26,31 @@ import host_capability_guard as guard
 ALLOWLIST = frozenset({
     "crates/unica-coder/src/application/mod.rs::cf_edit_preserves_unix_mode_0600",
     "crates/unica-coder/src/application/mod.rs::cf_edit_rejects_symlink_configuration_without_touching_referent",
-    "crates/unica-coder/src/infrastructure/native_operations/apply_families/metadata.rs::command_lifecycle_refuses_links_at_the_source_or_destination_module_route",
-    "crates/unica-coder/tests/platform/code_intelligence_integration.rs::git_grep_scoped_preflight_refuses_invalid_routes_without_dispatch",
     "crates/unica-coder/tests/platform/code_patch_composition.rs::code_patch_symlink_module_is_rejected_during_preview",
-    "crates/unica-workspace/src/actor_policy_contract_tests.rs::apply_policy_stable_deny_evidence_allows_unrelated_dry_run_and_real_publication",
 })
 
 
 class HostCapabilityGuardTests(unittest.TestCase):
+    def test_detects_assertions_hidden_behind_partial_capability_checks(self) -> None:
+        shapes = {
+            "positive_probe": "if supports_retained_root_replacement_test() { assert_eq!(changed(), true); }",
+            "alias": "let modes_supported = set_unix_mode_for_test(&a, 0o600).unwrap();\nif modes_supported { assert_eq!(mode(&a), 0o600); }",
+            "optional_identity": "if let Some(count) = hard_link_count(&a).unwrap() { assert_eq!(count, 2); }",
+            "distant_alias": "let available = set_unix_mode_for_test(&a, 0o600).unwrap();\n" + "prepare();\n" * 30 + "if available { assert!(mode_ok()); }",
+            "optional_alias": "let native = file_identity_for_test(&a).unwrap();\nif native.is_some() { assert!(same_inode()); }",
+            "print_only_else": "if supports_retained_root_replacement_test() { assert!(changed()); } else { eprintln!(\"skip\"); }",
+            "comment_is_not_skip": "if supports_retained_root_replacement_test() { assert!(changed()); } else { /* skip_without_host_capability(x, y); */ }",
+            "multiline": "if\n    supports_retained_root_replacement_test()\n{\n    assert!(changed());\n}",
+            "os_and_capability": "if MAIN_SEPARATOR == '/' && supports_retained_root_replacement_test() { assert!(changed()); }",
+            "alias_conjunction": "let available = supports_retained_root_replacement_test();\nif available && true { assert!(changed()); }",
+            "matches_macro": "if matches!(create_file_symlink_for_test(&a, &b), Some(Ok(_))) { assert!(linked()); }",
+        }
+        for name, statement in shapes.items():
+            with self.subTest(shape=name):
+                source = "#[test]\nfn sample() {\n" + statement + "\n}\n"
+                self.assertEqual(guard.offenses(source, "crates/demo/src/lib.rs"),
+                                 ["crates/demo/src/lib.rs::sample"])
+
     def test_no_new_early_exit_and_no_stale_allowlist_entry(self) -> None:
         found = guard.repository_offenses()
         self.assertEqual(sorted(found - ALLOWLIST), [], "test exits early on a host capability without the skip helper")
@@ -68,6 +86,12 @@ class HostCapabilityGuardTests(unittest.TestCase):
             "        return Err(CapabilitySkip { capability: \"rename-under-open-handle\", reason: \"x\" });\n    }\n    Ok(())\n}\n",
             "#[test]\nfn sample() {\n    let program = r#\"fn main() { if symlink(a, b).is_err() { return; } }\"#;\n}\n",
             "#[test]\nfn sample() {\n    let link = create_file_symlink_for_test(&a, &b).unwrap().unwrap();\n    assert!(link);\n}\n",
+            "#[test]\nfn sample() {\nif supports_retained_root_replacement_test() { assert!(changed()); } else { skip_without_host_capability(x, y); return; }\n}\n",
+            "#[test]\nfn sample() {\nif set_unix_mode_for_test(&a, 0o600).unwrap() { assert!(unix_ok()); } else { assert!(portable_ok()); }\n}\n",
+            "#[test]\nfn sample() {\nmatch result { Err(error) if error.kind() == PermissionDenied => { assert!(unchanged()); }, _ => { assert!(changed()); } }\n}\n",
+            "#[test]\nfn sample() {\nif std::path::MAIN_SEPARATOR == '/' { assert!(unix_syntax()); }\n}\n",
+            "#[test]\nfn sample() {\nif supports_retained_root_replacement_test() { assert!(changed()); } else { panic!(\"required capability missing\"); }\n}\n",
+            "fn identity_for_open_path_for_test(file: &File) -> Result<Option<String>> {\nmatch hard_link_count(file) { Ok(count) => Ok(Some(count.to_string())), Err(_) => return Ok(None), }\n}\n",
         )
         for source in allowed:
             with self.subTest(source=source):
