@@ -19,10 +19,11 @@ Guards и Python `small` обоих наборов (`tests/ci`, `tests/dev`) о�
 Матрица и допущенные размеры вычисляются общей политикой; итоговый gate
 сверяет весь ожидаемый состав, поэтому неполная кодовая очередь не проходит.
 
-Прогон занимает по одной джобе на ОС. Тариф даёт 20 одновременных джоб,
-из них 5 macOS, поэтому запись очереди — три раннера: Linux-джоба
-`Unica CI`, `Rust (macos-14)` и лёгкая `Clippy (windows-latest)` (только
-Clippy, кэш зависимостей Windows на чтение; её же запускает кнопка `main`).
+Прогон занимает по одной джобе на ОС. Запись очереди — два раннера:
+Linux-джоба `Unica CI` и лёгкая `Clippy (windows-latest)` (только Clippy,
+кэш зависимостей Windows на чтение; её же запускает кнопка `main`). Очередь
+не ждёт раннера macOS: записи подряд часами стояли без раннера `macos-15`.
+macOS идёт ночью, по `ci:full`, по кнопке и в релизе.
 `Unica CI` ждёт её исход по jobs API отдельной записью `lint-rust-windows`:
 при Rust она обязательна, её пропуск — отказ. Pull request — `Unica CI` и `Lint and Python`
 (Clippy и Python small отдельной джобой, параллельно сборке и medium); метка
@@ -37,7 +38,7 @@ Python идут параллельно друг другу. В pull request `Uni
 Clippy и Python джобы `Lint and Python` (шаги `lint-job`, `pr-python`). Красный шаг не отменяет следующие (`!cancelled()`),
 поэтому ошибка линта или загрузки SARIF не лишает отчёт тестовых результатов.
 
-`needs` на macOS сделал бы запись последовательной. Поэтому `Unica CI` в конце
+`needs` на другую ОС сделал бы запись последовательной. Поэтому `Unica CI` в конце
 ждёт джобы других ОС по jobs API (`await_os_jobs.py`, не дольше часа)
 и забирает их артефакты `plan-<runner>` и `results-<runner>`. Джоба ОС
 считает маршрут тем же классификатором. Расхождение маршрутов видно
@@ -52,16 +53,14 @@ Clippy и Python джобы `Lint and Python` (шаги `lint-job`, `pr-python`)
 
 Состав полос задаёт профиль и ОС (`ci_rust_lanes.lanes`). Очередь и push
 релизной линии исполняют на Linux ordinary и Receipt. Vendor идёт только
-ночью и на теге. На macOS очередь исполняет только платформенные фасады:
-тесты модулей, чьи файлы лежат в каталогах правила
-INV.PLATFORM.OS-BEHIND-FACADE. Это nextest-профиль `queue-platform`, его
-выражение пишет `size-filters.py --write`, ручного списка нет. Receipt,
-vendor, doctests и Clippy на macOS в очереди не идут. Ночной `large`,
-релиз, push релизной линии и кнопка исполняют полный набор и Clippy
-на каждой ОС своей матрицы. В джобе ОС Clippy идёт до сборки тестов,
-а сборка и прогон идут и после его отказа: оба сигнала приходят в одном
-прогоне. Цена решения: ветки `cfg` под macOS вне платформенных каталогов
-и Clippy на macOS впервые проверяет ночь, когда изменение уже в `main`.
+ночью и на теге. На macOS тесты и Clippy идут своим профилем: ночной `large`
+и тег (`release`) — все размеры, push релизной линии и кнопка `main` — `small`
+и `medium`, pull request с меткой `ci:full` — профиль `pr`, только `small`.
+В джобе ОС Clippy идёт до сборки тестов, а сборка и прогон идут и после его
+отказа: оба сигнала приходят в одном прогоне. Цена: ветки `cfg` под macOS
+и Clippy на macOS до `main` проверяет только `ci:full`, а `medium` под macOS
+впервые проверяет ночь, когда изменение уже в `main`. Изменение поведения
+под macOS автор гоняет до очереди с меткой `ci:full`.
 Clippy под Windows очередь исполняет сама, отдельной джобой. SARIF Clippy и zizmor идут в Code Scanning
 с Linux; сбой их загрузки гейт не красит.
 
@@ -148,9 +147,9 @@ ignored-кейсом, а не потерей. Вне этих путей OS-cfg 
 
 | Возможность | Обязательна на | Где исполняется |
 | --- | --- | --- |
-| `symlink` | ubuntu, macOS | очередь Linux; macOS — очередь для `tests/platform/`, остальное nightly; Windows без привилегии — `skipped` |
+| `symlink` | ubuntu, macOS | очередь Linux; macOS — nightly и `ci:full`; Windows без привилегии — `skipped` |
 | `case-sensitive-filesystem` | ubuntu | очередь Linux |
-| `case-insensitive-filesystem` | macOS | macOS: очередь для `tests/platform/`, остальное nightly |
+| `case-insensitive-filesystem` | macOS | macOS: nightly и `ci:full` |
 | `normalization-insensitive-filesystem` | macOS | как предыдущая |
 | `enforced-permission-bits` | ubuntu, macOS | очередь Linux |
 | `directory-mtime` | ubuntu, macOS | очередь Linux |

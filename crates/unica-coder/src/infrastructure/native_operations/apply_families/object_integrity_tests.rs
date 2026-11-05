@@ -19,6 +19,10 @@ use unica_workspace::test_support::tree_snapshot;
 
 const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
 
+mod numerator_tests {
+    include!("object_integrity_tests/numerator.rs");
+}
+
 struct Fixture {
     _root: tempfile::TempDir,
     source: PathBuf,
