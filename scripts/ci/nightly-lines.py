@@ -191,8 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         args.repo, args.site, datetime.now(timezone.utc), gh=status.gh, fetch=fetch_json, open_lines=status.open_lines
     )
     started = dispatch(decisions) if args.dispatch else [d["line"] for d in decisions if d["run"]]
-    if args.dispatch and args.follow is not None:
-        follow(decisions, args.follow)
+    outcomes = follow(decisions, args.follow) if args.dispatch and args.follow is not None else []
     table = summary(decisions)
     if args.summary is not None:
         with args.summary.open("a", encoding="utf-8") as handle:
@@ -201,6 +200,8 @@ def main(argv: list[str] | None = None) -> int:
     # Строки для GITHUB_OUTPUT: линии со сдвигом и их число.
     print(f"lines={' '.join(started)}")
     print(f"count={len(started)}")
+    # Линии, чей прогон этой ночи прошёл: по ним ночь выпускает alpha.
+    print(f"green={' '.join(o['line'] for o in outcomes if o['conclusion'] == 'success')}")
     return 0
 
 

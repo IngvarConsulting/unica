@@ -892,7 +892,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
 
         self.assertEqual(
             normalized(assessment["env"]["RELEASE_TAG"]),
-            "${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}",
+            "${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-alpha.'))) && github.ref_name || '' }}",
         )
         self.assertEqual(condition(resolve), "${{ env.RELEASE_TAG == '' }}")
         self.assertIn('echo "RELEASE_TAG=v${version}" >> "$GITHUB_ENV"', resolve["run"])
@@ -914,6 +914,40 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 gate = condition(job(self.release, job_id))
                 self.assertIn("github.event_name == 'push'", gate)
                 self.assertIn("startsWith(github.ref, 'refs/tags/')", gate)
+
+    def test_a_manual_run_on_a_tag_releases_only_an_alpha(self) -> None:
+        # Тег от токена прогона не будит push: alpha собирается запуском на теге,
+        # а ручной запуск на теге любого другого выпуска не публикует ничего.
+        for job_id in ("publish-release-assets", "smoke-thin-plugin", "verify-published-assets"):
+            with self.subTest(job_id=job_id):
+                gate = normalized(condition(job(self.release, job_id)))
+                self.assertIn(
+                    "(github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-alpha.'))",
+                    gate,
+                )
+
+    def test_an_alpha_publishes_the_full_set_and_cleans_up_after_itself(self) -> None:
+        publish = job(self.release, "publish-release-assets")
+        release = steps_using(publish, "softprops/action-gh-release")[0]
+        self.assertIn("dist/full/unica-full-*.tar.gz", release["with"]["files"])
+        self.assertIn("main@", "\n".join(strings(publish)))
+        steps = publish["steps"]
+        cleanup = next(step for step in steps if "release-alpha.py prune" in str(step.get("run", "")))
+        self.assertIs(cleanup["continue-on-error"], True)
+        self.assertGreater(steps.index(cleanup), steps.index(release))
+
+    def test_a_green_night_of_main_starts_the_one_alpha_path(self) -> None:
+        nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-nightly.yml").read_text(encoding="utf-8"))
+        alpha = nightly["jobs"]["alpha"]
+        self.assertEqual(alpha["uses"], "./.github/workflows/unica-alpha.yml")
+        self.assertIn("needs.lines.outputs.green", alpha["if"])
+        self.assertEqual(alpha["permissions"], {"contents": "write", "actions": "write"})
+        manual = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-alpha.yml").read_text(encoding="utf-8"))
+        triggers = manual[True]
+        self.assertIn("workflow_call", triggers)
+        self.assertIn("workflow_dispatch", triggers)
+        checkout = steps_using(manual["jobs"]["publish"], "actions/checkout")[0]
+        self.assertEqual(checkout["with"]["ref"], "main")
 
     def test_conditional_pipeline_breaks_transitive_skip_propagation(self) -> None:
         dependencies = {
@@ -1302,7 +1336,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             # Evaluate the closed boolean/string subset used by these actual
             # YAML conditions, with successful prerequisites; no script runs.
             expression = condition(node).removeprefix("${{").removesuffix("}}").strip()
-            values = {"matrix.target": target, "github.event_name": event, "github.ref": ref,
+            values = {"matrix.target": target, "github.event_name": event,
+                      "github.ref_name": ref.rsplit("/", 1)[-1], "github.ref": ref,
                       "needs.build-tools.result": "success", "needs.unica-ci.result": "success",
                       "needs.rust-os.result": "success", "needs.package-thin.result": "success",
                       "needs.publish-release-assets.result": "success",
@@ -1311,19 +1346,23 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 expression = expression.replace(key, repr(value))
             expression = expression.replace("&&", " and ").replace("||", " or ")
             return bool(eval(expression, {"__builtins__": {}, "always": lambda: True,
-                                          "startsWith": lambda value, prefix: value.startswith(prefix)}))
+                                          "startsWith": lambda value, prefix: value.startswith(prefix),
+                                          "contains": lambda value, part: part in value}))
 
         for target in ("linux-x64", "darwin-arm64", "win-x64"):
             for event, ref in (("workflow_dispatch", "refs/heads/codex/ci-macos15"),
                                ("pull_request", "refs/pull/2370/merge"),
-                               ("push", "refs/heads/main"), ("push", "refs/tags/v0.15.0")):
+                               ("push", "refs/heads/main"), ("push", "refs/tags/v0.15.0"),
+                               ("workflow_dispatch", "refs/tags/v0.15.0"),
+                               ("workflow_dispatch", "refs/tags/v0.15.0-alpha.1")):
                 expected = (target == "linux-x64" or (target == "darwin-arm64" and event == "workflow_dispatch")
-                            or (event == "push" and ref.startswith("refs/tags/")))
+                            or (event == "push" and ref.startswith("refs/tags/"))
+                            or "-alpha." in ref)
                 with self.subTest(target=target, event=event, ref=ref):
                     self.assertEqual(allowed(upload, target, event, ref), expected)
                     if event == "pull_request":
                         self.assertFalse(allowed(build, target, event, ref))
-                    if event == "workflow_dispatch":
+                    if event == "workflow_dispatch" and "-alpha." not in ref:
                         for name in ("publish-release-assets", "verify-published-assets"):
                             self.assertFalse(allowed(job(self.release, name), target, event, ref))
         self.assertEqual(upload["with"]["retention-days"], 1)
@@ -1467,7 +1506,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         downloaded = steps_using(publish, "actions/download-artifact")
         self.assertEqual(
             [(step["with"].get("pattern"), step["with"].get("path")) for step in downloaded],
-            [("unica-runtime-*", "dist/runtime"), ("unica-metadata-*", "dist/metadata")],
+            [("unica-runtime-*", "dist/runtime"), ("unica-metadata-*", "dist/metadata"), ("unica-full-*", "dist/full")],
         )
         pair = step_named(publish, "Pair core archives with their metadata")["run"]
         self.assertIn('test -f "dist/metadata/unica-runtime-${target}.json"', pair)

@@ -330,6 +330,7 @@ What the pipeline does, by the source tag:
 | --- | --- | --- | --- |
 | `vX.Y.Z` | published | on `main` | `next` unless it serves a newer candidate, then `main` |
 | `vX.Y.Z-rc.N` | published, marked as a prerelease | on `next` | `next` only |
+| `vX.Y.Z-alpha.N` | published with the full set of every OS, marked as a prerelease | skipped | none — [a slice of `main`](#an-alpha-a-slice-of-main) |
 | any other suffix | published, marked as a prerelease | skipped | none — a measurement build |
 
 The `next` branch of `unica-marketplace` carries catalogs named `unica-next`:
@@ -402,8 +403,52 @@ release so it stops looking like a release waiting to be served:
 gh release edit vX.Y.Z --repo IngvarConsulting/unica --prerelease
 ```
 
-Never delete a tag to "clean up" an abandoned version. An unused tag costs
+Never delete a tag to "clean up" an abandoned version; only alpha tags are
+removed, by their own retention. An unused tag costs
 nothing; a deleted one that something already resolved costs every consumer.
+
+## An alpha: a slice of `main`
+
+An alpha is a prerelease of the current `main` for checks and for consumers that
+need a fresh build before a candidate. It never reaches the marketplace.
+
+`scripts/ci/release-alpha.py publish` takes `X.Y.Z` from the version in `main`,
+raises `N`, commits `bump-version.py` on top of the `main` tip and tags that
+commit `vX.Y.Z-alpha.N`. The commit stays outside `main`, so the number in the
+code equals the tag, the version contract holds, and `main` gets no release
+commits. The commit's parent is the slice; the release description names it as
+`main@<sha>`.
+
+- **When.** **Unica Nightly** starts **Unica Alpha** after the night's `large`
+  run of `main` succeeds. A `main` that did not move starts nothing.
+- **By hand.** The same path, with no commits in `main`:
+
+  ```bash
+  gh workflow run unica-alpha.yml --repo IngvarConsulting/unica --ref main
+  ```
+
+  `-f dry-run=true` names the next number and changes nothing; `-f force=true`
+  releases a slice that already has an alpha, for example after a failed build.
+- **The build.** A tag pushed with the run's token does not wake `on: push`, so
+  the script dispatches the build on the tag with profile `main`. The
+  release jobs accept that dispatch for `-alpha.` tags only. Any other manual run
+  on a tag publishes nothing.
+- **The assets.** Besides the core pair, the release carries
+  `unica-full-<target>.tar.gz` for every OS: the core and all engines laid out
+  like the plugin package, so it needs no marketplace or download on first use.
+- **The order.** By SemVer an alpha is older than a `-rc` of the same `X.Y.Z`, even
+  when its content is newer; compare the slices, not the numbers.
+- **After a full release.** Once `vX.Y.Z` exists, an alpha of that `X.Y.Z` would
+  be older than the release, so the script refuses until `main` raises the version.
+- **Retention.** After a publication the build runs
+  `release-alpha.py prune`: the two newest published alphas stay, older ones go
+  with their tags, and so do older tags whose build never published. The tag is
+  deleted first, so a refusal leaves the release intact. The `released version
+  tags` ruleset must exclude `refs/tags/v*-alpha.*`; without that the step fails
+  with that message and the new alpha stays published.
+
+The page `alpha.html` on the site shows the latest alpha. It is given out as a
+direct link: nothing on the site links to it and it is closed to search robots.
 
 ## Rolling back a live release
 
@@ -460,7 +505,7 @@ tag by hand.
 
 ## Never
 
-- Move or delete a published tag, or force-push `main` or `next` of the
+- Move or delete a published tag other than an expired alpha, or force-push `main` or `next` of the
   marketplace. Consumers resolve `git-subdir` against those refs; changed bytes
   require a new version.
 - Point a catalog at a tag by hand, or point `main` at a candidate. The promote

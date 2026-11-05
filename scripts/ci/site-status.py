@@ -229,6 +229,40 @@ def candidates(status: dict[str, object], releases: list) -> list[dict[str, str]
     return [{"candidate_tag": tag, "candidate_url": str(status["next_url"]), "candidate_date": release_date(releases, tag)}]
 
 
+def latest_alpha(releases: list, repo: str) -> dict[str, str]:
+    """Последний опубликованный alpha для его страницы; прочерки, если их нет."""
+    rules = channel_rules()
+    found = []
+    for release in releases:
+        tag = str(release["tag_name"])
+        try:
+            if rules.channel(tag) == "none" and "-alpha." in tag:
+                found.append((rules.precedence(tag), release))
+        except rules.TagError:
+            continue
+    if not found:
+        return {
+            "alpha_tag": "—",
+            "alpha_url": f"https://github.com/{repo}/releases",
+            "alpha_date": "—",
+            "alpha_commit": "—",
+            "alpha_commit_url": f"https://github.com/{repo}/commits/main",
+            "alpha_download": f"https://github.com/{repo}/releases",
+        }
+    release = max(found, key=lambda item: item[0])[1]
+    tag = str(release["tag_name"])
+    # Срез записан в описании релиза: родитель служебного коммита вне main.
+    slice_ = re.search(r"main@([0-9a-f]{40})", str(release.get("body") or ""))
+    return {
+        "alpha_tag": tag,
+        "alpha_url": str(release["html_url"]),
+        "alpha_date": human(moment(release["published_at"])),
+        "alpha_commit": slice_[1][:7] if slice_ else "—",
+        "alpha_commit_url": f"https://github.com/{repo}/commit/{slice_[1]}" if slice_ else str(release["html_url"]),
+        "alpha_download": f"https://github.com/{repo}/releases/download/{tag}",
+    }
+
+
 def plural(count: int, one: str, few: str, many: str) -> str:
     """Форма слова при числе: 1 тест, 2 теста, 5 тестов, 11 тестов, 21 тест."""
     if count % 10 == 1 and count % 100 != 11:
@@ -318,6 +352,7 @@ def main() -> int:
     }
 
     status["candidates"] = candidates(status, releases)
+    status.update(latest_alpha(releases, args.repo))
 
     tested, plain = [], []
     for line in site_lines(args.branch, args.repo, now):

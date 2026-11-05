@@ -1,0 +1,48 @@
+name: Unica Alpha
+
+# Один путь выпуска alpha: его вызывает зелёная ночь main, а человек запускает
+# его кнопкой. Служебный коммит и тег остаются вне main, сборку на теге запускает
+# `scripts/ci/release-alpha.py`.
+on:
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Выпустить, даже если у этого среза main уже есть alpha"
+        type: boolean
+        default: false
+      dry-run:
+        description: "Назвать номер и ничего не менять"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unica-alpha
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Служебный коммит, тег и запуск сборки
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force && '--force' || '' }}
+          DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
+        run: |
+          # shellcheck disable=SC2086 # пустой флаг не должен становиться аргументом
+          python scripts/ci/release-alpha.py publish $FORCE $DRY_RUN

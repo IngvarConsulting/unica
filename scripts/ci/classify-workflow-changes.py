@@ -101,6 +101,8 @@ CI_CONTRACT_PATHS = {
     "tests/ci/test_gate_profiles.py",
     "scripts/ci/nightly-lines.py",
     "scripts/ci/resolve-line.py",
+    "scripts/ci/release-alpha.py",
+    "tests/ci/test_release_alpha.py",
     "tests/ci/test_nightly_lines.py",
     "tests/ci/test_resolve_line.py",
     "tests/ci/test_python_sizes.py",

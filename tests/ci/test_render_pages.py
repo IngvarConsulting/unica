@@ -29,6 +29,18 @@ def load(name: str, path: Path):
     return module
 
 
+class AlphaPageTests(unittest.TestCase):
+    """На страницу alpha ведут прямой ссылкой, поэтому сайт о ней молчит."""
+
+    def test_the_page_is_closed_to_robots_and_nothing_links_to_it(self) -> None:
+        pages = REPO_ROOT / "docs" / "pages"
+        self.assertIn('<meta name="robots" content="noindex, nofollow">', (pages / "alpha.html").read_text(encoding="utf-8"))
+        for page in pages.glob("*.html"):
+            if page.name != "alpha.html":
+                with self.subTest(page=page.name):
+                    self.assertNotIn("alpha.html", page.read_text(encoding="utf-8"))
+
+
 class HomeStateCardsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.render = load("render_pages", REPO_ROOT / "scripts" / "ci" / "render-pages.py")

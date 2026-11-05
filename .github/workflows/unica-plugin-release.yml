@@ -930,6 +930,29 @@ jobs:
           python scripts/ci/check-tool-contracts.py
           --target "${{ matrix.target }}"
           --tools-dir ".build/tool-bundles/${{ matrix.target }}/bin/${{ matrix.target }}"
+      # Alpha ставят без маркетплейса, поэтому его выпуск несёт полный набор:
+      # ядро и движки рядом, как в пакете плагина под одну цель.
+      - name: Package the full alpha set
+        if: ${{ startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-alpha.') }}
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          python scripts/ci/package-unica-plugin.py \
+            --repo-root . \
+            --tools-root ".build/tool-bundles/$TARGET" \
+            --lock-file plugins/unica/third-party/tools.lock.json \
+            --out-dir .build/alpha-package \
+            --marketplace-name unica-dev \
+            --local-debug-target "$TARGET"
+          tar -czf ".build/unica-full-$TARGET.tar.gz" -C .build/alpha-package/marketplace/plugins unica
+      - if: ${{ startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-alpha.') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unica-full-${{ matrix.target }}
+          path: .build/unica-full-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
       - name: Package deterministic runtime
         run: >
           python scripts/ci/package-unica-runtime.py
@@ -1105,7 +1128,7 @@ jobs:
           if-no-files-found: error
           retention-days: 1
       - name: Upload required runtime archive
-        if: ${{ matrix.target == 'linux-x64' || (matrix.target == 'darwin-arm64' && github.event_name == 'workflow_dispatch') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) }}
+        if: ${{ matrix.target == 'linux-x64' || (matrix.target == 'darwin-arm64' && github.event_name == 'workflow_dispatch') || (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-alpha.')) }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unica-runtime-${{ matrix.target }}
@@ -1140,7 +1163,7 @@ jobs:
     needs: build-tools
     if: ${{ always() && needs.build-tools.result == 'success' }}
     env:
-      RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+      RELEASE_TAG: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-alpha.'))) && github.ref_name || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1331,7 +1354,7 @@ jobs:
     timeout-minutes: 60
     needs: [unica-ci, build-tools]
     env:
-      RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+      RELEASE_TAG: ${{ ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-alpha.'))) && github.ref_name || '' }}
     if: >-
       ${{
         always() &&
@@ -1388,8 +1411,8 @@ jobs:
       ${{
         always() &&
         needs.build-tools.result == 'success' &&
-        github.event_name == 'push' &&
-        startsWith(github.ref, 'refs/tags/')
+        ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+         (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-alpha.')))
       }}
     permissions:
       contents: write
@@ -1407,6 +1430,21 @@ jobs:
           pattern: unica-metadata-*
           path: dist/metadata
           merge-multiple: true
+      - if: ${{ contains(github.ref_name, '-alpha.') }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: unica-full-*
+          path: dist/full
+          merge-multiple: true
+      # Родитель служебного коммита alpha и есть срез main.
+      - id: alpha-notes
+        if: ${{ contains(github.ref_name, '-alpha.') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          slice="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.parents[0].sha')"
+          echo "body=Срез main@$slice. Гарантий нет: сборка для проверки, в маркетплейс не идёт." >> "$GITHUB_OUTPUT"
       - name: Pair core archives with their metadata
         shell: bash
         run: |
@@ -1423,6 +1461,7 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
+          body: ${{ steps.alpha-notes.outputs.body }}
           # Предвыпуск не должен выглядеть последним релизом: его ищут те, кто
           # ищет свежее, а он существует только для замеров.
           prerelease: ${{ contains(github.ref_name, '-') }}
@@ -1435,6 +1474,14 @@ jobs:
           files: |
             dist/runtime/unica-runtime-*.tar.gz
             dist/runtime/unica-runtime-*.json
+            dist/full/unica-full-*.tar.gz
+      # Новый выпуск уже опубликован: отказ удаления виден в прогоне и ему не мешает.
+      - name: Remove old alpha releases
+        if: ${{ contains(github.ref_name, '-alpha.') }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/ci/release-alpha.py prune
 
   smoke-thin-plugin:
     name: Smoke published thin plugin (${{ matrix.target }})
@@ -1446,8 +1493,8 @@ jobs:
         always() &&
         needs.package-thin.result == 'success' &&
         needs.publish-release-assets.result == 'success' &&
-        github.event_name == 'push' &&
-        startsWith(github.ref, 'refs/tags/')
+        ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+         (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-alpha.')))
       }}
     strategy:
       fail-fast: false
@@ -1502,8 +1549,8 @@ jobs:
         always() &&
         needs.package-thin.result == 'success' &&
         needs.publish-release-assets.result == 'success' &&
-        github.event_name == 'push' &&
-        startsWith(github.ref, 'refs/tags/')
+        ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) ||
+         (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/') && contains(github.ref_name, '-alpha.')))
       }}
     permissions:
       contents: read

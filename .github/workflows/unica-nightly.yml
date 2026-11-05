@@ -30,6 +30,8 @@ jobs:
     name: Перечислить сдвинувшиеся линии, запустить large и забрать результаты
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    outputs:
+      green: ${{ steps.nightly.outputs.green }}
     # Запуск workflow на линии — запись в Actions; права джобы заменяют права
     # workflow целиком, поэтому `contents: read` повторён.
     permissions:
@@ -42,7 +44,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - env:
+      - id: nightly
+        env:
           GH_TOKEN: ${{ github.token }}
           SITE: https://ingvarconsulting.github.io/unica
         run: |
@@ -58,3 +61,14 @@ jobs:
           path: .build/large
           retention-days: 7
           overwrite: true
+
+  # Зелёная ночь main выпускает alpha. Неудача выпуска не трогает отчёт ночи:
+  # результаты уже выложены, а причину называет этот прогон.
+  alpha:
+    name: Выпустить alpha среза main
+    needs: lines
+    if: ${{ always() && contains(format(' {0} ', needs.lines.outputs.green), ' main ') }}
+    permissions:
+      contents: write
+      actions: write
+    uses: ./.github/workflows/unica-alpha.yml
