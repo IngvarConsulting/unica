@@ -2115,6 +2115,19 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
             capture.assert_not_called()
 
     def test_every_wire_answers_its_frozen_classes(self) -> None:
+        """
+        rule: CTR.SOURCE.EMPTY-BRANCHES
+        rule: INV.ANALYSIS.METADATA-DIAGNOSTIC-VERDICT
+        rule: INV.APP.SUPPORT-STATE
+        rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
+        rule: INV.SOURCE.EVENT-IMPLEMENTATION-PAIR
+        rule: INV.SOURCE.FORM-EVENT-HANDLER-PARAMETERS
+        rule: INV.SOURCE.MODULE-EVENT-STATE
+        rule: INV.SOURCE.SUPPORT-SEPARATE-APPLY
+        rule: INV.SOURCE.VENDOR-OBJECT-REMOVAL
+        rule: INV.SOURCE.WRITABLE-PROFILE
+        rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
+        """
         run_corpus(self, select_profile(self.corpus, "source"))
 
 
@@ -2431,6 +2444,10 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
                 validate_controls(step, declared)
 
     def test_analyzer_delivery_wires_have_terminal_content(self):
+        """
+        rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
+        rule: INV.RUNTIME.SERVICE-MUTATION-INVALIDATION
+        """
         import sys
         corpus = select_profile(self.corpus, "delivery")
         with tempfile.TemporaryDirectory(prefix="unica-analyzer-delivery-") as raw:
@@ -2444,6 +2461,7 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
                 run_corpus(self, corpus, plugin, scenario_driver=prepare,
                            fixture_cleanup=fixtures.close)
     def test_pinned_resident_reports_real_baseline_author_and_scope_facts(self):
+        """rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE"""
         from tests.ci.acceptance_profiles import stage_analyzer, host_target
         from tests.ci.acceptance_diagnostics import resident_filter_evidence
         import platform
@@ -2474,6 +2492,7 @@ class AcceptanceFaultCorpusRunTests(unittest.TestCase):
         cls.corpus = load_acceptance_corpus()
 
     def test_controlled_jsonl_faults_preserve_public_reason_without_provider_input(self):
+        """rule: INV.APP.DIAGNOSTIC-PROVIDERS"""
         from tests.ci.acceptance_faults import stage_fault_producer, fault_driver
         with tempfile.TemporaryDirectory(prefix="unica-jsonl-fault-") as raw:
             plugin = Path(raw).resolve() / "plugin"

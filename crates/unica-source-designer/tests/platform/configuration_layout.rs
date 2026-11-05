@@ -27,6 +27,7 @@ fn cf_consumers_share_the_canonical_metadata_kind_order() {
     }
 }
 
+/// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
 #[test]
 fn child_object_insertion_orders_bot_and_rejects_unknown_kinds() {
     let mut xml = concat!(

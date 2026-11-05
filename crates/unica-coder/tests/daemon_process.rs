@@ -122,6 +122,7 @@ fn daemon_frontend_process_fixture() {
     panic!("daemon stopped answering after the competitor left: {last_error:?}");
 }
 
+/// rule: INV.APP.HIDDEN-SERVICES
 #[test]
 fn two_frontend_processes_race_to_one_daemon_pid_record_and_endpoint() {
     let root = tempfile::tempdir().unwrap();

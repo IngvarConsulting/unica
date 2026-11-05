@@ -629,6 +629,7 @@ impl<'ast> Visit<'ast> for FacadeAuthorityReferenceFinder<'_> {
     }
 }
 
+/// rule: INV.WIRE.DAEMON-RECEIPT-KEY
 #[test]
 fn authority_wrappers_match_the_frozen_application_vectors() {
     assert_eq!(
@@ -689,6 +690,7 @@ fn assert_observed_invalid_request(encoded: &str, label: &str) -> serde_json::Va
     envelope
 }
 
+/// rule: INV.APP.RECEIPT-SCENARIO-EVIDENCE
 #[test]
 fn crash_is_a_staged_control_and_does_not_mint_receipt_transition_evidence() {
     let scenario = r#"{
@@ -807,6 +809,7 @@ fn facade_authority_guard_scans_every_named_production_source() {
     );
 }
 
+/// rule: INV.APP.RECEIPT-TEST-SUPPORT-AUTHORITY
 #[test]
 fn facade_and_non_owner_helpers_have_no_direct_receipt_ledger_authority() {
     assert_eq!(
@@ -841,6 +844,7 @@ fn facade_and_non_owner_helpers_have_no_direct_receipt_ledger_authority() {
     );
 }
 
+/// rule: INV.APP.RECEIPT-SCENARIO-EVIDENCE
 #[test]
 fn scenario_driver_cannot_mint_runtime_telemetry_events() {
     let references = facade_forbidden_authority_references_by_source(
@@ -854,6 +858,7 @@ fn scenario_driver_cannot_mint_runtime_telemetry_events() {
     );
 }
 
+/// rule: INV.APP.RECEIPT-SCENARIO-EVIDENCE
 #[test]
 fn scenario_driver_source_list_names_every_runner_file() {
     let on_disk = scenario_runner_files_on_disk();
@@ -875,6 +880,7 @@ fn scenario_driver_source_list_names_every_runner_file() {
     );
 }
 
+/// rule: INV.APP.RECEIPT-SCENARIO-EVIDENCE
 #[test]
 fn scenario_telemetry_guard_sees_minting_in_a_nested_runner_module() {
     let sources: &[(&str, &str)] = &[
@@ -1049,6 +1055,7 @@ fn facade_authority_guard_ignores_exact_cfg_test_associated_items() {
     );
 }
 
+/// rule: INV.APP.RECEIPT-TEST-SUPPORT-AUTHORITY
 #[test]
 fn facade_source_keeps_the_exact_abi_and_has_no_production_authority() {
     let source = include_str!("../../src/receipt_ledger_test_support.rs");

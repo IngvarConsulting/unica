@@ -53,6 +53,7 @@ fn references() -> String {
     )
 }
 
+/// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
 #[test]
 fn journal_column_references_keep_five_distinct_targets_and_read_the_returned_field() {
     let fixture = RealReaderFixture::new();
