@@ -1211,6 +1211,7 @@ fn project_health_index_eol_accepts_large_aggregate_of_bounded_blobs() {
     .expect("nine 31 MiB blobs are measured without a total-memory bound");
 }
 
+/// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
 #[test]
 fn continued_repository_eol_resumes_after_a_staged_timeout_and_rechecks_working_bytes() {
     let fixture = policy_fixture();
@@ -1434,6 +1435,7 @@ fn continued_repository_eol_uses_bounded_git_batches() {
     assert_eq!(continuation.index_eol_keys_for_test().len(), 130);
 }
 
+/// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
 #[test]
 fn continued_repository_eol_resumes_on_disk_past_the_former_evidence_capacity() {
     // 22 full pages of staged text resources and Configuration.xml: about 90
@@ -2566,6 +2568,7 @@ fn continued_repository_eol_cancellation_keeps_only_complete_batches() {
     assert_eq!(continuation.index_eol_keys_for_test().len(), 64);
 }
 
+/// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
 #[test]
 fn continued_staged_eol_malformed_protocol_keeps_attribute_findings() {
     struct MalformedEolRunner;
@@ -2644,6 +2647,7 @@ fn continued_staged_eol_malformed_protocol_keeps_attribute_findings() {
     }));
 }
 
+/// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
 #[test]
 fn final_index_change_invalidates_earlier_attribute_findings() {
     let fixture = policy_fixture();
@@ -2708,6 +2712,7 @@ fn final_index_change_invalidates_earlier_attribute_findings() {
         .any(|fact| { matches!(fact, ProjectHealthFact::TextPolicyMissing { .. }) }));
 }
 
+/// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
 #[test]
 fn continued_working_eol_resumes_inside_one_file_across_deadlines() {
     for (tail, expected) in [
@@ -2856,6 +2861,7 @@ fn working_eol_reader_rejects_cancellation_and_expiry_during_eof() {
     }
 }
 
+/// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
 #[test]
 fn continued_working_eol_discards_partial_state_when_fingerprint_changes() {
     for mutation in ["prefix", "size", "replacement", "during_read"] {
@@ -3060,6 +3066,7 @@ fn working_eol_scanner_keeps_its_offset_on_io_error_and_overflow() {
     assert!(!scanner.lf);
 }
 
+/// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
 #[test]
 fn continued_working_eol_rejects_a_new_file_and_late_cancellation() {
     let fixture = policy_fixture();
@@ -3241,6 +3248,7 @@ fn project_health_lfs_size_does_not_follow_linked_parent_directory() {
     )));
 }
 
+/// rule: INV.SOURCE.PORTABLE-LFS-ADVISORY
 #[test]
 pub(crate) fn project_health_repository_policy_lfs_is_advisory_for_exact_large_binary() {
     let fixture = policy_fixture();

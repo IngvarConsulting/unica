@@ -304,6 +304,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.PARTIAL-FALLBACK
     #[test]
     fn completed_designer_partial_load_failure_is_retryable() {
         let argv = argv();
@@ -418,6 +419,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.PARTIAL-FALLBACK
     #[test]
     fn unrelated_platform_failures_and_interruption_are_not_retryable() {
         let argv = argv();
@@ -468,6 +470,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.APP.PARTIAL-FALLBACK
     #[test]
     fn malformed_or_mismatched_receipts_fail_closed() {
         let argv = argv();

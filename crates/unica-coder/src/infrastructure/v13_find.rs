@@ -2686,6 +2686,7 @@ mod tests {
         )
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn a_name_resolves_to_the_address_and_the_file_that_carries_it() {
         let index = Fixture::new().directory();
@@ -2743,6 +2744,8 @@ mod tests {
         assert!(index.locate_address("main:Catalog.Валют").is_none());
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
+    /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
     #[test]
     fn a_common_module_file_resolves_to_its_owner_without_becoming_a_name_fact() {
         let fixture = Fixture::new();
@@ -3055,6 +3058,7 @@ mod tests {
         assert_eq!(failure.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_preserves_full_relative_paths_and_checks_every_source_before_not_found() {
         let fixture = Fixture::new();
@@ -3132,6 +3136,8 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_routes_owner_module_roles_through_the_platform_profile() {
         let fixture = Fixture::new();
@@ -3196,6 +3202,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_common_module_file_requires_target_and_owner_without_full_directory() {
         let fixture = Fixture::new();
@@ -3250,6 +3257,7 @@ mod tests {
         assert_eq!(failure.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_common_module_path_skips_a_broken_alias_in_another_source() {
         let first = Fixture::new();
@@ -3291,6 +3299,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_keeps_distinct_source_roots_with_different_case() {
         use std::ffi::OsStr;
@@ -3384,6 +3393,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_accepts_a_physical_unicode_alias_of_the_source_root() {
         let temp = tempfile::tempdir().unwrap();
@@ -3444,6 +3454,7 @@ mod tests {
         assert_eq!(module.at(), "main:CommonModule.Main");
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn windows_drive_and_unc_prefixes_keep_the_same_root_anchor_shape() {
         if std::path::MAIN_SEPARATOR != '\\' {
@@ -3472,6 +3483,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_refuses_a_replaced_requested_root_ancestor() {
         let temp = tempfile::tempdir().unwrap();
@@ -3510,6 +3522,7 @@ mod tests {
         assert_eq!(error.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_skips_a_foreign_root_at_the_target_files_depth() {
         let temp = tempfile::tempdir().unwrap();
@@ -3537,6 +3550,7 @@ mod tests {
         assert_eq!(found.at(), "main:Catalog.X");
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_distinguishes_a_file_from_a_case_folded_foreign_root() {
         let temp = tempfile::tempdir().unwrap();
@@ -3595,6 +3609,7 @@ mod tests {
         assert_eq!(still_found.at(), "main:Catalog.X");
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn absolute_lookup_does_not_open_a_damaged_case_distinct_foreign_parent() {
         let temp = tempfile::tempdir().unwrap();
@@ -3650,6 +3665,7 @@ mod tests {
         assert_eq!(found.at(), "main:Catalog.X");
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn relative_source_prefix_skips_linked_collections_in_another_source() {
         use unica_workspace::test_support::{
@@ -3725,6 +3741,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_refuses_ambiguous_paths_across_admitted_sources() {
         let first = Fixture::new();
@@ -3745,6 +3762,7 @@ mod tests {
         assert_eq!(error.code(), RefusalCode::BadValue);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_uses_the_full_layout_path_even_with_a_shorter_suffix() {
         let fixture = Fixture::new();
@@ -3789,6 +3807,7 @@ mod tests {
         assert!(missing.is_none(), "the requested catalog file is absent");
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_checks_the_owner_of_a_nested_object() {
         let fixture = Fixture::new();
@@ -3900,6 +3919,7 @@ mod tests {
         assert_eq!(error.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_refuses_an_existing_broken_target_descriptor() {
         let fixture = Fixture::new();
@@ -3923,6 +3943,7 @@ mod tests {
         assert_eq!(error.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_refuses_an_existing_broken_external_target_descriptor() {
         let fixture = tempfile::tempdir().unwrap();
@@ -3989,6 +4010,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_refuses_when_target_name_is_outside_the_descriptor_sample() {
         let fixture = Fixture::new();
@@ -4022,6 +4044,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_ignores_the_search_collection_entry_limit() {
         let fixture = Fixture::new();
@@ -4053,6 +4076,7 @@ mod tests {
         assert_eq!(entry.at(), "main:Catalog.Валюты");
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn large_configuration_descriptor_still_has_a_layout_address() {
         let fixture = Fixture::new();
@@ -4105,6 +4129,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn point_lookup_nested_path_ignores_an_unrelated_linked_owner_directory() {
         use unica_workspace::test_support::{
@@ -4155,6 +4180,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn linked_nested_descriptor_refuses_instead_of_looking_complete() {
         use unica_workspace::test_support::{
@@ -4193,6 +4219,8 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
+    /// rule: INV.SOURCE.SOURCE-PATH-RESOLUTION
     #[test]
     fn linked_proven_owner_directory_refuses_instead_of_hiding_nested_names() {
         use unica_workspace::test_support::{
@@ -4243,6 +4271,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn linked_command_directory_refuses_instead_of_looking_complete() {
         use unica_workspace::test_support::{
@@ -4280,6 +4309,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn a_file_path_resolves_back_to_its_object_address() {
         let index = Fixture::new().directory();
@@ -4301,12 +4331,14 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn a_synonym_resolves_to_its_object() {
         let index = Fixture::new().directory();
         assert_eq!(single(&index, "Валюты и курсы").0, "main:Catalog.Валюты");
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn unreadable_descriptor_makes_name_search_partial_but_resolve_refuses() {
         let fixture = Fixture::new();
@@ -4365,6 +4397,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::ProviderUnavailable);
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn a_local_io_error_is_partial_but_handle_failure_is_a_refusal() {
         let fixture = Fixture::new();
@@ -4402,6 +4435,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::ProviderUnavailable);
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn cancellation_during_a_failed_descriptor_read_refuses_instead_of_returning_partial() {
         let fixture = Fixture::new();
@@ -4491,6 +4525,7 @@ mod tests {
         assert!(snapshot.find_collection_entries.exact_count > 0);
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn many_owner_directories_do_not_exhaust_open_file_handles() {
         let fixture = Fixture::new();
@@ -4518,6 +4553,7 @@ mod tests {
         assert_eq!(single(&built.index, "Item399").0, "main:Catalog.Item399");
     }
 
+    /// rule: INV.SEARCH.NAMES-PARTIAL-RESULTS
     #[test]
     fn descriptor_identity_drift_remains_a_refusal() {
         let fixture = Fixture::new();
@@ -4547,6 +4583,7 @@ mod tests {
         assert_eq!(refusal.code(), RefusalCode::InvalidSource);
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn the_directory_holds_objects_and_never_code_symbols_or_inner_nodes() {
         let index = Fixture::new().directory();
@@ -4563,6 +4600,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn the_directory_refuses_to_exceed_resource_bounds() {
         let fixture = Fixture::new();
@@ -4744,6 +4782,7 @@ mod tests {
         assert_eq!(searched.names.candidates[0].1.at(), "main:Catalog.Валюты");
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn the_directory_observes_cancellation() {
         let fixture = Fixture::new();
@@ -4764,6 +4803,8 @@ mod tests {
         assert_eq!(error.code().as_str(), "cancelled");
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
+    /// rule: INV.SOURCE.RESOLVED-RESOURCE-IDENTITY
     #[test]
     fn an_external_root_publishes_its_owner_and_never_the_dump_sidecar() {
         let root = tempfile::tempdir().unwrap();
@@ -5044,6 +5085,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn the_directory_observes_its_operation_deadline() {
         let fixture = Fixture::new();
@@ -5062,6 +5104,7 @@ mod tests {
         assert_eq!(error.code().as_str(), "deadline_exceeded");
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn a_file_that_is_not_an_owner_descriptor_never_becomes_an_object() {
         let fixture = Fixture::new();
@@ -5110,6 +5153,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.FIND-IDENTITY-ONLY
     #[test]
     fn a_descriptor_whose_attributes_start_on_a_new_line_is_still_an_object() {
         let fixture = Fixture::new();

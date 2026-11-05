@@ -60,6 +60,7 @@ fn member_profile_context_requires_the_complete_named_catalog_path() {
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn member_profile_owns_only_exact_context_property_diagnostics() {
     let profile = MetaMemberReadProfile::CatalogTabularSection220;

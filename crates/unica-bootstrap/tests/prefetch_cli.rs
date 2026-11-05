@@ -186,6 +186,7 @@ impl Downloader for AssetDownloader {
     }
 }
 
+/// rule: INV.PKG.PREFETCH-EXIT-STATUS
 #[test]
 fn prefetch_cli_reports_success_and_artifact_disk_failures() {
     let host = HostTarget::current().expect("supported test host");

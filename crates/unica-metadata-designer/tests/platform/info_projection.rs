@@ -266,6 +266,7 @@ fn http_service_descriptive_properties_still_reject_nested_markup() {
     }
 }
 
+/// rule: INV.SOURCE.XDTO-EXPANDED-TYPE-NAME
 #[test]
 fn web_service_details_preserve_packages_operations_and_expanded_qnames() {
     let xml = include_str!(concat!(
@@ -467,6 +468,7 @@ fn manifest_edge_fixtures_keep_the_canonical_platform_wrapper() {
     }
 }
 
+/// rule: INV.APP.META-INFO-COVERAGE
 #[test]
 fn manifest_and_profile_cover_every_platform_gated_metadata_kind() {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(concat!(
@@ -1380,6 +1382,7 @@ fn web_service_rejects_a_qname_with_an_invalid_local_name() {
     assert_eq!(diagnostics[0].code, MetaDiagnosticCode::ValidationFailed);
 }
 
+/// rule: INV.SOURCE.XDTO-EXPANDED-TYPE-NAME
 #[test]
 fn expanded_xdto_names_do_not_depend_on_the_xml_prefix() {
     let original = include_str!(concat!(
@@ -1666,6 +1669,7 @@ fn http_method_projection_accepts_every_8_3_27_enum_literal() {
 
 /// Ссылка расширения на тип расширяемой конфигурации (`v8:TypeId`, #1361)
 /// читается как есть и закрыта для записи: имени типа у неё нет.
+/// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 #[test]
 fn observed_type_reads_an_extension_type_id_as_a_read_only_variant() {
     use unica_metadata::{
@@ -1729,6 +1733,7 @@ fn observed_type_reads_an_extension_type_id_as_a_read_only_variant() {
     }
 }
 
+/// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
 #[test]
 fn property_observation_distinguishes_missing_false_empty_nil_and_damage() {
     // Synthetic property fragments test the reader, not platform export policy.

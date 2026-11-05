@@ -1,12 +1,5 @@
 ---
 id: INV.APP.DOCUMENTATION-TEXT-PAGES
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::short_opened_document_preserves_the_whole_response
-  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::opened_document_pages_reassemble_exact_utf8_text_and_replay
-  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::prepared_document_locator_continues_across_calls_before_source_admission
-  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::docs_locator_accepts_pagination_arguments
-  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::document_over_transport_size_on_one_line_starts_with_a_useful_page
-  - crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs::oversized_document_metadata_refuses_before_issuing_a_cursor
 ---
 
 # Страницы открытого документа сохраняют точный текст UTF-8

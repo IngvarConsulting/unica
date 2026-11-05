@@ -1,6 +1,5 @@
 ---
 id: INV.ANALYSIS.ANALYZER-PROCESS-FAILURE
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/958
 ---
 
