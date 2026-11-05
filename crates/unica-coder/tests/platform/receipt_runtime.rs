@@ -169,7 +169,7 @@ use unica_execution::receipt_runtime::response::{
 use unica_execution::receipt_runtime::DURABLE_STEP_BUDGET;
 
 #[path = "receipt_runtime/idle_observation.rs"]
-mod idle_observation;
+mod medium_idle_observation;
 
 #[test]
 fn losing_daemon_does_not_rewrite_capacity_snapshot_before_receipt_authority() {
