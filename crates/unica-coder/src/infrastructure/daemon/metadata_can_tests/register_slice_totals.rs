@@ -109,7 +109,7 @@ fn verify_modes(prefix: &str, periods: &[&str]) {
 }
 
 #[test]
-fn slice_totals_preserve_independent_registers_including_inactive_nonperiodical() {
+fn medium_slice_totals_preserve_independent_registers_including_inactive_nonperiodical() {
     verify_modes(
         "Ind",
         &[

@@ -417,6 +417,81 @@ fn column_group_and_its_columns_are_addressable_through_the_wire() {
     assert!(can.contains("item.remove"), "{column:?}");
     assert!(!can.contains("item.add"), "{column:?}");
 
+    // #2323: an existing column group is a sibling, including when the
+    // next insertion follows the field added earlier in the same list.
+    let before = unica_workspace::test_support::tree_snapshot(&source);
+    for (target, after) in [
+        (format!("{form_at}.Item.Rows"), "Missing"),
+        (first_at.clone(), "Second"),
+    ] {
+        let refused = call(
+            ToolIdentity::Apply,
+            serde_json::json!({"at":target,"ops":[{"op":"item.add","args":{"items":[
+                {"name":"Rejected","type":"InputField","path":"Объект.Ref","after":after}
+            ]}}]}),
+        );
+        assert!(!refused.ok, "{refused:?}");
+        assert_eq!(refused.diagnostics[0]["code"], "bad_value");
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&source),
+            before
+        );
+    }
+    let added = call(
+        ToolIdentity::Apply,
+        serde_json::json!({"at":format!("{form_at}.Item.Rows"),"ops":[{"op":"item.add","args":{"items":[
+            {"name":"AddedField","type":"InputField","path":"Объект.Ref","readOnly":true,"after":"First"},
+            {"name":"AddedCheck","type":"CheckBox","path":"Объект.Posted","readOnly":true,"after":"AddedField"}
+        ]}}]}),
+    );
+    assert!(added.ok, "{added:?}");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&source),
+        before
+    );
+    let published = call(
+        ToolIdentity::Apply,
+        serde_json::json!({"executionToken":added.data.as_ref().unwrap()["executionToken"]}),
+    );
+    assert!(published.ok, "{published:?}");
+    let text = std::fs::read_to_string(&form_path).unwrap();
+    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
+    let original = roxmltree::Document::parse(with_columns.trim_start_matches('\u{feff}')).unwrap();
+    for node in original
+        .descendants()
+        .filter(|node| node.attribute("id").is_some())
+    {
+        let name = node.attribute("name").unwrap();
+        let retained = document
+            .descendants()
+            .find(|node| node.attribute("name") == Some(name))
+            .unwrap();
+        assert_eq!(retained.attribute("id"), node.attribute("id"), "{name}");
+        if name == "First" {
+            assert_eq!(
+                &document.input_text()[retained.range()],
+                &original.input_text()[node.range()]
+            );
+        }
+    }
+    let rows = document
+        .descendants()
+        .find(|node| node.attribute("name") == Some("Rows"))
+        .unwrap();
+    let names = rows
+        .children()
+        .find(|node| node.has_tag_name("ChildItems"))
+        .unwrap()
+        .children()
+        .filter_map(|node| node.attribute("name"))
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["First", "AddedField", "AddedCheck", "Second"]);
+    let added_view = call(
+        ToolIdentity::View,
+        serde_json::json!({"at":format!("{form_at}.Item.Rows.Item.AddedField")}),
+    );
+    assert!(added_view.ok, "{added_view:?}");
+
     let moved = call(
         ToolIdentity::Apply,
         serde_json::json!({
