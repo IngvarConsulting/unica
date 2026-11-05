@@ -694,8 +694,10 @@ pub(super) fn project_configuration_with_counts(
         }
         props.insert("interface".to_string(), Value::Object(interface));
     }
-    if let Some(Value::Object(panels)) = payload.get("panels") {
-        props.insert("panels".to_string(), Value::Object(panels.clone()));
+    for key in ["panels", "panelLayout"] {
+        if let Some(Value::Object(value)) = payload.get(key) {
+            props.insert(key.to_string(), Value::Object(value.clone()));
+        }
     }
     for key in ["support", "properties", "homePage"] {
         match payload.get(key) {
@@ -947,6 +949,7 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "homePage",
             "interface",
             "panels",
+            "panelLayout",
         ],
         LogicalReader::Metadata => metadata::PAYLOAD_KEYS,
         LogicalReader::Form => form::PAYLOAD_KEYS,

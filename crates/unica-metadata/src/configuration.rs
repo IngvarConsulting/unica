@@ -1,5 +1,7 @@
 //! Existing configuration semantic values and closed capabilities.
 use crate::support_state::ConfigurationSupportData;
+mod panel_layout;
+pub use panel_layout::{CfPanelArea, CfPanelDefinition, CfPanelItem, CfPanelLayoutData};
 
 /// Typed answer of `unica.cf.info` (ADR-0023). Every declared property is
 /// present: an absent value is `null`, never a missing key, so "not set" and
@@ -23,6 +25,8 @@ pub struct CfInfoData {
     /// панелями, группа — массив имён. Без документа ключа нет.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub panels: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub panel_layout: Option<CfPanelLayoutData>,
 }
 
 #[derive(serde::Serialize)]

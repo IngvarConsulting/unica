@@ -1,7 +1,7 @@
 mod job_schedule;
 use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
 use unica_execution_contract::view_error::ViewError;
-use unica_metadata::configuration::{CfHomePageData, CfInterfaceData};
+use unica_metadata::configuration::{CfHomePageData, CfInterfaceData, CfPanelLayoutData};
 use unica_metadata_designer::configuration::{
     cf_home_page_item_data, parse_cf_command_interface_xml, parse_cf_home_page_xml_strict,
     parse_cf_info_xml,
@@ -415,14 +415,16 @@ impl ProviderReadAuthority {
                 "Configuration.xml is not UTF-8",
             )
         })?;
-        let parsed = parse_cf_info_xml(
+        let (panels, panel_layout) = self.panels()?;
+        let mut parsed = parse_cf_info_xml(
             text,
             self.configuration_support(checkpoint)?,
             self.home_page()?,
             self.command_interface()?,
-            self.panels()?,
+            panels,
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        parsed.data.panel_layout = panel_layout;
         let owner = prove_already_read_source_set_owner(
             Path::new("Configuration.xml"),
             &bytes,
@@ -511,8 +513,27 @@ impl ProviderReadAuthority {
         let interface = serde_json::to_value(self.command_interface()?).map_err(|error| {
             ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
         })?;
-        let panels = self.panels()?.unwrap_or(Value::Null);
-        read_configuration_root(file, support, home_page, interface, panels, checkpoint)
+        let (panels, panel_layout) = self.panels()?;
+        let mut root = read_configuration_root(
+            file,
+            support,
+            home_page,
+            interface,
+            panels.unwrap_or(Value::Null),
+            checkpoint,
+        )?;
+        if let Some(panel_layout) = panel_layout {
+            root.payload
+                .as_object_mut()
+                .expect("configuration root object")
+                .insert(
+                    "panelLayout".to_string(),
+                    serde_json::to_value(panel_layout).map_err(|error| {
+                        ViewError::detailed(RefusalDetail::BackendBroken, error.to_string())
+                    })?,
+                );
+        }
+        Ok(root)
     }
 
     /// Build root registration evidence from the complete retained XML once.
@@ -2218,13 +2239,14 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
-    /// Раскладка панелей корня в форме, которую принимает `panels.set`.
-    fn panels(&self) -> Result<Option<Value>, ViewError> {
+    /// Both observations describe the same bytes; the summary retains its
+    /// existing writer-shaped profile while topology preserves raw identities.
+    fn panels(&self) -> Result<(Option<Value>, Option<CfPanelLayoutData>), ViewError> {
         let Some(bytes) = self.read_optional_relative_whole(Path::new(
             unica_metadata_designer::client_interface::CLIENT_INTERFACE_RELATIVE,
         ))?
         else {
-            return Ok(None);
+            return Ok((None, None));
         };
         let text = std::str::from_utf8(&bytes).map_err(|_| {
             ViewError::detailed(
@@ -2232,9 +2254,13 @@ impl ProviderReadAuthority {
                 "ClientApplicationInterface.xml is not UTF-8",
             )
         })?;
-        unica_metadata_designer::client_interface::parse_panels(text)
-            .map(|stored| Some(stored.to_json()))
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+        let observation =
+            unica_metadata_designer::client_interface::parse_panel_layout_observation(text)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let summary = unica_metadata_designer::client_interface::parse_panels(text)
+            .ok()
+            .map(|stored| stored.to_json());
+        Ok((summary, Some(observation)))
     }
 
     fn home_page(&self) -> Result<Option<CfHomePageData>, ViewError> {
