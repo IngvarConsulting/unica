@@ -1308,6 +1308,7 @@ mod tests {
     /// #1385: on a platform-shaped CRLF document the new header attribute
     /// lands before the tabular sections and forms, the new template before
     /// the commands, and every inserted line keeps the descriptor's CRLF.
+    /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
     #[test]
     fn member_and_template_adds_take_their_platform_slot_and_line_ending() {
         let order = ORDER_XML
@@ -1549,6 +1550,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn object_remove_retains_unchanged_reference_and_subsystem_inputs() {
         for subsystem in [false, true] {
@@ -1590,6 +1592,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.EMBEDDED-HELP-CREATE
     #[test]
     fn help_create_stages_the_embedded_help_facet() {
         let fixture = MetadataFixture::new();
@@ -1896,6 +1899,7 @@ mod tests {
     /// сужены до узла. Каждое семейство проверяется на нескольких видах
     /// владельца. Перекрёстные правила полей (значение заполнения требует
     /// тип) схема не выражает — такие образцы здесь не берутся.
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn medium_member_operation_contracts_and_the_planner_agree_on_structure() {
         use unica_address::address::QualifiedAddress;

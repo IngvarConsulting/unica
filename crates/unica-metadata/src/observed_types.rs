@@ -336,6 +336,7 @@ mod tests {
         assert_eq!(editable.variants, vec![MetadataTypeVariant::Uuid]);
     }
 
+    /// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
     #[test]
     fn read_only_observation_cannot_be_narrowed_into_the_writer_algebra() {
         let observed = ObservedMetadataType {

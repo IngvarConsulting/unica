@@ -1,6 +1,5 @@
 ---
 id: INV.APP.PROVIDER-PRIVATE-STATE
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/966
 ---
 
