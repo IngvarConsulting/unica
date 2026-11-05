@@ -1667,8 +1667,6 @@ mod apply_large_input_tests;
 #[path = "code_target_tests.rs"]
 mod code_target_tests;
 #[cfg(test)]
-mod external_cache_apply_tests;
-#[cfg(test)]
 #[path = "form_lifecycle_tests.rs"]
 mod form_lifecycle_tests;
 #[cfg(test)]
@@ -1680,6 +1678,9 @@ mod form_native_profile_tests;
 #[cfg(test)]
 #[path = "form_properties_tests.rs"]
 mod form_properties_tests;
+#[cfg(test)]
+#[path = "server/external_cache_apply_tests.rs"]
+mod medium_external_cache_apply_tests;
 #[cfg(test)]
 #[path = "metadata_can_tests.rs"]
 mod metadata_can_tests;
@@ -1709,10 +1710,14 @@ mod legacy_inline_check_tests;
 mod apply_answer_size_tests;
 
 #[cfg(test)]
-mod stored_secret_tests;
+#[path = "server/stored_secret_tests.rs"]
+mod medium_stored_secret_tests;
 
+// Shared helpers keep their former name for the modules that import them.
 #[cfg(test)]
-pub(crate) mod actor_capacity_tests {
+pub(crate) use medium_actor_capacity_tests as actor_capacity_tests;
+#[cfg(test)]
+pub(crate) mod medium_actor_capacity_tests {
     use super::super::runner_015::VERSION as RUNNER_VERSION;
     use super::*;
     use unica_analysis_services::provider_host::ProviderHostKey;
@@ -4692,7 +4697,7 @@ pub(crate) mod actor_capacity_tests {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "infrastructure::daemon::server::actor_capacity_tests::canonical_selected_engine_routes_request_delivery_before_provider_start",
+                "infrastructure::daemon::server::medium_actor_capacity_tests::canonical_selected_engine_routes_request_delivery_before_provider_start",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -4915,7 +4920,7 @@ pub(crate) mod actor_capacity_tests {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "infrastructure::daemon::server::actor_capacity_tests::every_route_refuses_a_missing_engine_with_one_typed_refusal",
+                "infrastructure::daemon::server::medium_actor_capacity_tests::every_route_refuses_a_missing_engine_with_one_typed_refusal",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -5047,7 +5052,7 @@ pub(crate) mod actor_capacity_tests {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "infrastructure::daemon::server::actor_capacity_tests::canonical_infobase_create_refusal_discloses_no_private_input",
+                "infrastructure::daemon::server::medium_actor_capacity_tests::canonical_infobase_create_refusal_discloses_no_private_input",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -5490,7 +5495,7 @@ fn main() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "infrastructure::daemon::server::actor_capacity_tests::canonical_run_and_role_search_deliver_engines_and_run_supported_providers",
+                "infrastructure::daemon::server::medium_actor_capacity_tests::canonical_run_and_role_search_deliver_engines_and_run_supported_providers",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -15165,7 +15170,7 @@ struct ActorLogicalReadLease {"#,
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "infrastructure::daemon::server::actor_capacity_tests::module_check_answers_working_while_the_analyzer_is_being_delivered",
+                "infrastructure::daemon::server::medium_actor_capacity_tests::module_check_answers_working_while_the_analyzer_is_being_delivered",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -15711,7 +15716,7 @@ struct ActorLogicalReadLease {"#,
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "infrastructure::daemon::server::actor_capacity_tests::call_graph_branch_answers_working_while_the_analyzer_is_being_delivered",
+                "infrastructure::daemon::server::medium_actor_capacity_tests::call_graph_branch_answers_working_while_the_analyzer_is_being_delivered",
                 "--nocapture",
             ])
             .env(CHILD, "1")
@@ -17995,13 +18000,13 @@ fn main() {
     #[test]
     fn daemon_exact_long_work_ownership_contract() {
         run_long_work_contract_obligation(
-            "infrastructure::daemon::server::actor_capacity_tests::daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership",
+            "infrastructure::daemon::server::medium_actor_capacity_tests::daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownership",
         );
         run_long_work_contract_obligation(
-            "infrastructure::daemon::server::actor_capacity_tests::daemon_index_work_separates_worktrees_and_build_generations",
+            "infrastructure::daemon::server::medium_actor_capacity_tests::daemon_index_work_separates_worktrees_and_build_generations",
         );
         run_long_work_contract_obligation(
-            "infrastructure::daemon::server::actor_capacity_tests::daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication",
+            "infrastructure::daemon::server::medium_actor_capacity_tests::daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication",
         );
         run_long_work_contract_obligation(
             "infrastructure::runtime_jobs_integration::tests::runtime_resource_tree_lease_contract",
@@ -19704,7 +19709,7 @@ fn main() {
 /// #1251: no production operation path may start a finite `ProviderDeadline`
 /// again, under its own name or an alias, outside the listed per-step limits.
 #[cfg(test)]
-mod finite_deadline_guard {
+mod medium_finite_deadline_guard {
 
     /// Constructors that start a finite operation deadline.
     const FINITE_DEADLINE_CONSTRUCTORS: [&str; 3] = ["from_budget", "new", "from_started_at"];

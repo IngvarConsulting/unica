@@ -495,7 +495,7 @@ pub fn clear_execute_permission_for_test(_path: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         classify_file_link_fixture_result, create_file_link_fixture_for_test,
         file_identity_for_test, path_identity_for_test, set_unix_mode_for_test, unix_mode_for_test,

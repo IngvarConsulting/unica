@@ -3954,4 +3954,4 @@ fn repository_regular_file_size(
 
 #[cfg(test)]
 #[path = "../../tests/platform/project_health_resources.rs"]
-mod tests;
+mod medium_tests;
