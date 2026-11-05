@@ -377,3 +377,35 @@ fn reduction_profile_reads_three_values_and_keeps_missing_and_damaged_facts_loca
         assert!(info.collections.dimensions[0].properties.is_empty());
     }
 }
+
+#[test]
+fn information_dimension_flags_with_xml_space_agree_with_the_flag_fields() {
+    let xml = "<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"2.20\"><InformationRegister uuid=\"a1583000-0000-4000-8000-000000000001\"><Properties><Name>Owner</Name></Properties><ChildObjects><Dimension uuid=\"a1583000-0000-4000-8000-000000000002\"><Properties><Name>Member</Name><Synonym/><FillChecking>DontCheck</FillChecking><Master>\n\ttrue\n</Master><MainFilter> false </MainFilter><DenyIncompleteValues>\r\ntrue\r\n</DenyIncompleteValues><TypeReductionMode>TransformValues</TypeReductionMode></Properties></Dimension></ChildObjects></InformationRegister></MetaDataObject>";
+    let info = read(
+        xml,
+        "InformationRegister.Owner",
+        Some(SourceSetKind::Configuration),
+    );
+    let dimension = &info.collections.dimensions[0];
+    assert!(dimension.property_limits.is_empty(), "{dimension:?}");
+    assert!(!dimension.incomplete, "{dimension:?}");
+    assert_eq!(dimension.master, Some(true));
+    assert_eq!(dimension.main_filter, Some(false));
+    assert_eq!(dimension.deny_incomplete_values, Some(true));
+    for (name, value) in [
+        ("Master", true),
+        ("MainFilter", false),
+        ("DenyIncompleteValues", true),
+    ] {
+        let property = dimension
+            .properties
+            .iter()
+            .find(|property| property.name == name)
+            .unwrap_or_else(|| panic!("{name}: {dimension:?}"));
+        assert_eq!(
+            serde_json::to_value(&property.value).unwrap(),
+            json!({"kind":"boolean","value":value}),
+            "{name}"
+        );
+    }
+}
