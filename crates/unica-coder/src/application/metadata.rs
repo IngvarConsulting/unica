@@ -297,7 +297,7 @@ fn metadata_failure(
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use crate::application::ports::{
         ApplicationPorts, HandlerOutcome, MetaPublishReport, PreparedMetadataMutation,

@@ -1695,7 +1695,7 @@ fn unix_ms_in(ttl: Duration) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use serde_json::json;
 

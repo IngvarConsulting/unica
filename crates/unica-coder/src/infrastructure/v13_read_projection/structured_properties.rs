@@ -182,6 +182,7 @@ pub(crate) fn properties(reader: LogicalReader, kind: NodeKind) -> &'static [Pro
         (LogicalReader::Xdto, NodeKind::XdtoPackage) => {
             const {
                 &[
+                    special(write("Comment", "props.set")),
                     observed(
                         "elementFormQualified",
                         "Observed package element qualification; no write operand",

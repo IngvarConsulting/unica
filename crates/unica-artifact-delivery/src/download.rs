@@ -187,7 +187,7 @@ impl Downloader for HttpDownloader {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
 
     use std::io::{BufRead, BufReader, Write};

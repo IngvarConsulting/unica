@@ -1139,7 +1139,7 @@ fn registered_language_images(
 }
 
 #[cfg(test)]
-pub(crate) mod typed_add_publication_tests {
+pub(crate) mod medium_typed_add_publication_tests {
     use super::*;
 
     use std::collections::BTreeMap;
