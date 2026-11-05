@@ -429,11 +429,6 @@ impl MetaMemberPropertySpec {
                         value: value.into(),
                     })
             }
-            MetaMemberValueKind::Boolean => match value {
-                "true" => Some(MetaObservedPropertyValue::Boolean { value: true }),
-                "false" => Some(MetaObservedPropertyValue::Boolean { value: false }),
-                _ => None,
-            },
             MetaMemberValueKind::String => Some(MetaObservedPropertyValue::Text {
                 value: value.into(),
             }),

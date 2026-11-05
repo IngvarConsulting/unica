@@ -1128,6 +1128,9 @@
                     "DistributedInfoBase": {
                       "type": "boolean"
                     },
+                    "EditFormat": {
+                      "type": "string"
+                    },
                     "EditType": {
                       "enum": [
                         "InDialog",
@@ -1143,11 +1146,17 @@
                       "pattern": "^[A-Z][A-Za-z0-9]*$",
                       "type": "string"
                     },
+                    "ExtendedEdit": {
+                      "type": "boolean"
+                    },
                     "ExternalConnection": {
                       "type": "boolean"
                     },
                     "FoldersOnTop": {
                       "type": "boolean"
+                    },
+                    "Format": {
+                      "type": "string"
                     },
                     "FullTextSearch": {
                       "enum": [
@@ -1194,10 +1203,19 @@
                     "MainFilterOnPeriod": {
                       "type": "boolean"
                     },
+                    "MarkNegatives": {
+                      "type": "boolean"
+                    },
+                    "Mask": {
+                      "type": "string"
+                    },
                     "MaxExtDimensionCount": {
                       "maximum": 4294967295,
                       "minimum": 0,
                       "type": "integer"
+                    },
+                    "MultiLine": {
+                      "type": "boolean"
                     },
                     "Namespace": {
                       "type": "string"
@@ -1235,6 +1253,9 @@
                       "maximum": 4294967295,
                       "minimum": 0,
                       "type": "integer"
+                    },
+                    "PasswordMode": {
+                      "type": "boolean"
                     },
                     "PeriodAdjustmentLength": {
                       "maximum": 4294967295,
