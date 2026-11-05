@@ -711,7 +711,7 @@ pub fn meta_remove_references(
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("bsl"));
     let mut found = Vec::new();
-    if !search.may_mention(text, !is_bsl) {
+    if !is_bsl && !search.may_mention(text, true) {
         return found;
     }
     let (patterns, query_patterns) = (&search.patterns, &search.query_patterns);
@@ -726,7 +726,7 @@ pub fn meta_remove_references(
             })
             .unwrap_or(owner);
         for (index, line) in text.lines().enumerate() {
-            if patterns.mentioned_in(line) {
+            if search.bsl_patterns.mentioned_in(line) {
                 found.push(MetaRemoveReference::Code {
                     at: format!("{source_set}:{module}"),
                     line: index + 1,
@@ -1042,10 +1042,10 @@ fn descriptor_property(node: roxmltree::Node<'_, '_>) -> String {
 /// with the patterns of query-language text held in it. Each pattern has its
 /// searcher built once for the whole scan, not once per searched line.
 pub struct MetaRemoveSearch {
-    /// The object's name, when every pattern contains it and a text without
-    /// it therefore names the object by none of them.
+    /// Exact XML name prefilter. BSL spelling is case-insensitive and bypasses it.
     name: Option<memmem::Finder<'static>>,
     patterns: MetaRemovePatterns,
+    bsl_patterns: MetaRemovePatterns,
     query_patterns: MetaRemovePatterns,
 }
 
@@ -1067,6 +1067,7 @@ impl MetaRemoveSearch {
             name: (identifier && in_every)
                 .then(|| memmem::Finder::new(name.as_bytes()).into_owned()),
             patterns: MetaRemovePatterns::new(patterns),
+            bsl_patterns: MetaRemovePatterns::bsl(patterns),
             query_patterns: MetaRemovePatterns::new(query_patterns),
         }
     }
@@ -1092,7 +1093,7 @@ impl MetaRemoveSearch {
 struct MetaRemovePatterns(Vec<MetaRemovePattern>);
 
 struct MetaRemovePattern {
-    finder: memmem::Finder<'static>,
+    finder: MetaRemoveFinder,
     /// The pattern ends with a dot: `Catalogs.X.` or the bare `X.` of a
     /// common module; whatever follows it is a member.
     open_end: bool,
@@ -1101,13 +1102,39 @@ struct MetaRemovePattern {
     bare: bool,
 }
 
+enum MetaRemoveFinder {
+    Exact(memmem::Finder<'static>),
+    Bsl(regex::Regex),
+}
+
 impl MetaRemovePatterns {
     fn new(patterns: &[String]) -> Self {
+        Self::with_case(patterns, false)
+    }
+
+    fn bsl(patterns: &[String]) -> Self {
+        Self::with_case(patterns, true)
+    }
+
+    fn with_case(patterns: &[String], insensitive: bool) -> Self {
         Self(
             patterns
                 .iter()
                 .map(|pattern| MetaRemovePattern {
-                    finder: memmem::Finder::new(pattern.as_bytes()).into_owned(),
+                    finder: if insensitive {
+                        MetaRemoveFinder::Bsl(
+                            regex::RegexBuilder::new(&regex::escape(pattern))
+                                .case_insensitive(true)
+                                // A literal name must not gain a regex program-size limit.
+                                .size_limit(usize::MAX)
+                                .build()
+                                .expect("escaped metadata reference is a valid regex"),
+                        )
+                    } else {
+                        MetaRemoveFinder::Exact(
+                            memmem::Finder::new(pattern.as_bytes()).into_owned(),
+                        )
+                    },
                     open_end: pattern.ends_with('.'),
                     bare: pattern.ends_with('.') && !pattern[..pattern.len() - 1].contains('.'),
                 })
@@ -1123,19 +1150,24 @@ impl MetaRemovePatterns {
 impl MetaRemovePattern {
     /// Whether `text` names the object by the pattern as a whole name:
     /// `Catalog.X` does not match `Catalog.XY` or `MyCatalog.X`. The search
-    /// is case-sensitive and visits the same non-overlapping occurrences,
-    /// left to right, as `str::match_indices`.
+    /// uses the original text's identifier boundaries even when BSL matching
+    /// ignores case. XML keeps exact spelling.
     fn mentioned_in(&self, text: &str) -> bool {
-        let identifier = |ch: char| ch.is_alphanumeric() || ch == '_';
-        let length = self.finder.needle().len();
-        // A match of a UTF-8 pattern in UTF-8 text starts and ends on
-        // character boundaries.
-        self.finder.find_iter(text.as_bytes()).any(|start| {
+        let whole_name = |start: usize, end: usize| {
+            let identifier = |ch: char| ch.is_alphanumeric() || ch == '_';
             let before = text[..start].chars().next_back();
-            let after = text[start + length..].chars().next();
+            let after = text[end..].chars().next();
             !before.is_some_and(|ch| identifier(ch) || (self.bare && ch == '.'))
                 && (self.open_end || !after.is_some_and(identifier))
-        })
+        };
+        match &self.finder {
+            MetaRemoveFinder::Exact(finder) => finder
+                .find_iter(text.as_bytes())
+                .any(|start| whole_name(start, start + finder.needle().len())),
+            MetaRemoveFinder::Bsl(finder) => finder
+                .find_iter(text)
+                .any(|matched| whole_name(matched.start(), matched.end())),
+        }
     }
 }
 
@@ -1159,7 +1191,7 @@ mod tests {
     }
 
     #[test]
-    fn code_reference_is_a_whole_case_sensitive_name() {
+    fn code_reference_is_a_whole_case_insensitive_name() {
         let module = Path::new("CommonModules/Calls/Ext/Module.bsl");
         let text = "Справочники.Единицы.СоздатьЭлемент();\n\
                     Ссылка = Catalogs.Единицы.EmptyRef();\n\
@@ -1168,18 +1200,19 @@ mod tests {
                     справочники.единицы.СоздатьЭлемент();\n\
                     Тип(\"CatalogRef.Единицы\");\n";
         let found = meta_remove_references("main", module, text, &catalog_code_search("Единицы"));
-        assert_eq!(lines(&found), vec![1, 2, 6]);
+        assert_eq!(lines(&found), vec![1, 2, 5, 6]);
     }
 
     #[test]
-    fn text_without_the_name_names_nothing_in_any_case() {
+    fn differently_cased_name_is_not_skipped_by_the_prefilter() {
         let module = Path::new("CommonModules/Calls/Ext/Module.bsl");
-        // The search is case-sensitive, so the name in another case is no
-        // reference whether the file is searched or passed over.
+        // BSL identifiers have the same identity in either case.
         let text = "справочники.единицы.СоздатьЭлемент();\nCATALOGS.ЕДИНИЦЫ.EmptyRef();\n";
         let search = catalog_code_search("Единицы");
-        assert!(!search.may_mention(text, false));
-        assert!(meta_remove_references("main", module, text, &search).is_empty());
+        assert_eq!(
+            lines(&meta_remove_references("main", module, text, &search)),
+            vec![1, 2]
+        );
     }
 
     #[test]
@@ -1187,11 +1220,38 @@ mod tests {
         let module = Path::new("CommonModules/Calls/Ext/Module.bsl");
         let patterns = meta_remove_search_patterns("CommonModule", "Печать", "CommonModules");
         let search = MetaRemoveSearch::new("Печать", &patterns, &[]);
-        let text = "Печать.Выполнить();\nДругой.Печать.Выполнить();\nПечатьФорм.Выполнить();\n";
+        let text = "печать.Выполнить();\nДругой.ПЕЧАТЬ.Выполнить();\nПечатьФорм.Выполнить();\n";
         assert_eq!(
             lines(&meta_remove_references("main", module, text, &search)),
             vec![1]
         );
+    }
+
+    #[test]
+    fn bsl_case_matching_keeps_original_unicode_identifier_boundaries() {
+        let module = Path::new("CommonModules/Calls/Ext/Module.bsl");
+        let text = "İСправочники.Единицы.Create();\n\
+                    Справочники.Единицыİ.Create();\n\
+                    İ; СПРАВОЧНИКИ.ЕДИНИЦЫ.Create();\n\
+                    myCATALOGS.Единицы.Create();\n\
+                    CATALOGS.единицыИзмерения.Create();\n";
+        assert_eq!(
+            lines(&meta_remove_references(
+                "main",
+                module,
+                text,
+                &catalog_code_search("Единицы")
+            )),
+            vec![3]
+        );
+    }
+
+    #[test]
+    fn xml_metadata_reference_spelling_remains_exact() {
+        let descriptor = Path::new("Documents/Order.xml");
+        let search = catalog_code_search("Единицы");
+        let text = "<Document><Properties><Type>catalogref.единицы</Type></Properties></Document>";
+        assert!(meta_remove_references("main", descriptor, text, &search).is_empty());
     }
 
     #[test]
