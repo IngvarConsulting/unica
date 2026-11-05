@@ -199,13 +199,15 @@ pub fn meta_edit_replace_or_insert_property(
     replacement: &str,
     child_indent: &str,
 ) -> Result<(), String> {
+    let prefix = properties_prefix(properties).to_string();
+    let replacement = qualify_property_element(replacement, tag, &prefix);
     if let Some(range) = meta_edit_xml_element_range(properties, tag)? {
         properties.replace_range(range, replacement.trim_start());
         return Ok(());
     }
 
-    let Some(close_pos) = properties.rfind("</Properties>") else {
-        return Err("No closing </Properties> found".to_string());
+    let Some(close_pos) = properties.rfind(&format!("</{prefix}Properties>")) else {
+        return Err(format!("No closing </{prefix}Properties> found"));
     };
     properties.insert_str(close_pos, &format!("{replacement}\n{child_indent}"));
     Ok(())
@@ -230,12 +232,54 @@ pub fn meta_edit_set_mltext_property(
     emit_meta_mltext(&mut lines, child_indent, tag, lang, value);
     meta_edit_replace_or_insert_property(properties, tag, &lines.join("\n"), child_indent)
 }
+/// The namespace prefix of a `<Properties>` container text, with its colon:
+/// `md:` for `<md:Properties>`, empty for the default namespace or any other
+/// text. Its child properties are spelled with the same prefix.
+fn properties_prefix(text: &str) -> &str {
+    let Some(start) = text.trim_start().strip_prefix('<') else {
+        return "";
+    };
+    let name = start
+        .split(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>')
+        .next()
+        .unwrap_or("");
+    match name.rsplit_once(':') {
+        Some((prefix, "Properties")) if !prefix.is_empty() => &start[..prefix.len() + 1],
+        _ => "",
+    }
+}
+
+/// `replacement` with its outer element renamed to `prefix` + `tag`; other
+/// elements keep their spelling.
+fn qualify_property_element(replacement: &str, tag: &str, prefix: &str) -> String {
+    if prefix.is_empty() {
+        return replacement.to_string();
+    }
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut text = replacement.to_string();
+    if let Some(at) = text.find(&open).filter(|at| {
+        text[at + open.len()..]
+            .chars()
+            .next()
+            .is_none_or(|ch| ch == '>' || ch == '/' || ch.is_whitespace())
+    }) {
+        text.insert_str(at + 1, prefix);
+    }
+    if let Some(at) = text.rfind(&close) {
+        text.insert_str(at + 2, prefix);
+    }
+    text
+}
+
 pub fn meta_edit_xml_element_range(
     text: &str,
     tag: &str,
 ) -> Result<Option<std::ops::Range<usize>>, String> {
-    let needle = format!("<{tag}");
-    let close = format!("</{tag}>");
+    // Child properties of a prefixed container share its prefix.
+    let prefix = properties_prefix(text);
+    let needle = format!("<{prefix}{tag}");
+    let close = format!("</{prefix}{tag}>");
     let mut search_start = 0usize;
 
     while let Some(relative_start) = text[search_start..].find(&needle) {
@@ -2071,10 +2115,21 @@ pub fn apply_typed_element_fields(xml: &mut String, element: &MetaElementDefinit
     }
     xml.replace_range(range, &text);
 }
+/// The first `<Properties>` container of `text`, also when it is spelled with a
+/// namespace prefix such as `<md:Properties>`.
 pub fn typed_properties_text_range(text: &str) -> Option<std::ops::Range<usize>> {
-    let start = text.find("<Properties>")?;
-    let close = "</Properties>";
-    let relative_end = text[start..].find(close)?;
+    let (start, prefix) = text.match_indices('<').find_map(|(at, _)| {
+        let name = text[at + 1..].split('>').next()?;
+        let prefix = name.strip_suffix("Properties")?;
+        (prefix.is_empty()
+            || (prefix.ends_with(':')
+                && prefix[..prefix.len() - 1]
+                    .chars()
+                    .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.'))))
+        .then_some((at, prefix))
+    })?;
+    let close = format!("</{prefix}Properties>");
+    let relative_end = text[start..].find(&close)?;
     Some(start..start + relative_end + close.len())
 }
 pub fn find_typed_element_range(
