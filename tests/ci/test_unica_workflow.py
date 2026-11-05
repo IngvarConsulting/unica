@@ -273,6 +273,20 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("python -m py_compile scripts/dev/*.py tests/dev/*.py", script(gate))
         self.assertIn("python scripts/ci/check-version-contract.py", script(gate))
 
+    def test_draft_pull_request_takes_no_runner_until_it_is_ready(self) -> None:
+        self.assertIn("ready_for_review", triggers(self.release)["pull_request"]["types"])
+        self.assertEqual(triggers(self.release)["merge_group"]["types"], ["checks_requested"])
+        for job_id in ("unica-ci", "pr-checks", "rust-os"):
+            with self.subTest(job=job_id):
+                self.assertIn(
+                    "!github.event.pull_request.draft",
+                    normalized(job(self.release, job_id)["if"]),
+                )
+        # Очередь идёт своими джобами без оглядки на черновик.
+        self.assertNotIn(
+            "draft", normalized(job(self.release, "windows-clippy")["if"])
+        )
+
     def test_label_changes_cannot_replace_the_stable_pull_request_gate(self) -> None:
         on = triggers(self.release)
         gate = job(self.release, "unica-ci")
@@ -280,14 +294,21 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Изменение метки не должно создавать новый suite этого workflow:
         # ruleset смотрит на последний suite головы PR и перестаёт видеть
         # обязательный `Unica CI`, если тот suite состоит из skipped-джоб.
-        self.assertEqual(on["pull_request"]["types"], ["opened", "synchronize", "reopened"])
+        self.assertEqual(
+            on["pull_request"]["types"],
+            ["opened", "synchronize", "reopened", "ready_for_review"],
+        )
         self.assertNotIn("paths", on["pull_request"])
         self.assertNotIn("paths", on["push"])
         self.assertNotIn("label ignored", "\n".join(strings(self.release)))
         self.assertEqual(gate["name"], "Unica CI")
         # Пропущенную обязательную проверку ruleset засчитал бы как пройденную:
-        # у гейта нет ни условия, ни `needs`, которые могли бы его пропустить.
-        self.assertNotIn("if", gate)
+        # гейт пропускает только черновик, который нельзя влить, а `needs`
+        # нет. Очередь, push, тег и кнопка идут всегда.
+        self.assertEqual(
+            normalized(gate["if"]),
+            "${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}",
+        )
         self.assertEqual(needs(gate), [])
         self.assertEqual(
             normalized(self.release["concurrency"]["group"]),
@@ -343,7 +364,10 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                                         "verify-published-assets", "delivery-ci")}
         # `Lint and Python` — только pull request: у записи очереди её нет.
         self.assertEqual(set(validation), {"unica-ci", "rust-os", "pr-checks", "windows-clippy"})
-        self.assertEqual(condition(job(self.release, "pr-checks")), "${{ github.event_name == 'pull_request' }}")
+        self.assertEqual(
+            condition(job(self.release, "pr-checks")),
+            "${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}",
+        )
         # Хвост поставки и его итог очередь и pull request не запускают: каждая
         # их джоба сама требует тег или кнопку либо успех такой джобы.
         tail = set(jobs(self.release)) - set(validation)

@@ -16,7 +16,9 @@ on:
     # Смена меток не запускает основной workflow: новый suite без `Unica CI`
     # заменяет для ruleset успешный suite той же головы PR. Метка `ci:full`
     # читается из снимка pull request при следующем push (`synchronize`).
-    types: [opened, synchronize, reopened]
+    # У черновика джобы пропускаются, перевод в готовый запускает полный прогон
+    # (`ready_for_review`).
+    types: [opened, synchronize, reopened, ready_for_review]
   # Очередь слияния: прогон на будущем состоянии main пачкой pull request.
   # Здесь ловится то, что отбор по размеру на pull request пропускает.
   merge_group:
@@ -57,12 +59,15 @@ jobs:
   # `target`: архивы полос не покидают джобу, продукт для Python собирается из
   # тех же зависимостей. `needs` на другие ОС сделал бы запись последовательной,
   # поэтому в конце джоба ждёт их по jobs API (`await_os_jobs.py`) и забирает
-  # отчёт macOS. У джобы нет `if:`:
-  # пропущенную обязательную проверку ruleset засчитал бы как пройденную.
+  # отчёт macOS. Единственное условие джобы — черновик pull request. Пропущенную
+  # обязательную проверку ruleset засчитывает как пройденную, но черновик нельзя
+  # влить: перевод в готовый запускает прогон этой же головы, а запись очереди
+  # проходит свой `Unica CI` на итоговом дереве.
   unica-ci:
     # Стабильное имя обязательной проверки ruleset. Смена метки не запускает
     # этот workflow и потому не создаёт более новый suite без этих ворот.
     name: Unica CI
+    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     # Ночной large исполняет весь набор подряд и ждёт Windows.
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 300 || 120 }}
@@ -479,7 +484,7 @@ jobs:
   # `Unica CI`; запись очереди держит Linux и Clippy Windows.
   pr-checks:
     name: Lint and Python
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # SARIF Clippy пишет в Code Scanning.
@@ -599,7 +604,7 @@ jobs:
     permissions:
       contents: read
       actions: write
-    if: ${{ github.event_name != 'merge_group' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'ci:full')) }}
+    if: ${{ github.event_name != 'merge_group' && !(github.event_name == 'push' && github.ref == 'refs/heads/main') && (github.event_name != 'pull_request' || (!github.event.pull_request.draft && contains(github.event.pull_request.labels.*.name, 'ci:full'))) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.profile == 'large' && 180 || 60 }}
     # Без `continue-on-error`: красная Windows-джоба красит ночной прогон
