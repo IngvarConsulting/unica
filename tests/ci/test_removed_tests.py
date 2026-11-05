@@ -194,6 +194,9 @@ class RemovedTestsTests(unittest.TestCase):
             ("crates/demo/src/a/one.rs", "demo", "a::one", True),
             ("crates/demo/src/a/two.rs", "demo", "a::two", True),
         ])
+        # Reached through `#[path]` (mod_rs), the file still owns `a/`, not `src/`.
+        moved = list(removed_tests.Packages.children("crates/demo/src/a.rs", source, "demo", "a", True, files))
+        self.assertEqual(moved, children)
         literal = list(removed_tests.Packages.children(
             "crates/demo/src/a.rs", 'include!(concat!(env!("OUT_DIR"), "/other.rs"));\n', "demo", "a", False, files))
         self.assertEqual(literal, [])

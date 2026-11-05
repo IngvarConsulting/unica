@@ -242,7 +242,9 @@ class Packages:
                 depth -= 1
             elif item["include"] is not None and DISCOVERED_MODULES.match(source, item.start("include")):
                 names = [name for _, name in inline]
-                directory = own.joinpath(*names)
+                # build.rs reads the directory named after the including file, also
+                # when that file is itself reached through `#[path]`.
+                directory = PurePosixPath(path).with_suffix("").joinpath(*names)
                 for file in sorted(files):
                     if PurePosixPath(file).parent == directory and file.endswith(".rs"):
                         yield file, binary, joined(*names, PurePosixPath(file).stem), True
