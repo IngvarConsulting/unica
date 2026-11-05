@@ -286,7 +286,7 @@ fn verify_input_settings(
     );
 }
 #[test]
-fn field_input_format_header_string() {
+fn medium_field_input_format_header_string() {
     verify_input_settings(
         "main:Catalog.Codes.Attribute.Key",
         "Catalogs/Codes.xml",
@@ -297,7 +297,7 @@ fn field_input_format_header_string() {
     );
 }
 #[test]
-fn field_input_format_header_number() {
+fn medium_field_input_format_header_number() {
     verify_input_settings(
         "main:Catalog.Codes.Attribute.Amount",
         "Catalogs/Codes.xml",
@@ -308,7 +308,7 @@ fn field_input_format_header_number() {
     );
 }
 #[test]
-fn field_input_format_tabular_string() {
+fn medium_field_input_format_tabular_string() {
     verify_input_settings(
         "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
         "Catalogs/Codes.xml",
@@ -319,7 +319,7 @@ fn field_input_format_tabular_string() {
     );
 }
 #[test]
-fn field_input_format_tabular_number() {
+fn medium_field_input_format_tabular_number() {
     verify_input_settings(
         "main:Catalog.Codes.TabularSection.Rows.Attribute.Amount",
         "Catalogs/Codes.xml",
@@ -330,7 +330,7 @@ fn field_input_format_tabular_number() {
     );
 }
 #[test]
-fn field_input_format_constant_string() {
+fn medium_field_input_format_constant_string() {
     verify_input_settings(
         "main:Constant.Setting",
         "Constants/Setting.xml",
@@ -341,7 +341,7 @@ fn field_input_format_constant_string() {
     );
 }
 #[test]
-fn field_input_format_constant_number() {
+fn medium_field_input_format_constant_number() {
     verify_input_settings(
         "main:Constant.Amount",
         "Constants/Amount.xml",
@@ -353,7 +353,7 @@ fn field_input_format_constant_number() {
 }
 
 #[test]
-fn field_input_format_explicit_type_matches_can_and_preview() {
+fn medium_field_input_format_explicit_type_matches_can_and_preview() {
     for (at, op, type_key, number_key, string_key) in [
         (
             "main:Constant.Setting",

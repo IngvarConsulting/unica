@@ -324,7 +324,7 @@ fn native_helper_does_not_inherit_project_cwd_from_isolated_caller() {
     let fixture = CwdFixture::new(true);
     let binary = compile_probe(&fixture);
     let mut command = Command::new(env::current_exe().unwrap());
-    command.args(["--exact", "infrastructure::workspace_services::persistent_provider_cwd_native_tests::helper_inherited_cwd_subprocess_fixture",
+    command.args(["--exact", "infrastructure::workspace_services::medium_persistent_provider_cwd_native_tests::helper_inherited_cwd_subprocess_fixture",
                   "--ignored", "--nocapture"])
         .current_dir(&fixture.context.cwd)
         .env("UNICA_CWD_HELPER_FIXTURE_ROOT", &fixture.root)

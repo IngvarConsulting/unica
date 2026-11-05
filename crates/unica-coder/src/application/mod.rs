@@ -2716,8 +2716,11 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
     }
 }
 
+// Shared helpers keep their former name for the modules that import them.
 #[cfg(test)]
-pub(crate) mod tests {
+pub(crate) use medium_tests as tests;
+#[cfg(test)]
+pub(crate) mod medium_tests {
     use super::*;
     use crate::composition::testing::{
         create_file_link_fixture_for_test, file_identity_for_test, prepare_file_for_removal,

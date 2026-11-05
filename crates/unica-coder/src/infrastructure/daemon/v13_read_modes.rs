@@ -1,9 +1,10 @@
-use crate::domain::apply::OperationDescriptorExt;
-use crate::domain::apply::RetiredOperationExt;
 use serde_json::{json, Map, Value};
 use std::fmt;
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_forms::FormItemRole;
+use unica_forms::{FormItemRole, FormObservation};
+use unica_metadata::style_color::StyleItemPropertiesObservation;
+type StyleItemPropertiesLookup<'a> =
+    &'a dyn Fn(&QualifiedAddress) -> Option<StyleItemPropertiesObservation>;
 use unica_refusal::RefusalCode;
 use unica_source_designer::layout::metadata_kind;
 use unica_templates::TemplateFormat;
@@ -97,7 +98,7 @@ pub(super) fn configuration_context() -> CanContext {
     )
 }
 
-/// The node's address, template format and form item role, read from the
+/// The node's address, template format and form facts, read from the
 /// projected node data. `None` means the dictionary is not computed for this
 /// node: the kind or the address is unknown to the grammar.
 fn node_site(
@@ -106,7 +107,7 @@ fn node_site(
 ) -> Option<(
     QualifiedAddress,
     Option<TemplateFormat>,
-    Option<FormItemRole>,
+    Option<FormObservation>,
 )> {
     NodeKind::parse(data.get("kind")?.as_str()?).ok()?;
     let at = QualifiedAddress::parse(data.get("at")?.as_str()?).ok()?;
@@ -117,7 +118,15 @@ fn node_site(
             .and_then(Value::as_str)
     };
     let format = prop("format").map(TemplateFormat::parse);
-    let item = prop("tag").map(FormItemRole::from_tag);
+    let item = if unica_forms::applicability::is_form_attribute(at.segments()) {
+        prop("type").and_then(FormObservation::from_attribute_type)
+    } else if unica_forms::applicability::is_form_column(at.segments()) {
+        prop("parentType").and_then(FormObservation::from_column_parent_type)
+    } else {
+        prop("tag")
+            .map(FormItemRole::from_tag)
+            .map(FormObservation::Item)
+    };
     Some((at, format, item))
 }
 
@@ -136,7 +145,11 @@ fn inherited_node(data: &Map<String, Value>) -> bool {
 /// template, the format filter. `None` means the dictionary is not computed
 /// for this node: the answer then carries no `can`. A computed dictionary
 /// may be empty (`[]`): nothing applies at this node, which is an answer.
-fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Option<Vec<Value>> {
+fn computed_can_entries(
+    data: &Map<String, Value>,
+    context: CanContext,
+    color: StyleItemPropertiesLookup<'_>,
+) -> Option<Vec<Value>> {
     let (at, format, item) = node_site(data, context)?;
     let site = crate::domain::apply::operation_site(&at, context)?;
     // Содержимое заимствованного узла без своего файла принадлежит
@@ -147,7 +160,16 @@ fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Optio
         crate::domain::apply::operation_registry()
             .descriptors()
             .iter()
-            .filter(|descriptor| descriptor.applies_to_node(&site, format, item))
+            .filter(|descriptor| {
+                descriptor.applies_with_observations(
+                    &site,
+                    &crate::domain::apply::observation_lookup_with_style_properties(
+                        &|_| format,
+                        &|_| item,
+                        color,
+                    ),
+                )
+            })
             .filter(|descriptor| !inherited || descriptor.content_resource().is_none())
             .map(|descriptor| {
                 json!({
@@ -161,11 +183,19 @@ fn computed_can_entries(data: &Map<String, Value>, context: CanContext) -> Optio
 
 /// Every `view` answer of a node with a computed dictionary carries `can`:
 /// what `apply` accepts here is part of the answer, not a separate question.
+#[cfg(test)]
 pub(super) fn attach_can(data: &mut Value, context: CanContext) {
+    attach_can_with_color(data, context, &|_| None);
+}
+pub(super) fn attach_can_with_color(
+    data: &mut Value,
+    context: CanContext,
+    color: StyleItemPropertiesLookup<'_>,
+) {
     let Some(node) = data.as_object_mut() else {
         return;
     };
-    if let Some(entries) = computed_can_entries(node, context) {
+    if let Some(entries) = computed_can_entries(node, context, color) {
         node.insert("can".to_string(), Value::Array(entries));
     }
 }
@@ -180,7 +210,7 @@ pub(super) fn operation_node(
     at: &str,
     context: CanContext,
 ) -> Result<Value, ReadModeError> {
-    operation_node_with(data, operation, at, context, &|_| None)
+    operation_node_with(data, operation, at, context, &|_| None, &|_| None)
 }
 
 /// The same with the role of an ancestor form item, read by the caller: a
@@ -192,6 +222,7 @@ pub(super) fn operation_node_with(
     at: &str,
     context: CanContext,
     ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    color: StyleItemPropertiesLookup<'_>,
 ) -> Result<Value, ReadModeError> {
     let data = data
         .as_object()
@@ -209,9 +240,10 @@ pub(super) fn operation_node_with(
         return Err(retired_operation_contract(
             operation,
             &site,
-            (format, item),
+            (format, item.and_then(FormObservation::item_role)),
             inherited_node(data),
             ancestor_role,
+            color,
         ));
     };
     if inherited_node(data) && descriptor.content_resource().is_some() {
@@ -219,7 +251,14 @@ pub(super) fn operation_node_with(
             "operation `{operation}` writes content this borrowed node inherits from the parent; read the parent named by props.extends"
         )));
     }
-    if !descriptor.applies_to_node(&site, format, item) {
+    if !descriptor.applies_with_observations(
+        &site,
+        &crate::domain::apply::observation_lookup_with_style_properties(
+            &|_| format,
+            &|_| item,
+            color,
+        ),
+    ) {
         let kind = owner
             .segments()
             .last()
@@ -228,7 +267,14 @@ pub(super) fn operation_node_with(
             "operation `{operation}` does not apply to {kind}"
         )));
     }
-    let mut contract = descriptor.argument_contract_at(&site);
+    let mut contract = descriptor.argument_contract_at_with_observations(
+        &site,
+        &crate::domain::apply::observation_lookup_with_style_properties(
+            &|_| format,
+            &|_| item,
+            color,
+        ),
+    );
     // Командная панель принимает только кнопки: её контракт `item.add`
     // публикует один вид, как и отвечает писатель (#1447).
     let command_bar = data
@@ -281,6 +327,7 @@ fn retired_operation_contract(
     (format, item): (Option<TemplateFormat>, Option<FormItemRole>),
     inherited: bool,
     ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    color: StyleItemPropertiesLookup<'_>,
 ) -> ReadModeError {
     let Some(retired) = crate::domain::apply::retired_operation(operation) else {
         return ReadModeError::bad_value(format!(
@@ -303,13 +350,16 @@ fn retired_operation_contract(
     let owner = site.at();
     let format_of = |at: &QualifiedAddress| if at == owner { format } else { None };
     let role_of = |at: &QualifiedAddress| {
-        if at == owner {
-            item
-        } else {
-            ancestor_role(at)
-        }
+        if at == owner { item } else { ancestor_role(at) }.map(FormObservation::Item)
     };
-    match retired.replacement_target(site, crate::domain::apply::operation_registry().context(), &format_of, &role_of) {
+    let observations =
+        crate::domain::apply::observation_lookup_with_style_properties(&format_of, &role_of, color);
+    let replacement = retired.replacement_with_observations(
+        site,
+        crate::domain::apply::operation_registry().context(),
+        &observations,
+    );
+    match replacement {
         Some(target) => {
             let contract = format!("{target}.Can.{}", retired.replacement());
             let mut error = ReadModeError::bad_value(format!(
@@ -350,6 +400,71 @@ mod operation_dictionary_tests {
     /// Реквизит и команда формы названы по своему узлу, как у объекта
     /// метаданных (#1465): одно имя, а контракт выбирает адрес — у формы
     /// контракт писателя формы, у объекта — члена метаданных.
+    #[test]
+    fn column_type_can_and_contract_require_a_verified_valuetable_parent() {
+        let at = "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value";
+        let context = super::configuration_context();
+        for (parent_type, allowed) in [
+            ("ValueTable", true),
+            ("ValueTree", false),
+            ("boolean", false),
+            ("", false),
+        ] {
+            let mut data = json!({"at":at,"kind":"Column","props":{"type":"DefinedType.Existing","parentType":parent_type}});
+            super::attach_can(&mut data, context);
+            assert_eq!(
+                data["can"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["op"] == "props.set"),
+                allowed,
+                "{parent_type}"
+            );
+            assert_eq!(
+                super::operation_node(&data, "props.set", at, context).is_ok(),
+                allowed,
+                "{parent_type}"
+            );
+        }
+        let root = "main:Catalog.Items.Form.Main";
+        let mut data = json!({"at":root,"kind":"Form","props":{}});
+        super::attach_can(&mut data, context);
+        assert!(data["can"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["op"] == "props.set"));
+        assert!(super::operation_node(&data, "props.set", root, context).is_ok());
+    }
+
+    #[test]
+    fn column_add_contract_and_dictionary_require_a_valuetable_attribute() {
+        let at = "main:Catalog.Items.Form.Main.Attribute.Rows";
+        let context = super::configuration_context();
+        for (type_name, allowed) in [
+            ("ValueTable", true),
+            ("ValueTree", false),
+            ("boolean", false),
+            ("", false),
+        ] {
+            let mut data = json!({"at":at,"kind":"Attribute","props":{"type":type_name}});
+            super::attach_can(&mut data, context);
+            assert_eq!(
+                data["can"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["op"] == "column.add"),
+                allowed
+            );
+            assert_eq!(
+                super::operation_node(&data, "column.add", at, context).is_ok(),
+                allowed
+            );
+        }
+    }
+
     #[test]
     fn a_shared_operation_name_publishes_the_contract_of_the_addressed_node() {
         use unica_forms::operations::FormOperation;
@@ -425,16 +540,18 @@ mod operation_dictionary_tests {
         let context = super::configuration_context();
         let event = format!("{field}.Event.OnChange");
         let data = json!({"at": event, "kind": "Event"});
-        let error = super::operation_node_with(&data, "element.add", &event, context, &roles)
-            .expect_err("a retired operation has no contract");
+        let error =
+            super::operation_node_with(&data, "element.add", &event, context, &roles, &|_| None)
+                .expect_err("a retired operation has no contract");
         assert_eq!(
             error.next(),
             Some(format!("{form}.Item.Header.Can.item.add").as_str()),
             "{error}"
         );
         let data = json!({"at": bar, "kind": "Item", "props": {"tag": "[AutoCommandBar]"}});
-        let error = super::operation_node_with(&data, "element.remove", &bar, context, &roles)
-            .expect_err("a retired operation has no contract");
+        let error =
+            super::operation_node_with(&data, "element.remove", &bar, context, &roles, &|_| None)
+                .expect_err("a retired operation has no contract");
         assert_eq!(error.next(), None, "{error}");
         let data = json!({
             "at": form,

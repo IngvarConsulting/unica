@@ -8,7 +8,8 @@ pub const DATA_CORE_NS: &str = "http://v8.1c.ru/8.1/data/core";
 /// Only the `v8:content` of the `lang` item changes; the other `v8:item`s
 /// keep their bytes. A missing `lang` item is appended after the last one.
 /// An empty `text` removes the `lang` item, and a property left without items
-/// becomes empty. Element names keep the prefixes the source uses.
+/// becomes empty when no other content remains. Opening tags and local
+/// namespace declarations survive; new children bind their prefixes in scope.
 pub fn replace_language_value(
     source: &str,
     property: roxmltree::Node<'_, '_>,
@@ -16,28 +17,41 @@ pub fn replace_language_value(
     lang: &str,
     text: &str,
 ) -> String {
-    replace_language_value_impl(source, property, indent, lang, text, false)
+    replace_language_value_with_empty(
+        source,
+        property,
+        indent,
+        lang,
+        text,
+        EmptyTranslation::Remove,
+    )
 }
 
-/// Replace text while retaining local namespace declarations. New metadata
-/// input settings use this entry point; existing consumers retain their API.
-pub fn replace_language_value_preserving_namespaces(
+/// Set a language value, retaining an explicit content item when `text` is empty.
+/// Existing headers, namespace bindings and unrelated translations keep their bytes.
+pub fn replace_language_value_keeping_empty(
     source: &str,
     property: roxmltree::Node<'_, '_>,
     indent: &str,
     lang: &str,
     text: &str,
 ) -> String {
-    replace_language_value_impl(source, property, indent, lang, text, true)
+    replace_language_value_with_empty(source, property, indent, lang, text, EmptyTranslation::Keep)
 }
 
-fn replace_language_value_impl(
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EmptyTranslation {
+    Remove,
+    Keep,
+}
+
+fn replace_language_value_with_empty(
     source: &str,
     property: roxmltree::Node<'_, '_>,
     indent: &str,
     lang: &str,
     text: &str,
-    preserve_namespaces: bool,
+    empty: EmptyTranslation,
 ) -> String {
     fn core_child<'a, 'input>(
         node: roxmltree::Node<'a, 'input>,
@@ -57,30 +71,47 @@ fn replace_language_value_impl(
             .unwrap_or(open.len());
         &open[..end]
     }
-    fn opening_end(raw: &str) -> usize {
+    // Locate the opening delimiter without mistaking an attribute's `>` for it.
+    fn opening_end(xml: &str) -> usize {
         let mut quote = None;
-        raw.bytes()
-            .enumerate()
-            .find_map(|(i, b)| {
-                if let Some(q) = quote {
-                    if b == q {
-                        quote = None;
-                    }
-                } else if matches!(b, b'\'' | b'"') {
-                    quote = Some(b);
-                } else if b == b'>' {
-                    return Some(i + 1);
-                }
-                None
-            })
-            .expect("parsed XML opening element")
+        for (offset, ch) in xml.char_indices() {
+            match (quote, ch) {
+                (Some(current), ch) if current == ch => quote = None,
+                (None, '\'' | '"') => quote = Some(ch),
+                (None, '>') => return offset + 1,
+                _ => {}
+            }
+        }
+        unreachable!("a parsed element has an opening delimiter")
     }
-    fn wrap(raw: &str, name: &str, content: &str) -> String {
-        let open = &raw[..opening_end(raw)];
-        let open = open
-            .strip_suffix("/>")
-            .map_or_else(|| open.to_owned(), |s| format!("{s}>"));
-        format!("{open}{content}</{name}>")
+    fn prefix_of(name: &str) -> Option<&str> {
+        name.split_once(':').map(|(prefix, _)| prefix)
+    }
+    // A sibling's declaration is not in scope on the new child. Bind the
+    // preferred spelling on that child instead of rebinding its parent.
+    fn core_name(parent: roxmltree::Node<'_, '_>, prefix: Option<&str>) -> (String, String) {
+        let name = prefix.map_or_else(String::new, |prefix| format!("{prefix}:"));
+        let declaration = if parent.lookup_namespace_uri(prefix) == Some(DATA_CORE_NS) {
+            String::new()
+        } else {
+            let attribute =
+                prefix.map_or_else(|| "xmlns".to_string(), |prefix| format!("xmlns:{prefix}"));
+            format!(" {attribute}=\"{DATA_CORE_NS}\"")
+        };
+        (name, declaration)
+    }
+    // Replace only the inner image, preserving the original opening tag,
+    // including locally declared namespaces and attributes.
+    fn with_inner(xml: &str, name: &str, inner: &str) -> String {
+        let end = opening_end(xml);
+        if xml[..end].ends_with("/>") {
+            format!("{}>{inner}</{name}>", &xml[..end - 2])
+        } else {
+            let close = xml
+                .rfind("</")
+                .expect("a nonempty element has a closing tag");
+            format!("{}{inner}{}", &xml[..end], &xml[close..])
+        }
     }
     let range = property.range();
     let existing = &source[range.clone()];
@@ -98,75 +129,71 @@ fn replace_language_value_impl(
         .collect::<Vec<_>>();
     debug_assert!(!lang.is_empty(), "a multilingual value needs a language");
     if items.is_empty() {
-        if text.is_empty() {
-            return if preserve_namespaces {
-                wrap(existing, qname, "")
-            } else {
-                format!("<{qname}/>")
-            };
+        if text.is_empty() && empty == EmptyTranslation::Remove {
+            return existing.to_string();
         }
-        // New lines follow the line endings the descriptor already uses.
-        let eol = if source.contains("\r\n") {
-            "\r\n"
+        let prefix = if property.lookup_namespace_uri(None) == Some(DATA_CORE_NS) {
+            None
         } else {
-            "\n"
+            Some(property.lookup_prefix(DATA_CORE_NS).unwrap_or("v8"))
         };
-        let (core, declaration) = match property.lookup_prefix(DATA_CORE_NS) {
-            Some("") => (String::new(), String::new()),
-            Some(prefix) => (format!("{prefix}:"), String::new()),
-            None => {
-                let mut prefix = "v8".to_owned();
-                while preserve_namespaces && property.lookup_namespace_uri(Some(&prefix)).is_some()
-                {
-                    prefix.push('_');
-                }
-                (
-                    format!("{prefix}:"),
-                    format!(" xmlns:{prefix}=\"{DATA_CORE_NS}\""),
-                )
-            }
+        let (core, declaration) = core_name(property, prefix);
+        let end = opening_end(existing);
+        let inner = if existing[..end].ends_with("/>") {
+            ""
+        } else {
+            &existing[end..existing.rfind("</").expect("a closing tag")]
         };
-        if !preserve_namespaces {
-            return format!("<{qname}{declaration}>{eol}{indent}\t<{core}item>{eol}{indent}\t\t<{core}lang>{lang_text}</{core}lang>{eol}{indent}\t\t<{core}content>{escaped}</{core}content>{eol}{indent}\t</{core}item>{eol}{indent}</{qname}>");
-        }
-        let content = format!("{eol}{indent}\t<{core}item{declaration}>{eol}{indent}\t\t<{core}lang>{lang_text}</{core}lang>{eol}{indent}\t\t<{core}content>{escaped}</{core}content>{eol}{indent}\t</{core}item>{eol}{indent}");
-        return wrap(existing, qname, &content);
+        // Keep existing nonstructural content byte for byte. A new formatted
+        // item follows the local line ending when one is available.
+        let newline = existing
+            .find(['\r', '\n'])
+            .map(|offset| range.start + offset)
+            .or_else(|| source[..range.start].rfind(['\r', '\n']))
+            .or_else(|| {
+                source[range.end..]
+                    .find(['\r', '\n'])
+                    .map(|offset| range.end + offset)
+            });
+        let eol = match newline.map(|offset| (offset, source.as_bytes()[offset])) {
+            Some((offset, b'\r')) if source.as_bytes().get(offset + 1) == Some(&b'\n') => "\r\n",
+            Some((offset, b'\n')) if offset > 0 && source.as_bytes()[offset - 1] == b'\r' => "\r\n",
+            Some((_, b'\r')) => "\r",
+            _ => "\n",
+        };
+        let item = format!(
+            "{eol}{indent}\t<{core}item{declaration}>{eol}{indent}\t\t<{core}lang>{lang_text}</{core}lang>{eol}{indent}\t\t<{core}content>{escaped}</{core}content>{eol}{indent}\t</{core}item>{eol}{indent}"
+        );
+        return with_inner(existing, qname, &format!("{inner}{item}"));
     }
     let target = items.iter().copied().find(|item| {
         core_child(*item, "lang").is_some_and(|node| crate::read::direct_text(node).trim() == lang)
     });
     let mut updated = existing.to_string();
     match target {
-        Some(item) if !text.is_empty() => {
+        Some(item) if !text.is_empty() || empty == EmptyTranslation::Keep => {
             if let Some(content) = core_child(item, "content") {
+                if !content.children().any(|node| node.is_element())
+                    && crate::read::direct_text(content) == text
+                {
+                    return updated;
+                }
                 let content_name = qualified_name(source, content);
                 updated.replace_range(
                     local(content.range()),
-                    &if preserve_namespaces {
-                        wrap(&source[content.range()], content_name, &escaped)
-                    } else {
-                        format!("<{content_name}>{escaped}</{content_name}>")
-                    },
+                    &with_inner(&source[content.range()], content_name, &escaped),
                 );
             } else {
                 let language = core_child(item, "lang").expect("the item was found by its lang");
-                let core = qualified_name(source, language)
-                    .rsplit_once(':')
-                    .map_or(String::new(), |(prefix, _)| format!("{prefix}:"));
+                let (core, declaration) =
+                    core_name(item, prefix_of(qualified_name(source, language)));
                 updated.insert_str(
                     local(language.range()).end,
-                    &format!("<{core}content>{escaped}</{core}content>"),
+                    &format!("<{core}content{declaration}>{escaped}</{core}content>"),
                 );
             }
         }
         Some(item) => {
-            if items.len() == 1 {
-                return if preserve_namespaces {
-                    wrap(existing, qname, "")
-                } else {
-                    format!("<{qname}/>")
-                };
-            }
             let item_range = local(item.range());
             let line_start = existing[..item_range.start]
                 .rfind('\n')
@@ -177,7 +204,6 @@ fn replace_language_value_impl(
                         .all(|ch| ch == '\t' || ch == ' ')
                 });
             let removed = match line_start {
-                // The item owns its line: drop the line with its terminator.
                 Some(start) => {
                     let rest = &existing[item_range.end..];
                     let eol = if rest.starts_with("\r\n") {
@@ -190,24 +216,21 @@ fn replace_language_value_impl(
                 None => item_range,
             };
             updated.replace_range(removed, "");
+            let end = opening_end(&updated);
+            let close = updated
+                .rfind("</")
+                .expect("a property containing an item has a closing tag");
+            if updated[end..close]
+                .chars()
+                .all(|ch| matches!(ch, ' ' | '\t' | '\r' | '\n'))
+            {
+                return format!("{}/>", &updated[..end - 1]);
+            }
         }
-        None if text.is_empty() => {}
+        None if text.is_empty() && empty == EmptyTranslation::Remove => {}
         None => {
             let last = *items.last().expect("items are not empty");
-            let core = qualified_name(source, last)
-                .rsplit_once(':')
-                .map_or(String::new(), |(prefix, _)| format!("{prefix}:"));
-            // The last item may declare its core prefix locally. A new sibling
-            // must carry that binding itself instead of relying on the sibling.
-            let prefix = core.strip_suffix(':');
-            let declaration = if !preserve_namespaces
-                || property.lookup_namespace_uri(prefix) == Some(DATA_CORE_NS)
-            {
-                String::new()
-            } else {
-                let name = prefix.map_or_else(|| "xmlns".to_owned(), |p| format!("xmlns:{p}"));
-                format!(" {name}=\"{DATA_CORE_NS}\"")
-            };
+            let (core, declaration) = core_name(property, prefix_of(qualified_name(source, last)));
             let last = local(last.range());
             let line_start = existing[..last.start]
                 .rfind('\n')
@@ -219,13 +242,9 @@ fn replace_language_value_impl(
                 } else {
                     "\n"
                 };
-                format!(
-                    "{eol}{item_indent}<{core}item{declaration}>{eol}{item_indent}\t<{core}lang>{lang_text}</{core}lang>{eol}{item_indent}\t<{core}content>{escaped}</{core}content>{eol}{item_indent}</{core}item>"
-                )
+                format!("{eol}{item_indent}<{core}item{declaration}>{eol}{item_indent}\t<{core}lang>{lang_text}</{core}lang>{eol}{item_indent}\t<{core}content>{escaped}</{core}content>{eol}{item_indent}</{core}item>")
             } else {
-                format!(
-                    "<{core}item{declaration}><{core}lang>{lang_text}</{core}lang><{core}content>{escaped}</{core}content></{core}item>"
-                )
+                format!("<{core}item{declaration}><{core}lang>{lang_text}</{core}lang><{core}content>{escaped}</{core}content></{core}item>")
             };
             updated.insert_str(last.end, &item);
         }
@@ -234,61 +253,4 @@ fn replace_language_value_impl(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn localized_replacement_preserves_local_namespace_bindings() {
-        let md = "http://v8.1c.ru/8.3/MDClasses";
-        for source in [
-            format!(r#"<v8:Format xmlns:v8="{md}"/>"#),
-            format!(
-                r#"<v8:Format xmlns:v8="{md}"><c:item xmlns:c="{DATA_CORE_NS}"><c:lang>en</c:lang><c:content>ND=1</c:content></c:item></v8:Format>"#
-            ),
-            format!(
-                r#"<Format xmlns="{md}"><item xmlns="{DATA_CORE_NS}"><lang>en</lang><content>ND=1</content></item></Format>"#
-            ),
-            format!(
-                r#"<Format xmlns="{md}" xmlns:d="{DATA_CORE_NS}"><d:item><d:lang>ru</d:lang><c:content xmlns:c="{DATA_CORE_NS}" xmlns:note="urn:a>b">old</c:content></d:item></Format>"#
-            ),
-        ] {
-            let parsed = roxmltree::Document::parse(&source).unwrap();
-            let changed = replace_language_value_preserving_namespaces(
-                &source,
-                parsed.root_element(),
-                "",
-                "ru",
-                "ЧДЦ=2",
-            );
-            let result =
-                roxmltree::Document::parse(&changed).unwrap_or_else(|e| panic!("{e}: {changed}"));
-            assert_eq!(result.root_element().tag_name().namespace(), Some(md));
-            let item = result
-                .root_element()
-                .children()
-                .find(|n| {
-                    n.is_element()
-                        && n.children()
-                            .any(|c| c.tag_name().name() == "lang" && c.text() == Some("ru"))
-                })
-                .unwrap();
-            for node in item.descendants().filter(|n| n.is_element()) {
-                assert_eq!(node.tag_name().namespace(), Some(DATA_CORE_NS), "{changed}");
-            }
-            assert_eq!(
-                item.children()
-                    .find(|n| n.tag_name().name() == "content")
-                    .unwrap()
-                    .text(),
-                Some("ЧДЦ=2")
-            );
-            if source.contains("ND=1") {
-                let en = parsed
-                    .root_element()
-                    .children()
-                    .find(|n| n.is_element())
-                    .unwrap();
-                assert!(changed.contains(&source[en.range()]));
-            }
-        }
-    }
-}
+mod tests;

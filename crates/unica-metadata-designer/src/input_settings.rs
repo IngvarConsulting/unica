@@ -104,7 +104,7 @@ pub(crate) fn replacements(
                 continue;
             }
             let indent = crate::edit::meta_edit_line_indent(source, property.range().start);
-            let changed = unica_xml_format::localized::replace_language_value_preserving_namespaces(
+            let changed = unica_xml_format::localized::replace_language_value(
                 source, *property, &indent, lang, value,
             );
             let end = opening_end(&changed);
