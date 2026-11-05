@@ -318,7 +318,7 @@ pub(crate) fn write_utf8_bom(path: &Path, content: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod mutation_tests {
+mod medium_mutation_tests {
     use super::{guard_active_format_owner, read_utf8_sig_snapshot, write_utf8_bom};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};

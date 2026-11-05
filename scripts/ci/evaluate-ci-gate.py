@@ -18,7 +18,7 @@ LINUX = "ubuntu-latest"
 # lazily there would pull Cargo helpers into the gate, so the table is small
 # and its equality is a test.
 PROFILE_RUNNERS = {
-    "pr": [LINUX, "macos-15"], "queue": [LINUX, "macos-15"], "main": [LINUX, "macos-15"],
+    "pr": [LINUX, "macos-15"], "queue": [LINUX], "main": [LINUX, "macos-15"],
     "release": [LINUX, "macos-15"], "large": [LINUX, "macos-15", "windows-latest"],
 }
 

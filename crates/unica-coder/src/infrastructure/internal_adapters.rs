@@ -2918,6 +2918,15 @@ analyze_timeout_seconds = 900
 
     #[test]
     fn legacy_diagnostics_paths_are_rejected_before_any_runner_call() {
+        assert_legacy_diagnostics_path_refusal(false);
+    }
+
+    #[test]
+    fn legacy_diagnostics_symlink_path_is_rejected_before_any_runner_call() {
+        assert_legacy_diagnostics_path_refusal(true);
+    }
+
+    fn assert_legacy_diagnostics_path_refusal(with_link: bool) {
         let context = temp_context("diagnostics-path-containment");
         fs::create_dir_all(context.workspace_root.join("src")).unwrap();
         let outside = context.workspace_root.with_file_name(format!(
@@ -2935,12 +2944,22 @@ analyze_timeout_seconds = 900
             "../outside/Module.bsl".to_string(),
             absolute_outside_path.display().to_string(),
         ];
-        if let Some(symlink_result) = unica_workspace::test_support::create_dir_symlink_for_test(
-            &outside,
-            context.workspace_root.join("src").join("escape"),
-        ) {
-            symlink_result.unwrap();
-            paths.push("escape/Module.bsl".to_string());
+        if with_link {
+            let outcome = unica_workspace::test_support::create_directory_link_fixture_for_test(
+                &outside,
+                context.workspace_root.join("src").join("escape"),
+            )
+            .unwrap();
+            if outcome != unica_workspace::test_support::FileLinkFixtureOutcome::Created {
+                cleanup_context(&context);
+                fs::remove_dir_all(&outside).unwrap();
+                unica_process::test_support::skip_without_host_capability(
+                    unica_process::test_support::HostCapability::Symlink,
+                    "diagnostics containment fixture needs directory links",
+                );
+                return;
+            }
+            paths = vec!["escape/Module.bsl".to_string()];
         }
 
         for path in paths {

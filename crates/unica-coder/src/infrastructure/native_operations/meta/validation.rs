@@ -3103,6 +3103,221 @@ mod tests {
             assert_eq!(actual, expected, "{enum_name}");
         }
     }
+    const TURNOVER_STANDARD_ATTRIBUTES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/acceptance/workspace-turnover-attributes/src/AccumulationRegisters/Остатки.xml"
+    ));
+    const BALANCE_STANDARD_ATTRIBUTES: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/acceptance/workspace-register-dimensions/src/AccumulationRegisters/Остатки.xml"
+    ));
+
+    fn checked_accumulation_register(xml: &str) -> unica_metadata::MetaValidationData {
+        let registration = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/acceptance/workspace-turnover-attributes/src/Configuration.xml"
+        ));
+        let language = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/acceptance/workspace-turnover-attributes/src/Languages/Русский.xml"));
+        let proof = subject(
+            "AccumulationRegister.Остатки",
+            Some(xml),
+            registration,
+            &[("Language.Русский", language)],
+        );
+        MetadataValidator::new(unica_metadata_designer::validation::FormRootValidator(
+            unica_forms_designer::root::require_form_root,
+        ))
+        .validate(&proof, &context())
+    }
+
+    fn without_standard_attribute(xml: &str, name: &str) -> String {
+        let start = xml
+            .find(&format!("<xr:StandardAttribute name=\"{name}\">"))
+            .unwrap();
+        let end = start
+            + xml[start..].find("</xr:StandardAttribute>").unwrap()
+            + "</xr:StandardAttribute>".len();
+        let mut changed = xml.to_owned();
+        changed.replace_range(start..end, "");
+        changed
+    }
+
+    fn standard_warning(result: &unica_metadata::MetaValidationData, message: &str) -> bool {
+        result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == MetaDiagnosticCode::ValidationWarning
+                && diagnostic.severity == MetaDiagnosticSeverity::Warning
+                && diagnostic.field.as_deref() == Some("standardAttributes")
+                && diagnostic.message == message
+        })
+    }
+
+    #[test]
+    fn native_turnover_standard_attributes_do_not_require_record_type() {
+        for xml in [TURNOVER_STANDARD_ATTRIBUTES.to_owned(), TURNOVER_STANDARD_ATTRIBUTES.replacen(
+            "<v8:content>Остатки</v8:content>",
+            "<v8:content>Очень длинное имя регистра для независимого предупреждения о длине команды</v8:content>", 1,
+        )] {
+            let result = checked_accumulation_register(&xml);
+            assert_eq!(result.status, MetaValidationStatus::Passed, "{:?}", result.diagnostics);
+            assert!(!result.diagnostics.iter().any(|diagnostic| {
+                diagnostic.field.as_deref() == Some("standardAttributes")
+                    && diagnostic.message.contains("RecordType")
+            }), "{:?}", result.diagnostics);
+            assert!(result.diagnostics.iter().any(|diagnostic| diagnostic.message.contains("no registrar document found")), "independent diagnostic lost: {:?}", result.diagnostics);
+            if xml != TURNOVER_STANDARD_ATTRIBUTES {
+                assert!(result.diagnostics.iter().any(|diagnostic| {
+                    diagnostic.code == MetaDiagnosticCode::CommandTextUpperLimit
+                        && diagnostic.field.as_deref() == Some("properties.Synonym")
+                }), "independent synonym diagnostic lost: {:?}", result.diagnostics);
+            }
+        }
+    }
+
+    #[test]
+    fn accumulation_register_standard_attributes_keep_balance_and_real_missing_checks() {
+        let balance = checked_accumulation_register(BALANCE_STANDARD_ATTRIBUTES);
+        assert_eq!(
+            balance.status,
+            MetaValidationStatus::Passed,
+            "{:?}",
+            balance.diagnostics
+        );
+        assert!(
+            !balance
+                .diagnostics
+                .iter()
+                .any(|d| d.field.as_deref() == Some("standardAttributes")),
+            "{:?}",
+            balance.diagnostics
+        );
+        let missing_record_type = checked_accumulation_register(&without_standard_attribute(
+            BALANCE_STANDARD_ATTRIBUTES,
+            "RecordType",
+        ));
+        assert!(
+            standard_warning(
+                &missing_record_type,
+                "5. Missing StandardAttributes: RecordType"
+            ),
+            "{:?}",
+            missing_record_type.diagnostics
+        );
+        for xml in [TURNOVER_STANDARD_ATTRIBUTES, BALANCE_STANDARD_ATTRIBUTES] {
+            for name in ["Active", "LineNumber", "Recorder", "Period"] {
+                let missing = checked_accumulation_register(&without_standard_attribute(xml, name));
+                assert!(
+                    standard_warning(&missing, &format!("5. Missing StandardAttributes: {name}")),
+                    "{:?}",
+                    missing.diagnostics
+                );
+            }
+        }
+        let broken = checked_accumulation_register(&TURNOVER_STANDARD_ATTRIBUTES.replacen(
+            "name=\"Active\"",
+            "",
+            1,
+        ));
+        assert_eq!(broken.status, MetaValidationStatus::Failed);
+        assert!(
+            broken
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == MetaDiagnosticSeverity::Error
+                    && d.field.as_deref() == Some("standardAttributes")
+                    && d.message.contains("without 'name'")),
+            "{:?}",
+            broken.diagnostics
+        );
+        let inapplicable = checked_accumulation_register(&TURNOVER_STANDARD_ATTRIBUTES.replace(
+            "</StandardAttributes>",
+            "<xr:StandardAttribute name=\"RecordType\"/></StandardAttributes>",
+        ));
+        assert!(
+            standard_warning(
+                &inapplicable,
+                "5. Unexpected StandardAttribute 'RecordType' for AccumulationRegister"
+            ),
+            "{:?}",
+            inapplicable.diagnostics
+        );
+    }
+
+    #[test]
+    fn accumulation_register_unknown_kind_does_not_invent_record_type_applicability() {
+        let without_active = without_standard_attribute(TURNOVER_STANDARD_ATTRIBUTES, "Active");
+        for kind in [
+            "",
+            "<RegisterType/>",
+            "<RegisterType>UnknownKind</RegisterType>",
+            "<RegisterType><Nested>Balance</Nested></RegisterType>",
+            "<RegisterType>Turnovers<Nested/></RegisterType>",
+            "<RegisterType>Turnovers</RegisterType><RegisterType>Balance</RegisterType>",
+            "<foreign:RegisterType xmlns:foreign=\"urn:foreign\">Balance</foreign:RegisterType>",
+            "<RegisterType extra=\"damaged\">Balance</RegisterType>",
+        ] {
+            let xml = without_active.replace("<RegisterType>Turnovers</RegisterType>", kind);
+            let result = checked_accumulation_register(&xml);
+            assert!(
+                standard_warning(&result, "5. Missing StandardAttributes: Active"),
+                "{kind}: {:?}",
+                result.diagnostics
+            );
+            assert!(standard_warning(&result, "5. Cannot determine RecordType applicability: RegisterType is missing or invalid"), "{kind}: {:?}", result.diagnostics);
+            assert!(
+                !result
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.message.contains("Missing StandardAttributes")
+                        && d.message.contains("RecordType")),
+                "{kind}: {:?}",
+                result.diagnostics
+            );
+            if kind.contains("UnknownKind") {
+                assert_eq!(result.status, MetaValidationStatus::Failed);
+                assert!(
+                    result
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.severity == MetaDiagnosticSeverity::Error
+                            && d.field.as_deref() == Some("properties")
+                            && d.message.contains("UnknownKind")),
+                    "existing enum diagnostic lost: {:?}",
+                    result.diagnostics
+                );
+            }
+        }
+        let alias = TURNOVER_STANDARD_ATTRIBUTES.replace("<RegisterType>Turnovers</RegisterType>", "<md:RegisterType xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\">Turnovers</md:RegisterType>");
+        let result = checked_accumulation_register(&alias);
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.field.as_deref() == Some("standardAttributes")),
+            "{:?}",
+            result.diagnostics
+        );
+        for native in ["Balance", "Turnovers"] {
+            for foreign_first in [true, false] {
+                let own = format!("<RegisterType>{native}</RegisterType>");
+                let foreign = "<foreign:RegisterType xmlns:foreign=\"urn:foreign\">UnknownKind</foreign:RegisterType>";
+                let kind = if foreign_first {
+                    format!("{foreign}{own}")
+                } else {
+                    format!("{own}{foreign}")
+                };
+                let xml = TURNOVER_STANDARD_ATTRIBUTES
+                    .replace("<RegisterType>Turnovers</RegisterType>", &kind);
+                let result = checked_accumulation_register(&xml);
+                assert_eq!(
+                    standard_warning(&result, "5. Missing StandardAttributes: RecordType"),
+                    native == "Balance",
+                    "{kind}: {:?}",
+                    result.diagnostics
+                );
+                assert!(!standard_warning(&result, "5. Cannot determine RecordType applicability: RegisterType is missing or invalid"), "{kind}: {:?}", result.diagnostics);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

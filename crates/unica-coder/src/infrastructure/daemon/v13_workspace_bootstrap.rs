@@ -1083,7 +1083,7 @@ pub(super) fn project_config_recipe(source_map: &ProjectSourceMap) -> Option<Str
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{inspect_infobase_target, project_config_recipe};
     use unica_source_contract::{ProjectSourceMap, ProjectSourceSet, SourceFormat, SourceSetKind};
 

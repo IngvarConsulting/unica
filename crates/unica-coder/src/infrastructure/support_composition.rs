@@ -428,4 +428,4 @@ pub(crate) fn plan_object_rule(
 
 #[cfg(test)]
 #[path = "../../tests/platform/support_tests.rs"]
-pub(crate) mod tests;
+pub(crate) mod medium_tests;
