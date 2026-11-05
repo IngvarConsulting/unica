@@ -2076,6 +2076,7 @@ mod medium_tests {
         cleanup(&context);
     }
 
+    /// rule: INV.SOURCE.WRITE-TARGET-KIND
     #[test]
     fn platform_xml_source_target_revalidation_rejects_changed_descriptor_identity() {
         let context = fixture(
@@ -2459,6 +2460,7 @@ mod medium_tests {
 
     /// The complete `(target kind, policy)` table, so widening one cell cannot
     /// pass unnoticed because only its own scenario was covered.
+    /// rule: INV.SOURCE.WRITE-TARGET-KIND
     #[test]
     fn platform_xml_target_kind_policy_table_is_closed() {
         let context = fixture(
@@ -2550,6 +2552,7 @@ mod medium_tests {
 
     /// A handle revalidates under the policy that issued it, so a source-root
     /// handle keeps resolving while a module handle can never widen into one.
+    /// rule: INV.SOURCE.WRITE-TARGET-KIND
     #[test]
     fn platform_xml_source_root_handle_revalidates_without_widening() {
         let context = fixture(
@@ -3364,6 +3367,7 @@ mod medium_tests {
         cleanup(&context);
     }
 
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
     #[test]
     fn platform_xml_object_target_rejects_xml_decoded_version_equality() {
         let context = fixture(
