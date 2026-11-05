@@ -583,6 +583,7 @@ impl std::fmt::Debug for MetaElementDefinition {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetaElementUpdateInput {
+    pub choice: crate::MemberChoiceChanges,
     pub name: String,
     pub new_name: Option<String>,
     pub synonym: Option<String>,
@@ -601,6 +602,7 @@ pub struct MetaElementUpdateInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetaElementUpdate {
+    pub choice: crate::MemberChoiceChanges,
     pub name: String,
     pub new_name: Option<String>,
     pub synonym: Option<String>,
@@ -964,6 +966,7 @@ impl MetaElementUpdate {
             && input.main_filter.is_none()
             && input.deny_incomplete_values.is_none()
             && input.type_reduction_mode.is_none()
+            && input.choice.0.is_empty()
         {
             return Err(invalid_operation(
                 field,
@@ -988,6 +991,18 @@ impl MetaElementUpdate {
             }
         }
         let spec = metadata_collection_spec(collection);
+        for (property, value) in &input.choice.0 {
+            if !matches!(
+                collection,
+                MetaCollection::Attributes | MetaCollection::Dimensions | MetaCollection::Resources
+            ) || !property.accepts(value)
+            {
+                return Err(invalid_operation(
+                    format!("{field}.{}", property.argument()),
+                    "invalid member choice setting",
+                ));
+            }
+        }
         validate_element_fields(
             spec,
             field,
@@ -1013,6 +1028,7 @@ impl MetaElementUpdate {
             main_filter: input.main_filter,
             deny_incomplete_values: input.deny_incomplete_values,
             type_reduction_mode: input.type_reduction_mode,
+            choice: input.choice,
         })
     }
 }
@@ -1842,6 +1858,14 @@ pub fn validate_metadata_operation_capabilities(
                         || scope.is_some())
                 {
                     return Err(invalid_operation(format!("elements[{index}].typeReductionMode"), "typeReductionMode is available only for direct information register dimensions"));
+                }
+                if !element.choice.0.is_empty()
+                    && !crate::member_choice_site(owner_kind, *collection, scope.is_some())
+                {
+                    return Err(invalid_operation(
+                        format!("elements[{index}].{}", element.choice.0[0].0.argument()),
+                        "choice settings are not supported for this owner/member",
+                    ));
                 }
             }
             let context = if scope.is_some() {

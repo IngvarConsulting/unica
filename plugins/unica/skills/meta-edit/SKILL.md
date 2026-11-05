@@ -313,6 +313,25 @@ Font/Border, повреждённый или отсутствующий Value н
 }
 ```
 
+### Настройки выбора существующего поля
+
+`attribute.set` поддерживает реквизиты шапки и табличной части Catalog/Document,
+а также реквизиты InformationRegister. У InformationRegister настройки также
+принимают `dimension.set` и `resource.set`. Перед правкой прочитай `Can` поля.
+
+В `values` доступны `choiceFoldersAndItems` (`Items/Folders/FoldersAndItems`),
+`choiceHistoryOnInput` (`Auto/DontUse`), `quickChoice` и `createOnInput`
+(`Auto/Use/DontUse`), `choiceForm` (например, `Catalog.Codes.Form.Choose`
+или `CommonForm.Choose`; пустая строка очищает настройку).
+Форма должна быть зарегистрированной управляемой формой того же source set.
+Читаются её дескриптор, XML формы и регистрация; изменение зависимости после
+preview делает токен непригодным. Настройки не меняют тип, UUID и прочие поля.
+
+Платформа хранит эти настройки и у скалярных полей и допускает форму другого
+владельца. Наличие настройки в XML само по себе не доказывает её действие
+в клиенте. Для `createOnInput` учитывай также `CreateOnInput` ссылочного объекта.
+Публичный сценарий — `S-1669-member-choice`.
+
 ### Запрет пустых значений измерения
 
 `dimension.set` у измерения регистра накопления, бухгалтерии или расчёта

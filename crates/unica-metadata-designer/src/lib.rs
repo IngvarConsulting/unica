@@ -83,4 +83,5 @@ pub mod borrowed_form;
 pub mod borrowed_object;
 
 mod dimension_reduction;
+mod member_choice;
 pub mod style_color;

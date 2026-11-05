@@ -77,6 +77,12 @@ MEASURED_MEDIUM_CASES = (
     # Full public preview/publication matrices over the 19 root descriptors.
     MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::root_comments::root_comments_preview_publish_read_and_repeat_preserve_native_companions"),
     MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::root_comments::root_comment_refusals_and_late_batch_failure_do_not_publish_any_file"),
+    # Public field-choice matrices use real preview/publication and retained reads.
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::member_choice::member_choice_roundtrip_preserves_identity_types_neighbors_and_noop"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::member_choice::member_choice_refuses_invalid_values_forms_context_and_malformed_preimage"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::member_choice::member_choice_saved_token_guards_form_payload_registration_and_owner"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::member_choice::member_choice_checks_final_form_after_later_removal_including_noop"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::member_choice::member_choice_exact_scope_preserves_same_named_neighbor_and_late_failure_is_atomic"),
     # Библиотечные проверки от 3 с в ворота `pr`: PR-прогон 39649205116,
     # ubuntu, 21.10.2026. Вместе ~150 с из ~330 с суммарного (не настенного)
     # времени тестов PR; настенная фаза исполнения тогда шла 92 с.

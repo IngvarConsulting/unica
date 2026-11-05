@@ -2224,6 +2224,11 @@ pub fn update_typed_element(
     let node_xml = xml_text[range.clone()].to_string();
     let mut flag_properties_range = None;
     let mut flag_edits = Vec::new();
+    flag_edits.extend(crate::member_choice::edits(
+        xml_text,
+        range.clone(),
+        &update.choice,
+    )?);
     for (tag, field, value) in [
         ("Master", "master", update.master),
         ("MainFilter", "mainFilter", update.main_filter),
