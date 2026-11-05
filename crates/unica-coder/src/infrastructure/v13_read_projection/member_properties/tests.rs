@@ -281,3 +281,164 @@ fn catalog_tabular_provider_profile_does_not_publish_unknown_names_or_raw_item_k
     assert_profile_properties_absent(&node);
     assert_eq!(node["props"]["required"], json!(true));
 }
+
+#[test]
+fn nested_member_profiles_publish_nine_facts_on_collection_and_detail() {
+    for (owner, kind, collection, profile, properties, expected) in [
+        (
+            "Document",
+            "Command",
+            "commands",
+            "documentCommand220",
+            json!([
+                {"name":"Group","value":{"kind":"text","value":"NavigationPanelImportant"}},
+                {"name":"ParameterUseMode","value":{"kind":"text","value":"Single"}},
+                {"name":"ModifiesData","value":{"kind":"boolean","value":false}}
+            ]),
+            json!({"Group":"NavigationPanelImportant","ParameterUseMode":"Single","ModifiesData":false}),
+        ),
+        (
+            "InformationRegister",
+            "Dimension",
+            "dimensions",
+            "informationRegisterDimension220",
+            json!([
+                {"name":"Master","value":{"kind":"boolean","value":true}},
+                {"name":"MainFilter","value":{"kind":"boolean","value":true}},
+                {"name":"DenyIncompleteValues","value":{"kind":"boolean","value":true}},
+                {"name":"TypeReductionMode","value":{"kind":"text","value":"TransformValues"}}
+            ]),
+            json!({"master":true,"mainFilter":true,"denyIncompleteValues":true,"TypeReductionMode":"TransformValues"}),
+        ),
+        (
+            "AccumulationRegister",
+            "Dimension",
+            "dimensions",
+            "accumulationRegisterDimension220",
+            json!([
+                {"name":"UseInTotals","value":{"kind":"boolean","value":false}}
+            ]),
+            json!({"UseInTotals":false}),
+        ),
+        (
+            "DocumentJournal",
+            "Column",
+            "columns",
+            "documentJournalColumn220",
+            json!([
+                {"name":"Indexing","value":{"kind":"text","value":"DontIndex"}}
+            ]),
+            json!({"Indexing":"DontIndex"}),
+        ),
+    ] {
+        let payload = json!({"kind":owner,"name":"Owner","memberReadProfile":profile,"collections":{collection:[{"name":"Member","synonym":"Member title","required":false,"properties":properties}]}});
+        let collection = project(
+            &format!("main:{owner}.Owner.{kind}"),
+            payload.clone(),
+            Some(SourceSetKind::Configuration),
+        );
+        let item = &collection["items"][0];
+        let detail = project(
+            item["at"].as_str().unwrap(),
+            payload,
+            Some(SourceSetKind::Configuration),
+        );
+        for node in [item, &detail] {
+            for (key, value) in expected.as_object().unwrap() {
+                assert_eq!(&node["props"][key], value, "{owner}.{kind} {key}: {node}");
+            }
+            assert_eq!(node["props"]["required"], false);
+            assert_eq!(node["props"]["synonym"], "Member title");
+        }
+        assert_eq!(item["props"], detail["props"]);
+    }
+}
+
+#[test]
+fn nested_dimension_projection_keeps_limits_and_independent_facts_for_invalid_booleans() {
+    let payload = |properties: Value| json!({"kind":"InformationRegister","name":"Facts","memberReadProfile":"informationRegisterDimension220","collections":{"dimensions":[{"name":"Dimension","required":false,"properties":properties}]}});
+    let at = "main:InformationRegister.Facts.Dimension.Dimension";
+    for invalid in [
+        json!({"kind":"text","value":"false"}),
+        json!({"kind":"boolean","value":"false"}),
+        json!({"kind":"boolean","value":0}),
+        json!(false),
+    ] {
+        let node = project(
+            at,
+            payload(json!([
+                {"name":"Master","value":invalid},
+                {"name":"MainFilter","value":{"kind":"boolean","value":false}}
+            ])),
+            Some(SourceSetKind::Configuration),
+        );
+        assert!(node["props"].get("master").is_none(), "{node}");
+        assert_eq!(node["props"]["mainFilter"], false, "{node}");
+        assert_eq!(node["props"]["required"], false);
+        assert!(
+            node["limits"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|limit| limit.as_str().unwrap().contains("Master")),
+            "{node}"
+        );
+    }
+    let duplicate = json!({"name":"Master","value":{"kind":"boolean","value":false}});
+    let node = project(
+        at,
+        payload(json!([duplicate, duplicate])),
+        Some(SourceSetKind::Configuration),
+    );
+    assert!(node["props"].get("master").is_none());
+    assert!(node["limits"]
+        .as_array()
+        .is_some_and(|limits| !limits.is_empty()));
+    let node = project(at, payload(json!([])), Some(SourceSetKind::Configuration));
+    for key in [
+        "master",
+        "mainFilter",
+        "denyIncompleteValues",
+        "TypeReductionMode",
+    ] {
+        assert!(node["props"].get(key).is_none());
+    }
+    assert!(node.get("limits").is_none());
+}
+
+#[test]
+fn nested_member_projection_requires_matching_profile_owner_and_configuration() {
+    let payload = json!({"kind":"Document","name":"Orders","memberReadProfile":"documentCommand220","collections":{"commands":[{"name":"Run","synonym":"Run title","properties":[{"name":"ModifiesData","value":{"kind":"boolean","value":false}}]}]}});
+    let at = "main:Document.Orders.Command.Run";
+    for source in [
+        None,
+        Some(SourceSetKind::Extension),
+        Some(SourceSetKind::ExternalProcessor),
+        Some(SourceSetKind::ExternalReport),
+    ] {
+        let node = project(at, payload.clone(), source);
+        assert!(node["props"].get("ModifiesData").is_none(), "{node}");
+        assert_eq!(node["props"]["synonym"], "Run title");
+    }
+    for marker in [
+        json!(null),
+        json!("catalogTabularSection220"),
+        json!("informationRegisterDimension220"),
+        json!("documentCommand219"),
+    ] {
+        let mut payload = payload.clone();
+        payload["memberReadProfile"] = marker;
+        let node = project(at, payload, Some(SourceSetKind::Configuration));
+        assert!(node["props"].get("ModifiesData").is_none(), "{node}");
+    }
+    let mut wrong_owner = payload.clone();
+    wrong_owner["kind"] = json!("Catalog");
+    let node = project(at, wrong_owner, Some(SourceSetKind::Configuration));
+    assert!(node["props"].get("ModifiesData").is_none());
+    let node = project(
+        "main:Catalog.Orders.Command.Run",
+        payload,
+        Some(SourceSetKind::Configuration),
+    );
+    assert!(node["props"].get("ModifiesData").is_none());
+}

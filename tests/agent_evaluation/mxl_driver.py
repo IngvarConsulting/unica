@@ -103,10 +103,10 @@ def verify_mxl_images(workspace, scenario, source_before, registered_before):
             "registeredTemplates": registered}
 
 
-def evaluate(server, scenario, proof_root):
+def evaluate(server, scenario, proof_root, *, fixture=None):
     registered_before = template_registration(server.workspace)
     proof = evaluate_contract(server, scenario, proof_root,
-                             fixture=REPO / "tests/fixtures/acceptance/agent-mxl",
+                             fixture=fixture or REPO / "tests/fixtures/acceptance/agent-mxl",
                              source="src", auditor=audit,
                              changed_paths={"src/cf/Reports/F06Report.xml",
                                             PREFIX + "Templates/Agent1311.xml",

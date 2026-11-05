@@ -29,7 +29,7 @@ pub(crate) fn daemon_process_command(
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use std::path::PathBuf;
     #[test]
