@@ -26,6 +26,7 @@ struct BundledManifest {
     /// Плейсхолдер исходного чекаута: инструменты там собираются на месте.
     #[serde(default)]
     source_manifest: bool,
+    source_lock_sha256: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,7 +102,7 @@ struct LockTool {
 type ManifestBinaryError = (EngineStage, String);
 
 pub(crate) fn bundled_tool_version(plugin_root: &Path, tool_name: &str) -> Result<String, String> {
-    let manifest_path = plugin_root.join("third-party").join("manifest.json");
+    let manifest_path = selected_manifest_path(plugin_root);
     if let Ok(text) = fs::read_to_string(&manifest_path) {
         let manifest: BundledManifest = serde_json::from_str(&text)
             .map_err(|error| format!("invalid Unica third-party manifest: {error}"))?;
@@ -281,8 +282,38 @@ fn resolve_bundled_tool_in(
 }
 
 fn read_manifest(plugin_root: &Path) -> Option<BundledManifest> {
-    let manifest_path = plugin_root.join("third-party").join("manifest.json");
+    let manifest_path = selected_manifest_path(plugin_root);
     serde_json::from_slice(&fs::read(manifest_path).ok()?).ok()
+}
+
+/// A dev bundle belongs only to its source checkout and the exact lock that built it.
+fn selected_manifest_path(plugin_root: &Path) -> PathBuf {
+    let source = plugin_root.join("third-party/manifest.json");
+    let is_source = fs::read(&source)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<BundledManifest>(&bytes).ok())
+        .is_some_and(|manifest| manifest.source_manifest);
+    if !is_source || !source_checkout_builder(plugin_root).is_file() {
+        return source;
+    }
+    let dev = plugin_root.join(".dev-tools/manifest.json");
+    let Some(manifest) = fs::read(&dev)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<BundledManifest>(&bytes).ok())
+    else {
+        return source;
+    };
+    let lock_digest = fs::read(plugin_root.join("third-party/tools.lock.json"))
+        .ok()
+        .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+    if manifest.source_manifest
+        && lock_digest.is_some()
+        && manifest.source_lock_sha256 == lock_digest
+    {
+        dev
+    } else {
+        source
+    }
 }
 
 /// Движок в кеше артефактов:
@@ -302,6 +333,9 @@ fn resolve_from_artifact_cache(
     let Some(manifest) = read_manifest(plugin_root) else {
         return Ok(None);
     };
+    if manifest.source_manifest {
+        return Ok(None);
+    }
     let Ok(binary) = manifest_binary(&manifest, tool_name, target_id) else {
         return Ok(None);
     };
@@ -344,6 +378,9 @@ fn artifact_delivery_key(
     artifact: &str,
     version: &str,
 ) -> Result<String, String> {
+    if manifest.source_manifest {
+        return Err("source tools are built in the checkout".to_string());
+    }
     let Some(asset) = manifest.artifact_assets.get(artifact) else {
         // Дерево разработки и старые тестовые фикстуры не являются релизной
         // доставкой. Их прежний путь сохраняется; опубликованный manifest
@@ -367,6 +404,9 @@ fn artifact_delivery_key(
 /// один: `rlm-tools-bsl` несёт два.
 pub(crate) fn artifact_for(plugin_root: &Path, tool_name: &str) -> Option<String> {
     let manifest = read_manifest(plugin_root)?;
+    if manifest.source_manifest {
+        return None;
+    }
     let tool = manifest.tools.iter().find(|tool| tool.name == tool_name)?;
     Some(
         tool.artifact
@@ -547,7 +587,7 @@ fn resolve_bundled_tool_for_target(
             None,
         ))
     };
-    let manifest_path = plugin_root.join("third-party").join("manifest.json");
+    let manifest_path = selected_manifest_path(plugin_root);
     if !manifest_path.is_file() {
         if verify {
             return Err(absent(EngineStage::Manifest));
@@ -809,6 +849,89 @@ mod medium_tests {
             .any(|component| component.as_os_str() == "scripts"));
         assert!(!tool.program.to_string_lossy().ends_with(".ps1"));
         assert!(!tool.program.to_string_lossy().ends_with(".sh"));
+    }
+
+    #[test]
+    fn source_checkout_resolves_dev_bundle_and_rejects_stale_lock() {
+        let plugin = temp_plugin_root("dev-overlay");
+        let builder = source_checkout_builder(&plugin);
+        fs::create_dir_all(builder.parent().unwrap()).unwrap();
+        fs::write(builder, "").unwrap();
+        fs::write(
+            plugin.join("third-party/manifest.json"),
+            r#"{"sourceManifest":true,"tools":[]}"#,
+        )
+        .unwrap();
+        let lock = br#"{"targets":{"linux-x64":{"exe":""}},"tools":[{"name":"v8-runner","version":"current","binaryName":"v8-runner","assets":{"linux-x64":{}}}]}"#;
+        fs::write(plugin.join("third-party/tools.lock.json"), lock).unwrap();
+        let relative = ".dev-tools/build-1/bin/linux-x64/v8-runner";
+        let binary = plugin.join(relative);
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(&binary, b"runner").unwrap();
+        let manifest = serde_json::json!({
+            "sourceManifest": true, "sourceLockSha256": format!("{:x}", Sha256::digest(lock)),
+            "tools": [{"name":"v8-runner", "version":"current", "binaryPath":relative,
+                "sha256": format!("{:x}", Sha256::digest(b"runner"))}]
+        });
+        fs::write(
+            plugin.join(".dev-tools/manifest.json"),
+            manifest.to_string(),
+        )
+        .unwrap();
+        let cache = plugin.join("cache");
+        let cached_binary = cache.join("v8-runner/current/linux-x64").join(relative);
+        fs::create_dir_all(cached_binary.parent().unwrap()).unwrap();
+        fs::write(&cached_binary, b"runner").unwrap();
+        assert!(
+            resolve_from_artifact_cache(&plugin, &cache, "v8-runner", "linux-x64", true)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            resolve_bundled_tool_in(&plugin, Some(&cache), "v8-runner", "linux-x64", true)
+                .unwrap()
+                .program,
+            binary
+        );
+        assert_eq!(
+            engine_path_for(&plugin, "v8-runner", "linux-x64"),
+            Some(binary.clone())
+        );
+        for verify in [false, true] {
+            let tool =
+                resolve_bundled_tool_for_target(&plugin, "v8-runner", "linux-x64", verify).unwrap();
+            assert_eq!(tool.program, binary);
+            assert!(tool.missing.is_none());
+        }
+        assert_eq!(
+            bundled_tool_version(&plugin, "v8-runner").unwrap(),
+            "current"
+        );
+        assert_eq!(
+            expected_engine_path(&plugin, "v8-runner", "linux-x64"),
+            Some(binary.clone())
+        );
+        assert_eq!(install_mode_of(&plugin), InstallMode::Source);
+        assert_eq!(artifact_for(&plugin, "v8-runner"), None);
+        fs::write(&binary, b"corrupt").unwrap();
+        let error =
+            resolve_bundled_tool_for_target(&plugin, "v8-runner", "linux-x64", true).unwrap_err();
+        assert_eq!(stage_of(&error), Some(EngineStage::Checksum));
+        fs::write(
+            plugin.join("third-party/tools.lock.json"),
+            [lock.as_slice(), b" "].concat(),
+        )
+        .unwrap();
+        let error =
+            resolve_bundled_tool_for_target(&plugin, "v8-runner", "linux-x64", true).unwrap_err();
+        assert_eq!(stage_of(&error), Some(EngineStage::Manifest));
+        let preview =
+            resolve_bundled_tool_for_target(&plugin, "v8-runner", "linux-x64", false).unwrap();
+        assert_eq!(preview.program, plugin.join("bin/linux-x64/v8-runner"));
+        // An installed manifest owns resolution even if a dev overlay is present.
+        write_manifest_with_bsl_analyzer(&plugin);
+        assert!(resolve_bundled_tool_for_target(&plugin, "v8-runner", "linux-x64", true).is_err());
+        fs::remove_dir_all(plugin.parent().unwrap().parent().unwrap()).unwrap();
     }
 
     #[test]
