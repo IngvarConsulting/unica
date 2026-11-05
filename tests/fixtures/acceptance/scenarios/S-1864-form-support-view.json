@@ -48,7 +48,7 @@
         },
         {
           "pointer": "/data/props/support",
-          "eq": "supported"
+          "eq": "editableWithSupport"
         }
       ]
     },
@@ -399,7 +399,7 @@
         },
         {
           "pointer": "/data/props/support",
-          "eq": "locked"
+          "eq": "configurationReadOnly"
         }
       ]
     }
