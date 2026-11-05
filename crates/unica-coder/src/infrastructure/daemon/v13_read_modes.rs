@@ -120,6 +120,8 @@ fn node_site(
     let format = prop("format").map(TemplateFormat::parse);
     let item = if unica_forms::applicability::is_form_attribute(at.segments()) {
         prop("type").and_then(FormObservation::from_attribute_type)
+    } else if unica_forms::applicability::is_form_column(at.segments()) {
+        prop("parentType").and_then(FormObservation::from_column_parent_type)
     } else {
         prop("tag")
             .map(FormItemRole::from_tag)
@@ -386,6 +388,44 @@ mod operation_dictionary_tests {
     /// Реквизит и команда формы названы по своему узлу, как у объекта
     /// метаданных (#1465): одно имя, а контракт выбирает адрес — у формы
     /// контракт писателя формы, у объекта — члена метаданных.
+    #[test]
+    fn column_type_can_and_contract_require_a_verified_valuetable_parent() {
+        let at = "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value";
+        let context = super::configuration_context();
+        for (parent_type, allowed) in [
+            ("ValueTable", true),
+            ("ValueTree", false),
+            ("boolean", false),
+            ("", false),
+        ] {
+            let mut data = json!({"at":at,"kind":"Column","props":{"type":"DefinedType.Existing","parentType":parent_type}});
+            super::attach_can(&mut data, context);
+            assert_eq!(
+                data["can"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["op"] == "props.set"),
+                allowed,
+                "{parent_type}"
+            );
+            assert_eq!(
+                super::operation_node(&data, "props.set", at, context).is_ok(),
+                allowed,
+                "{parent_type}"
+            );
+        }
+        let root = "main:Catalog.Items.Form.Main";
+        let mut data = json!({"at":root,"kind":"Form","props":{}});
+        super::attach_can(&mut data, context);
+        assert!(data["can"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["op"] == "props.set"));
+        assert!(super::operation_node(&data, "props.set", root, context).is_ok());
+    }
+
     #[test]
     fn column_add_contract_and_dictionary_require_a_valuetable_attribute() {
         let at = "main:Catalog.Items.Form.Main.Attribute.Rows";

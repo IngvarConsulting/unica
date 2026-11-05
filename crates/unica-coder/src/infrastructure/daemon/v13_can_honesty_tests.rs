@@ -1060,6 +1060,10 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         data["props"]["type"]
             .as_str()
             .and_then(FormObservation::from_attribute_type)
+    } else if unica_forms::applicability::is_form_column(address.segments()) {
+        data["props"]["parentType"]
+            .as_str()
+            .and_then(FormObservation::from_column_parent_type)
     } else {
         item_role.map(FormObservation::Item)
     };
@@ -1137,7 +1141,7 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         // Роль элемента проверяет планировщик на настоящей форме: операцию,
         // которую фильтр роли не выпускает, он отвергает.
         let role_refused = placed && descriptor.observation_type().is::<FormObservation>()
-            && !descriptor.admits_context(&|_| form_observation.map(|value| Box::new(value) as Box<dyn std::any::Any>));
+            && !crate::domain::apply::operation_site(&address, checked.traits).is_some_and(|site| descriptor.applies_with_observations(&site, &crate::domain::apply::observation_lookup(&|_| None, &|_| form_observation)));
         if preflight.is_ok() != (placed && !role_refused) {
             mismatches.push(format!("{at}: `{op}` preflight={} differs from structural placement={placed} and observed form refusal={role_refused}", preflight.is_ok()));
         }
@@ -2975,6 +2979,61 @@ fn object_remove_skeleton_previews_with_only_the_outer_target() {
     );
     assert!(preview.ok, "{preview:?}");
     assert_eq!(tree_digest(&fixture.workspace.join("src")), before);
+}
+
+#[test]
+fn column_type_uses_the_same_parent_fact_for_dictionary_and_preflight() {
+    let at = "main:Catalog.Items.Form.Main.Attribute.Rows.Column.Value";
+    let traits = crate::domain::apply::source_set_traits_for_read(
+        SourceSetKind::Configuration,
+        PlatformProfile::v8_3_27(),
+    );
+    for (parent_type, allowed) in [
+        ("ValueTable", true),
+        ("ValueTree", false),
+        ("boolean", false),
+        ("", false),
+    ] {
+        let mut data = json!({"at":at,"kind":"Column","props":{"parentType":parent_type}});
+        super::v13_read_modes::attach_can(&mut data, traits);
+        let request = apply_request(
+            at,
+            "props.set",
+            json!({"values":{"type":"DefinedType.Existing | CatalogRef.Additional"}}),
+        );
+        let observed = FormObservation::from_column_parent_type(parent_type);
+        let admitted = super::v13_service::preflight_apply_operations_observed(
+            &request,
+            traits,
+            &|_| None,
+            &|_| observed,
+            &unica_operations::recovery::no_member_lookup,
+            &|_| None,
+        );
+        assert_eq!(admitted.is_ok(), allowed, "{parent_type}: {admitted:?}");
+        assert_eq!(
+            data["can"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["op"] == "props.set"),
+            allowed
+        );
+    }
+    let request = apply_request(
+        "main:Catalog.Items.Form.Main",
+        "props.set",
+        json!({"values":{"Width":60}}),
+    );
+    assert!(super::v13_service::preflight_apply_operations_observed(
+        &request,
+        traits,
+        &|_| None,
+        &|_| None,
+        &unica_operations::recovery::no_member_lookup,
+        &|_| None,
+    )
+    .is_ok());
 }
 
 #[test]

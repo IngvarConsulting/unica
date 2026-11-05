@@ -295,10 +295,10 @@ mod tests {
                 observed,
                 serde_json::json!([
                     {"name":"Rows","type":"ValueTable","isMain":false,"mainTable":null,"columns":[
-                        {"name":"Ref","type":"CatalogRef.Items"},
-                        {"name":"Amount","type":"decimal(10,2)"}]},
+                        {"name":"Ref","parentType":"ValueTable","type":"CatalogRef.Items"},
+                        {"name":"Amount","parentType":"ValueTable","type":"decimal(10,2)"}]},
                     {"name":"Tree","type":"ValueTree","isMain":false,"mainTable":null,"columns":[
-                        {"name":"Text","type":"string(20)"}]}
+                        {"name":"Text","parentType":"ValueTree","type":"string(20)"}]}
                 ])
             );
             observations.push(observed);
