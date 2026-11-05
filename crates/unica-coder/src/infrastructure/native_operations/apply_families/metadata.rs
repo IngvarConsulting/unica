@@ -70,6 +70,9 @@ mod tests {
     mod report_variants_storage_tests {
         include!("metadata/report_variants_storage_tests.rs");
     }
+    mod language_code_tests {
+        include!("metadata/language_code_tests.rs");
+    }
     mod numerator_tests {
         include!("metadata/numerator_tests.rs");
     }
