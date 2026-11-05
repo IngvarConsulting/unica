@@ -971,20 +971,45 @@ pub fn typed_operation_effect_value(
             collection,
             scope,
             elements,
-        } => typed_collection_effect_value(
-            xml,
-            object,
-            *collection,
-            scope.as_ref(),
-            elements.iter().map(|element| {
-                if after {
-                    element.new_name.as_deref().unwrap_or(&element.name)
-                } else {
-                    &element.name
-                }
-            }),
-            &target,
-        )?,
+        } => {
+            let value = typed_collection_effect_value(
+                xml,
+                object,
+                *collection,
+                scope.as_ref(),
+                elements.iter().map(|element| {
+                    if after {
+                        element.new_name.as_deref().unwrap_or(&element.name)
+                    } else {
+                        &element.name
+                    }
+                }),
+                &target,
+            )?;
+            if elements
+                .iter()
+                .any(|element| element.type_reduction_mode.is_some())
+            {
+                crate::dimension_reduction::effect(
+                    xml,
+                    object,
+                    value,
+                    &elements
+                        .iter()
+                        .filter(|element| element.type_reduction_mode.is_some())
+                        .map(|element| {
+                            if after {
+                                element.new_name.as_deref().unwrap_or(&element.name)
+                            } else {
+                                &element.name
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )?
+            } else {
+                value
+            }
+        }
         MetaEditOperation::Remove {
             collection,
             scope,
@@ -1427,6 +1452,7 @@ pub fn apply_typed_properties(
                 | MetaPropertyKey::ChoiceDataGetModeOnInputByString
                 | MetaPropertyKey::CreateOnInput
                 | MetaPropertyKey::ChoiceHistoryOnInput
+                | MetaPropertyKey::PredefinedDataUpdate
         ) {
             let same_name_count = properties
                 .children()
@@ -1480,6 +1506,17 @@ pub fn apply_typed_properties(
             }
         }
         let replacement = match (key, value) {
+            (MetaPropertyKey::CodeType, MetaPropertyValue::String(value))
+                if kind == MetadataKind::ChartOfCalculationTypes
+                    && matches!(
+                        super::info_projection::observe_meta_info_property(properties, kind, tag),
+                        Ok(Some(MetaInfoPropertyValue::String(current))) if current == *value
+                    ) =>
+            {
+                // An equivalent mode preserves its lexical bytes and does not
+                // turn a no-op into a change requiring companion validation.
+                continue;
+            }
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {
                 if previous_type
                     .as_ref()
@@ -2059,6 +2096,15 @@ pub fn update_typed_element(
         )
     })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    if let Some(value) = &update.type_reduction_mode {
+        if let Some((edit, token)) =
+            crate::dimension_reduction::edit(xml_text, range.clone(), value)?
+        {
+            let start = range.start + properties_range.start;
+            properties_text.replace_range(edit.start - start..edit.end - start, &token);
+        }
+    }
+
     if let Some(metadata_type) = &update.r#type {
         let fill_value = match &update.fill_value {
             Some(fill_value) => Some(fill_value.clone()),

@@ -51,6 +51,7 @@ pub enum MetaPropertyKey {
     PostInPrivilegedMode,
     Posting,
     Predefined,
+    PredefinedDataUpdate,
     Privileged,
     QuickChoice,
     RealTimePosting,
@@ -240,6 +241,8 @@ const CODE_KINDS: &[MetadataKind] = &[
     MetadataKind::ChartOfCalculationTypes,
     MetadataKind::ExchangePlan,
 ];
+const CODE_TYPE_KINDS: &[MetadataKind] =
+    &[MetadataKind::Catalog, MetadataKind::ChartOfCalculationTypes];
 const DESCRIPTION_KINDS: &[MetadataKind] = &[
     MetadataKind::Catalog,
     MetadataKind::ChartOfAccounts,
@@ -345,6 +348,14 @@ const RETURN_VALUES_REUSE_VALUES: &[&str] = &["DontUse", "DuringRequest", "Durin
 const REUSE_SESSIONS_VALUES: &[&str] = &["DontUse", "AutoUse"];
 const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "ToItems"];
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
+
+const PREDEFINED_DATA_UPDATE_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+];
+const PREDEFINED_DATA_UPDATE_VALUES: &[&str] = &["Auto", "AutoUpdate", "DontAutoUpdate"];
 
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
     enum_property(
@@ -467,7 +478,7 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "CodeType",
         "CodeType",
         MetaPropertyKey::CodeType,
-        CATALOG_KINDS,
+        CODE_TYPE_KINDS,
         CODE_TYPE_VALUES,
     ),
     property(
@@ -650,6 +661,13 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::Posting,
         DOCUMENT_KINDS,
         POSTING_VALUES,
+    ),
+    enum_property(
+        "PredefinedDataUpdate",
+        "PredefinedDataUpdate",
+        MetaPropertyKey::PredefinedDataUpdate,
+        PREDEFINED_DATA_UPDATE_KINDS,
+        PREDEFINED_DATA_UPDATE_VALUES,
     ),
     property(
         "Predefined",
@@ -961,6 +979,35 @@ mod tests {
     }
 
     #[test]
+    fn code_type_keeps_its_closed_enum_and_argument_type_for_both_supported_owners() {
+        for kind in [MetadataKind::Catalog, MetadataKind::ChartOfCalculationTypes] {
+            for value in ["String", "Number"] {
+                assert!(MetaPropertyChanges::convert(
+                    kind,
+                    vec![MetaPropertyInput::new(
+                        "CodeType",
+                        MetaPropertyValue::String(value.into())
+                    )]
+                )
+                .is_ok());
+            }
+            for value in [
+                MetaPropertyValue::Boolean(true),
+                MetaPropertyValue::UnsignedInteger(9),
+                MetaPropertyValue::String("Unknown".into()),
+            ] {
+                let error = MetaPropertyChanges::convert(
+                    kind,
+                    vec![MetaPropertyInput::new("CodeType", value)],
+                )
+                .expect_err("CodeType keeps its exact value kind and enum");
+                assert_eq!(error.code, MetaDiagnosticCode::InvalidArguments);
+                assert_eq!(error.field.as_deref(), Some("values.CodeType"));
+            }
+        }
+    }
+
+    #[test]
     fn code_length_uses_the_current_writer_kind_matrix() {
         assert_property_kind_matrix(
             "CodeLength",
@@ -1249,7 +1296,7 @@ mod tests {
             (
                 "CodeType",
                 MetaPropertyValue::String("Number".into()),
-                &[Catalog],
+                &[Catalog, ChartOfCalculationTypes],
             ),
             (
                 "Correspondence",
@@ -1419,6 +1466,16 @@ mod tests {
                 "Posting",
                 MetaPropertyValue::String("Deny".into()),
                 &[Document],
+            ),
+            (
+                "PredefinedDataUpdate",
+                MetaPropertyValue::String("AutoUpdate".into()),
+                &[
+                    Catalog,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                ],
             ),
             (
                 "Predefined",

@@ -2179,6 +2179,11 @@ mod body_range_refusal_tests {
                 ),
                 "a retained-source advisory must not publish after its named root was replaced"
             );
+        } else {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform keeps a retained source root from being replaced",
+            );
         }
     }
 }

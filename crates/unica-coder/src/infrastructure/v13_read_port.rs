@@ -449,6 +449,26 @@ impl ProviderReadAuthority {
         Ok(Value::Object(payload))
     }
 
+    /// Lexical parent version without materializing a large Configuration DOM.
+    pub(crate) fn configuration_root_version_literal(
+        &self,
+        checkpoint: &dyn Fn() -> Result<(), ViewError>,
+    ) -> Result<Option<String>, ViewError> {
+        let relative = Path::new("Configuration.xml");
+        if let Some(buffer) = self.open_buffer(relative) {
+            return crate::infrastructure::v13_large_configuration::read_configuration_root_version_literal(std::io::Cursor::new(buffer.text.as_bytes()),checkpoint);
+        }
+        let file = self
+            .root
+            .open_relative_regular_nofollow(relative)
+            .map_err(|error| {
+                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+            })?;
+        crate::infrastructure::v13_large_configuration::read_configuration_root_version_literal(
+            file, checkpoint,
+        )
+    }
+
     pub(crate) fn streamed_configuration_root(
         &self,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
@@ -661,6 +681,14 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<FormInfoData, ViewError> {
         let descriptor = self.metadata_descriptor(target)?;
+        if form_content_profile(&descriptor)
+            .is_ok_and(|profile| profile == MetadataChildProfile::OrdinaryForm)
+        {
+            return Err(ViewError::new(RefusalCode::UnsupportedSource, format!(
+                "ordinary Form.bin content is not supported; read `{}:{}.Metadata` for the form declaration",
+                self.source_set(), target.as_str(),
+            )));
+        }
         let relative = self.attached_resource_relative(target, "Form.xml")?;
         let bytes = self.read_relative_whole(&relative)?;
         let text = std::str::from_utf8(&bytes).map_err(|_| {
@@ -1200,6 +1228,21 @@ impl ProviderReadAuthority {
                         "field": "properties",
                         "message": message,
                     }])
+                }
+            }
+        }
+        if evidence.artifact_kind() == "WSReference" {
+            match unica_metadata_designer::ws_reference::read_location_url(&descriptor) {
+                Ok(Some(value)) => {
+                    payload["properties"] = json!([{
+                        "key": "LocationURL",
+                        "value": unica_metadata::MetaObservedPropertyValue::Text { value },
+                    }])
+                }
+                Ok(None) => {}
+                Err(message) => {
+                    payload["unreadable"] =
+                        json!([{"field":"properties.LocationURL","message":message}])
                 }
             }
         }
@@ -2437,6 +2480,22 @@ fn encode_export_path_components<'a>(
         encoded.push_str(component);
     }
     Ok(encoded)
+}
+
+/// Only a proven Ordinary discriminator changes the content reader. A damaged
+/// declaration keeps the existing Form.xml path and its independent diagnostics;
+/// neither unrelated properties nor a support UUID decide the content format.
+fn form_content_profile(descriptor: &[u8]) -> Result<MetadataChildProfile, String> {
+    use unica_metadata_designer::validation::{
+        exact_mdclasses_children, exact_metadata_artifact, form_profile, MetadataAdmission,
+    };
+    let (_, document) = unica_xml_format::read::parse_metadata_image(descriptor)?;
+    let artifact = exact_metadata_artifact(&document, MetadataAdmission::Read)?;
+    let properties = exact_mdclasses_children(artifact, "Properties", "Form descriptor")?;
+    let [properties] = properties.as_slice() else {
+        return Err("Form descriptor must contain one Properties element".to_string());
+    };
+    form_profile(*properties)
 }
 
 /// Missing marker is proven absence; with a marker the descriptor UUID is
