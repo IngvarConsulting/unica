@@ -410,6 +410,99 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_member_additions_refuse_at_the_callers_name_field() {
+        for (operation, kind, directory, scope, tag) in [
+            ("attribute.add", "Document", "Documents", None, "Attribute"),
+            (
+                "attribute.add",
+                "Document",
+                "Documents",
+                Some("Lines"),
+                "Attribute",
+            ),
+            (
+                "tabularSection.add",
+                "Document",
+                "Documents",
+                None,
+                "TabularSection",
+            ),
+            (
+                "dimension.add",
+                "InformationRegister",
+                "InformationRegisters",
+                None,
+                "Dimension",
+            ),
+            (
+                "resource.add",
+                "InformationRegister",
+                "InformationRegisters",
+                None,
+                "Resource",
+            ),
+            ("enumValue.add", "Enum", "Enums", None, "EnumValue"),
+            (
+                "column.add",
+                "DocumentJournal",
+                "DocumentJournals",
+                None,
+                "Column",
+            ),
+            ("command.add", "Document", "Documents", None, "Command"),
+        ] {
+            let member = format!(
+                r#"<{tag} uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Existing</Name></Properties><ChildObjects/></{tag}>"#
+            );
+            let children = if let Some(section) = scope {
+                format!(
+                    r#"<TabularSection uuid="44444444-4444-4444-8444-444444444444"><Properties><Name>{section}</Name></Properties><ChildObjects>{member}</ChildObjects></TabularSection>"#
+                )
+            } else {
+                member
+            };
+            let descriptor = format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><{kind} uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Order</Name></Properties><ChildObjects>{children}</ChildObjects></{kind}></MetaDataObject>"#
+            );
+            let relative = format!("{directory}/Order.xml");
+            let configuration = RU_CONFIGURATION_XML.replace(
+                "<Document>Order</Document>",
+                &format!("<{kind}>Order</{kind}>"),
+            );
+            let fixture = MetadataFixture::with_files(&[
+                ("Configuration.xml", &configuration),
+                ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+                (&relative, &descriptor),
+            ]);
+            let at = match scope {
+                Some(section) => format!("main:{kind}.Order.TabularSection.{section}"),
+                None => format!("main:{kind}.Order"),
+            };
+            let operation =
+                fixture.parse(operation, json!({"at":at,"items":[{"name":"Existing"}]}), 3);
+            let admission = fixture.admission();
+            let error = plan_metadata_batch_owned_for_test(
+                admission.staged_state().unwrap(),
+                admission
+                    .metadata_planning_authority(&fixture.binding)
+                    .unwrap(),
+                &[operation],
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{at}: {error}");
+            assert_eq!(error.path(), Some("ops[3].args.items[0].name"), "{at}");
+            assert!(
+                error.to_string().contains("already exists"),
+                "{at}: {error}"
+            );
+            assert_eq!(
+                std::fs::read(fixture._root.path().join("src").join(&relative)).unwrap(),
+                descriptor.as_bytes()
+            );
+        }
+    }
+
+    #[test]
     fn typed_member_additions_keep_the_owner_collection_and_section() {
         use super::{AddressedFields, MetadataPlanKind};
         use unica_metadata::{MetaCollection, MetaEditOperation};
@@ -494,7 +587,7 @@ mod tests {
             );
             assert_eq!(elements.len(), 1);
             assert_eq!(elements[0].name, "Added");
-            assert_eq!(addressed, section.map(|_| AddressedFields::Items));
+            assert_eq!(addressed, Some(AddressedFields::Items));
         }
     }
 
@@ -1311,6 +1404,7 @@ mod tests {
     /// #1385: on a platform-shaped CRLF document the new header attribute
     /// lands before the tabular sections and forms, the new template before
     /// the commands, and every inserted line keeps the descriptor's CRLF.
+    /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
     #[test]
     fn member_and_template_adds_take_their_platform_slot_and_line_ending() {
         let order = ORDER_XML
@@ -1552,6 +1646,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
     #[test]
     fn object_remove_retains_unchanged_reference_and_subsystem_inputs() {
         for subsystem in [false, true] {
@@ -1593,6 +1688,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.EMBEDDED-HELP-CREATE
     #[test]
     fn help_create_stages_the_embedded_help_facet() {
         let fixture = MetadataFixture::new();
@@ -1899,6 +1995,7 @@ mod tests {
     /// сужены до узла. Каждое семейство проверяется на нескольких видах
     /// владельца. Перекрёстные правила полей (значение заполнения требует
     /// тип) схема не выражает — такие образцы здесь не берутся.
+    /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn medium_member_operation_contracts_and_the_planner_agree_on_structure() {
         use unica_address::address::QualifiedAddress;

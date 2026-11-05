@@ -139,6 +139,7 @@ mod tests {
         assert!(!changed_type.contains("xsi:type"), "{changed_type}");
     }
 
+    /// rule: INV.SOURCE.PREDEFINED-LOCAL-CHANGE
     #[test]
     fn equivalent_simple_update_preserves_attribute_order_byte_for_byte() {
         let mut item = r#"<Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Description future:stamp="keep" xmlns:future="urn:future">old</Description></Item>"#.to_string();
@@ -335,6 +336,7 @@ mod tests {
     /// #1381: описание без `CodeType` (так платформа выгружает заимствованный
     /// справочник) не даёт писателю проверять коды по придуманному виду:
     /// запись предопределённых отказывает тем же текстом, что и чтение.
+    /// rule: INV.SOURCE.INCOMPLETE-METADATA-READ
     #[test]
     fn predefined_writer_refuses_an_owner_without_code_type_like_the_reader() {
         let root = temp_root("code-type-absent");
@@ -499,6 +501,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.PREDEFINED-EMPTY-STORAGE
     #[test]
     fn unchanged_or_absent_code_type_companion_keeps_precise_preimage_guards() {
         let root = temp_root("code-type-companion-guards");
@@ -822,6 +825,7 @@ mod tests {
         Document::parse(&wrapped).unwrap();
     }
 
+    /// rule: INV.SOURCE.PREDEFINED-LOCAL-CHANGE
     #[test]
     fn type_update_rejects_discarding_an_extension_in_a_removed_typed_branch() {
         let mut item = format!(
@@ -998,6 +1002,7 @@ mod tests {
         assert_eq!(item.matches("future:stamp=\"keep\"").count(), 2, "{item}");
     }
 
+    /// rule: INV.SOURCE.PREDEFINED-LOCAL-CHANGE
     #[test]
     fn planner_clears_explicit_empty_structural_fields_and_repeats_as_a_noop() {
         let root = temp_root("clear-structural-fields");
@@ -1059,6 +1064,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.PREDEFINED-IDENTITY-AND-SUBTREE
     #[test]
     fn remove_effect_reports_the_entire_subtree_in_document_order() {
         let parent = "a7d2e6fc-3824-4b56-b4be-ae6be4944c0e";
@@ -1174,6 +1180,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.PREDEFINED-LOCAL-CHANGE
     #[test]
     fn update_preserves_unknown_nodes_using_a_namespace_declared_on_the_document_root() {
         let root = temp_root("inherited-unknown-namespace");
@@ -1221,6 +1228,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.PREDEFINED-IDENTITY-AND-SUBTREE
     #[test]
     fn add_equivalence_does_not_ignore_an_existing_child_subtree() {
         let mut xml = r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Main</Name><Code/><Description/><IsFolder>false</IsFolder><ChildItems><Item id="b7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Child</Name></Item></ChildItems></Item></PredefinedData>"#.to_string();
@@ -1281,6 +1289,7 @@ mod tests {
         assert!(error.contains("duplicated"), "{error}");
     }
 
+    /// rule: INV.SOURCE.PREDEFINED-IDENTITY-AND-SUBTREE
     #[test]
     fn remove_of_a_parent_and_its_descendant_is_order_independent() {
         let base = r#"<PredefinedData xmlns="http://v8.1c.ru/8.3/xcf/predef" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CatalogPredefinedItems" version="2.20"><Item id="a7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Parent</Name><ChildItems><Item id="b7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Child</Name></Item></ChildItems></Item><Item id="c7d2e6fc-3824-4b56-b4be-ae6be4944c0e"><Name>Kept</Name></Item></PredefinedData>"#;
@@ -1384,6 +1393,7 @@ mod tests {
         assert!(xml.contains("<ChildItems/>"));
     }
 
+    /// rule: INV.SOURCE.PREDEFINED-IDENTITY-AND-SUBTREE
     #[test]
     fn planner_creates_bom_file_and_second_equivalent_add_is_noop() {
         let root = temp_root("create-noop");
@@ -1429,6 +1439,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// rule: INV.SOURCE.PREDEFINED-EMPTY-STORAGE
     #[test]
     fn removing_the_last_item_deletes_the_file_like_the_platform_export() {
         // Импортировав пустой `PredefinedData`, 8.3.27.2074 при выгрузке файл

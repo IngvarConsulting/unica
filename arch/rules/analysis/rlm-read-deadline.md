@@ -1,7 +1,5 @@
 ---
 id: INV.RLM.READ-DEADLINE
-check:
-  - crates/unica-adapter-rlm/src/navigation.rs::definition_readiness_and_call_share_one_remaining_deadline
 ---
 
 # Подготовка RLM и поиск определения расходуют один срок
