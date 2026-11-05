@@ -412,7 +412,7 @@ def check_build_dirs(host: Host, root: Path) -> Check:
         return Check("build dirs", OK, detail, required=False)
     return Check(
         "build dirs", WARN, detail,
-        ["py scripts/dev/prune-build-caches.py" if host.system == "Windows"
+        ["py -3.12 scripts/dev/prune-build-caches.py" if host.system == "Windows"
          else "python3.12 scripts/dev/prune-build-caches.py"],
         required=False,
     )

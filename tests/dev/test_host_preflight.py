@@ -253,7 +253,7 @@ class HostPreflightTests(unittest.TestCase):
         host.free = 20 * GIB
         check = by_name(run(host))["build dirs"]
         self.assertEqual(check.status, PREFLIGHT.WARN)
-        self.assertEqual(check.fix, ["py scripts/dev/prune-build-caches.py"])
+        self.assertEqual(check.fix, ["py -3.12 scripts/dev/prune-build-caches.py"])
 
     def test_build_root_follows_the_os_and_the_option(self) -> None:
         host = FakeHost("Linux")

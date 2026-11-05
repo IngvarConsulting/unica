@@ -13,7 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 
@@ -41,16 +41,22 @@ class FakeSystem(PRUNE.System):
         self.commands: list = []
         self.calls: list = []
         self.removed: list = []
+        self.gh_fails = False
+        self.ps_fails = False
 
     def now(self):
         return NOW
 
     def process_command_lines(self):
+        if self.ps_fails:
+            raise PRUNE.PruneError("cannot list running processes: access denied")
         return self.commands
 
     def run(self, argv, cwd=None):
         argv = list(argv)
         self.calls.append(argv)
+        if argv[0] == "gh" and self.gh_fails:
+            return 1, "HTTP 401: Bad credentials\n"
         if argv[:2] == ["gh", "pr"] and argv[2] == "list":
             selector = "--head" if "--head" in argv else "--search"
             return 0, json.dumps(self.prs.get(argv[argv.index(selector) + 1], []))
@@ -124,12 +130,18 @@ class PruneBuildCachesTests(unittest.TestCase):
         return path
 
     def test_build_dir_of_a_merged_or_closed_pr_is_a_candidate(self) -> None:
-        make_dir(self.builds / "worker-1-2399", 0)
-        make_dir(self.builds / "worker-3-2310", 0)
-        make_dir(self.builds / "worker-3-2277", 0)
+        make_dir(self.builds / "worker-1-2399", 0.1)
+        make_dir(self.builds / "worker-3-2310", 0.1)
+        make_dir(self.builds / "worker-3-2277", 0.1)
         self.system.pr_states = {2399: "MERGED", 2310: "CLOSED", 2277: "OPEN"}
         _, report = self.prune()
         self.assertEqual(self.reasons(report), {"worker-1-2399": "PR #2399 merged", "worker-3-2310": "PR #2310 closed"})
+
+    def test_reused_build_dir_written_within_the_hour_is_kept(self) -> None:
+        make_dir(self.builds / "worker-1-2399", 0.01)
+        self.system.pr_states = {2399: "MERGED"}
+        _, report = self.prune()
+        self.assertEqual(report["candidates"], [])
 
     def test_build_dir_unused_for_longer_than_the_limit_is_abandoned(self) -> None:
         make_dir(self.builds / "worker-2", 5)
@@ -164,9 +176,12 @@ class PruneBuildCachesTests(unittest.TestCase):
     def test_copy_of_someone_elses_pr_is_found_by_its_commit(self) -> None:
         self.add_worktree("w-fork", "pr-2265")
         self.add_worktree("w-detached", None)
+        self.add_worktree("w-mentioned", None)
         self.system.prs = {
-            "sha-w-fork": [{"number": 2265, "state": "MERGED", "headRefOid": "f"}],
-            "sha-w-detached": [{"number": 2266, "state": "CLOSED", "headRefOid": "g"}],
+            "sha-w-fork": [{"number": 2265, "state": "MERGED", "headRefOid": "sha-w-fork"}],
+            "sha-w-detached": [{"number": 2266, "state": "CLOSED", "headRefOid": "sha-w-detached"}],
+            # A PR that only mentions or contains the commit is not its PR.
+            "sha-w-mentioned": [{"number": 2267, "state": "MERGED", "headRefOid": "other"}],
         }
         _, report = self.prune()
         self.assertEqual(self.reasons(report), {"w-fork": "PR #2265 merged", "w-detached": "PR #2266 closed"})
@@ -177,13 +192,16 @@ class PruneBuildCachesTests(unittest.TestCase):
             {"number": 1, "state": "CLOSED", "headRefOid": "a"},
             {"number": 2, "state": "OPEN", "headRefOid": "b"},
         ]
-        dirty = self.add_worktree("w-dirty", "claude/dirty")
-        after = self.add_worktree("w-after", "claude/after")
-        self.add_worktree("w-locked", "claude/locked", locked=True)
+        dirty = self.add_worktree("w-dirty", "claude/dirty", age_days=30)
+        after = self.add_worktree("w-after", "claude/after", age_days=30)
+        self.add_worktree("w-locked", "claude/locked", age_days=30, locked=True)
+        old_dirty = self.add_worktree("w-old-dirty", None, age_days=30)
+        self.add_worktree("w-old-locked", None, age_days=30, locked=True)
         for branch in ("claude/dirty", "claude/after", "claude/locked"):
             self.system.prs[branch] = [{"number": 3, "state": "MERGED", "headRefOid": "c"}]
-        self.system.dirty.add(dirty)
+        self.system.dirty |= {dirty, old_dirty}
         self.system.not_ancestor.add(after)
+        self.system.unpushed.add(after)  # commits after the PR head, not pushed
         _, report = self.prune()
         self.assertEqual(report["candidates"], [])
 
@@ -197,16 +215,57 @@ class PruneBuildCachesTests(unittest.TestCase):
 
     def test_target_inside_an_active_working_copy_is_a_candidate(self) -> None:
         copy = self.add_worktree("w-active", "claude/active")
-        make_dir(copy / "target", 0)
+        make_dir(copy / "target", 0.1)
         self.system.prs["claude/active"] = [{"number": 5, "state": "OPEN", "headRefOid": "d"}]
         _, report = self.prune()
         self.assertEqual(report["candidates"][0]["kind"], "in-copy target")
         self.assertEqual(Path(report["candidates"][0]["path"]), copy / "target")
 
-    def test_main_checkout_is_never_a_candidate(self) -> None:
+    def test_main_checkout_and_the_current_copy_are_never_candidates(self) -> None:
         make_dir(self.repo, 30)
-        _, report = self.prune()
+        current = self.add_worktree("w-current", None, age_days=30)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            PRUNE.main(["--build-root", str(self.builds), "--json"], self.system, current)
+        self.assertEqual(json.loads(out.getvalue())["candidates"], [])
+
+    def test_links_are_never_candidates(self) -> None:
+        linked = make_dir(self.builds / "worker-9", 30)
+        copy = self.add_worktree("w-link-target", "claude/active")
+        make_dir(copy / "target", 30)
+        self.system.prs["claude/active"] = [{"number": 5, "state": "OPEN", "headRefOid": "d"}]
+        original = PRUNE.is_link
+        PRUNE.is_link = lambda path: Path(path) in (linked, copy / "target")
+        try:
+            _, report = self.prune()
+        finally:
+            PRUNE.is_link = original
         self.assertEqual(report["candidates"], [])
+
+    def test_failed_lookup_stops_without_deleting(self) -> None:
+        stale = make_dir(self.builds / "worker-2", 5)
+        self.add_worktree("w-old", "claude/old", age_days=10)
+        for failure in ("gh_fails", "ps_fails"):
+            with self.subTest(failure=failure):
+                system = FakeSystem(self.repo)
+                system.worktrees = self.system.worktrees
+                setattr(system, failure, True)
+                self.system = system
+                err = io.StringIO()
+                with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                    code = PRUNE.main(["--build-root", str(self.builds), "--apply"], system, self.repo)
+                self.assertEqual(code, 2)
+                self.assertIn("nothing was deleted", err.getvalue())
+                self.assertEqual(system.removed, [])
+                self.assertTrue(stale.is_dir())
+
+    def test_apply_rechecks_processes_before_deleting(self) -> None:
+        stale = make_dir(self.builds / "worker-2", 5)
+        lists = iter([[], [f"{stale}/debug/deps/unica-0a1b --exact t"]])
+        self.system.process_command_lines = lambda: next(lists)
+        _, report = self.prune("--apply")
+        self.assertEqual(report["candidates"][0]["removed"], False)
+        self.assertTrue(stale.is_dir())
 
     def test_default_run_only_lists(self) -> None:
         stale = make_dir(self.builds / "worker-2", 5, size=4096)
