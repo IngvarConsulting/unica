@@ -40,6 +40,7 @@ AGENT_EVALUATIONS = {"event-data-visibility": "tests/fixtures/acceptance/workspa
                      "xdto-contract": "tests/fixtures/acceptance/workspace-xdto-contract"}
 ACCEPTANCE_ROOT = REPO / "tests/fixtures/acceptance"
 SOURCE_PROFILE_DIR = "source-profiles"
+HOST_CONTEXT_MISSING_WORKSPACE = "tests/fixtures/acceptance/workspace-host-context-missing"
 
 
 def load_source_workspace_profiles(root: Path = ACCEPTANCE_ROOT) -> dict[str, dict]:
@@ -263,6 +264,17 @@ def isolated_environment(plugin, state):
     environment["UNICA_PLUGIN_ROOT"] = str(plugin)
     environment["UNICA_ARTIFACT_CACHE"] = str(state / "empty-artifact-cache")
     return environment
+
+
+
+def missing_host_context_environment(environment=None):
+    """Start the controlled refusal case without any captured project alias."""
+    values = dict(os.environ if environment is None else environment)
+    contract = json.loads((REPO / "tests/fixtures/mcp/host-workspace-context.json").read_text())
+    for key in [*contract["projectEnvironment"], "UNICA_RUNTIME_MANIFEST"]:
+        values.pop(key, None)
+    values["UNICA_HOST_CONTEXT_REQUIRED"] = "1"
+    return values
 
 
 def completed_delivery_call(server, tool, arguments, label):

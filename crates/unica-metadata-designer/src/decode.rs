@@ -88,6 +88,7 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
+    DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
     StyleItem(unica_metadata::style_color::StyleItemColor),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
@@ -1110,6 +1111,10 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::DocumentNumerator(values) => (
+            "DocumentNumerators",
+            DescriptorPropertyChanges::DocumentNumerator(values),
+        ),
         unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
             "FunctionalOptions",
             DescriptorPropertyChanges::FunctionalOption(values),

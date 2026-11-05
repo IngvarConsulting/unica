@@ -25,6 +25,7 @@ pub enum MetaPropertyKey {
     CodeMask,
     CodeType,
     Correspondence,
+    CreateTaskInPrivilegedMode,
     DefaultPresentation,
     DependenceOnCalculationTypes,
     Description,
@@ -51,6 +52,7 @@ pub enum MetaPropertyKey {
     PostInPrivilegedMode,
     Posting,
     Predefined,
+    PredefinedDataUpdate,
     Privileged,
     QuickChoice,
     RealTimePosting,
@@ -211,7 +213,14 @@ const fn patterned_string_property(
     }
 }
 
+const CODE_ALLOWED_LENGTH_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::ExchangePlan,
+];
 const CATALOG_KINDS: &[MetadataKind] = &[MetadataKind::Catalog];
+const BUSINESS_PROCESS_KINDS: &[MetadataKind] = &[MetadataKind::BusinessProcess];
 const DOCUMENT_KINDS: &[MetadataKind] = &[MetadataKind::Document];
 const INFORMATION_REGISTER_KINDS: &[MetadataKind] = &[MetadataKind::InformationRegister];
 const ACCUMULATION_REGISTER_KINDS: &[MetadataKind] = &[MetadataKind::AccumulationRegister];
@@ -347,6 +356,14 @@ const REUSE_SESSIONS_VALUES: &[&str] = &["DontUse", "AutoUse"];
 const SUBORDINATION_USE_VALUES: &[&str] = &["ToFolders", "ToFoldersAndItems", "ToItems"];
 const WRITE_MODE_VALUES: &[&str] = &["Independent", "RecorderSubordinate"];
 
+const PREDEFINED_DATA_UPDATE_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+];
+const PREDEFINED_DATA_UPDATE_VALUES: &[&str] = &["Auto", "AutoUpdate", "DontAutoUpdate"];
+
 pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
     enum_property(
         "FullTextSearch",
@@ -455,7 +472,7 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         "CodeAllowedLength",
         "CodeAllowedLength",
         MetaPropertyKey::CodeAllowedLength,
-        CATALOG_KINDS,
+        CODE_ALLOWED_LENGTH_KINDS,
         CODE_ALLOWED_LENGTH_VALUES,
     ),
     property(
@@ -624,6 +641,12 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         CALCULATION_REGISTER_PERIODICITY_VALUES,
     ),
     property(
+        "CreateTaskInPrivilegedMode",
+        MetaPropertyKey::CreateTaskInPrivilegedMode,
+        MetaPropertyValueKind::Boolean,
+        BUSINESS_PROCESS_KINDS,
+    ),
+    property(
         "PostInPrivilegedMode",
         MetaPropertyKey::PostInPrivilegedMode,
         MetaPropertyValueKind::Boolean,
@@ -635,6 +658,13 @@ pub const METADATA_PROPERTY_SPECS: &[MetadataPropertySpec] = &[
         MetaPropertyKey::Posting,
         DOCUMENT_KINDS,
         POSTING_VALUES,
+    ),
+    enum_property(
+        "PredefinedDataUpdate",
+        "PredefinedDataUpdate",
+        MetaPropertyKey::PredefinedDataUpdate,
+        PREDEFINED_DATA_UPDATE_KINDS,
+        PREDEFINED_DATA_UPDATE_VALUES,
     ),
     property(
         "Predefined",
@@ -946,6 +976,25 @@ mod tests {
     }
 
     #[test]
+    fn create_task_privileged_mode_is_boolean_and_business_process_only() {
+        for value in [false, true] {
+            assert_property_kind_matrix(
+                "CreateTaskInPrivilegedMode",
+                MetaPropertyValue::Boolean(value),
+                &[MetadataKind::BusinessProcess],
+            );
+        }
+        assert!(MetaPropertyChanges::convert(
+            MetadataKind::BusinessProcess,
+            vec![MetaPropertyInput::new(
+                "CreateTaskInPrivilegedMode",
+                MetaPropertyValue::String("true".into())
+            )],
+        )
+        .is_err());
+    }
+
+    #[test]
     fn code_type_keeps_its_closed_enum_and_argument_type_for_both_supported_owners() {
         for kind in [MetadataKind::Catalog, MetadataKind::ChartOfCalculationTypes] {
             for value in ["String", "Number"] {
@@ -1242,7 +1291,12 @@ mod tests {
             (
                 "CodeAllowedLength",
                 MetaPropertyValue::String("Fixed".into()),
-                &[Catalog],
+                &[
+                    Catalog,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ExchangePlan,
+                ],
             ),
             (
                 "CodeLength",
@@ -1422,6 +1476,16 @@ mod tests {
                 "Posting",
                 MetaPropertyValue::String("Deny".into()),
                 &[Document],
+            ),
+            (
+                "PredefinedDataUpdate",
+                MetaPropertyValue::String("AutoUpdate".into()),
+                &[
+                    Catalog,
+                    ChartOfAccounts,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                ],
             ),
             (
                 "Predefined",

@@ -15748,6 +15748,22 @@ struct ActorLogicalReadLease {"#,
 
     #[test]
     pub(crate) fn logical_reads_run_without_deadline_tree_scans_or_mutation_lane_wait() {
+        assert_logical_read_admission(false);
+    }
+
+    #[test]
+    fn logical_read_admission_rejects_replaced_retained_root() {
+        if !unica_workspace::test_support::supports_retained_root_replacement_test() {
+            unica_process::test_support::skip_without_host_capability(
+                unica_process::test_support::HostCapability::RenameUnderOpenHandle,
+                "the platform prevents replacement of a retained source root",
+            );
+            return;
+        }
+        assert_logical_read_admission(true);
+    }
+
+    fn assert_logical_read_admission(replace_retained_root: bool) {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("src");
         let sibling = workspace.path().join("dep");
@@ -16092,7 +16108,7 @@ struct ActorLogicalReadLease {"#,
             .unwrap();
         assert!(!result.ok);
         assert_eq!(result.diagnostics[0]["code"], "cancelled");
-        if unica_workspace::test_support::supports_retained_root_replacement_test() {
+        if replace_retained_root {
             let remapped_execution = layout_execution();
             assert!(remapped_execution.layout_read_source("main").is_ok());
             std::fs::rename(&source, workspace.path().join("retained-src")).unwrap();

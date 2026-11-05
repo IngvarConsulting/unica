@@ -1412,15 +1412,27 @@ pub fn apply_typed_properties(
                 Some("values"),
             )
         })?;
-        if matches!(
-            key,
-            MetaPropertyKey::FullTextSearch
-                | MetaPropertyKey::SearchStringModeOnInputByString
-                | MetaPropertyKey::FullTextSearchOnInputByString
-                | MetaPropertyKey::ChoiceDataGetModeOnInputByString
-                | MetaPropertyKey::CreateOnInput
-                | MetaPropertyKey::ChoiceHistoryOnInput
-        ) {
+        let kind_scoped_enum = matches!(
+            (kind, key),
+            (
+                MetadataKind::ChartOfCharacteristicTypes
+                    | MetadataKind::ChartOfCalculationTypes
+                    | MetadataKind::ExchangePlan,
+                MetaPropertyKey::CodeAllowedLength
+            )
+        );
+        if kind_scoped_enum
+            || matches!(
+                key,
+                MetaPropertyKey::FullTextSearch
+                    | MetaPropertyKey::SearchStringModeOnInputByString
+                    | MetaPropertyKey::FullTextSearchOnInputByString
+                    | MetaPropertyKey::ChoiceDataGetModeOnInputByString
+                    | MetaPropertyKey::CreateOnInput
+                    | MetaPropertyKey::ChoiceHistoryOnInput
+                    | MetaPropertyKey::PredefinedDataUpdate
+            )
+        {
             let same_name_count = properties
                 .children()
                 .filter(|node| node.is_element() && node.tag_name().name() == tag)

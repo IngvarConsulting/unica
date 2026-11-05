@@ -16,14 +16,17 @@ enum ValueKind {
 }
 
 const PROFILE: &[(&str, ValueKind)] = &[
-    ("NumberType", ValueKind::Enumeration(&["String", "Number"])),
+    (
+        "NumberType",
+        ValueKind::Enumeration(unica_metadata::document_numerator::NUMBER_TYPES),
+    ),
     (
         "NumberAllowedLength",
-        ValueKind::Enumeration(&["Variable", "Fixed"]),
+        ValueKind::Enumeration(unica_metadata::document_numerator::NUMBER_ALLOWED_LENGTHS),
     ),
     (
         "NumberPeriodicity",
-        ValueKind::Enumeration(&["Nonperiodical", "Year", "Quarter", "Month", "Day"]),
+        ValueKind::Enumeration(unica_metadata::document_numerator::NUMBER_PERIODICITIES),
     ),
     ("CheckUnique", ValueKind::Boolean),
 ];
