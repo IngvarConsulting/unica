@@ -156,6 +156,8 @@ pub struct FormInfoAttribute {
 #[serde(rename_all = "camelCase")]
 pub struct FormInfoColumn {
     pub name: String,
+    /// Strictly decoded type of the containing form attribute.
+    pub parent_type: Option<String>,
     #[serde(rename = "type")]
     pub type_name: Option<String>,
 }
@@ -185,6 +187,14 @@ pub struct FormInfoCommand {
     pub picture: Option<String>,
     /// The command's DefaultRepresentation; `null` when it keeps the default.
     pub representation: Option<String>,
+    pub current_row_use: Option<String>,
+    pub modifies_saved_data: Option<bool>,
+    pub associated_table_element_id: Option<String>,
+    pub functional_options: Option<Vec<String>>,
+    /// An explicitly stored flag, independent of the picture reference.
+    pub picture_load_transparent: Option<bool>,
+    /// Damage to one command property does not discard the other facts.
+    pub property_limits: Vec<String>,
 }
 
 /// Minimal, provider-neutral form evidence consumed by the hidden event

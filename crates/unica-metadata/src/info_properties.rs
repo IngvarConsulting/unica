@@ -424,6 +424,13 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | ReturnValuesReuse
         | Server
         | ServerCall => kind == CommonModule,
+        CreateTaskInPrivilegedMode => kind == BusinessProcess,
+        FullTextSearch
+        | SearchStringModeOnInputByString
+        | FullTextSearchOnInputByString
+        | ChoiceDataGetModeOnInputByString
+        | CreateOnInput
+        | ChoiceHistoryOnInput => matches!(kind, Catalog | Document),
         Correspondence | PeriodAdjustmentLength => kind == AccountingRegister,
         Description | Predefined | RestartCountOnFailure | RestartIntervalOnFailure | Use => {
             kind == ScheduledJob
@@ -440,6 +447,10 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | RegisterRecordsDeletion
         | RegisterRecordsWritingOnPost
         | UnpostInPrivilegedMode => kind == Document,
+        PredefinedDataUpdate => matches!(
+            kind,
+            Catalog | ChartOfAccounts | ChartOfCharacteristicTypes | ChartOfCalculationTypes
+        ),
         Periodicity => matches!(kind, InformationRegister | CalculationRegister),
         ReuseSessions | SessionMaxAge => matches!(kind, HTTPService | WebService),
         RootUrl => kind == HTTPService,

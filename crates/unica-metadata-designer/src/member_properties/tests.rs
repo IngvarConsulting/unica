@@ -177,3 +177,57 @@ fn catalog_tabular_native_context_does_not_propagate_to_header_or_column_attribu
         assert_no_section_properties(column);
     }
 }
+
+#[test]
+fn reduction_profile_reads_three_values_and_keeps_missing_and_damaged_facts_local() {
+    let native = include_str!("../../../../tests/fixtures/acceptance/workspace-register-dimensions/src/InformationRegisters/Цены.xml");
+    let original = "<TypeReductionMode>TransformValues</TypeReductionMode>";
+    for value in ["TransformValues", "Deny", "DeleteData"] {
+        let xml = native.replace(
+            original,
+            &format!("<TypeReductionMode>{value}</TypeReductionMode>"),
+        );
+        let info = read(
+            &xml,
+            "InformationRegister.Цены",
+            Some(SourceSetKind::Configuration),
+        );
+        let dimension = &info.collections.dimensions[0];
+        assert_eq!(dimension.properties.len(), 1);
+        assert_eq!(dimension.properties[0].name, "TypeReductionMode");
+        assert_eq!(
+            serde_json::to_value(&dimension.properties[0].value).unwrap(),
+            json!({"kind":"text", "value":value})
+        );
+        assert!(dimension.r#type.is_some());
+    }
+    for replacement in [
+        "",
+        "<TypeReductionMode/>",
+        "<TypeReductionMode>Future</TypeReductionMode>",
+        "<TypeReductionMode>Deny</TypeReductionMode><TypeReductionMode>Deny</TypeReductionMode>",
+        "<TypeReductionMode xmlns=\"urn:foreign\">Deny</TypeReductionMode>",
+    ] {
+        let info = read(
+            &native.replace(original, replacement),
+            "InformationRegister.Цены",
+            Some(SourceSetKind::Configuration),
+        );
+        assert!(info.collections.dimensions[0].properties.is_empty());
+        assert!(info.collections.dimensions[0].r#type.is_some());
+        let diagnostic = info.diagnostics.iter().any(|d| {
+            d.field.as_deref() == Some("collections.dimensions[0].properties.TypeReductionMode")
+        });
+        assert_eq!(diagnostic, !replacement.is_empty(), "{replacement}");
+    }
+    for kind in [
+        None,
+        Some(SourceSetKind::Extension),
+        Some(SourceSetKind::ExternalReport),
+        Some(SourceSetKind::ExternalProcessor),
+    ] {
+        let info = read(native, "InformationRegister.Цены", kind);
+        assert!(info.member_read_profile.is_none());
+        assert!(info.collections.dimensions[0].properties.is_empty());
+    }
+}

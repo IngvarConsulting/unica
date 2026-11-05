@@ -236,7 +236,8 @@ fn mltext(tag: &str, value: &Value, ns: &str, lang: Option<&str>) -> Result<Stri
 /// keeps the other translations byte for byte, as `props.set` does for
 /// metadata synonyms (#909). A language-to-text object replaces the value as
 /// given. An empty string removes the `lang` item while other translations
-/// remain; when it is the only item, the value is rewritten as before.
+/// remain. A sole default-language item retains explicit empty content.
+/// Existing LocalStringType headers and namespace bindings survive both cases.
 fn mltext_update(
     xml_text: &str,
     existing: Option<Node<'_, '_>>,
@@ -254,7 +255,21 @@ fn mltext_update(
         let only_default = items
             .iter()
             .all(|item| text(*item, V, "lang").trim() == lang);
-        if !(items.is_empty() || new_text.is_empty() && only_default) {
+        let local_string = existing.attribute((X, "type")).is_some_and(|qname| {
+            canonical_node_value_type(existing, qname.trim_matches([' ', '\t', '\r', '\n']))
+                .as_deref()
+                == Ok("v8:LocalStringType")
+        });
+        // Preserve a declared local-string header even for an empty value.
+        // Untyped empty elements still acquire the required type as before.
+        if local_string || !(items.is_empty() || new_text.is_empty() && only_default) {
+            if local_string && only_default {
+                return Ok(
+                    unica_xml_format::localized::replace_language_value_keeping_empty(
+                        xml_text, existing, "", lang, new_text,
+                    ),
+                );
+            }
             return Ok(unica_xml_format::localized::replace_language_value(
                 xml_text, existing, "", lang, new_text,
             ));
