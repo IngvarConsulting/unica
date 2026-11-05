@@ -65,6 +65,28 @@ pub fn metadata_property_schemas(kind: Option<MetadataKind>) -> Map<String, Valu
             .expect("root property schema is always an object")
             .remove("unconstrained");
     }
+    if kind.is_none() {
+        // Only names with different scalar kinds need a union. Keep the
+        // established merged enum shape for homogeneous owner profiles.
+        for spec in METADATA_PROPERTY_SPECS {
+            if !METADATA_PROPERTY_SPECS.iter().any(|other| {
+                other.public_name == spec.public_name && other.value_kind != spec.value_kind
+            }) {
+                continue;
+            }
+            let mut branches = Vec::new();
+            for owner in MetadataKind::ALL {
+                if let Some(schema) =
+                    metadata_property_schemas(Some(*owner)).remove(spec.public_name)
+                {
+                    if !branches.contains(&schema) {
+                        branches.push(schema);
+                    }
+                }
+            }
+            root_properties.insert(spec.public_name.into(), json!({"anyOf": branches}));
+        }
+    }
     root_properties
 }
 

@@ -1,0 +1,710 @@
+{
+  "id": "S-1648-constant-choice",
+  "issue": 1648,
+  "area": "Метаданные",
+  "task": "Изменить четыре настройки выбора константы, прочитать результат и XML, сохранить остальные свойства и отклонить неверные значения до записи",
+  "workspace": "tests/fixtures/acceptance/workspace-constant-choice",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MainCurrency.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "initial": {
+          "kind": "sha256",
+          "file": "src/Constants/MainCurrency.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceFoldersAndItems": "FoldersAndItems",
+                "ChoiceHistoryOnInput": "DontUse",
+                "ChoiceForm": "Catalog.Inspectable.Form.Main"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceFoldersAndItems",
+          "eq": [
+            "FoldersAndItems"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceHistoryOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceForm",
+          "eq": [
+            "Catalog.Inspectable.Form.Main"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "QuickChoice": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}QuickChoice",
+          "eq": [
+            "Use"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceFoldersAndItems",
+          "eq": [
+            "FoldersAndItems"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceHistoryOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceForm",
+          "eq": [
+            "Catalog.Inspectable.Form.Main"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MainCurrency"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceFoldersAndItems",
+          "eq": "FoldersAndItems"
+        },
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ChoiceForm",
+          "eq": "Catalog.Inspectable.Form.Main"
+        },
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "QuickChoice": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}QuickChoice",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceFoldersAndItems",
+          "eq": [
+            "FoldersAndItems"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceHistoryOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceForm",
+          "eq": [
+            "Catalog.Inspectable.Form.Main"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MainCurrency"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceFoldersAndItems",
+          "eq": "FoldersAndItems"
+        },
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ChoiceForm",
+          "eq": "Catalog.Inspectable.Form.Main"
+        },
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "QuickChoice": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}QuickChoice",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceFoldersAndItems",
+          "eq": [
+            "FoldersAndItems"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceHistoryOnInput",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceForm",
+          "eq": [
+            "Catalog.Inspectable.Form.Main"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.MainCurrency"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ChoiceFoldersAndItems",
+          "eq": "FoldersAndItems"
+        },
+        {
+          "pointer": "/data/props/ChoiceHistoryOnInput",
+          "eq": "DontUse"
+        },
+        {
+          "pointer": "/data/props/ChoiceForm",
+          "eq": "Catalog.Inspectable.Form.Main"
+        },
+        {
+          "pointer": "/data/props/QuickChoice",
+          "eq": "Auto"
+        }
+      ],
+      "captures": {
+        "changed": {
+          "kind": "sha256",
+          "file": "src/Constants/MainCurrency.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "QuickChoice": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ],
+      "refusal": "bad_value: property value must be a string"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "QuickChoice": "Never"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ],
+      "refusal": "bad_value: property `QuickChoice` value `Never` is invalid; expected one of: Auto, Use, DontUse"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceHistoryOnInput": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ],
+      "refusal": "bad_value: property `ChoiceHistoryOnInput` value `Use` is invalid; expected one of: Auto, DontUse"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceFoldersAndItems": "All"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ],
+      "refusal": "bad_value: property `ChoiceFoldersAndItems` value `All` is invalid; expected one of: Items, Folders, FoldersAndItems"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceForm": "Catalog.Inspectable.Form.Absent",
+                "Comment": "atomic refusal"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ],
+      "refusal": "bad_value: values.ChoiceForm: Catalog.Inspectable.Form.Absent is not registered by its owner"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceForm": "Catalog.Inspectable"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ],
+      "refusal": "bad_value: values.ChoiceForm: expected CommonForm.Name or Kind.Name.Form.Name"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "QuickChoice": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "staleToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "QuickChoice": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "competingImage": {
+          "kind": "sha256",
+          "file": "src/Constants/MainCurrency.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.staleToken"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}QuickChoice",
+          "eq": [
+            "DontUse"
+          ]
+        },
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "sha256",
+          "eq": "$capture.competingImage"
+        }
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Constants/MainCurrency.xml; input `Constants/MainCurrency.xml`: source write target; the plan retains its original state to pre"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "QuickChoice": "Auto"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceForm": "CommonForm.Standalone"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceForm",
+          "eq": [
+            "CommonForm.Standalone"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Constant.MainCurrency",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ChoiceForm": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Constants/MainCurrency.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Constant/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}ChoiceForm",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    }
+  ]
+}

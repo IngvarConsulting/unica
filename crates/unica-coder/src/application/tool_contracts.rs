@@ -4428,11 +4428,11 @@ pub(crate) mod tests {
             ),
             (
                 "unica.meta.add",
-                entry("metadata:Add", "31075:345dd3dd50dad68b"),
+                entry("metadata:Add", "31255:e4d83fd19a0eb484"),
             ),
             (
                 "unica.meta.edit",
-                entry("metadata:Edit", "31695:c4a8361532421af8"),
+                entry("metadata:Edit", "31875:b8ebd2c68eb44c63"),
             ),
             (
                 "unica.role.edit",

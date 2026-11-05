@@ -69,6 +69,17 @@ pub fn validate_final_object_integrity(
         let Ok(kind) = MetadataKind::parse(directory.tag) else {
             continue;
         };
+        if kind == MetadataKind::Constant
+            && relative.extension().and_then(|ext| ext.to_str()) == Some("xml")
+        {
+            crate::constant_choice::validate_choice_form(
+                staged,
+                relative,
+                bytes,
+                source_kind,
+                false,
+            )?;
+        }
         if kind == MetadataKind::EventSubscription
             && relative
                 .extension()
@@ -527,6 +538,18 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
             bytes
         };
         postimage.shrink_to_fit();
+        if actual_kind == "Constant"
+            && matches!(edit,
+            MetaEditOperation::SetProperties { values } if values.entries().iter().any(|(key, _)| *key == unica_metadata::MetaPropertyKey::ChoiceForm))
+        {
+            crate::constant_choice::validate_choice_form(
+                staged,
+                &relative,
+                &postimage,
+                authority.source_kind(),
+                true,
+            )?;
+        }
         if postimage != preimage {
             staged
                 .replace(&relative, &preimage, postimage)

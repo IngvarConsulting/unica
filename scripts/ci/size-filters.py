@@ -67,6 +67,11 @@ class MeasuredMediumCase(NamedTuple):
 # 400 000 исходных наборов: 34.447 с отдельно, 41.729 с совместно, macOS.
 # Это размер конкретной проверки; соседние layout-проверки остаются small.
 MEASURED_MEDIUM_CASES = (
+    # Public Constant choice workflows: 20-50 s on Windows, 2026-11-04.
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::constant_choice::constant_choice_roundtrip_preserves_other_settings_and_catalog_contract"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::constant_choice::constant_choice_rejects_invalid_values_and_forms_without_any_writes"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::constant_choice::constant_choice_saved_token_guards_form_and_owner"),
+    MeasuredMediumCase("unica-coder", "unica_coder", "infrastructure::daemon::server::metadata_can_tests::constant_choice::constant_choice_accepts_platform_inactive_settings_and_checks_noop_references"),
     MeasuredMediumCase(
         "unica-project-health",
         "unica_project_health",
