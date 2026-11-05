@@ -103,20 +103,34 @@ fn functional_option_links_preserve_all_thirteen_declarations_and_target_kinds()
 #[test]
 fn functional_option_empty_content_and_unavailable_parameter_use_are_distinct() {
     let f = RealReaderFixture::new();
-    install(&f, "FunctionalOption", "Empty", "<Content/>");
+    let path = install(&f, "FunctionalOption", "Empty", "<Content/>");
     let service = f.view_service();
     let node = service
         .view(ViewRequest::new("main:FunctionalOption.Empty").unwrap())
         .data
         .unwrap();
     assert_eq!(node["branches"][0]["count"], 0);
-    assert!(node.get("limits").is_none());
+    let limits = node["limits"]
+        .as_array()
+        .expect("independent storage diagnostic");
+    assert_eq!(limits.len(), 1, "{node}");
+    assert!(limits[0].as_str().unwrap().contains("Location"), "{node}");
     let rows = service
         .view(ViewRequest::new("main:FunctionalOption.Empty.Relation").unwrap())
         .data
         .unwrap();
     assert_eq!(rows["items"], json!([]));
     assert!(rows.get("limits").is_none());
+    let image = fs::read_to_string(&path).unwrap();
+    write(&path, &image.replace("<Content/>", "<Location>Constant.Storage</Location><PrivilegedGetMode>false</PrivilegedGetMode><Content/>"));
+    let recovered = service
+        .view(ViewRequest::new("main:FunctionalOption.Empty").unwrap())
+        .data
+        .unwrap();
+    assert_eq!(recovered["branches"][0]["count"], 0);
+    assert_eq!(recovered["props"]["Location"], "Constant.Storage");
+    assert_eq!(recovered["props"]["PrivilegedGetMode"], false);
+    assert!(recovered.get("limits").is_none(), "{recovered}");
     for (name, xml, reason) in [
         ("Empty", "<Use/>", "explicitly empty"),
         ("Missing", "", "absent"),

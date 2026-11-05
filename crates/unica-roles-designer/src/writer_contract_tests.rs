@@ -96,7 +96,7 @@ fn role_identity_matching_uses_complete_xml_string_values() {
     assert!(error.contains("one direct boolean text value"), "{error}");
 }
 #[test]
-fn right_insertion_rejects_mixed_eol_and_preserves_uniform_lone_cr() {
+fn right_insertion_uses_local_eol_and_preserves_uniform_lone_cr() {
     let mixed = rights_xml("\n", "<value>true</value>").replacen('\n', "\r\n", 1);
     let mixed_document = Document::parse(&mixed).unwrap();
     let mixed_object = direct_role_children(
@@ -104,9 +104,15 @@ fn right_insertion_rejects_mixed_eol_and_preserves_uniform_lone_cr() {
         "object",
         ROLE_RIGHTS_NAMESPACE,
     )[0];
-    let error = right_insertion(&mixed, mixed_object, "Edit", true)
-        .expect_err("mixed EOL must not choose a global fallback");
-    assert!(error.contains("ambiguous"), "{error}");
+    let (offset, insertion) = right_insertion(&mixed, mixed_object, "Edit", true).unwrap();
+    assert!(!insertion.contains('\r'));
+    let (updated, effect) =
+        apply_role_edit_operation(&mixed, &operation("Catalog.Demo", "Edit", true), 0).unwrap();
+    assert!(effect.changed);
+    assert_eq!(
+        updated,
+        format!("{}{}{}", &mixed[..offset], insertion, &mixed[offset..])
+    );
 
     let lone_cr = rights_xml("\r", "<value>true</value>");
     let lone_cr_document = Document::parse(&lone_cr).unwrap();

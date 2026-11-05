@@ -95,7 +95,8 @@ mod workspace_metadata_publication_tests;
 mod full_dump_integration;
 
 #[cfg(test)]
-mod source_discovery_integration_tests;
+#[path = "source_discovery_integration_tests.rs"]
+mod medium_source_discovery_integration_tests;
 
 pub(crate) mod analysis_composition;
 
@@ -108,9 +109,11 @@ pub(crate) mod interface_composition;
 pub(crate) mod support_composition;
 
 #[cfg(test)]
-mod meta_add_surface_tests;
+#[path = "meta_add_surface_tests.rs"]
+mod medium_meta_add_surface_tests;
 #[cfg(test)]
-mod meta_info_surface_tests;
+#[path = "meta_info_surface_tests.rs"]
+mod medium_meta_info_surface_tests;
 mod source_ids;
 
 pub(crate) mod external_artifact_inventory;
