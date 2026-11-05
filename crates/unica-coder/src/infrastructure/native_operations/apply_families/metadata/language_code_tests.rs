@@ -151,12 +151,18 @@ fn language_code_refuses_default_conflict_or_unregistered_owner() {
         ("Languages/Русский.xml", &language_xml("Русский", "ru")),
         ("Languages/English.xml", &language_xml("English", "en")),
     ]);
-    assert!(
-        validate(&mut prepare(&orphan, "de"))
-            .unwrap_err()
-            .to_string()
-            .contains("not registered")
-    );
+    // The planner refuses an unregistered language before any final guard.
+    assert!(plan_all(
+        &orphan,
+        &[(
+            "props.set",
+            json!({"at":"main:Language.English","values":{"LanguageCode":"de"}}),
+        )],
+    )
+    .map(|_| ())
+    .expect_err("an unregistered language is not a property target")
+    .to_string()
+    .contains("not registered"));
     let mut default = plan_all(
         &fixture,
         &[(
@@ -246,4 +252,26 @@ fn an_extension_language_changes_only_comment_and_names_the_main_configuration()
         staged_texts(&staged)[Path::new("Languages/English.xml")],
         language.replace("<Comment/>", "<Comment>Расширение</Comment>")
     );
+}
+
+#[test]
+fn an_unregistered_language_refuses_comment_with_an_unchanged_code() {
+    let configuration = RU_CONFIGURATION_XML.to_string();
+    let orphan = MetadataFixture::with_files(&[
+        ("Configuration.xml", &configuration),
+        ("Languages/Русский.xml", &language_xml("Русский", "ru")),
+        ("Languages/English.xml", &language_xml("English", "en")),
+    ]);
+    for values in [
+        json!({"Comment":"x","LanguageCode":"en"}),
+        json!({"Comment":"x"}),
+    ] {
+        let error = plan_all(
+            &orphan,
+            &[("props.set", json!({"at":"main:Language.English","values":values}))],
+        )
+        .map(|_| ())
+        .expect_err("an unregistered language is not a property target");
+        assert!(error.to_string().contains("not registered"), "{values}: {error}");
+    }
 }

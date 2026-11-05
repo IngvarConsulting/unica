@@ -1437,6 +1437,32 @@ fn stage_descriptor_properties(
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
                     .at_path(at_path.clone())
             };
+            // The target is a registered language whether or not the code
+            // changes; the final code guard runs only for a changed code.
+            let root_path = Path::new("Configuration.xml");
+            let root = staged
+                .read(root_path)
+                .map_err(|error| ApplyPlanError::staging(error, at_path.clone()))?
+                .ok_or_else(|| {
+                    ApplyPlanError::new(
+                        ApplyPlanErrorKind::NotFound,
+                        "configuration descriptor was not found",
+                    )
+                    .at_path(at_path.clone())
+                })?;
+            let root = unica_source_designer::owner::prove_already_read_source_set_owner(
+                root_path,
+                &root,
+                source_kind,
+            )
+            .map_err(|error| invalid(error.message))?;
+            if !root.registers("Language", name) {
+                return Err(ApplyPlanError::new(
+                    ApplyPlanErrorKind::NotFound,
+                    "metadata owner is not registered",
+                )
+                .at_path(at_path.clone()));
+            }
             // Comment goes through the shared descriptor Comment writer; the
             // code is then replaced on that image.
             let commented = comment
