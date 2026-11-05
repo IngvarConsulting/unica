@@ -18,6 +18,7 @@ pub mod validation_context;
 pub mod format_contract;
 
 pub mod edit;
+pub mod edit_type;
 
 pub mod descriptor_comment;
 pub mod functional_option;
@@ -83,4 +84,5 @@ pub mod borrowed_form;
 pub mod borrowed_object;
 
 mod dimension_reduction;
+pub mod language_code;
 pub mod style_color;

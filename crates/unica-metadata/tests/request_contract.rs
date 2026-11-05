@@ -650,7 +650,7 @@ fn add_and_edit_report_the_same_supported_common_module_properties() {
             }),
         ),
     ];
-    let expected = "unknown metadata property `ClientOrdinaryApplications`; supported properties for CommonModule: Synonym, Comment, ClientManagedApplication, ClientOrdinaryApplication, ExternalConnection, Global, Privileged, ReturnValuesReuse, Server, ServerCall";
+    let expected = "unknown metadata property `ClientOrdinaryApplications`; supported properties for CommonModule: ClientManagedApplication, ClientOrdinaryApplication, Comment, ExternalConnection, Global, Privileged, ReturnValuesReuse, Server, ServerCall, Synonym";
 
     for (operation, call) in calls {
         let error = diagnostic(operation, call);
