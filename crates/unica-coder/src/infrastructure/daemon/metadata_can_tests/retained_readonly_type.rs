@@ -63,6 +63,7 @@ fn assert_read_only(runtime: &V5CanonicalInvocationRuntime, fixture: &Fixture) {
     );
 }
 
+/// rule: INV.SOURCE.RETAINED-UNEDITABLE-TYPE
 #[test]
 fn canonical_independent_attribute_edits_preserve_read_only_type_bytes() {
     for (property, xml_name) in [("comment", "Comment"), ("synonym", "Synonym")] {
@@ -113,6 +114,7 @@ fn canonical_independent_attribute_edits_preserve_read_only_type_bytes() {
     }
 }
 
+/// rule: INV.SOURCE.RETAINED-UNEDITABLE-TYPE
 #[test]
 fn canonical_fill_value_refuses_read_only_type_without_source_changes() {
     let fixture = Fixture::new("workspace-metadata-values");

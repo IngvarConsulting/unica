@@ -502,6 +502,7 @@ mod tests {
         format!("Error: \"{}\"\n", detail.replace("{project}", PROJECT))
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
     #[test]
     fn cli_names_every_broken_baseline_it_reports_before_start() {
         let cases = [
@@ -607,6 +608,7 @@ mod tests {
 
     /// A path with spaces outside every known physical root: the whole path,
     /// not the part up to its first space, leaves the published detail.
+    /// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
     #[test]
     fn baseline_detail_hides_a_spaced_physical_path_whole() {
         let verdict = baseline_verdict(BaselineFacts {
@@ -634,6 +636,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-SUPPRESSION-EVIDENCE
     #[test]
     fn baseline_verdict_is_a_filter_unless_broken_or_unclassified() {
         // Disabled: nothing configured, nothing to name.

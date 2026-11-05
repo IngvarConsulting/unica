@@ -1,8 +1,5 @@
 ---
 id: INV.RUNTIME.COMPATIBLE-DEVELOPMENT-CYCLE
-check:
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_import.rs::force_is_optional_and_only_force_overwrites_the_infobase
-  - crates/unica-coder/src/infrastructure/daemon/v13_source_export.rs::compatibility_cycle_accepts_explicit_force_and_rejects_silent_overwrite
 gap: https://github.com/IngvarConsulting/unica/issues/1246
 ---
 

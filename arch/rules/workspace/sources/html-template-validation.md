@@ -1,12 +1,5 @@
 ---
 id: INV.SOURCE.HTML-TEMPLATE-VALIDATION
-check:
-  - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::html_template_pages_must_match_registered_language_codes
-  - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::html_template_requires_both_its_descriptor_and_language_page
-  - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::html_template_accepts_every_declared_language_page
-  - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::html_template_page_accepts_registered_utf8_html_without_xml_grammar
-  - crates/unica-coder/src/infrastructure/native_operations/meta/validation.rs::html_template_page_rejects_non_utf8_bytes
-  - crates/unica-coder/src/infrastructure/daemon/server/html_template_tests.rs::canonical_html_property_edits_preserve_authored_page_bytes_with_and_without_bom
 ---
 
 # HTML-страница макета не обязана быть корректным XML

@@ -39,6 +39,7 @@ fn english() -> Vec<(String, String)> {
     ]
 }
 
+/// rule: INV.ANALYSIS.PLATFORM-TYPE-CATALOG
 #[test]
 fn one_record_per_type_and_member_in_both_languages_with_types_by_page() {
     let catalog = build_catalog("8.3.27.0", &russian(), &english());

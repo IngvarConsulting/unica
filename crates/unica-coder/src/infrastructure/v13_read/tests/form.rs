@@ -841,6 +841,7 @@ fn production_form_empty_handlers_are_invalid_for_every_property_owner() {
         .contains_key("implementationAt"));
 }
 
+/// rule: INV.SOURCE.METADATA-NODE-PROPERTIES
 #[test]
 fn form_projection_uses_a_positive_nested_scalar_allowlist() {
     let at = QualifiedAddress::parse("main:CommonForm.Test.Item.Secret").unwrap();
@@ -875,6 +876,7 @@ fn form_projection_uses_a_positive_nested_scalar_allowlist() {
     assert!(!serialized.contains("must-not-leak"), "{serialized}");
 }
 
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 #[test]
 fn form_metadata_has_its_own_descriptor_properties_and_resource_identity() {
     let fixture = RealReaderFixture::new();
@@ -1033,6 +1035,7 @@ fn form_declaration_never_hides_the_form() {
     }
 }
 
+/// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
 #[test]
 fn inherited_form_metadata_is_local_without_claiming_a_local_form_payload() {
     let fixture = RealReaderFixture::new();
@@ -1071,6 +1074,7 @@ fn inherited_form_metadata_is_local_without_claiming_a_local_form_payload() {
 
 /// A form borrowed with its own `Form.xml` (#1982) carries local content:
 /// view does not report it as inherited, so its content writers stay open.
+/// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
 #[test]
 fn borrowed_form_with_its_own_form_xml_reads_as_local_content() {
     let fixture = RealReaderFixture::new();
@@ -1107,6 +1111,7 @@ fn borrowed_form_with_its_own_form_xml_reads_as_local_content() {
     );
 }
 
+/// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 #[test]
 fn form_metadata_rejects_orphans_and_does_not_follow_descriptor_links() {
     let fixture = RealReaderFixture::new();
