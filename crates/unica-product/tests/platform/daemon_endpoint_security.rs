@@ -69,7 +69,8 @@ pub fn assert_owner_only(path: &Path) {
         $full = [System.Security.AccessControl.FileSystemRights]::FullControl
         if (($rule.FileSystemRights -band $full) -ne $full) { throw 'owner lacks full control' }
     "#,
-    );
+    )
+    .expect("inspect owner-only endpoint ACL");
 }
 
 #[cfg(unix)]
@@ -102,28 +103,44 @@ pub struct SecuritySnapshot(String);
 #[cfg(windows)]
 impl SecuritySnapshot {
     pub fn capture(path: &Path) -> Self {
-        Self(powershell(
-            path,
-            r#"
-            $acl = Get-Acl -LiteralPath $path
-            $sections = [System.Security.AccessControl.AccessControlSections]::Owner -bor [System.Security.AccessControl.AccessControlSections]::Group -bor [System.Security.AccessControl.AccessControlSections]::Access
-            $acl.GetSecurityDescriptorSddlForm($sections)
-        "#,
-        ))
+        Self(
+            powershell(
+                path,
+                r#"
+                $sections = [System.Security.AccessControl.AccessControlSections]'Owner, Group, Access'
+                $item = Get-Item -LiteralPath $path
+                $item.GetAccessControl($sections).GetSecurityDescriptorSddlForm($sections)
+            "#,
+            )
+            .expect("capture endpoint owner, group and DACL"),
+        )
     }
 
     pub fn apply_to(&self, path: &Path) {
+        self.try_apply_to(path)
+            .expect("restore endpoint owner, group and DACL");
+    }
+
+    fn try_apply_to(&self, path: &Path) -> std::io::Result<()> {
         let sddl = self.0.trim().replace('\'', "''");
         powershell(
             path,
             &format!(
                 r#"
-            $acl = Get-Acl -LiteralPath $path
-            $acl.SetSecurityDescriptorSddlForm('{sddl}')
-            Set-Acl -LiteralPath $path -AclObject $acl
+            $sections = [System.Security.AccessControl.AccessControlSections]'Owner, Group, Access'
+            $item = Get-Item -LiteralPath $path
+            $acl = $item.GetAccessControl($sections)
+            $acl.SetSecurityDescriptorSddlForm('{sddl}', $sections)
+            $item.SetAccessControl($acl)
+            $ownership = [System.Security.AccessControl.AccessControlSections]'Owner, Group'
+            $actual = $item.GetAccessControl($ownership).GetSecurityDescriptorSddlForm($ownership)
+            if ($actual -cne $acl.GetSecurityDescriptorSddlForm($ownership)) {{
+                throw 'restoring the endpoint changed its owner or group'
+            }}
         "#
             ),
-        );
+        )?;
+        Ok(())
     }
 }
 
@@ -169,6 +186,14 @@ impl InsecureAccess {
 
 impl Drop for InsecureAccess {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        if std::thread::panicking() {
+            if let Err(error) = self.original.try_apply_to(&self.path) {
+                use std::io::Write;
+                let _ = writeln!(std::io::stderr(), "endpoint ACL cleanup failed: {error}");
+            }
+            return;
+        }
         self.original.apply_to(&self.path);
     }
 }
@@ -190,29 +215,62 @@ fn expose_to_others(path: &Path) {
     powershell(
         path,
         r#"
-        $acl = Get-Acl -LiteralPath $path
+        $item = Get-Item -LiteralPath $path
+        $acl = $item.GetAccessControl([System.Security.AccessControl.AccessControlSections]::Access)
         $everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')
         $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($everyone, [System.Security.AccessControl.FileSystemRights]::Read, [System.Security.AccessControl.AccessControlType]::Allow)
         $acl.AddAccessRule($rule)
-        Set-Acl -LiteralPath $path -AclObject $acl
+        $item.SetAccessControl($acl)
     "#,
-    );
+    )
+    .expect("expose the isolated fixture to another SID");
 }
 
 #[cfg(windows)]
-fn powershell(path: &Path, body: &str) -> String {
-    let escaped = path.to_str().unwrap().replace('\'', "''");
+fn powershell(path: &Path, body: &str) -> std::io::Result<String> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| std::io::Error::other("endpoint fixture path is not Unicode"))?;
+    let escaped = path.replace('\'', "''");
     let script = format!("$ErrorActionPreference='Stop'; $path='{escaped}'; {body}");
     let output = std::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .expect("inspect or change the isolated fixture's Windows ACL");
-    assert!(
-        output.status.success(),
-        "Windows ACL fixture failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        .output()?;
+    if !output.status.success() {
+        return Err(std::io::Error::other(format!(
+            "Windows ACL fixture failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+    Ok(String::from_utf8(output.stdout)
+        .map_err(std::io::Error::other)?
+        .trim()
+        .to_owned())
+}
+
+#[cfg_attr(
+    not(windows),
+    ignore = "host capability windows-acl: endpoint DACL restoration requires Windows"
+)]
+#[test]
+fn failed_acl_restore_preserves_the_primary_panic() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("endpoint");
+    std::fs::write(&path, b"fixture").unwrap();
+    let original = SecuritySnapshot::capture(&path);
+    let primary = std::panic::catch_unwind(|| {
+        let _guard = InsecureAccess {
+            path: path.clone(),
+            original,
+        };
+        std::fs::remove_file(&path).unwrap();
+        panic!("primary fixture failure");
+    })
+    .expect_err("the primary failure should unwind to the caller");
+    assert_eq!(
+        primary.downcast_ref::<&str>(),
+        Some(&"primary fixture failure")
     );
-    String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 #[cfg(target_os = "macos")]
