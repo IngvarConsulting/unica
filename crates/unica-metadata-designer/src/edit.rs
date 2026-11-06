@@ -2295,9 +2295,10 @@ pub fn find_typed_element_identity(
             )
         })
 }
-// The caller has parsed the whole document and proved a boolean text leaf.
+// The caller has parsed the whole document and proved a closed scalar leaf
+// and an XML-safe replacement from its typed domain.
 // Keep lexical whitespace (including character references) outside the value.
-fn dimension_boolean_text_range(
+fn metadata_scalar_text_range(
     xml: &str,
     range: std::ops::Range<usize>,
     decode_references: bool,
@@ -2331,7 +2332,7 @@ fn dimension_boolean_text_range(
 
 // roxmltree merges adjacent Text/CDATA nodes without extending their source
 // range. Scan the already validated leaf instead, retaining its markup.
-fn dimension_boolean_text_edits(
+fn metadata_scalar_text_edits(
     xml: &str,
     flag: roxmltree::Node<'_, '_>,
     replacement: &'static str,
@@ -2363,7 +2364,7 @@ fn dimension_boolean_text_edits(
             }
             (start..cursor, true)
         };
-        if let Some(range) = dimension_boolean_text_range(xml, text, decode_references) {
+        if let Some(range) = metadata_scalar_text_range(xml, text, decode_references) {
             edits.push((range, if edits.is_empty() { replacement } else { "" }));
         }
     }
@@ -2423,7 +2424,7 @@ fn dimension_boolean_edit(
         Vec::new()
     } else {
         let replacement = if value { "true" } else { "false" };
-        dimension_boolean_text_edits(xml, *flag, replacement).ok_or_else(refused)?
+        metadata_scalar_text_edits(xml, *flag, replacement).ok_or_else(refused)?
     };
     Ok(DimensionBooleanEdit {
         properties_range: properties.range(),
@@ -2467,6 +2468,69 @@ pub fn update_typed_element(
                     .into_iter()
                     .map(|(range, value)| (range, value.to_owned())),
             );
+        }
+    }
+    if update.full_text_search.is_some() || update.data_history.is_some() {
+        let refused = |key: &str| {
+            typed_diagnostic(MetaDiagnosticCode::InvalidArguments, format!("existing field {key} is missing or damaged; restore a confirmed valid source before changing it"), Some(key))
+        };
+        let doc = Document::parse(xml_text).map_err(|_| refused("properties"))?;
+        let node = doc
+            .descendants()
+            .find(|node| node.is_element() && node.range() == range)
+            .ok_or_else(|| refused("properties"))?;
+        let containers = node
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+            .collect::<Vec<_>>();
+        let [properties] = containers.as_slice() else {
+            return Err(refused("properties"));
+        };
+        if properties.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+            || properties.attributes().len() != 0
+        {
+            return Err(refused("properties"));
+        }
+        flag_properties_range.get_or_insert(properties.range());
+        for (key, value) in [
+            ("FullTextSearch", &update.full_text_search),
+            ("DataHistory", &update.data_history),
+        ] {
+            let Some(value) = value else {
+                continue;
+            };
+            let fields = properties
+                .children()
+                .filter(|node| node.is_element() && node.tag_name().name() == key)
+                .collect::<Vec<_>>();
+            let [property] = fields.as_slice() else {
+                return Err(refused(key));
+            };
+            let observed = property
+                .children()
+                .filter(|node| node.is_text())
+                .filter_map(|node| node.text())
+                .collect::<String>();
+            if property.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+                || property.attributes().len() != 0
+                || property.children().any(|node| node.is_element())
+                || !matches!(observed.as_str(), "Use" | "DontUse")
+            {
+                return Err(refused(key));
+            }
+            let replacement = match value.as_str() {
+                "Use" => "Use",
+                "DontUse" => "DontUse",
+                _ => return Err(refused(key)),
+            };
+            if observed != replacement {
+                flag_edits.extend(
+                    metadata_scalar_text_edits(xml_text, *property, replacement)
+                        .ok_or_else(|| refused(key))?
+                        .into_iter()
+                        .map(|(range, value)| (range, value.to_owned())),
+                );
+            }
         }
     }
     let properties_range = flag_properties_range
@@ -4447,5 +4511,74 @@ mod prefixed_property_writer_tests {
             missing.is_empty(),
             "no owner template exercises {missing:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod search_history_prefix_tests {
+    const BEFORE: &str = r#"<md:MetaDataObject xmlns:md="http://v8.1c.ru/8.3/MDClasses" xmlns="urn:unrelated" version="2.20"><md:InformationRegister><md:Properties><md:Name>Facts</md:Name></md:Properties><md:ChildObjects><md:Dimension><md:Properties><md:Name>Field</md:Name><md:MainFilter>false</md:MainFilter><md:FullTextSearch>DontUse</md:FullTextSearch><md:DataHistory>DontUse</md:DataHistory></md:Properties></md:Dimension></md:ChildObjects></md:InformationRegister></md:MetaDataObject>"#;
+    #[test]
+    fn search_and_history_preserve_prefixes_when_combined_with_a_dimension_flag() {
+        check_prefix(BEFORE, false);
+    }
+    #[test]
+    fn canonical_search_and_history_edits_preserve_either_namespace_declaration_order() {
+        check_prefix(BEFORE, true);
+        let reversed = BEFORE.replace(
+            "xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\" xmlns=\"urn:unrelated\"",
+            "xmlns=\"urn:unrelated\" xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\"",
+        );
+        check_prefix(&reversed, true);
+    }
+    fn check_prefix(before: &str, canonical: bool) {
+        let input = unica_metadata::request::parse_element_update(
+            &serde_json::json!({"name":"Field", "mainFilter":true, "fullTextSearch":"Use", "dataHistory":"Use"}),
+            "elements[0]",
+        ).unwrap();
+        let operation = unica_metadata::MetaEditOperation::update(
+            unica_metadata::MetaCollection::Dimensions,
+            None,
+            vec![input],
+        )
+        .unwrap();
+        let mut actual = before.to_string();
+        if canonical {
+            super::apply_typed_operations_with_uuid(&mut actual, &[operation], "ru", &mut || {
+                "unused".to_string()
+            })
+            .unwrap();
+        } else {
+            let unica_metadata::MetaEditOperation::Update { elements, .. } = operation else {
+                unreachable!()
+            };
+            super::update_typed_element(
+                &mut actual,
+                unica_metadata::MetaCollection::Dimensions,
+                None,
+                &elements[0],
+                "ru",
+            )
+            .unwrap();
+        }
+        let expected = before
+            .replace(
+                "<md:MainFilter>false</md:MainFilter>",
+                "<md:MainFilter>true</md:MainFilter>",
+            )
+            .replace(
+                "<md:FullTextSearch>DontUse</md:FullTextSearch>",
+                "<md:FullTextSearch>Use</md:FullTextSearch>",
+            )
+            .replace(
+                "<md:DataHistory>DontUse</md:DataHistory>",
+                "<md:DataHistory>Use</md:DataHistory>",
+            );
+        assert_eq!(actual, expected);
+        let parsed = roxmltree::Document::parse(&actual).unwrap();
+        for field in ["MainFilter", "FullTextSearch", "DataHistory"] {
+            assert!(parsed
+                .descendants()
+                .any(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", field))));
+        }
     }
 }

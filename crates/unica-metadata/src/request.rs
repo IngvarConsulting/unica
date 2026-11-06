@@ -838,6 +838,8 @@ pub fn parse_element_update(
         master: reader.read("master", optional_bool_at)?,
         main_filter: reader.read("mainFilter", optional_bool_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
+        full_text_search: reader.read("fullTextSearch", optional_string_at)?,
+        data_history: reader.read("dataHistory", optional_string_at)?,
         type_reduction_mode: reader.read("typeReductionMode", optional_string_at)?,
         name: reader.read("name", required_string_at)?,
         new_name: reader.read("newName", optional_string_at)?,

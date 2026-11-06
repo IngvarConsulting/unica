@@ -594,6 +594,8 @@ pub struct MetaElementUpdateInput {
     pub indexing: Option<String>,
     /// `DenyIncompleteValues` of a register dimension.
     pub deny_incomplete_values: Option<bool>,
+    pub full_text_search: Option<String>,
+    pub data_history: Option<String>,
     pub master: Option<bool>,
     pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
@@ -611,6 +613,8 @@ pub struct MetaElementUpdate {
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
     pub deny_incomplete_values: Option<bool>,
+    pub full_text_search: Option<String>,
+    pub data_history: Option<String>,
     pub master: Option<bool>,
     pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
@@ -676,6 +680,20 @@ const fn collection_spec(
 }
 
 /// Owners whose dimensions take `denyIncompleteValues` in this slice.
+pub fn metadata_field_search_history_is_allowed(
+    owner: MetadataKind,
+    collection: MetaCollection,
+    scope: MetaElementScope,
+) -> bool {
+    (owner == MetadataKind::Catalog && collection == MetaCollection::Attributes)
+        || (owner == MetadataKind::InformationRegister
+            && matches!(
+                collection,
+                MetaCollection::Dimensions | MetaCollection::Resources
+            )
+            && scope == MetaElementScope::TopLevel)
+}
+
 pub fn metadata_deny_incomplete_values_is_allowed(owner: MetadataKind) -> bool {
     matches!(
         owner,
@@ -963,6 +981,8 @@ impl MetaElementUpdate {
             && input.master.is_none()
             && input.main_filter.is_none()
             && input.deny_incomplete_values.is_none()
+            && input.full_text_search.is_none()
+            && input.data_history.is_none()
             && input.type_reduction_mode.is_none()
         {
             return Err(invalid_operation(
@@ -984,6 +1004,20 @@ impl MetaElementUpdate {
                 return Err(invalid_operation(
                     format!("{field}.typeReductionMode"),
                     "typeReductionMode requires a dimension and Deny or TransformValues",
+                ));
+            }
+        }
+        for (name, value) in [
+            ("fullTextSearch", &input.full_text_search),
+            ("dataHistory", &input.data_history),
+        ] {
+            if value
+                .as_deref()
+                .is_some_and(|value| !matches!(value, "Use" | "DontUse"))
+            {
+                return Err(invalid_operation(
+                    format!("{field}.{name}"),
+                    "expected Use or DontUse",
                 ));
             }
         }
@@ -1012,6 +1046,8 @@ impl MetaElementUpdate {
             master: input.master,
             main_filter: input.main_filter,
             deny_incomplete_values: input.deny_incomplete_values,
+            full_text_search: input.full_text_search,
+            data_history: input.data_history,
             type_reduction_mode: input.type_reduction_mode,
         })
     }
@@ -1850,6 +1886,20 @@ pub fn validate_metadata_operation_capabilities(
                 MetaElementScope::TopLevel
             };
             for (index, element) in elements.iter().enumerate() {
+                for (key, value) in [
+                    ("fullTextSearch", &element.full_text_search),
+                    ("dataHistory", &element.data_history),
+                ] {
+                    if value.is_some()
+                        && !metadata_field_search_history_is_allowed(
+                            owner_kind,
+                            *collection,
+                            context,
+                        )
+                    {
+                        return Err(invalid_operation(format!("elements[{index}].{key}"), "search/history settings are available for Catalog attributes and InformationRegister dimensions/resources"));
+                    }
+                }
                 if element.fill_value.is_some()
                     && !metadata_fill_value_is_allowed(owner_kind, *collection, context)
                 {

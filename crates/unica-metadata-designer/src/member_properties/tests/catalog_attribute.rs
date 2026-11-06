@@ -291,9 +291,15 @@ fn catalog_attribute_native_properties_stay_out_of_section_and_header_contexts()
         assert!(observed(section, "ToolTip").is_none());
     }
     for attribute in &info.collections.attributes {
-        for (name, _, _) in ENUMS {
-            assert!(observed(attribute, name).is_none());
+        // Header fields now own the two participation enums; section-only
+        // observations and the tabular Indexing/ToolTip profile stay separate.
+        for name in ["FullTextSearch", "DataHistory"] {
+            assert_eq!(
+                observed(attribute, name),
+                Some(json!({"kind":"text","value":"Use"}))
+            );
         }
+        assert!(observed(attribute, "Indexing").is_none());
         assert!(observed(attribute, "ToolTip").is_none());
     }
     for name in ["LineNumberLength", "Use"] {

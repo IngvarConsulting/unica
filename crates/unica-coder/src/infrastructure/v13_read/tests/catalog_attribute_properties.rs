@@ -287,17 +287,17 @@ fn catalog_attribute_profile_does_not_cross_owner_section_or_header_contexts() {
             "the Catalog must preserve its own {field}, independently of the Attribute's Use"
         );
     }
-    for at in [
-        SECTION.to_string(),
-        "main:Catalog.Items.Attribute.Header".to_string(),
-    ] {
-        let node = read(&fixture, &at);
-        for (field, _) in ENUMS {
-            assert!(
-                node["props"].get(field).is_none(),
-                "the Attribute-only enum profile must not publish {field} at {at}"
-            );
-        }
+    let section = read(&fixture, SECTION);
+    for (field, _) in ENUMS {
+        assert!(
+            section["props"].get(field).is_none(),
+            "field property {field} must stay out of the section"
+        );
+    }
+    let header = read(&fixture, "main:Catalog.Items.Attribute.Header");
+    assert!(header["props"].get("Indexing").is_none());
+    for field in ["FullTextSearch", "DataHistory"] {
+        assert_eq!(header["props"][field], "DontUse");
     }
     for attribute in attribute_views(&fixture) {
         for (field, expected) in ENUMS {

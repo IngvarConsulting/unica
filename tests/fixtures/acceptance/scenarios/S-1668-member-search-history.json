@@ -1,0 +1,2548 @@
+{
+  "id": "S-1668-member-search-history",
+  "issue": 1668,
+  "area": "Реквизиты и состав",
+  "task": "Адресно изменить поиск и историю четырёх контекстов полей, проверить коллекцию/деталь, preview, no-op и конфликт.",
+  "workspace": "tests/fixtures/acceptance/workspace-member-search-history",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fullTextSearch/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/dataHistory/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "fe390b45fbbdb4829596425a1f9745eab823a572bda293f35b8add08ae50dd31"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}FullTextSearch",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "fe390b45fbbdb4829596425a1f9745eab823a572bda293f35b8add08ae50dd31"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "fe390b45fbbdb4829596425a1f9745eab823a572bda293f35b8add08ae50dd31"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "dataHistory": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}DataHistory",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "dataHistory": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}DataHistory",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "fe390b45fbbdb4829596425a1f9745eab823a572bda293f35b8add08ae50dd31"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "dataHistory": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Key\"]/{*}DataHistory",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "fe390b45fbbdb4829596425a1f9745eab823a572bda293f35b8add08ae50dd31"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fullTextSearch/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/dataHistory/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "fe390b45fbbdb4829596425a1f9745eab823a572bda293f35b8add08ae50dd31"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}FullTextSearch",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "fe390b45fbbdb4829596425a1f9745eab823a572bda293f35b8add08ae50dd31"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "fe390b45fbbdb4829596425a1f9745eab823a572bda293f35b8add08ae50dd31"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1_0": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "dataHistory": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}DataHistory",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1_1": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "dataHistory": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}DataHistory",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "fe390b45fbbdb4829596425a1f9745eab823a572bda293f35b8add08ae50dd31"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1_2": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "dataHistory": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "xml",
+          "select": ".//{*}Attribute/{*}Properties[{*}Name=\"Text\"]/{*}DataHistory",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute.Text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "fe390b45fbbdb4829596425a1f9745eab823a572bda293f35b8add08ae50dd31"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Codes.TabularSection.Rows.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар.Can.dimension.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fullTextSearch/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/dataHistory/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_0_0": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Dimension/{*}Properties[{*}Name=\"Товар\"]/{*}FullTextSearch",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_0_1": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Dimension/{*}Properties[{*}Name=\"Товар\"]/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_0_2": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_0_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Dimension/{*}Properties[{*}Name=\"Товар\"]/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_1_0": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "dataHistory": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Dimension/{*}Properties[{*}Name=\"Товар\"]/{*}DataHistory",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_1_1": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "dataHistory": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Dimension/{*}Properties[{*}Name=\"Товар\"]/{*}DataHistory",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2_1_2": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "dataHistory": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2_1_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Dimension/{*}Properties[{*}Name=\"Товар\"]/{*}DataHistory",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension.Товар"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Dimension"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена.Can.resource.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fullTextSearch/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/dataHistory/enum",
+          "eq": [
+            "Use",
+            "DontUse"
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_0_0": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Resource/{*}Properties[{*}Name=\"Цена\"]/{*}FullTextSearch",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_0_1": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Resource/{*}Properties[{*}Name=\"Цена\"]/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_0_2": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_0_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Resource/{*}Properties[{*}Name=\"Цена\"]/{*}FullTextSearch",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/FullTextSearch",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_1_0": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "dataHistory": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Resource/{*}Properties[{*}Name=\"Цена\"]/{*}DataHistory",
+          "eq": [
+            "DontUse"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "DontUse"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_1_1": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "dataHistory": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Resource/{*}Properties[{*}Name=\"Цена\"]/{*}DataHistory",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before3_1_2": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/Цены.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "dataHistory": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3_1_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "xml",
+          "select": ".//{*}Resource/{*}Properties[{*}Name=\"Цена\"]/{*}DataHistory",
+          "eq": [
+            "Use"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource.Цена"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DataHistory",
+          "eq": "Use"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.Цены.Resource"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/DataHistory",
+          "eq": "Use"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "DontUse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Changed"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "changed": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Catalogs/Codes.xml; input `Catalogs/Codes.xml`: source write target; the plan retains its original state to prevent overwriting",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Codes.Attribute.Key",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "fullTextSearch": "Unknown"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: value is not one of the supported alternatives",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:AccumulationRegister.Остатки.Dimension.Товар",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "dataHistory": "Use"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: search/history settings are available for Catalog attributes and InformationRegister dimensions/resources",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+        }
+      ]
+    }
+  ]
+}

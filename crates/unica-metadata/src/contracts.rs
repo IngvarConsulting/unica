@@ -189,6 +189,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
         } else {
             fields.remove("templateType");
             fields.insert("typeReductionMode".into(), json!({"type":"string", "enum":["Deny", "TransformValues"]}));
+            for key in ["fullTextSearch", "dataHistory"] { fields.insert(key.into(), json!({"type":"string","enum":["Use","DontUse"]})); }
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
@@ -260,6 +261,26 @@ fn metadata_element_schema(
             "typeReductionMode".into(),
             json!({"type":"string", "enum":["Deny", "TransformValues"]}),
         );
+    }
+    if update
+        && site.is_some_and(|site| {
+            crate::metadata_field_search_history_is_allowed(
+                site.owner,
+                collection,
+                if site.in_section {
+                    crate::MetaElementScope::TabularSection
+                } else {
+                    crate::MetaElementScope::TopLevel
+                },
+            )
+        })
+    {
+        for key in ["fullTextSearch", "dataHistory"] {
+            fields.insert(
+                key.into(),
+                metadata_element_input_schema(true, false)["properties"][key].clone(),
+            );
+        }
     }
     let selector = if update { "newName" } else { "name" };
     fields[selector]

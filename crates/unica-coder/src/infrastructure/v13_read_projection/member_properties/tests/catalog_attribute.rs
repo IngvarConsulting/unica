@@ -182,7 +182,6 @@ fn catalog_attribute_provider_requires_admitted_source_marker_and_owner() {
 fn catalog_attribute_provider_keeps_contexts_closed_and_ignores_raw_item_keys() {
     for at in [
         "main:Catalog.Items",
-        "main:Catalog.Items.Attribute.Header",
         "main:Catalog.Items.TabularSection.Lines",
     ] {
         let node = project(
@@ -191,6 +190,15 @@ fn catalog_attribute_provider_keeps_contexts_closed_and_ignores_raw_item_keys() 
             Some(SourceSetKind::Configuration),
         );
         assert_absent(&node);
+    }
+    let header = project(
+        "main:Catalog.Items.Attribute.Header",
+        payload(observations()),
+        Some(SourceSetKind::Configuration),
+    );
+    assert!(header["props"].get("Indexing").is_none());
+    for key in ["FullTextSearch", "DataHistory"] {
+        assert_eq!(header["props"][key], "Use");
     }
     // StandardAttribute has its own closed observation profile. Shared names
     // keep their own observed values there instead of inheriting the
