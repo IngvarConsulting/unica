@@ -108,21 +108,57 @@ impl NetworkError {
                 NetworkFailure::Status(code),
                 format!(
                     "{} answered HTTP {code} {} ({route})",
-                    response.get_url(),
+                    super::diagnostics::url(response.get_url()),
                     response.status_text()
                 ),
             ),
-            error => match find_tls_error(&error) {
-                Some(rustls::Error::InvalidCertificate(reason)) => {
-                    certificate_refusal(reason, &error.to_string(), host, route, trust)
+            ureq::Error::Transport(error) => {
+                let detail = transport_detail(&error);
+                match find_tls_error(&error) {
+                    Some(rustls::Error::InvalidCertificate(reason)) => {
+                        certificate_refusal(reason, &detail, host, route, trust)
+                    }
+                    _ => Self::new(
+                        NetworkFailure::Transport,
+                        format!("request to {host} failed ({route}): {detail}"),
+                    ),
                 }
-                _ => Self::new(
-                    NetworkFailure::Transport,
-                    format!("request to {host} failed ({route}): {error}"),
-                ),
-            },
+            }
         }
     }
+}
+
+/// Чужой `Transport::Display` включает исходный URL и непрозрачное сообщение.
+/// Адрес показываем отдельно, а причину берём из типизированного источника.
+fn transport_detail(error: &ureq::Transport) -> String {
+    let mut detail = match error.url() {
+        Some(url) => format!(
+            "{}: {}",
+            super::diagnostics::url(url.as_str()),
+            error.kind()
+        ),
+        None => error.kind().to_string(),
+    };
+    if let Some(tls) = find_tls_error(error) {
+        detail.push_str(&format!(": {tls}"));
+    } else if let Some(io) = find_io_error(error) {
+        detail.push_str(&format!(": {:?}", io.kind()));
+        if let Some(code) = io.raw_os_error() {
+            detail.push_str(&format!(" (OS error {code})"));
+        }
+    }
+    detail
+}
+
+fn find_io_error<'a>(error: &'a (dyn StdError + 'static)) -> Option<&'a std::io::Error> {
+    let mut current = Some(error);
+    while let Some(item) = current {
+        if let Some(io) = item.downcast_ref::<std::io::Error>() {
+            return Some(io);
+        }
+        current = item.source();
+    }
+    None
 }
 
 fn certificate_refusal(

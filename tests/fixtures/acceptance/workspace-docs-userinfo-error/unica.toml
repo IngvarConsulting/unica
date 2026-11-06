@@ -1,0 +1,2 @@
+[providers.v8std]
+endpoint = "http://CorpusUser2566:CorpusPass2566@127.0.0.1:bad/mcp"
