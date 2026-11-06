@@ -24,10 +24,11 @@ fn compile_provider(directory: &Path) -> PathBuf {
     let executable =
         unica_process::test_support::fixture_executable_path(directory, "opaque-provider");
     fs::create_dir_all(directory).unwrap();
-    fs::write(&source, r###"use std::{env,fs,io::{self,BufRead,Write}};
+    fs::write(&source, r###"use std::{env,fs,io::{self,BufRead,Write,Read,Seek,SeekFrom}};
 fn quote(s:&str)->String { format!("\"{}\"",s.replace('\\',"\\\\").replace('"',"\\\"").replace('\n',"\\n")) }
 fn main(){
  let db=env::args().nth(1).unwrap(); let trace=env::args().nth(2).unwrap();
+ let mut index=fs::File::open(db).unwrap();
  for line in io::stdin().lock().lines(){
   let line=line.unwrap();
   let Some(rest)=line.split("\"id\":").nth(1) else {continue};
@@ -37,7 +38,8 @@ fn main(){
    let text=if line.contains("\"name\":\"rlm_start\"") {
     "{\"session_id\":\"opaque-session\",\"index\":{\"index_status\":\"ready\"}}".to_owned()
    } else if line.contains("\"name\":\"rlm_execute\"") {
-    let bytes=fs::read(&db).unwrap();
+    index.seek(SeekFrom::Start(0)).unwrap();
+    let mut bytes=Vec::new(); index.read_to_end(&mut bytes).unwrap();
     let (name,row)=match bytes.as_slice(){b"PRIVATE-A\0Alpha"=>("Alpha",1),b"\xffOpaque-B:Beta:private-layout-v2"=>("Beta",4),_=>panic!("unrecognized provider-owned format")};
     let mut log=fs::OpenOptions::new().create(true).append(true).open(&trace).unwrap();
     writeln!(log,"read-private-index:{name}:rlm_execute").unwrap();
@@ -74,7 +76,7 @@ fn normalize_service_access(snapshot: &mut [(PathBuf, Option<Vec<u8>>)], record:
     *bytes = serde_json::to_vec(&value).unwrap();
 }
 
-pub(crate) fn with_provider(context: &WorkspaceContext, format: u8, call: impl FnOnce()) {
+pub(crate) fn with_provider(context: &WorkspaceContext, format: u8, call: impl FnOnce(&Path)) {
     let source_root = context.workspace_root.join("src");
     write_ready_rlm_status_for_current_source(context, &source_root);
     let build = usable_index_build(context, &source_root).unwrap().unwrap();
@@ -109,17 +111,20 @@ pub(crate) fn with_provider(context: &WorkspaceContext, format: u8, call: impl F
         .strip_prefix(&context.workspace_root)
         .unwrap()
         .to_owned();
+    // Initialization acknowledges that the provider has opened the immutable
+    // build. Later reads use that held descriptor, outside the consumer boundary.
+    let mut command = Command::new(&executable);
+    command.args([&build.db_path, &trace]);
+    let transport = std::sync::Mutex::new(Some(
+        PersistentMcpSession::start_with_command(command, &CancellationToken::new()).unwrap(),
+    ));
     let mut runtime = new_runtime(identity, &record);
     runtime.test_set_rlm_starter(Arc::new({
-        let executable = executable.clone();
         let db = build.db_path.clone();
-        let trace = trace.clone();
-        move |_, source_root, build_directory, build_id, cancellation| {
+        move |_, source_root, build_directory, build_id, _| {
             assert_eq!(build_directory, db.parent().unwrap());
-            let mut command = Command::new(&executable);
-            command.args([&db, &trace]);
             Ok(RlmMcpSession::test_from_transport(
-                PersistentMcpSession::start_with_command(command, cancellation)?,
+                transport.lock().unwrap().take().expect("one provider session"),
                 source_root.to_owned(),
                 build_id.to_owned(),
                 None,
@@ -144,7 +149,9 @@ pub(crate) fn with_provider(context: &WorkspaceContext, format: u8, call: impl F
     let mut before = unica_workspace::actor::test_support::snapshot_tree(&context.workspace_root);
     before.retain(|(path, _)| path != &relative_lock);
     normalize_service_access(&mut before, &relative_record);
-    call();
+    let read_boundary = PrivateIndexReadBoundary::new(&build.db_path);
+    call(&build.db_path);
+    read_boundary.assert_no_consumer_open();
     // Force the legitimate heartbeat across a clock tick without a sleep.
     update_service_record_last_access(&_guard.runtime, record.last_access_at + 1);
     assert_eq!(
@@ -199,3 +206,4 @@ pub(crate) fn with_provider(context: &WorkspaceContext, format: u8, call: impl F
         "unexpected consumer writes/copies: changed={changed:?}, removed={removed:?}"
     );
 }
+

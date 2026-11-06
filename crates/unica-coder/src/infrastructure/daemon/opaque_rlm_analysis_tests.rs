@@ -3,14 +3,18 @@ use super::*;
 /// rule: INV.APP.PROVIDER-PRIVATE-STATE
 #[test]
 fn canonical_analysis_uses_supported_mcp_with_opaque_format_a() {
-    check_opaque_format(0);
+    check_opaque_format(0, false);
 }
 /// rule: INV.APP.PROVIDER-PRIVATE-STATE
 #[test]
 fn canonical_analysis_uses_supported_mcp_with_opaque_format_b() {
-    check_opaque_format(1);
+    check_opaque_format(1, false);
 }
-fn check_opaque_format(format: u8) {
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/platform/opaque_rlm_read_boundary_test.rs"
+));
+fn check_opaque_format(format: u8, inject_consumer_read: bool) {
     let workspace = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(workspace.path()).unwrap();
     let source = root.join("src");
@@ -48,12 +52,17 @@ fn check_opaque_format(format: u8) {
         cache_root: root.join(".build/unica"),
         workspace_epoch: 1,
     };
-    crate::infrastructure::workspace_services::with_opaque_rlm_for_test(&context, format, || {
+    crate::infrastructure::workspace_services::with_opaque_rlm_for_test(&context, format, |private_index| {
         let request=InvocationRequest::new(ToolIdentity::Search,serde_json::json!({"query":"opaque-index-query","role":"semantic","scope":"main:Configuration"}),root.to_string_lossy(),7000).unwrap();
         let bound = runtime.bind(request).unwrap();
         let prepared = bound.prepare().unwrap();
         let result = prepared.execute(CancellationToken::new()).unwrap();
         assert!(result.ok, "{result:?}");
+        if inject_consumer_read {
+            // Deliberate mutation: the result is ignored, but the OS boundary
+            // must still detect the consumer opening the private index.
+            let _ = std::fs::read(private_index);
+        }
         let data = result.data.as_ref().unwrap();
         let sections = data["matches"].as_array().unwrap();
         assert_eq!(sections.len(), 1, "{data:#}");

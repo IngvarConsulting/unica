@@ -1,3 +1,7 @@
+#[path = "private_index_read_boundary.rs"]
+mod private_index_read_boundary;
+use private_index_read_boundary::PrivateIndexReadBoundary;
+
 use crate::infrastructure::analysis_composition;
 
 use serde_json::{json, Map, Value};
@@ -176,7 +180,7 @@ fn wait_for_record_with_connector(
 pub(crate) fn with_opaque_rlm_for_test(
     context: &WorkspaceContext,
     format: u8,
-    call: impl FnOnce(),
+    call: impl FnOnce(&std::path::Path),
 ) {
     tests::opaque_rlm_contract::with_provider(context, format, call);
 }
