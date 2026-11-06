@@ -6,7 +6,7 @@ name: Unica CI
 # Очередь: Clippy всего workspace, весь Rust `small`, `medium` изменённых крейтов, Python
 # small, смоук и снимки контрактов (`scripts/ci/queue-tests.py`); medium остальных крейтов,
 # Python medium и large идут ночью. Windows и macOS целиком, тяжёлые тесты и упаковка
-# идут ночью и в выпуске, в `unica-plugin-release.yml`.
+# идут ночью и в выпуске, в `release.yml`.
 on:
   pull_request:
     # Черновик не занимает раннер. Перевод в готовые запускает прогон:

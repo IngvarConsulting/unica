@@ -444,7 +444,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
 
     def test_classifier_workflow_and_platform_guard_changes_fail_closed(self) -> None:
         cases = {
-            ".github/workflows/unica-plugin-release.yml": {
+            ".github/workflows/release.yml": {
                 "ci_changed": True,
                 "assessment_required": True,
             },
@@ -478,7 +478,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             Path(__file__).resolve().parents[2]
             / ".github"
             / "workflows"
-            / "unica-plugin-release.yml"
+            / "release.yml"
         ).read_text(encoding="utf-8")
 
         self.assertIn("Report standalone runtime size evidence", workflow)
@@ -530,9 +530,9 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "scripts/ci/collect-results.py",
             "tests/ci/test_run_tests.py",
             "tests/ci/test_gate_profiles.py",
-            "scripts/ci/nightly-lines.py",
+            "scripts/ci/nightly-decide.py",
             "scripts/ci/resolve-line.py",
-            "tests/ci/test_nightly_lines.py",
+            "tests/ci/test_nightly_decide.py",
             "tests/ci/test_resolve_line.py",
             "tests/ci/test_python_sizes.py",
             "tests/ci/test_research_policy.py",

@@ -41,8 +41,8 @@ tags, `v0.7.2` through `v0.8.1`, name their own version.
 
 ## One human action, one linear pipeline
 
-The workflow runs the whole publication as one pass of **Publish Unica
-Marketplace**, started automatically when the tag-triggered build succeeds:
+`.github/workflows/release.yml` runs the build and the whole publication as one
+run, started by the tag:
 
 | You | The pipeline |
 | --- | --- |
@@ -67,19 +67,27 @@ pipeline removed that wait.
 
 ### Which revision runs the pipeline
 
-**Publish Unica Marketplace** starts from `workflow_run`, so GitHub runs the
-workflow file of the default branch, and every job checks out
-`scripts/ci/release-channel.py` at `github.sha` — the `main` commit the run
-was triggered on. Neither comes from the source tag: the tag's code never runs
-next to the marketplace token. A change to the publication order therefore
-reaches the next release that is published after it merges into `main`,
-whichever commit that release's tag names; the build of the tag itself is
-unaffected. A manual dispatch runs the revision of the branch it is
-dispatched on, `main` by default.
+The tag push runs `release.yml` from the tagged commit, marketplace jobs
+included. A change to the publication order therefore reaches the first release
+tagged after it; a rerun of an old release repeats the old order. What does not
+come from the tag is the channel: every marketplace job checks out only
+`scripts/ci/release-channel.py`, sparsely, from `main`, and nothing in those
+jobs checks out the tag's code. `UNICA_MARKETPLACE_TOKEN` lives in the
+`marketplace` environment, which accepts `v*` tags only, so a branch or a manual
+run cannot read it. The jobs holding the token still come from the tagged
+commit's `release.yml`, so whoever can create a `v*` tag defines those steps. Old
+tags also run against the current `release-channel.py` from `main`, so keep its
+commands compatible with them.
+
+The site job deploys through the `github-pages` environment, which must allow
+`main`, `release-v*` and `v*`: a ref it refuses ends the run red after the release.
+
+A release line carries its own `release.yml`. A line without it has no workflow
+that publishes: bring the workflow onto the line before tagging a patch.
 
 There is no scheduler and no waiting window: a failed stage is a red run
 attached to the release tag, and the catalog stays where it was. Rerunning the
-failed workflow resumes the publication — every stage is idempotent.
+failed jobs resumes the publication — every stage is idempotent.
 
 ## Preconditions
 
@@ -137,15 +145,18 @@ has to carry both the bump and everything else the version ships.
 
 Some contracts run only on the tag build and in the `large` profile: the
 Windows tool contracts in `scripts/ci/check-tool-contracts.py` and the
-Windows test lane. A pull request does not run them. Before tagging, run
-`large` on the branch the release is cut from, at the commit you are about to
-tag, and wait for it to finish green:
+Windows test lane. A pull request does not run them. The nightly checks `main`
+only, so a release line gets no check of its own until you press the button.
+Before tagging, run `large` on the branch the release is cut from, at the commit
+you are about to tag, and wait for it to finish green:
 
 ```bash
-gh workflow run unica-plugin-release.yml --ref main -f profile=large
-gh run list --workflow unica-plugin-release.yml --limit 3 \
+gh workflow run release.yml --ref release-vX.Y -f profile=large
+gh run list --workflow release.yml --limit 3 \
   --json databaseId,headSha,status,conclusion
 ```
+
+For a minor cut from `main`, use `--ref main`.
 
 Check that the run's `headSha` is the commit you will tag. A tag is
 immutable and the build reads its checks from the tagged commit: a check that
@@ -156,9 +167,8 @@ under the next one. That is how `v0.13.0-rc.6` was lost to a Windows-only
 ## Step 1 — tag the source release
 
 Tag the merge commit of the version pull request in `unica` and push. On a
-patch that commit is on `release-vX.Y`, not on `main`. The tag triggers the
-release build, and the successful build starts the publication pipeline on its
-own.
+patch that commit is on `release-vX.Y`, not on `main`. The tag starts the
+release run, and its green build moves on to the publication on its own.
 
 ```bash
 git tag -s vX.Y.Z <release-commit-sha> -m "Unica vX.Y.Z"
@@ -171,8 +181,8 @@ rejects a manifest whose URL disagrees with its declared version.
 
 ## Step 2 — watch it land
 
-The tag push runs **Build Unica Codex Plugin**, and its success triggers
-**Publish Unica Marketplace**: stage → anchor → verify → promote.
+The tag push runs **Unica Release**: build, then stage → anchor → verify →
+promote, then the site. The site updates only from these runs and the nightly.
 
 ### What the release carries
 
@@ -209,10 +219,8 @@ downloads them, and nothing touches the address after that: a typo in a tag woul
 otherwise surface at a user's first engine call.
 
 ```bash
-gh run list --workflow "Build Unica Codex Plugin" --limit 3 \
+gh run list --workflow release.yml --limit 3 \
   --json databaseId,headBranch,conclusion
-gh run list --workflow "Publish Unica Marketplace" --limit 3 \
-  --json databaseId,conclusion
 ```
 
 The release is live when the catalog names the new tag — both host catalogs
@@ -249,7 +257,7 @@ state while the line moved only the two workspace crate versions.
 ## If a stage fails
 
 The pipeline stops before the catalog moves, so consumers are unaffected.
-Rerun the whole workflow after fixing the cause — completed stages detect
+Rerun the failed jobs after fixing the cause — completed stages detect
 themselves and pass through:
 
 - `stage` finds the payload already on the branch and reports that commit.
@@ -267,16 +275,12 @@ themselves and pass through:
   bytes.
 
 ```bash
-gh run rerun <publish-run-id> --failed
+gh run rerun <release-run-id> --failed
 ```
 
-To run the pipeline for a build that already succeeded (for example after the
-`workflow_run` trigger was missed), dispatch it with the build's run id:
-
-```bash
-gh workflow run publish-unica-marketplace.yml --repo IngvarConsulting/unica \
-  -f source_run_id=<build-run-id>
-```
+A rerun uses the tag's own workflow and the payload that run built. A defect in
+the publication steps themselves needs a new tag, as does a run GitHub no longer
+reruns.
 
 ## What consumers see, and when
 
@@ -330,6 +334,7 @@ What the pipeline does, by the source tag:
 | --- | --- | --- | --- |
 | `vX.Y.Z` | published | on `main` | `next` unless it serves a newer candidate, then `main` |
 | `vX.Y.Z-rc.N` | published, marked as a prerelease | on `next` | `next` only |
+| `vX.Y.Z-alpha.N` | published with the full set of every OS, marked as a prerelease | skipped | none — [a slice of `main`](#an-alpha-a-slice-of-main) |
 | any other suffix | published, marked as a prerelease | skipped | none — a measurement build |
 
 The `next` branch of `unica-marketplace` carries catalogs named `unica-next`:
@@ -402,8 +407,57 @@ release so it stops looking like a release waiting to be served:
 gh release edit vX.Y.Z --repo IngvarConsulting/unica --prerelease
 ```
 
-Never delete a tag to "clean up" an abandoned version. An unused tag costs
+Never delete a tag to "clean up" an abandoned version; only alpha tags are
+removed, by their own retention. An unused tag costs
 nothing; a deleted one that something already resolved costs every consumer.
+
+## An alpha: a slice of `main`
+
+An alpha is a prerelease of the current `main` for checks and for consumers that
+need a fresh build before a candidate. It never reaches the marketplace.
+
+`scripts/ci/release-alpha.py publish` takes `X.Y.Z` from the version in `main`,
+raises `N`, commits `bump-version.py` on top of the `main` tip and tags that
+commit `vX.Y.Z-alpha.N`. The commit stays outside `main`, so the number in the
+code equals the tag, the version contract holds, and `main` gets no release
+commits. The commit's parent is the slice; the release description names it as
+`main@<sha>`.
+
+- **When.** **Unica Nightly** calls `release.yml` with profile `large`. After the
+  tests pass on every OS, the job `alpha-tag` makes the commit and the tag, and
+  the rest of that run builds and publishes them. The tests do not run again: the
+  commit changes only the version. A `main` that did not move starts nothing.
+- **By hand.** The same path, with no commits in `main`:
+
+  ```bash
+  gh workflow run nightly.yml --repo IngvarConsulting/unica --ref main -f force=true
+  ```
+
+  `force` runs the night on a tip that was already checked and releases a slice
+  that already has an alpha, for example after a failed build.
+- **The assets.** Besides the core pair, the release carries
+  `unica-full-<target>.tar.gz` for every OS: the core and all engines laid out
+  like the plugin package, so it needs no marketplace or download on first use.
+- **The order.** By SemVer an alpha is older than a `-rc` of the same `X.Y.Z`, even
+  when its content is newer; compare the slices, not the numbers.
+- **After a full release.** Once `vX.Y.Z` exists, an alpha of that `X.Y.Z` would
+  be older than the release, so the night stays green and releases no alpha until
+  `main` raises the version.
+- **Retention.** After a publication the run calls
+  `release-alpha.py prune`: the two newest published alphas stay, older ones go
+  with their tags, and so do older tags whose build never published. The
+  `released version tags` ruleset must exclude `refs/tags/v*-alpha.*`. On a
+  mutable release the tag goes first, so a refusal leaves the release intact and
+  the step fails with that message; the new alpha stays published. An immutable
+  release is deleted first, and if GitHub keeps its tag, the tag stays with a
+  warning: a kept tag holds no assets and `N` only grows.
+- **Immutable releases.** Assets can be uploaded only before publication, so every
+  prerelease goes up as a draft and a separate step publishes it. A failed run
+  before that step can be rerun: it continues the draft. After publication a
+  failure means a new number.
+
+The page `alpha.html` on the site shows the latest alpha. It is given out as a
+direct link: nothing on the site links to it and it is closed to search robots.
 
 ## Rolling back a live release
 
@@ -460,7 +514,7 @@ tag by hand.
 
 ## Never
 
-- Move or delete a published tag, or force-push `main` or `next` of the
+- Move or delete a published tag other than an expired alpha, or force-push `main` or `next` of the
   marketplace. Consumers resolve `git-subdir` against those refs; changed bytes
   require a new version.
 - Point a catalog at a tag by hand, or point `main` at a candidate. The promote
