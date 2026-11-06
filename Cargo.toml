@@ -90,6 +90,27 @@ cap-fs-ext = "4.0.2"
 # The daemon identity hashes the running executable at every frontend and
 # daemon start; an unoptimized SHA-256 spends seconds of the connect budget
 # on a debug binary.
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.dev.package.unica-execution]
+opt-level = 1
+
+[profile.dev.package.unica-execution-contract]
+opt-level = 1
+
+[profile.dev.package.unica-xml-format]
+opt-level = 1
+
+[profile.dev.package.unica-source-designer]
+opt-level = 1
+
+[profile.dev.package.unica-metadata-designer]
+opt-level = 1
+
+[profile.dev.package.unica-workspace]
+opt-level = 1
+
 [profile.dev.package.sha2]
 opt-level = 3
 
