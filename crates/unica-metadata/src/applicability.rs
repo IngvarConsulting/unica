@@ -16,6 +16,7 @@ pub enum OperationApplicability {
     Interface,
     InterfaceGroup,
     Metadata,
+    MetadataRelations,
     MetadataOrCommonTemplate,
     MetadataAttribute,
     MetadataAttributeContainer,
@@ -50,6 +51,7 @@ impl OperationApplicability {
             Self::ConfigurationRoot => "`Configuration` of a configuration, not of an extension",
             Self::ExtensionRoot => "`Configuration` of an extension",
             Self::Metadata => "`Kind.Name`",
+            Self::MetadataRelations => "`Kind.Name` of a kind with supported relations",
             Self::MetadataOrCommonTemplate => "`Kind.Name` or `CommonTemplate.Name`",
             Self::SupportRule => "`Kind.Name` or `Kind.Name.Form.F`",
             Self::MetadataOrRoleOrSubsystem => {
@@ -102,6 +104,9 @@ impl OperationApplicability {
                     && site.source().kind() == SourceSetKind::Extension
             }
             Self::Metadata => site.metadata_object().is_some(),
+            Self::MetadataRelations => site
+                .metadata_object()
+                .is_some_and(|kind| !crate::metadata_relation_specs(kind).is_empty()),
             // A common template is a top-level object the configurator
             // removes like any other, though it has no typed metadata kind.
             Self::MetadataOrCommonTemplate => {
