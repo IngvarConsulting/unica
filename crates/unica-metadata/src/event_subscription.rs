@@ -200,6 +200,7 @@ pub enum EventBindingError {
     HandlerArity {
         event: String,
         event_parameter_count: usize,
+        event_parameters: &'static [&'static str],
         expected: usize,
         actual: usize,
     },
@@ -758,6 +759,7 @@ pub fn validate_event_subscription_binding(
         return Err(EventBindingError::HandlerArity {
             event: event.to_string(),
             event_parameter_count: expected.parameters.len(),
+            event_parameters: expected.parameters,
             expected: expected_arity,
             actual: handler.parameter_count,
         });

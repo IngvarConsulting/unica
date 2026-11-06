@@ -44,6 +44,20 @@ pub fn validate_event_source_registration(
     expected_kind: &str,
     expected_name: &str,
 ) -> Result<(), String> {
+    validate_configuration_registration(
+        owner_bytes,
+        expected_kind,
+        expected_name,
+        "EventSubscription source",
+    )
+}
+
+pub(crate) fn validate_configuration_registration(
+    owner_bytes: &[u8],
+    expected_kind: &str,
+    expected_name: &str,
+    subject: &str,
+) -> Result<(), String> {
     let (source, document) = unica_xml_format::read::parse_metadata_image(owner_bytes)?;
     let root = document.root_element();
     if root.tag_name().namespace() != Some(MD_CLASSES_NS)
@@ -52,7 +66,7 @@ pub fn validate_event_source_registration(
             != Some(ACTIVE_FORMAT_PROFILE.export_format)
     {
         return Err(format!(
-            "EventSubscription source owner must be a Platform XML MetaDataObject version {}",
+            "{subject} owner must be a Platform XML MetaDataObject version {}",
             ACTIVE_FORMAT_PROFILE.export_format
         ));
     }
@@ -62,21 +76,21 @@ pub fn validate_event_source_registration(
         .collect::<Vec<_>>();
     let [configuration] = artifacts.as_slice() else {
         return Err(format!(
-            "EventSubscription source owner must contain exactly one Configuration, found {}",
+            "{subject} owner must contain exactly one Configuration, found {}",
             artifacts.len()
         ));
     };
     if configuration.tag_name().namespace() != Some(MD_CLASSES_NS)
         || configuration.tag_name().name() != "Configuration"
     {
-        return Err(
-            "EventSubscription source owner must contain a direct Configuration".to_string(),
-        );
+        return Err(format!(
+            "{subject} owner must contain a direct Configuration"
+        ));
     }
     let child_objects = direct_children(*configuration, MD_CLASSES_NS, "ChildObjects");
     let [child_objects] = child_objects.as_slice() else {
         return Err(format!(
-            "EventSubscription source owner must contain exactly one direct ChildObjects, found {}",
+            "{subject} owner must contain exactly one direct ChildObjects, found {}",
             child_objects.len()
         ));
     };
@@ -88,7 +102,7 @@ pub fn validate_event_source_registration(
     }) {
         let value = strict_leaf_text(
             registration,
-            &format!("EventSubscription source registration <{expected_kind}>"),
+            &format!("{subject} registration <{expected_kind}>"),
         )?;
         if value == expected_name {
             registrations += 1;
@@ -96,7 +110,7 @@ pub fn validate_event_source_registration(
     }
     if registrations != 1 {
         return Err(format!(
-            "EventSubscription source must be registered exactly once as <{expected_kind}>{expected_name}</{expected_kind}>, found {registrations}"
+            "{subject} must be registered exactly once as <{expected_kind}>{expected_name}</{expected_kind}>, found {registrations}"
         ));
     }
     Ok(())

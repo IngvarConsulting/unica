@@ -2509,28 +2509,6 @@ pub fn validate_event_subscription_binding_subject(
             format!("CommonModule `{module_name}` descriptor evidence is unavailable"),
         );
     };
-    let (_, module_document) =
-        match unica_xml_format::read::parse_metadata_image(&module_descriptor.bytes) {
-            Ok(parsed) => parsed,
-            Err(message) => return fail("properties.handler", message),
-        };
-    let module_properties = module_document
-        .root_element()
-        .children()
-        .find(|node| node.is_element() && node.tag_name().name() == "CommonModule")
-        .and_then(|node| unica_xml_format::read::child_element(node, "Properties"));
-    let Some(module_properties) = module_properties else {
-        return fail(
-            "properties.handler",
-            format!("CommonModule `{module_name}` properties are unavailable"),
-        );
-    };
-    let module_global = unica_xml_format::read::child_direct_text(module_properties, "Global")
-        .as_deref()
-        .and_then(explicit_boolean_property);
-    let module_server = unica_xml_format::read::child_direct_text(module_properties, "Server")
-        .as_deref()
-        .and_then(explicit_boolean_property);
     let module = subject.resources.iter().find(|resource| {
         matches!(&resource.role, unica_metadata::validation_subject::MetadataResourceRole::Module { owner } if owner == &module_target)
     });
@@ -2540,37 +2518,14 @@ pub fn validate_event_subscription_binding_subject(
             format!("CommonModule `{module_name}` BSL evidence is unavailable"),
         );
     };
-    let content = match std::str::from_utf8(&module.bytes) {
-        Ok(content) => content,
-        Err(error) => {
-            return fail(
-                "properties.handler",
-                format!("handler module is not UTF-8: {error}"),
-            )
-        }
-    };
-    let method = match exact_bsl_method_facts(content, procedure_name) {
-        Ok(Some(method)) => method,
-        Ok(None) => {
-            return fail(
-                "properties.handler",
-                format!(
-                    "procedure `{procedure_name}` was not found in CommonModule `{module_name}`"
-                ),
-            )
-        }
+    let facts = match event_handler_facts_from_images(
+        module_name,
+        procedure_name,
+        &module_descriptor.bytes,
+        &module.bytes,
+    ) {
+        Ok(facts) => facts,
         Err(message) => return fail("properties.handler", message),
-    };
-    let facts = EventHandlerFacts {
-        module_global,
-        module_server,
-        method_kind: if method.is_procedure {
-            EventHandlerMethodKind::Procedure
-        } else {
-            EventHandlerMethodKind::Function
-        },
-        exported: method.is_export,
-        parameter_count: method.parameter_count,
     };
     match validate_event_subscription_binding(&source_classes, &event, facts) {
         Ok(_) => Vec::new(),
@@ -2579,6 +2534,50 @@ pub fn validate_event_subscription_binding_subject(
             fail(field, message)
         }
     }
+}
+
+/// Shared handler facts for `check` and final staged binding validation.
+pub(crate) fn event_handler_facts_from_images(
+    module_name: &str,
+    procedure_name: &str,
+    descriptor: &[u8],
+    module: &[u8],
+) -> Result<EventHandlerFacts, String> {
+    let (_, document) = unica_xml_format::read::parse_metadata_image(descriptor)?;
+    let properties = document
+        .root_element()
+        .children()
+        .find(|node| node.has_tag_name((MD_CLASSES_NS, "CommonModule")))
+        .and_then(|node| crate::info_projection::direct_md_child(node, "Properties"))
+        .ok_or_else(|| format!("CommonModule `{module_name}` properties are unavailable"))?;
+    if crate::info_projection::direct_md_child_text(properties, "Name").as_deref()
+        != Some(module_name)
+    {
+        return Err(format!(
+            "CommonModule `{module_name}` descriptor does not match its registered name"
+        ));
+    }
+    let flag = |name| {
+        crate::info_projection::direct_md_child_text(properties, name)
+            .as_deref()
+            .and_then(explicit_boolean_property)
+    };
+    let content = std::str::from_utf8(module)
+        .map_err(|error| format!("handler module is not UTF-8: {error}"))?;
+    let method = exact_bsl_method_facts(content, procedure_name)?.ok_or_else(|| {
+        format!("procedure `{procedure_name}` was not found in CommonModule `{module_name}`")
+    })?;
+    Ok(EventHandlerFacts {
+        module_global: flag("Global"),
+        module_server: flag("Server"),
+        method_kind: if method.is_procedure {
+            EventHandlerMethodKind::Procedure
+        } else {
+            EventHandlerMethodKind::Function
+        },
+        exported: method.is_export,
+        parameter_count: method.parameter_count,
+    })
 }
 
 pub fn explicit_boolean_property(value: &str) -> Option<bool> {
@@ -2676,12 +2675,14 @@ pub fn event_binding_error_message(error: EventBindingError) -> (&'static str, S
         EventBindingError::HandlerArity {
             event,
             event_parameter_count,
+            event_parameters,
             expected,
             actual,
         } => (
             "properties.handler",
             format!(
-                "handler for `{event}` must have {expected} parameters (Source plus {event_parameter_count} event parameters), got {actual}"
+                "handler for `{event}` must have {expected} parameters (Source plus {event_parameter_count} event parameters: {}), got {actual}",
+                std::iter::once("Source").chain(event_parameters.iter().copied()).collect::<Vec<_>>().join(", ")
             ),
         ),
     }
