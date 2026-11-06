@@ -598,3 +598,156 @@ fn cfe_patch_method_8_3_27_grammar_matrix_has_exactly_51_roles() {
     }
     assert_eq!(accepted, 51, "8.3.27 cfe.patch_method grammar matrix");
 }
+
+/// Pure image-generation evidence; role absence is not a publication no-op.
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn extension_init_images_round_trip_with_base_language_and_optional_default_role() {
+    let args = Map::from_iter([("vendor".to_string(), serde_json::json!("Synthetic & Co"))]);
+    let base_language_uuid = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    for no_role in [false, true] {
+        let images = cfe_init_images(CfeInitImageInput {
+            args: &args,
+            name: "SyntheticExtension",
+            synonym: "Synthetic <extension>",
+            name_prefix: "Synthetic_",
+            purpose: "Customization",
+            compatibility: "Version8_3_27",
+            interface_mode: "TaxiEnableVersion8_2",
+            base_lang_uuid: base_language_uuid,
+            role_name: "SyntheticAccess",
+            no_role,
+        });
+        let info = parse_cf_info_xml(
+            &images.configuration,
+            unica_metadata::support_state::ConfigurationSupportData {
+                state: unica_metadata::support_state::ConfigurationSupportState::Extension,
+                editing_enabled: None,
+                objects: None,
+            },
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(info.data.name, "SyntheticExtension");
+        assert_eq!(info.data.synonym.as_deref(), Some("Synthetic <extension>"));
+        assert_eq!(info.data.vendor.as_deref(), Some("Synthetic & Co"));
+        assert_eq!(
+            info.data.extension_purpose.as_deref(),
+            Some("Customization")
+        );
+        assert_eq!(
+            info.data.properties.extension_compatibility_mode.as_deref(),
+            Some("Version8_3_27")
+        );
+        assert_eq!(
+            info.data.properties.name_prefix.as_deref(),
+            Some("Synthetic_")
+        );
+        assert_eq!(info.data.format, "2.20");
+        let configuration = Document::parse(&images.configuration).unwrap();
+        let language = Document::parse(&images.language).unwrap();
+        for document in [&configuration, &language] {
+            let root = document.root_element();
+            assert!(root.has_tag_name((CFE_BORROW_MD_NAMESPACE, "MetaDataObject")));
+            assert_eq!(root.attribute("version"), Some("2.20"));
+            assert!(matches!(
+                classify_root_version(root.attribute("version")).unwrap(),
+                FormatCompatibility::Supported { .. }
+            ));
+        }
+        let cfg = configuration
+            .root_element()
+            .children()
+            .find(|node| node.has_tag_name((CFE_BORROW_MD_NAMESPACE, "Configuration")))
+            .unwrap();
+        let lang = language
+            .root_element()
+            .children()
+            .find(|node| node.has_tag_name((CFE_BORROW_MD_NAMESPACE, "Language")))
+            .unwrap();
+        let properties = lang
+            .children()
+            .find(|node| node.has_tag_name((CFE_BORROW_MD_NAMESPACE, "Properties")))
+            .unwrap();
+        let language_name = cf_prop_text(properties, "Name");
+        assert_eq!(language_name, "Русский");
+        assert_eq!(cf_prop_text(properties, "LanguageCode"), "ru");
+        assert_eq!(
+            cf_prop_text(properties, "ExtendedConfigurationObject"),
+            base_language_uuid
+        );
+        assert_eq!(
+            info.data.properties.default_language,
+            Some(format!("Language.{language_name}"))
+        );
+        assert!(info
+            .registered_objects
+            .iter()
+            .any(|object| object.kind == "Language" && object.name == language_name));
+        let cfg_uuid = uuid::Uuid::parse_str(cfg.attribute("uuid").unwrap()).unwrap();
+        let lang_uuid = uuid::Uuid::parse_str(lang.attribute("uuid").unwrap()).unwrap();
+        assert_ne!(cfg_uuid, uuid::Uuid::nil());
+        assert_ne!(lang_uuid, uuid::Uuid::nil());
+        assert_ne!(cfg_uuid, lang_uuid);
+        assert_ne!(lang_uuid.to_string(), base_language_uuid);
+        let properties = cfg
+            .children()
+            .find(|node| node.has_tag_name((CFE_BORROW_MD_NAMESPACE, "Properties")))
+            .unwrap();
+        let default_roles = properties
+            .children()
+            .find(|node| node.has_tag_name((CFE_BORROW_MD_NAMESPACE, "DefaultRoles")))
+            .unwrap();
+        if no_role {
+            assert!(images.role.is_none());
+            assert!(info
+                .registered_objects
+                .iter()
+                .all(|object| object.kind != "Role"));
+            assert_eq!(
+                default_roles
+                    .children()
+                    .filter(|node| node.is_element())
+                    .count(),
+                0
+            );
+            assert_eq!(info.data.total_objects, 1);
+        } else {
+            let role_image = images.role.as_deref().unwrap();
+            let role = Document::parse(role_image).unwrap();
+            assert!(role
+                .root_element()
+                .has_tag_name((CFE_BORROW_MD_NAMESPACE, "MetaDataObject")));
+            assert_eq!(role.root_element().attribute("version"), Some("2.20"));
+            let role_node = role
+                .root_element()
+                .children()
+                .find(|node| node.has_tag_name((CFE_BORROW_MD_NAMESPACE, "Role")))
+                .unwrap();
+            let role_props = role_node
+                .children()
+                .find(|node| node.has_tag_name((CFE_BORROW_MD_NAMESPACE, "Properties")))
+                .unwrap();
+            let role_name = cf_prop_text(role_props, "Name");
+            assert_eq!(role_name, "SyntheticAccess");
+            let role_uuid = uuid::Uuid::parse_str(role_node.attribute("uuid").unwrap()).unwrap();
+            assert_ne!(role_uuid, uuid::Uuid::nil());
+            assert_ne!(role_uuid, cfg_uuid);
+            assert_ne!(role_uuid, lang_uuid);
+            assert!(info
+                .registered_objects
+                .iter()
+                .any(|object| object.kind == "Role" && object.name == role_name));
+            let refs = default_roles
+                .children()
+                .filter(|node| node.is_element())
+                .collect::<Vec<_>>();
+            assert_eq!(refs.len(), 1);
+            assert!(refs[0].has_tag_name((CFE_PATCH_XR_NAMESPACE, "Item")));
+            assert_eq!(refs[0].text(), Some(format!("Role.{role_name}").as_str()));
+            assert_eq!(info.data.total_objects, 2);
+        }
+    }
+}

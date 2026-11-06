@@ -1484,6 +1484,12 @@ mod inherited_content_tests;
 mod object_integrity_tests;
 
 #[cfg(test)]
+mod publication_invariant_tests;
+
+#[cfg(test)]
+mod resource_publication_invariant_tests;
+
+#[cfg(test)]
 mod tests {
     use super::plan_hidden_v13_apply;
     use crate::domain::apply::ApplyRequest;

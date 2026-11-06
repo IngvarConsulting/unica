@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.EMPTY-APPLY-PUBLICATION
-gap: https://github.com/IngvarConsulting/unica/issues/954
 ---
 
 # Неизменный результат не заменяет файлы
