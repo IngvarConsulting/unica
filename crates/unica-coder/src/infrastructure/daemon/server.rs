@@ -1664,6 +1664,9 @@ impl unica_daemon::transport::ObservationLifecycle for CapacityObservation {
 #[path = "apply_large_input_tests.rs"]
 mod apply_large_input_tests;
 #[cfg(test)]
+#[path = "apply_publication_invariant_tests.rs"]
+mod apply_publication_invariant_tests;
+#[cfg(test)]
 #[path = "code_target_tests.rs"]
 mod code_target_tests;
 #[cfg(test)]

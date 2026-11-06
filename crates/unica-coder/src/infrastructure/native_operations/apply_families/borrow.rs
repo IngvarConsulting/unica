@@ -1137,6 +1137,7 @@ mod tests {
 
     /// rule: INV.SOURCE.BORROWED-OBJECT-IDENTITY
     /// rule: INV.SOURCE.BORROWED-OBJECT-REFRESH
+    /// rule: INV.SOURCE.EMPTY-APPLY-PUBLICATION
     #[test]
     fn canonical_borrow_preview_refresh_and_noop_keep_local_identity_and_events_honest() {
         let fixture = Fixture::new();
@@ -1152,6 +1153,7 @@ mod tests {
             )
             .unwrap();
         let descriptor = fixture.dst.join("Catalogs/Orders.xml");
+        assert_eq!(committed.commit_count_for_test(), 1);
         let before = std::fs::read_to_string(&descriptor).unwrap();
         let before_doc = roxmltree::Document::parse(&before).unwrap();
         let identity = before_doc
@@ -1191,6 +1193,7 @@ mod tests {
         let refresh = fixture.run(true, None, None).unwrap();
         assert!(!refresh.effects().events().is_empty());
         let refreshed = fixture.run(false, Some(refresh.rev()), None).unwrap();
+        assert_eq!(refreshed.commit_count_for_test(), 1);
         assert_eq!(refreshed.rev(), refresh.rev());
         let after = std::fs::read_to_string(&descriptor).unwrap();
         let after_doc = roxmltree::Document::parse(&after).unwrap();
@@ -1207,9 +1210,17 @@ mod tests {
         assert!(!after.contains("new parent comment"));
         let file_identity =
             unica_workspace::test_support::file_identity_for_test(&descriptor).unwrap();
+        let snapshot = super::super::publication_invariant_tests::Snapshot::capture_root(
+            &fixture.actor.context().workspace_root,
+        );
         let noop_preview = fixture.run(true, None, None).unwrap();
         assert!(noop_preview.effects().events().is_empty());
+        let _ = unica_workspace::compile_transaction::take_retained_apply_observed_events();
         let noop = fixture.run(false, Some(noop_preview.rev()), None).unwrap();
+        assert!(
+            unica_workspace::compile_transaction::take_retained_apply_observed_events().is_empty()
+        );
+        assert_eq!(noop.commit_count_for_test(), 0);
         assert_eq!(noop.rev(), noop_preview.rev());
         assert!(noop.effects().events().is_empty());
         assert_eq!(std::fs::read_to_string(&descriptor).unwrap(), after);
@@ -1217,6 +1228,93 @@ mod tests {
             unica_workspace::test_support::file_identity_for_test(&descriptor).unwrap(),
             file_identity
         );
+        snapshot.assert_unchanged();
+    }
+
+    /// rule: INV.SOURCE.BOUND-PREIMAGES
+    #[test]
+    fn canonical_borrow_revalidates_parent_destination_and_absent_output_in_both_windows() {
+        use unica_source_contract::proposal::ApplyStagingErrorKind;
+        use unica_workspace::actor::ApplyPublicationErrorKind;
+        for after_prepare in [false, true] {
+            for input in ["parent", "destination", "absent-output"] {
+                let fixture = Fixture::new();
+                let preview = fixture.run(true, None, None).unwrap();
+                let value = serde_json::json!({"at":"extension:Configuration","dryRun":false,"ifRev":preview.rev(),"ops":[{"op":"object.borrow","args":{"from":"main:Catalog.Orders"}}]});
+                let request =
+                    ApplyRequest::parse(value.as_object().unwrap(), &["main", "extension"])
+                        .unwrap();
+                let admission = fixture
+                    .actor
+                    .admit_apply_with_dependencies(
+                        &fixture.destination,
+                        std::slice::from_ref(&fixture.parent),
+                        request.if_rev(),
+                        false,
+                        ProviderDeadline::from_budget(Duration::from_secs(10)),
+                        &CancellationToken::new(),
+                    )
+                    .unwrap();
+                let (staged, effects) =
+                    super::super::plan_hidden_v13_apply(&request, &fixture.destination, &admission)
+                        .unwrap();
+                assert!(!staged.planned_changes().is_empty());
+                let path = match input {
+                    "parent" => fixture.src.join("Catalogs/Orders.xml"),
+                    "destination" => fixture.dst.join("Configuration.xml"),
+                    _ => fixture.dst.join("Catalogs/Orders.xml"),
+                };
+                let mutate = || {
+                    let mut bytes = std::fs::read(&path).unwrap_or_else(|_| b"<foreign/>".to_vec());
+                    bytes.extend_from_slice(b"<!-- foreign valid XML edit -->");
+                    std::fs::write(&path, bytes).unwrap();
+                    super::super::publication_invariant_tests::Snapshot::capture_root(
+                        &fixture.actor.context().workspace_root,
+                    )
+                };
+                if after_prepare {
+                    let prepared = admission.prepare_with_effects(staged, effects).unwrap();
+                    let before = mutate();
+                    let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+                    assert_eq!(
+                        error.kind(),
+                        if input == "absent-output" {
+                            ApplyPublicationErrorKind::ContainmentIdentity
+                        } else {
+                            ApplyPublicationErrorKind::ConcurrentRevision
+                        },
+                        "{input}: {error}"
+                    );
+                    before.assert_unchanged();
+                } else {
+                    let before = mutate();
+                    match admission.prepare_with_effects(staged, effects) {
+                        Err(error) => assert_eq!(
+                            error.kind(),
+                            if input == "absent-output" {
+                                ApplyStagingErrorKind::AbsentChainOccupied
+                            } else {
+                                ApplyStagingErrorKind::ConcurrentRevision
+                            },
+                            "{input}: {error}"
+                        ),
+                        Ok(prepared) => {
+                            let error = fixture.actor.publish_prepared_apply(prepared).unwrap_err();
+                            assert_eq!(
+                                error.kind(),
+                                if input == "absent-output" {
+                                    ApplyPublicationErrorKind::ContainmentIdentity
+                                } else {
+                                    ApplyPublicationErrorKind::ConcurrentRevision
+                                },
+                                "{input}: {error}"
+                            );
+                        }
+                    }
+                    before.assert_unchanged();
+                }
+            }
+        }
     }
 
     #[test]
