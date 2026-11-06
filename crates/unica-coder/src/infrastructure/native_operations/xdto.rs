@@ -765,7 +765,7 @@ fn prove_xdto_resource(
             format!("cannot resolve XDTO package resource identity: {error}"),
         )
     })?;
-    if !resource_identity.starts_with(&source_root) {
+    if !unica_workspace::paths::path_starts_with_host_root(&resource_identity, &source_root) {
         return Err(XdtoResolutionError::new(
             XdtoPublicErrorCode::ContainmentDenied,
             format!(
@@ -779,9 +779,8 @@ fn prove_xdto_resource(
 }
 
 fn ensure_no_link_components(source_root: &Path, path: &Path) -> Result<(), String> {
-    let relative = path
-        .strip_prefix(source_root)
-        .map_err(|_| "containment_denied: XDTO package resource escapes sourceSet".to_string())?;
+    let relative = unica_workspace::paths::host_path_relative_to(path, source_root)
+        .ok_or_else(|| "containment_denied: XDTO package resource escapes sourceSet".to_string())?;
     let mut current = source_root.to_path_buf();
     for component in relative.components() {
         current.push(component.as_os_str());
@@ -3797,5 +3796,27 @@ pub(crate) mod medium_tests {
             assert_eq!(snapshot_tree(&fixture.source), before);
         }
         fixture.cleanup();
+    }
+}
+
+#[cfg(test)]
+mod host_path_tests {
+    use super::ensure_no_link_components;
+    use std::path::Path;
+    use unica_workspace::test_support::extended_length_spelling_for_test;
+
+    #[test]
+    fn an_absent_resource_stays_inside_a_source_root_of_another_host_spelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let plain = unica_workspace::paths::normalize_path_identity(temp.path()).unwrap();
+        let extended = extended_length_spelling_for_test(&plain);
+        let resource = Path::new("XDTOPackages/Absent.xdto");
+
+        ensure_no_link_components(&extended, &plain.join(resource)).unwrap();
+        ensure_no_link_components(&plain, &extended.join(resource)).unwrap();
+        assert!(
+            ensure_no_link_components(&extended.join("src"), &plain.join("other/Absent.xdto"))
+                .is_err()
+        );
     }
 }
