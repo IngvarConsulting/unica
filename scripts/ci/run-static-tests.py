@@ -55,7 +55,8 @@ def run_module(name: str) -> int:
     runner = importlib.util.module_from_spec(spec)
     sys.modules["run_unittest"] = runner
     spec.loader.exec_module(runner)
-    sys.path.insert(0, str(ROOT))
+    # Как `discover`: каталог набора в пути, его помощники импортируются по имени.
+    sys.path[:0] = [str(ROOT), str(ROOT / name.rsplit(".", 1)[0].replace(".", "/"))]
     suite = small_tests(unittest.defaultTestLoader.loadTestsFromName(name), runner.Sizes.load(MANIFEST))
     result = unittest.TextTestRunner(stream=sys.stdout, verbosity=0).run(suite)
     print(json.dumps({"tests": result.testsRun}))
