@@ -9,7 +9,8 @@ on:
   pull_request:
     # Черновик не занимает раннер. Перевод в готовые запускает прогон:
     # без `ready_for_review` на его head осталась бы пропущенная проверка.
-    types: [opened, synchronize, reopened, ready_for_review]
+    # `milestoned` запускает тесты, когда владелец вычитал PR.
+    types: [opened, synchronize, reopened, ready_for_review, milestoned]
   merge_group:
     types: [checks_requested]
 
@@ -30,62 +31,149 @@ env:
   GATE_PROFILE: ${{ github.event_name == 'merge_group' && 'queue' || 'pr' }}
 
 jobs:
+  # Непрочитанная работа не занимает раннеры тестами. Отметка «вычитано» — веха от
+  # владельца: см. `pr-metadata.yml`, правило то же. Кода PR здесь нет. Очередь
+  # допускает всегда, а отметку заново проверяет `PR metadata`.
+  admission:
+    name: Допуск к тестам
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      checks: read
+    outputs:
+      admitted: ${{ github.event_name == 'merge_group' || steps.admission.outputs.admitted == 'true' }}
+      kept: ${{ steps.kept.outputs.kept == 'true' }}
+    steps:
+      - name: Веха от владельца
+        id: admission
+        if: ${{ github.event_name == 'pull_request' && !github.event.pull_request.draft }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MILESTONE_OWNER: zeegin
+          STRICT: "false"
+        run: |
+          set -euo pipefail
+          # Запись очереди называется gh-readonly-queue/<база>/pr-<номер>-<sha>.
+          number="${PR_NUMBER:-$(sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p' <<<"$GITHUB_REF")}"
+          if [ -z "$number" ]; then
+            echo "::error::Номер PR не определён по $GITHUB_REF"
+            exit 1
+          fi
+          json="$(gh api graphql -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$number" -f query='
+            query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  milestone { number }
+                  assignees { totalCount }
+                  timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
+                  closingIssuesReferences(first: 100) { nodes { number milestone { number } } }
+                }
+              }
+            }')"
+          problems="$(jq -r --arg owner "$MILESTONE_OWNER" '
+            .data.repository.pullRequest as $pr | $pr.closingIssuesReferences.nodes as $issues
+            | ($pr.timelineItems.nodes[-1].actor.login // "неизвестно") as $actor
+            | (if $pr.milestone == null then
+                 (if ($issues | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
+               elif ($issues | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
+               else empty end),
+              ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается")' <<<"$json")"
+          assignees="$(jq -r '.data.repository.pullRequest.assignees.totalCount' <<<"$json")"
+          if [ -n "$problems" ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
+          level="$( [ "$STRICT" = true ] && echo error || echo notice )"
+          if [ -n "$problems" ]; then
+            while read -r problem; do echo "::$level::$problem"; done <<<"$problems"
+          fi
+          # Ответственный на запуск тестов не влияет: его требует только `PR metadata`.
+          if [ "$STRICT" = true ]; then
+            if [ "$assignees" = 0 ]; then echo "::error::Укажите ответственного"; fi
+            if [ -n "$problems" ] || [ "$assignees" = 0 ]; then exit 1; fi
+          fi
+          echo "PR #$number: проверка окончена"
+      # Смена вехи на зелёной вершине не повторяет тесты и не заменяет зелёный итог
+      # пропуском: `Unica CI` этого набора сразу зелёный. Новый push это не затрагивает.
+      - name: Зелёный итог этой вершины
+        id: kept
+        if: ${{ github.event.action == 'milestoned' && steps.admission.outputs.admitted == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          last="$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=Unica%20CI&filter=all&per_page=100" \
+            --jq '[.check_runs[] | select(.status == "completed" and .conclusion != "skipped")] | sort_by(.completed_at) | last | .conclusion // ""')"
+          if [ "$last" = success ]; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
+
   unica-ci:
-    # Имя обязательной проверки ruleset. Условие пропускает только черновик,
-    # а черновик влить нельзя.
+    # Имя обязательной проверки ruleset. Пропуск по условию она считает пройденной,
+    # поэтому без отметки владельца вливание блокирует `PR metadata`.
     name: Unica CI
-    if: ${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}
+    needs: admission
+    if: ${{ needs.admission.outputs.admitted == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     defaults:
       run:
         shell: bash
+    env:
+      KEPT: ${{ needs.admission.outputs.kept }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: env.KEPT != 'true'
         with:
           persist-credentials: false
           # Python-проверки читают историю репозитория.
           fetch-depth: 0
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: env.KEPT != 'true'
         with:
           python-version: "3.12"
       - run: python -m pip install -r tests/ci/requirements.txt
+        if: env.KEPT != 'true'
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        if: env.KEPT != 'true'
         with:
           toolchain: stable
           components: rustfmt, clippy
       - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
-        if: github.event_name == 'merge_group'
+        if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' }}
         with:
           tool: cargo-nextest@0.9.148
       # Только чтение: pull request и очередь берут кэш области `main`.
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; pull request и очередь читают область main и ничего не пишут
+        if: env.KEPT != 'true'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ci-rust-ordinary
           save-if: false
       - name: Формат
+        if: env.KEPT != 'true'
         run: cargo fmt --all -- --check
       - name: Контракт версий
+        if: env.KEPT != 'true'
         run: python scripts/ci/check-version-contract.py
       - name: Clippy
+        if: env.KEPT != 'true'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # Medium Python запускает продукт. Сборка идёт до тестов Rust: вызов
       # контракта ReceiptLedger пересобирает `unica` со своим признаком.
       - name: Продукт для Python
-        if: github.event_name == 'merge_group'
+        if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' }}
         run: |
           python scripts/ci/prepared_binary.py build --destination .build/ci-product --target-dir target
           echo "UNICA_PREPARED_BINARY_MANIFEST=$PWD/.build/ci-product/manifest.json" >> "$GITHUB_ENV"
       # Красный шаг не отменяет следующие: упавший тест не прячет остальные.
       - name: Тесты Rust
-        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        if: ${{ !cancelled() && github.event_name == 'merge_group' && env.KEPT != 'true' }}
         run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust
       - name: Тесты Python
-        if: ${{ !cancelled() && github.event_name == 'merge_group' }}
+        if: ${{ !cancelled() && github.event_name == 'merge_group' && env.KEPT != 'true' }}
         run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python
       - name: Статические проверки Python
-        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}
         run: python scripts/ci/run-static-tests.py
 
   windows-clippy:
