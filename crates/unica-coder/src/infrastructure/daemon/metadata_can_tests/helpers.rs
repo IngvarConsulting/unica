@@ -10,13 +10,8 @@ pub(super) struct Fixture {
     pub(super) source: PathBuf,
 }
 
-pub(super) fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_owned()
+pub(super) fn acceptance_fixtures() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/acceptance")
 }
 
 pub(super) fn copy_image(from: &Path, to: &Path) {
@@ -32,10 +27,7 @@ impl Fixture {
         let root = tempfile::tempdir().unwrap();
         let workspace =
             unica_workspace::test_support::canonical_path(root.path()).join("workspace");
-        copy_image(
-            &repo_root().join("tests/fixtures/acceptance").join(name),
-            &workspace,
-        );
+        copy_image(&acceptance_fixtures().join(name), &workspace);
         Self {
             _root: root,
             source: workspace.join("src"),
@@ -76,7 +68,7 @@ impl Fixture {
     pub(super) fn with_extension() -> Self {
         let fixture = Self::new("workspace");
         copy_image(
-            &repo_root().join("tests/fixtures/acceptance/workspace-format/src-ext"),
+            &acceptance_fixtures().join("workspace-format/src-ext"),
             &fixture.workspace.join("src-ext"),
         );
         std::fs::write(

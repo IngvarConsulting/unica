@@ -9274,8 +9274,7 @@ mod medium_tests {
     #[test]
     fn explicit_search_roles_name_only_the_engine_they_execute() {
         let lock_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../..")
-            .join("plugins/unica/third-party/tools.lock.json");
+            .join("../../plugins/unica/third-party/tools.lock.json");
         let lock: serde_json::Value =
             serde_json::from_slice(&std::fs::read(lock_path).unwrap()).unwrap();
         {

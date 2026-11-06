@@ -289,16 +289,22 @@ fn assert_no_error_diagnostic(result: &InfoResult, code: &str) {
     );
 }
 
-fn fixture_workspace(label: &str, fixture: &str, files: &[&str]) -> TempWorkspace {
+fn language_aware_fixture() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/unica_mcp_script_parity/meta-validate-language-aware")
+}
+
+fn subordinate_register_fixture() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meta-validate-subordinate-register")
+}
+
+fn fixture_workspace(label: &str, fixture_root: &Path, files: &[&str]) -> TempWorkspace {
     let workspace = TempWorkspace::new(label);
     std::fs::write(
         workspace.path().join("v8project.yaml"),
         "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
     )
     .unwrap();
-    let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/unica_mcp_script_parity")
-        .join(fixture);
     for relative in files {
         let destination = workspace.path().join("src").join(relative);
         std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
@@ -1648,14 +1654,14 @@ fn meta_info_private_closed_read_proof_requires_every_registered_language_image(
         "Languages/English.xml",
         "Languages/Русский.xml",
     ];
-    let valid = fixture_workspace("language-valid", "meta-validate-language-aware", &files);
+    let valid = fixture_workspace("language-valid", &language_aware_fixture(), &files);
     let valid_result = call_info_path(valid.path(), "Enum.LanguageAware");
     assert_eq!(
         valid_result.data.as_ref().unwrap()["validation"]["status"],
         "passed"
     );
 
-    let missing = fixture_workspace("language-missing", "meta-validate-language-aware", &files);
+    let missing = fixture_workspace("language-missing", &language_aware_fixture(), &files);
     std::fs::remove_file(missing.path().join("src/Languages/English.xml")).unwrap();
     let missing_result = call_info_path(missing.path(), "Enum.LanguageAware");
 
@@ -1667,7 +1673,7 @@ fn meta_info_private_closed_read_proof_requires_every_registered_language_image(
     assert!(missing_result.data.as_ref().unwrap()["name"].is_string());
     assert_logical_diagnostic(&missing_result, missing.path(), "provider_unavailable");
 
-    let invalid = fixture_workspace("language-invalid", "meta-validate-language-aware", &files);
+    let invalid = fixture_workspace("language-invalid", &language_aware_fixture(), &files);
     std::fs::write(invalid.path().join("src/Languages/English.xml"), "not XML").unwrap();
     let invalid_result = call_info_path(invalid.path(), "Enum.LanguageAware");
 
@@ -1690,7 +1696,7 @@ fn meta_info_private_closed_read_proof_rejects_a_missing_forward_register_image(
     ];
     let workspace = fixture_workspace(
         "missing-forward-register",
-        "meta-validate-subordinate-register",
+        &subordinate_register_fixture(),
         &files,
     );
     std::fs::remove_file(
@@ -1719,11 +1725,7 @@ fn meta_info_private_closed_read_proof_rejects_reverse_registrar_inconsistency()
         "InformationRegisters/SubordinateRegister.xml",
         "Languages/Русский.xml",
     ];
-    let workspace = fixture_workspace(
-        "reverse-registrar",
-        "meta-validate-subordinate-register",
-        &files,
-    );
+    let workspace = fixture_workspace("reverse-registrar", &subordinate_register_fixture(), &files);
     let registrar = workspace.path().join("src/Documents/Регистратор.xml");
     let bytes = std::fs::read_to_string(&registrar).unwrap().replace(
         "InformationRegister.SubordinateRegister",
@@ -1753,7 +1755,7 @@ fn meta_info_private_closed_read_accepts_complete_registrar_evidence() {
     ];
     let workspace = fixture_workspace(
         "registrar-complete",
-        "meta-validate-subordinate-register",
+        &subordinate_register_fixture(),
         &files,
     );
 
@@ -1777,13 +1779,13 @@ fn meta_info_private_closed_read_treats_absent_and_empty_documents_as_complete_e
     ];
     let absent = fixture_workspace(
         "registrar-documents-absent",
-        "meta-validate-subordinate-register",
+        &subordinate_register_fixture(),
         &files,
     );
     let absent_result = call_info_path(absent.path(), "InformationRegister.SubordinateRegister");
     let empty = fixture_workspace(
         "registrar-documents-empty",
-        "meta-validate-subordinate-register",
+        &subordinate_register_fixture(),
         &files,
     );
     std::fs::create_dir_all(empty.path().join("src/Documents")).unwrap();
@@ -1816,7 +1818,7 @@ fn meta_info_private_closed_read_registrar_scan_reads_a_document_past_the_former
     ];
     let workspace = fixture_workspace(
         "registrar-large-document",
-        "meta-validate-subordinate-register",
+        &subordinate_register_fixture(),
         &files,
     );
     let descriptor = workspace.path().join("src/Documents/Регистратор.xml");
@@ -1846,7 +1848,7 @@ fn meta_info_private_closed_read_reports_malformed_registrar_evidence_unavailabl
     ];
     let workspace = fixture_workspace(
         "registrar-malformed",
-        "meta-validate-subordinate-register",
+        &subordinate_register_fixture(),
         &files,
     );
     std::fs::write(
@@ -1873,7 +1875,7 @@ fn meta_info_post_capture_cancellation_after_first_identity_parse_is_provider_un
     ];
     let workspace = fixture_workspace(
         "registrar-first-identity-cancel",
-        "meta-validate-subordinate-register",
+        &subordinate_register_fixture(),
         &files,
     );
     let cancellation = CancellationToken::new();
@@ -1913,7 +1915,7 @@ fn meta_info_post_capture_cancellation_after_large_identity_parse_is_provider_un
     ];
     let workspace = fixture_workspace(
         "registrar-large-identity-cancel",
-        "meta-validate-subordinate-register",
+        &subordinate_register_fixture(),
         &files,
     );
     let original =
@@ -1965,7 +1967,7 @@ fn meta_info_post_capture_cancellation_after_last_registrar_parse_is_provider_un
     ];
     let workspace = fixture_workspace(
         "registrar-last-parse-cancel",
-        "meta-validate-subordinate-register",
+        &subordinate_register_fixture(),
         &files,
     );
     std::fs::copy(
@@ -2015,7 +2017,7 @@ fn meta_info_post_capture_cancellation_before_complete_return_is_provider_unavai
     ];
     let workspace = fixture_workspace(
         "registrar-final-return-cancel",
-        "meta-validate-subordinate-register",
+        &subordinate_register_fixture(),
         &files,
     );
     let cancellation = CancellationToken::new();

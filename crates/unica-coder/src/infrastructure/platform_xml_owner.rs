@@ -953,11 +953,15 @@ pub(crate) mod medium_tests {
             ),
             (
                 "additional-indexes",
-                include_bytes!("../../../../tests/fixtures/platform_8_3_27/additional_indexes/AdditionalIndexes.xml").as_slice(),
+                include_bytes!("../../tests/fixtures/additional_indexes/AdditionalIndexes.xml")
+                    .as_slice(),
             ),
             (
                 "accumulation-register-aggregates",
-                include_bytes!("../../../../tests/fixtures/platform_8_3_27/accumulation_register_aggregates/Aggregates.xml").as_slice(),
+                include_bytes!(
+                    "../../tests/fixtures/accumulation_register_aggregates/Aggregates.xml"
+                )
+                .as_slice(),
             ),
             (
                 "job-schedule",

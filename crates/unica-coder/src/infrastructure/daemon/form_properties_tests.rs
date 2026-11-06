@@ -147,7 +147,7 @@ fn canonical_props_set_writes_form_root_properties_as_1c_exports_them() {
     assert!(published.ok, "{published:?}");
     let native = std::fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/platform_8_3_27/form-root-properties/native-form.xml"),
+            .join("tests/fixtures/form-root-properties/native-form.xml"),
     )
     .unwrap();
     assert!(
@@ -358,9 +358,10 @@ fn canonical_props_set_refuses_what_the_form_does_not_take() {
 #[test]
 fn canonical_form_add_writes_a_document_form_as_1c_exports_it() {
     let fixture = catalog_form();
-    let native = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join(
-        "../../tests/fixtures/platform_8_3_27/form-root-properties/native-document-form.xml",
-    ))
+    let native = std::fs::read(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/form-root-properties/native-document-form.xml"),
+    )
     .unwrap();
     let written = std::fs::read(
         fixture

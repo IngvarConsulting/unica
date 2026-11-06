@@ -1878,7 +1878,7 @@ mod tests {
                 MetadataKind::Catalog,
                 include_bytes!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/../../tests/fixtures/platform_8_3_27/predefined/Catalog.xml"
+                    "/tests/fixtures/predefined/Catalog.xml"
                 ))
                 .as_slice(),
             ),
@@ -1886,7 +1886,7 @@ mod tests {
                 MetadataKind::ChartOfAccounts,
                 include_bytes!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/../../tests/fixtures/platform_8_3_27/predefined/ChartOfAccounts.xml"
+                    "/tests/fixtures/predefined/ChartOfAccounts.xml"
                 ))
                 .as_slice(),
             ),
@@ -1894,7 +1894,7 @@ mod tests {
                 MetadataKind::ChartOfCharacteristicTypes,
                 include_bytes!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/../../tests/fixtures/platform_8_3_27/predefined/ChartOfCharacteristicTypes.xml"
+                    "/tests/fixtures/predefined/ChartOfCharacteristicTypes.xml"
                 ))
                 .as_slice(),
             ),
@@ -1902,7 +1902,7 @@ mod tests {
                 MetadataKind::ChartOfCalculationTypes,
                 include_bytes!(concat!(
                     env!("CARGO_MANIFEST_DIR"),
-                    "/../../tests/fixtures/platform_8_3_27/predefined/ChartOfCalculationTypes.xml"
+                    "/tests/fixtures/predefined/ChartOfCalculationTypes.xml"
                 ))
                 .as_slice(),
             ),
@@ -1923,7 +1923,7 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let fixture = include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/predefined/ChartOfAccounts.xml"
+            "/tests/fixtures/predefined/ChartOfAccounts.xml"
         ));
         fs::write(&path, fixture).unwrap();
         let accounting_flags = BTreeMap::from([

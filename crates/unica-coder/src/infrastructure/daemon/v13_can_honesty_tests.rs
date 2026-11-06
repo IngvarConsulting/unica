@@ -248,12 +248,8 @@ struct Fixture {
     sets: Vec<(String, SourceSetKind, ProviderRootBinding)>,
 }
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(Path::parent)
-        .expect("repository root")
-        .to_path_buf()
+fn acceptance_fixtures() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/acceptance")
 }
 
 fn copy_tree(from: &Path, to: &Path) {
@@ -301,10 +297,7 @@ fn source_sets(workspace: &Path) -> Vec<(String, SourceSetKind, PathBuf)> {
 fn fixture(name: &str) -> Fixture {
     let root = tempfile::tempdir().unwrap();
     let workspace = std::fs::canonicalize(root.path()).unwrap().join("ws");
-    copy_tree(
-        &repo_root().join("tests/fixtures/acceptance").join(name),
-        &workspace,
-    );
+    copy_tree(&acceptance_fixtures().join(name), &workspace);
     let context = WorkspaceContext {
         cwd: workspace.clone(),
         workspace_root: workspace.clone(),
@@ -1762,7 +1755,7 @@ fn retired_form_arguments_route_next_to_the_item_or_event_address() {
 fn two_set_workspace() -> (tempfile::TempDir, PathBuf) {
     let root = tempfile::tempdir().unwrap();
     let workspace = std::fs::canonicalize(root.path()).unwrap().join("ws");
-    let fixtures = repo_root().join("tests/fixtures/acceptance");
+    let fixtures = acceptance_fixtures();
     copy_tree(
         &fixtures.join("workspace-code/src/cf"),
         &workspace.join("src/base"),

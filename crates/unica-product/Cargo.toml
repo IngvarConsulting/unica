@@ -63,4 +63,4 @@ windows-sys.workspace = true
 
 [package.metadata.unica]
 inputs = ["crates/unica-coder/src/receipt_ledger_test_support.rs", "crates/unica-coder/tests/support", "tests/fixtures/acceptance", "tests/fixtures/platform_8_3_27", "tests/fixtures/mcp", "tests/fixtures/xdto"]
-read-outside-baseline = 4
+read-outside-baseline = 1

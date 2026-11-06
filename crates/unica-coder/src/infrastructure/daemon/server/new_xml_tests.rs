@@ -12,20 +12,20 @@ const FORM_CONTENT: &str = "Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form.xml
 const FORM_MODULE: &str = "Catalogs/CorpusCatalog/Forms/CorpusForm/Ext/Form/Module.bsl";
 const NATIVE_CATALOG: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/fixtures/platform_8_3_27/new-xml/native-catalog-descriptor.xml"
+    "/tests/fixtures/new-xml/native-catalog-descriptor.xml"
 ));
 const NATIVE_FORM_DESCRIPTOR: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/fixtures/platform_8_3_27/new-xml/native-form-descriptor.xml"
+    "/tests/fixtures/new-xml/native-form-descriptor.xml"
 ));
 const NATIVE_FORM_CONTENT: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/fixtures/platform_8_3_27/new-xml/native-form-content.xml"
+    "/tests/fixtures/new-xml/native-form-content.xml"
 ));
 
 const NATIVE_FORM_MODULE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/fixtures/platform_8_3_27/new-xml/native-form-module.bsl"
+    "/tests/fixtures/new-xml/native-form-module.bsl"
 ));
 
 fn workspace(with_catalog: bool) -> tempfile::TempDir {
@@ -446,7 +446,7 @@ fn canonical_object_create_publishes_native_chart_of_accounts_descriptor_bytes()
     let published = std::fs::read(source.join(descriptor)).unwrap();
     let native = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/new-xml/native-chart-of-accounts-descriptor.xml"
+        "/tests/fixtures/new-xml/native-chart-of-accounts-descriptor.xml"
     ));
     assert_eq!(published, bind_native_identities(native, &published, "ChartOfAccounts"), "new ChartOfAccounts must match raw native export apart from its 15 declared generated identity slots");
 }

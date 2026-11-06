@@ -1949,7 +1949,7 @@ pub(super) mod tests {
     /// (`tests/fixtures/v8_runner_015/README.md`).
     fn captured(name: &str) -> Value {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/v8_runner_015")
+            .join("tests/fixtures/v8_runner_015")
             .join(name);
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
@@ -1958,7 +1958,7 @@ pub(super) mod tests {
     /// до шагов, форма которых в 0.15 не менялась; на 0.15.1 вживую не сняты.
     fn captured_014(name: &str) -> Value {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/v8_runner_014")
+            .join("tests/fixtures/v8_runner_014")
             .join(name);
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
