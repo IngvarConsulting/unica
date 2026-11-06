@@ -133,7 +133,7 @@
       "caseId": "check-cf-real-validator",
       "entry": "check",
       "mode": "validator=cf",
-      "fixture": "tests/fixtures/v013/domain-parity/check-diff.json",
+      "fixture": "tests/ci/fixtures/domain-parity/check-diff.json",
       "expected": {
         "outcome": "normalized-diagnostics",
         "rawStreams": false,
@@ -144,7 +144,7 @@
       "caseId": "check-unavailable-dependency",
       "entry": "check",
       "mode": "validator=cf;dependency=unavailable",
-      "fixture": "tests/fixtures/v013/domain-parity/check-diff.json",
+      "fixture": "tests/ci/fixtures/domain-parity/check-diff.json",
       "expected": {
         "outcome": "provider_unavailable"
       }
@@ -153,7 +153,7 @@
       "caseId": "diff-bounded-revision-cursor",
       "entry": "diff",
       "mode": "limit=2;cursor=both-revisions",
-      "fixture": "tests/fixtures/v013/domain-parity/check-diff.json",
+      "fixture": "tests/ci/fixtures/domain-parity/check-diff.json",
       "expected": {
         "outcome": "stale_cursor_on_either_revision",
         "boundedChanges": true,
