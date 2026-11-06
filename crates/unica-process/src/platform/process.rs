@@ -259,6 +259,13 @@ impl RuntimeProcessTreeHandle {
         child: &mut Child,
         deadline: Instant,
     ) -> io::Result<()> {
+        #[cfg(test)]
+        {
+            let probe = RUNTIME_TREE_DEADLINE_PROBE.with(|slot| slot.borrow_mut().take());
+            if let Some(probe) = probe {
+                probe(deadline);
+            }
+        }
         #[cfg(any(test, feature = "test-support"))]
         RUNTIME_TREE_CLEANUP_CALLS.with(|slot| slot.set(slot.get().saturating_add(1)));
         #[cfg(any(test, feature = "test-support"))]
@@ -840,6 +847,17 @@ pub fn assert_windows_runtime_process_tree_semantics_for_test() -> io::Result<()
     }
 
     process_tree.terminate_and_reap_bounded(&mut child, TERMINATION_WAIT_LIMIT)
+}
+
+#[cfg(test)]
+type CleanupDeadlineProbe = Box<dyn FnOnce(Instant)>;
+#[cfg(test)]
+thread_local! {
+    static RUNTIME_TREE_DEADLINE_PROBE: std::cell::RefCell<Option<CleanupDeadlineProbe>> = const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(crate) fn set_runtime_tree_deadline_probe(probe: Option<CleanupDeadlineProbe>) {
+    RUNTIME_TREE_DEADLINE_PROBE.with(|slot| *slot.borrow_mut() = probe);
 }
 
 #[cfg(any(test, feature = "test-support"))]
