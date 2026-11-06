@@ -733,7 +733,16 @@ pub fn apply_typed_operations_with_uuid<F>(
 where
     F: FnMut() -> String,
 {
-    let mut working = xml_text.clone();
+    // Writers spell MDClasses elements in the default namespace; a prefixed
+    // descriptor is written in that form and gets its prefix back below.
+    let (mut working, form) = unica_xml_format::prefix_form::PrefixForm::normalize(xml_text)
+        .map_err(|message| {
+            unica_metadata::request::MetaFailure::from(typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                message,
+                None,
+            ))
+        })?;
     let mut counts = MetaEditCounts::default();
     for (operation_index, operation) in operations.iter().enumerate() {
         if matches!(
@@ -823,7 +832,13 @@ where
         });
     }
     validate_typed_event_source_final_state(&working, operations)?;
-    *xml_text = working;
+    *xml_text = form.restore(&working).map_err(|message| {
+        unica_metadata::request::MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            message,
+            None,
+        ))
+    })?;
     Ok(counts)
 }
 pub fn validate_typed_event_source_final_state(
@@ -4464,44 +4479,56 @@ mod prefixed_property_writer_tests {
                 else {
                     continue;
                 };
-                let Some(current) = current_text(&plain, spec.xml_name) else {
-                    continue;
-                };
-                let Some(changes) = changed_value(*kind, spec, &current) else {
-                    continue;
-                };
-                let mut plain_after = plain.clone();
-                if apply_typed_properties(&mut plain_after, &changes, "ru").is_err()
-                    || plain_after == plain
-                {
-                    continue;
-                }
-                covered = true;
-                let source = prefixed(&plain);
-                let mut after = source.clone();
-                if let Err(error) = apply_typed_properties(&mut after, &changes, "ru") {
-                    failures.push(format!(
-                        "{} of {}: {error:?}",
-                        spec.public_name,
-                        kind.as_str()
-                    ));
+                // Optional fields need a real descriptor sample when the
+                // minimal creation template intentionally omits them.
+                let optional = (*kind == MetadataKind::ExchangePlan).then_some(include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/acceptance/workspace-exchange-extensions/src/ExchangePlans/Codes.xml"
+                )));
+                for plain in std::iter::once(plain).chain(optional.map(str::to_string)) {
+                    let Some(current) = current_text(&plain, spec.xml_name) else {
+                        continue;
+                    };
+                    let Some(changes) = changed_value(*kind, spec, &current) else {
+                        continue;
+                    };
+                    let mut plain_after = plain.clone();
+                    if apply_typed_properties(&mut plain_after, &changes, "ru").is_err()
+                        || plain_after == plain
+                    {
+                        continue;
+                    }
+                    covered = true;
+                    let source = prefixed(&plain);
+                    let mut after = source.clone();
+                    if let Err(error) = apply_typed_properties(&mut after, &changes, "ru") {
+                        failures.push(format!(
+                            "{} of {}: {error:?}",
+                            spec.public_name,
+                            kind.as_str()
+                        ));
+                        break;
+                    }
+                    let label = format!("{} of {}", spec.public_name, kind.as_str());
+                    if unprefixed(&after) != plain_after {
+                        failures.push(format!(
+                            "{label}: prefixed result differs from the default-namespace result"
+                        ));
+                    } else if elements(&after) != elements(&plain_after) {
+                        failures.push(format!("{label}: element namespaces changed"));
+                    } else {
+                        let mut repeat = after.clone();
+                        apply_typed_properties(&mut repeat, &changes, "ru").unwrap();
+                        if repeat != after {
+                            failures
+                                .push(format!("{label}: repeat changed the prefixed descriptor"));
+                        }
+                    }
                     break;
                 }
-                let label = format!("{} of {}", spec.public_name, kind.as_str());
-                if unprefixed(&after) != plain_after {
-                    failures.push(format!(
-                        "{label}: prefixed result differs from the default-namespace result"
-                    ));
-                } else if elements(&after) != elements(&plain_after) {
-                    failures.push(format!("{label}: element namespaces changed"));
-                } else {
-                    let mut repeat = after.clone();
-                    apply_typed_properties(&mut repeat, &changes, "ru").unwrap();
-                    if repeat != after {
-                        failures.push(format!("{label}: repeat changed the prefixed descriptor"));
-                    }
+                if covered {
+                    break;
                 }
-                break;
             }
             if !covered {
                 missing.push(spec.public_name);
