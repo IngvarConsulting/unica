@@ -1383,6 +1383,18 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
+    let metadata_operations = parsed
+        .iter()
+        .filter_map(|operation| match operation {
+            ParsedApplyOperation::Metadata(operation) => Some(operation.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    unica_metadata_designer::root_type::validate_final(
+        &mut staged.proposal(),
+        binding.source_kind(),
+        &metadata_operations,
+    )?;
     code_type_plan.validate_final(&mut staged.proposal(), binding.source_kind())?;
     unica_metadata_designer::planner::validate_final_numerators(
         &mut staged.proposal(),

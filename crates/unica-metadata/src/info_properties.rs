@@ -409,7 +409,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
     use MetadataKind::*;
 
     match key {
-        // Constant Type is observed through MetaInfoDetails, not scalar properties.
+        // Structural Type is observed through MetaInfoDetails, not scalar properties.
         Type | ClientOrdinaryApplication => false,
         Synonym | Comment => true,
         EditType => matches!(kind, Catalog | InformationRegister),
@@ -900,13 +900,16 @@ mod tests {
     #[test]
     fn read_profile_preserves_every_published_writer_property_without_using_it_at_runtime() {
         for writer in METADATA_PROPERTY_SPECS {
-            // Structured Constant Type is covered by the canonical create/edit/view
+            // Structured Type is covered by the canonical edit/view
             // round trip; exposing it here would duplicate the details projection.
             if writer.key == MetaPropertyKey::Type {
-                assert_eq!(writer.allowed_kinds, &[MetadataKind::Constant]);
-                assert!(META_INFO_PROPERTY_PROFILE
-                    .resolve(MetadataKind::Constant, "Type")
-                    .is_none());
+                assert_eq!(
+                    writer.allowed_kinds,
+                    &[MetadataKind::Constant, MetadataKind::DefinedType]
+                );
+                for kind in writer.allowed_kinds {
+                    assert!(META_INFO_PROPERTY_PROFILE.resolve(*kind, "Type").is_none());
+                }
                 continue;
             }
             for kind in MetadataKind::ALL {

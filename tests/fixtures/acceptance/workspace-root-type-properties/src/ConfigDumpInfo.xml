@@ -1,0 +1,17 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Catalog.Items" id="4c8d887c-d557-4751-8360-b5e859b289e2" configVersion="b0e2dafc3d2bef408d51da215a0b3b5f00000000"/>
+		<Metadata name="Catalog.Items.ObjectModule" id="4c8d887c-d557-4751-8360-b5e859b289e2.0" configVersion="a0f48793566ef84393cfbe6e55978d1100000000"/>
+		<Metadata name="Catalog.Other" id="f54af222-f244-4802-a701-cd460aead01f" configVersion="35bc8d1b887df84892bb14852509317200000000"/>
+		<Metadata name="Catalog.Other.ObjectModule" id="f54af222-f244-4802-a701-cd460aead01f.0" configVersion="f7c18ef495139743b93ddefa91c04c0c00000000"/>
+		<Metadata name="CommonAttribute.SharedValue" id="6d1f54b0-1186-4fee-8765-7a33398e6e30" configVersion="ba7ebbf9dfff8644b444f7043350813c00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="e3e5532b93773547b0378fee2c887e7a00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="72467fb697685e4984241c15aac46fca00000000"/>
+		<Metadata name="DefinedType.Existing" id="f0bbe2eb-7ebe-4d9e-bf46-7901baeaa0f5" configVersion="7042a534bfa35248ae3b430500c7b5c800000000"/>
+		<Metadata name="DefinedType.Helper" id="115862b5-53e4-445a-8296-a850a880821e" configVersion="35c724c4f57d354caefd88d877fa6dd400000000"/>
+		<Metadata name="FilterCriterion.CriterionValue" id="acbfbe86-7238-41e0-98f4-76773ff95813" configVersion="f150da525f128842a72a0f828439947700000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="a34b0922a448a34aa5652fbf9aa60cdc00000000"/>
+		<Metadata name="SessionParameter.SessionValue" id="1c7f3175-3cf9-47f4-812e-0a5ccb008b9b" configVersion="a6d88859e2bb944bb521e93cde5bd26500000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

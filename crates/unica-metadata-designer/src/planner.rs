@@ -1448,6 +1448,19 @@ fn stage_descriptor_properties(
         .at_path(at_path.clone())
     })?;
     let (kind, postimage_text) = match changes {
+        DescriptorPropertyChanges::RootType {
+            owner,
+            metadata_type,
+        } => {
+            let mut text = source.clone();
+            crate::edit::apply_descriptor_type(&mut text, *owner, metadata_type).map_err(
+                |diagnostic| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, diagnostic.message)
+                        .at_path(format!("ops[{op_index}].args.values.Type"))
+                },
+            )?;
+            (owner.node_kind(), text)
+        }
         DescriptorPropertyChanges::LanguageCode { code, comment } => {
             let invalid = |message: String| {
                 ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)

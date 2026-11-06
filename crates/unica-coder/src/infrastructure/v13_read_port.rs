@@ -1320,6 +1320,12 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if matches!(
+            evidence.artifact_kind(),
+            "CommonAttribute" | "SessionParameter" | "FilterCriterion"
+        ) {
+            unica_metadata_designer::root_type::enrich(&descriptor, &mut payload);
+        }
         Ok(payload)
     }
 

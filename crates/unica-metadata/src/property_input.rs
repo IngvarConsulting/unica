@@ -48,6 +48,10 @@ pub struct WsReferencePropertyChanges {
 pub enum PropertiesIntent {
     DocumentNumerator(crate::document_numerator::DocumentNumeratorChanges),
     Metadata(MetaPropertyChanges),
+    RootType {
+        owner: crate::descriptor_operations::TypePropertyOwner,
+        metadata_type: crate::MetadataType,
+    },
     LanguageCode {
         code: String,
         comment: Option<String>,
@@ -84,6 +88,15 @@ fn invalid(path: impl Into<String>, message: impl Into<String>) -> ContractError
         path: path.into(),
         message: message.into(),
     }
+}
+
+fn root_type_argument_error(error: crate::MetaDiagnostic, path: &str) -> ContractError {
+    let field = error.field.as_deref().unwrap_or("values.Type");
+    let field = field.strip_prefix("type").map_or_else(
+        || field.to_string(),
+        |suffix| format!("values.Type{suffix}"),
+    );
+    invalid(format!("{path}.{field}"), error.message)
 }
 
 struct PropertyArgumentReader<'a> {
@@ -322,6 +335,40 @@ fn decode_with_contract(
                 return Err(invalid(&values_path, "property changes must not be empty"));
             }
             let intent = match site {
+                PropertiesSite::TypeOwner(owner) => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    let value = values_reader.field("Type", false)?;
+                    if value.is_some() && comment.is_some() {
+                        return Err(invalid(
+                            &values_path,
+                            "supply either Type or Comment, one property per operation",
+                        ));
+                    }
+                    if let Some(value) = value {
+                        let metadata_type =
+                            crate::request::parse_metadata_type(value, "values.Type")
+                                .and_then(|metadata_type| {
+                                    crate::validate_metadata_element_value_profile(
+                                        Some(&metadata_type),
+                                        None,
+                                        crate::MetaValueProfileContext::Patch,
+                                    )?;
+                                    Ok(metadata_type)
+                                })
+                                .map_err(|error| root_type_argument_error(error, path))?;
+                        PropertiesIntent::RootType {
+                            owner,
+                            metadata_type,
+                        }
+                    } else {
+                        PropertiesIntent::CommentOnly {
+                            kind: owner.node_kind(),
+                            comment: comment.ok_or_else(|| {
+                                invalid(&values_path, "Type or Comment is required")
+                            })?,
+                        }
+                    }
+                }
                 PropertiesSite::CommentOnly(kind) => PropertiesIntent::CommentOnly {
                     kind,
                     comment: values_reader
@@ -385,6 +432,18 @@ fn decode_with_contract(
                                 error.message,
                             )
                         })?;
+                    if kind == crate::MetadataKind::DefinedType {
+                        for (_, value) in changes.entries() {
+                            if let crate::MetaPropertyValue::Type(metadata_type) = value {
+                                crate::validate_metadata_element_value_profile(
+                                    Some(metadata_type),
+                                    None,
+                                    crate::MetaValueProfileContext::Patch,
+                                )
+                                .map_err(|error| root_type_argument_error(error, path))?;
+                            }
+                        }
+                    }
                     for spec in METADATA_PROPERTY_SPECS
                         .iter()
                         .filter(|spec| spec.allowed_kinds.contains(&kind))

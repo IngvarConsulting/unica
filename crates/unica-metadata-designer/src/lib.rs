@@ -45,6 +45,7 @@ pub mod remove;
 pub mod help;
 
 pub mod planner;
+pub mod root_type;
 
 pub mod subsystem;
 

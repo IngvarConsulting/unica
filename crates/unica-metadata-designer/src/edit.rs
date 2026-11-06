@@ -9,6 +9,10 @@ use unica_xml_format::text::{resolve_observed_line_ending, LineEnding, SourceTex
 use super::format_contract::*;
 use super::template_catalog::*;
 use super::xml_model::*;
+
+#[cfg(test)]
+#[path = "edit/root_type_tests.rs"]
+mod root_type_tests;
 #[derive(Debug, Default)]
 pub struct MetaEditCounts {
     pub added: usize,
@@ -1022,6 +1026,13 @@ pub fn typed_operation_effect_value(
                             Some("values.Type"),
                         )
                     })?;
+                    if !after
+                        && kind == MetadataKind::DefinedType
+                        && is_empty_definition_type(properties)
+                    {
+                        selected.insert(public_key, Value::Null);
+                        continue;
+                    }
                     let observed_type =
                         super::info_projection::parse_observed_metadata_type_node(properties)?;
                     selected.insert(
@@ -1448,6 +1459,119 @@ pub fn typed_diagnostic(
         None => diagnostic,
     }
 }
+fn is_empty_definition_type(properties: roxmltree::Node<'_, '_>) -> bool {
+    let containers = properties
+        .children()
+        .filter(|node| node.has_tag_name((crate::info_projection::MD_CLASSES_NAMESPACE, "Type")))
+        .collect::<Vec<_>>();
+    matches!(containers.as_slice(), [node] if node.attributes().len() == 0
+        && !node.children().any(|child| child.is_element())
+        && node.children().filter(|child| child.is_text()).all(|child| child.text().is_none_or(|text| crate::root_type::trim_xml_space(text).is_empty())))
+}
+
+fn type_property_replacement(
+    properties: roxmltree::Node<'_, '_>,
+    metadata_type: &MetadataType,
+    indent: &str,
+    allow_empty_definition: bool,
+) -> Result<Option<String>, MetaDiagnostic> {
+    match super::info_projection::parse_observed_metadata_type_node(properties) {
+        Ok(observed) => {
+            if observed.variants.iter().any(|variant| {
+                matches!(
+                    variant,
+                    ObservedMetadataTypeVariant::Object { .. }
+                        | ObservedMetadataTypeVariant::RecordSet { .. }
+                )
+            }) {
+                return Err(typed_diagnostic(
+                    MetaDiagnosticCode::InvalidArguments,
+                    "existing metadata type is outside the public mutation algebra",
+                    Some("values.Type"),
+                ));
+            }
+            if MetadataType::try_from(observed).ok().as_ref() == Some(metadata_type) {
+                return Ok(None);
+            }
+        }
+        Err(error) => {
+            // object.create leaves an explicit empty Type on DefinedType.
+            // Its first supplied nonempty Type completes that descriptor;
+            // missing, nil and otherwise malformed containers still fail.
+            if !allow_empty_definition || !is_empty_definition_type(properties) {
+                return Err(error);
+            }
+        }
+    }
+    let mut lines = Vec::new();
+    emit_meta_typed_value_type(&mut lines, indent, metadata_type);
+    // Type owns its QName bindings even when the descriptor uses other aliases.
+    lines[0] = format!(
+        r#"{indent}<Type xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#
+    );
+    Ok(Some(lines.join("\n")))
+}
+
+/// Replace the one structural Type of an existing descriptor. Identity and
+/// registration are checked by the staged planner; no other property is edited.
+pub fn apply_descriptor_type(
+    xml_text: &mut String,
+    owner: unica_metadata::descriptor_operations::TypePropertyOwner,
+    metadata_type: &MetadataType,
+) -> Result<(), MetaDiagnostic> {
+    const MD: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let body = xml_text.trim_start_matches('\u{feff}');
+    let prefix_len = xml_text.len() - body.len();
+    let invalid = || {
+        typed_diagnostic(
+            MetaDiagnosticCode::ProviderUnavailable,
+            "metadata descriptor has no unique matching object and Properties",
+            Some("values.Type"),
+        )
+    };
+    let document = Document::parse(body).map_err(|_| invalid())?;
+    let root = document.root_element();
+    if !root.has_tag_name((MD, "MetaDataObject")) {
+        return Err(invalid());
+    }
+    let objects = root
+        .children()
+        .filter(|node| node.is_element())
+        .collect::<Vec<_>>();
+    let [object] = objects.as_slice() else {
+        return Err(invalid());
+    };
+    if !object.has_tag_name((MD, owner.node_kind().as_str())) {
+        return Err(invalid());
+    }
+    let properties = object
+        .children()
+        .filter(|node| node.has_tag_name((MD, "Properties")))
+        .collect::<Vec<_>>();
+    let [properties] = properties.as_slice() else {
+        return Err(invalid());
+    };
+    if crate::root_type::has_nil_type_context(*properties) {
+        return Err(invalid());
+    }
+    let indent = meta_edit_property_child_indent(&body[properties.range()]);
+    let Some(replacement) = type_property_replacement(*properties, metadata_type, &indent, false)?
+    else {
+        return Ok(());
+    };
+    let property = properties
+        .children()
+        .find(|node| node.has_tag_name((MD, "Type")))
+        .ok_or_else(invalid)?;
+    let range = property.range();
+    drop(document);
+    xml_text.replace_range(
+        range.start + prefix_len..range.end + prefix_len,
+        replacement.trim_start(),
+    );
+    Ok(())
+}
+
 pub fn apply_typed_properties(
     xml_text: &mut String,
     changes: &unica_metadata::MetaPropertyChanges,
@@ -1484,32 +1608,6 @@ pub fn apply_typed_properties(
             None,
         )
     })?;
-    let previous_type = if changes
-        .entries()
-        .iter()
-        .any(|(key, _)| *key == MetaPropertyKey::Type)
-    {
-        let observed = super::info_projection::parse_observed_metadata_type_node(properties)?;
-        // Recognition of object/record-set types must not introduce a new write
-        // capability. Legacy Characteristic/TypeId can still be explicitly
-        // replaced by a complete supported type without narrowing the old one.
-        if observed.variants.iter().any(|variant| {
-            matches!(
-                variant,
-                ObservedMetadataTypeVariant::Object { .. }
-                    | ObservedMetadataTypeVariant::RecordSet { .. }
-            )
-        }) {
-            return Err(typed_diagnostic(
-                MetaDiagnosticCode::InvalidArguments,
-                "existing metadata type is outside the public mutation algebra",
-                Some("values.Type"),
-            ));
-        }
-        Some(observed)
-    } else {
-        None
-    };
     let range = properties.range();
     let mut text = parsed_body[range.clone()].to_string();
     let indent = meta_edit_property_child_indent(&text);
@@ -1719,27 +1817,20 @@ pub fn apply_typed_properties(
                 continue;
             }
             (MetaPropertyKey::Type, MetaPropertyValue::Type(metadata_type)) => {
-                if previous_type
-                    .as_ref()
-                    .and_then(|observed| MetadataType::try_from(observed.clone()).ok())
-                    .as_ref()
-                    == Some(metadata_type)
-                {
-                    continue;
+                match type_property_replacement(
+                    properties,
+                    metadata_type,
+                    &indent,
+                    kind == MetadataKind::DefinedType,
+                )? {
+                    Some(replacement) => replacement,
+                    None => continue,
                 }
-                let mut lines = Vec::new();
-                emit_meta_typed_value_type(&mut lines, &indent, metadata_type);
-                // The replacement owns these QName bindings even when the
-                // original descriptor uses aliases or shadows canonical names.
-                lines[0] = format!(
-                    r#"{indent}<Type xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config">"#
-                );
-                lines.join("\n")
             }
             (_, MetaPropertyValue::Type(_)) => {
                 return Err(typed_diagnostic(
                     MetaDiagnosticCode::InvalidArguments,
-                    "structured Type is only a Constant Type property",
+                    "structured Type requires a Type property",
                     Some("values.Type"),
                 ))
             }

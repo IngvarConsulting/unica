@@ -5,5 +5,5 @@ pub(super) const SPEC: MetadataPropertySpec = property(
     "Type",
     MetaPropertyKey::Type,
     MetaPropertyValueKind::Type,
-    &[MetadataKind::Constant],
+    &[MetadataKind::Constant, MetadataKind::DefinedType],
 );

@@ -218,6 +218,8 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
                 6
             } else if kind == "WSReference" {
                 4
+            } else if matches!(kind.as_str(), "CommonAttribute" | "SessionParameter" | "FilterCriterion") {
+                3
             } else if kind == "StyleItem" || kind == "Language" {
                 // Comment, its alias and Value or LanguageCode.
                 3
@@ -229,6 +231,10 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
             },
             "{at}"
         );
+        if matches!(kind.as_str(), "CommonAttribute" | "SessionParameter" | "FilterCriterion") {
+            let fields = &can["argsSchema"]["properties"]["values"]["properties"];
+            for key in ["Type", "Comment", "comment"] { assert!(fields.get(key).is_some(), "{at}: missing {key}"); }
+        }
         let relative = PathBuf::from(directory).join(format!("{name}.xml"));
         let path = fixture.source.join(&relative);
         let source = std::fs::read_to_string(&path).unwrap();

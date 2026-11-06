@@ -54,9 +54,32 @@ allowed-tools:
 операции (`argsSchema` подробного `can`). Общие прикладные правила — в
 [соглашениях по метаданным](../../references/platform/metadata-conventions.md).
 
+### Тип корневого объекта
+
+`props.set` меняет структурный `Type` существующих `CommonAttribute`,
+`SessionParameter`, `FilterCriterion` и `DefinedType`. У первых трёх этот
+профиль меняет `Type` или отдельно `Comment`/`comment`; у `DefinedType` сохраняются также прежние
+свойства `Synonym` и `Comment`. Прочитай `props.Type` объекта и его
+`Can.props.set`, затем передай `values.Type` с поддержанными `variants`
+и квалификаторами из контракта. `mutationCapability` описывает наблюдение,
+в аргументы оно не входит; наблюдаемый вариант `readOnly` не становится
+допустимым вариантом записи.
+
+```json
+{"at":"main:SessionParameter.SessionValue","ops":[{"op":"props.set","args":{"values":{"Type":{"variants":[{"kind":"number","digits":12,"fraction":2,"sign":"any"}]}}}}]}
+```
+
+Ссылочный тип называет объект того же набора исходников в `metadataPath`.
+План проверяет конечные ссылки и достижимые определяемые типы, включая
+циклы; исполняй только выданный `executionToken`. Новый тип общего
+реквизита должен принимать его активное значение заполнения. Тип
+заимствованного разделителя расширения менять нельзя; для изменения
+обычного заимствованного реквизита его режим разделения должен быть известен.
+После исполнения перечитай `Type` и проверь сохранность нужных свойств.
+
 `props.set` изменяет только строковый `Comment` у существующих
-`CommonAttribute`, `FunctionalOptionsParameter`,
-`SessionParameter`, `FilterCriterion`, `SettingsStorage`, `CommonCommand`,
+`FunctionalOptionsParameter`,
+`SettingsStorage`, `CommonCommand`,
 `CommandGroup`, `CommonForm`, `CommonTemplate`, `CommonPicture`,
 `IntegrationService`, `XDTOPackage`,
 `Sequence` и `Style`. Для общей формы адресуй дескриптор

@@ -51,6 +51,7 @@ pub enum PropertiesSite {
     },
     CommentOnly(NodeKind),
     DocumentNumerator,
+    TypeOwner(TypePropertyOwner),
     FunctionalOption,
     Role,
     WSReference,
@@ -62,6 +63,25 @@ pub enum PropertiesSite {
     Configuration {
         extension: bool,
     },
+}
+
+/// Existing descriptors with a structured Type profile alongside Comment.
+/// These owners do not acquire the metadata creation vocabulary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypePropertyOwner {
+    CommonAttribute,
+    SessionParameter,
+    FilterCriterion,
+}
+
+impl TypePropertyOwner {
+    pub const fn node_kind(self) -> NodeKind {
+        match self {
+            Self::CommonAttribute => NodeKind::CommonAttribute,
+            Self::SessionParameter => NodeKind::SessionParameter,
+            Self::FilterCriterion => NodeKind::FilterCriterion,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +121,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension: true } => {
                         match self { $(Self::$field => $extension),+ }
                     }
-                    PropertiesSite::Metadata { .. } => false,
+                    PropertiesSite::Metadata { .. } | PropertiesSite::TypeOwner(_) => false,
                     PropertiesSite::DocumentNumerator => self == Self::Comment,
                     PropertiesSite::CommentOnly(_) | PropertiesSite::Language => self == Self::Comment,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
@@ -236,6 +256,11 @@ impl PropertiesSite {
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::CommonAttribute => Some(Self::TypeOwner(TypePropertyOwner::CommonAttribute)),
+            NodeKind::SessionParameter => {
+                Some(Self::TypeOwner(TypePropertyOwner::SessionParameter))
+            }
+            NodeKind::FilterCriterion => Some(Self::TypeOwner(TypePropertyOwner::FilterCriterion)),
             NodeKind::DocumentNumerator => Some(Self::DocumentNumerator),
             NodeKind::StyleItem => Some(Self::StyleItem),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
@@ -243,10 +268,7 @@ impl PropertiesSite {
             NodeKind::Language => Some(Self::Language),
             NodeKind::WsReference => Some(Self::WSReference),
             NodeKind::Subsystem => Some(Self::Subsystem),
-            NodeKind::CommonAttribute
-            | NodeKind::FunctionalOptionsParameter
-            | NodeKind::SessionParameter
-            | NodeKind::FilterCriterion
+            NodeKind::FunctionalOptionsParameter
             | NodeKind::SettingsStorage
             | NodeKind::CommonCommand
             | NodeKind::CommandGroup
@@ -283,6 +305,12 @@ impl PropertiesSite {
             );
         }
         match self {
+            Self::TypeOwner(owner) => {
+                let mut values = Self::CommentOnly(owner.node_kind()).values_schema();
+                values["properties"]["Type"] = crate::metadata_type_schema();
+                values["maxProperties"] = json!(1);
+                return values;
+            }
             Self::DocumentNumerator => {
                 // The numerator's closed scalar profile plus the descriptor
                 // Comment that the Designer property palette also edits.
@@ -375,12 +403,14 @@ impl PropertiesOperation {
                 },
                 effect: "Change the supplied descriptor properties, preserving identity, other properties, translations and companion files.",
                 notes: match site {
+                    PropertiesSite::TypeOwner(TypePropertyOwner::CommonAttribute) => "values contains either the structured Type or Comment/comment, one property per operation. The new Type must accept the existing active FillValue. The Type of a borrowed data separator cannot change; changing an ordinary borrowed attribute requires known DataSeparation. Descriptor identity, other properties and companion files are preserved. Preview writes nothing; execute only the saved execution token.",
                     PropertiesSite::Language => "Comment/comment is an exact string; an empty string clears it. LanguageCode is a nonempty string without the platform's reserved characters; custom codes are allowed. A LanguageCode change requires an unused additional language, no code collision, and no texts or embedded help bound to either the old or new code. XML and literal NStr/НСтр dependencies are checked in original and final sources; an unprovable dependency refuses the change. No translation migration is performed. An equivalent value preserves bytes. In an extension a language is adopted: its code is set in the main configuration and only Comment changes. Preview writes nothing; execute only the saved execution token.",
                     PropertiesSite::WSReference => "LocationURL and optional Comment/comment are exact strings; an empty string clears the supplied field. Comment-only edits do not validate LocationURL; mixed edits validate both fields before publication. Missing or damaged fields are refused. Editing preserves identity, registration and the local WSDL; it does not download WSDL/imports or generate a client. Preview writes nothing; publish only its execution token. Changes to the descriptor or configuration registration invalidate the saved plan.",
                     PropertiesSite::StyleItem => "Color Value and optional string Comment/comment are accepted: #RRGGBB or an enumerated web/builtin style color. Empty Value, null and arbitrary XML are refused; empty Comment clears the comment, and simultaneous Comment/comment aliases are refused. Type, identity and bytes outside supplied Value/Comment stay. Font/Border, missing/damaged Value and unmodelled colors have no color write capability. The same semantic color is a byte-preserving no-op, including prefix aliases and RGB case. Arguments are checked before descriptor state. Preview writes nothing; execute only its saved executionToken.",
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
+                    PropertiesSite::TypeOwner(_) => json!({"values":{"Type":{"variants":[{"kind":"string","length":32,"allowedLength":"variable"}]}}}),
                     PropertiesSite::DocumentNumerator => json!({"values":{"NumberLength":12,"CheckUnique":true}}),
                     PropertiesSite::WSReference => json!({"values":{"LocationURL":"https://example.invalid/service?wsdl"}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
@@ -390,7 +420,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::TypeOwner(_) | PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -707,7 +737,15 @@ mod tests {
             let properties = schema["properties"]["values"]["properties"]
                 .as_object()
                 .unwrap();
-            assert_eq!(properties.len(), 2, "{at}: {properties:?}");
+            let expected_fields = if matches!(
+                kind,
+                "CommonAttribute" | "SessionParameter" | "FilterCriterion"
+            ) {
+                3
+            } else {
+                2
+            };
+            assert_eq!(properties.len(), expected_fields, "{at}: {properties:?}");
             for alias in ["Comment", "comment"] {
                 assert_eq!(properties[alias], json!({"type":"string"}));
                 assert!(
@@ -913,7 +951,7 @@ mod tests {
             (
                 MetadataKind::DefinedType,
                 json!({"Type":{"variants":[{"kind":"boolean"}]}}),
-                false,
+                true,
             ),
             (
                 MetadataKind::CommonModule,
@@ -957,3 +995,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "descriptor_operations/root_type_tests.rs"]
+mod root_type_tests;
