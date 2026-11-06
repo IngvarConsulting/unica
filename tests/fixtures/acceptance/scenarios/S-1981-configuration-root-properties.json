@@ -33,7 +33,7 @@
           "contains": "Version8_3_24"
         },
         {
-          "pointer": "/data/props/contract/argsSchema/properties/values/properties/version/type",
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Version/type",
           "eq": "string"
         },
         {

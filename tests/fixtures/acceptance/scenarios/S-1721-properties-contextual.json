@@ -658,7 +658,7 @@
           "absent": true
         },
         {
-          "pointer": "/data/props/contract/argsSchema/properties/values/properties/synonym/type",
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Synonym/type",
           "eq": "string"
         },
         {
@@ -911,7 +911,7 @@
           "absent": true
         },
         {
-          "pointer": "/data/props/contract/argsSchema/properties/values/properties/includeInCommandInterface/type",
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/IncludeInCommandInterface/type",
           "eq": "boolean"
         },
         {
