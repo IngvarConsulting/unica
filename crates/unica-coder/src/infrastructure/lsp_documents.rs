@@ -20,6 +20,7 @@ use unica_execution_contract::view_error::ViewError;
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::module_layout::{module_relative, module_source_address};
 use unica_workspace::documents::{DocumentOverlay, DocumentOverlayError, DocumentText};
+use unica_workspace::paths::{host_path_relative_to, same_host_path};
 
 /// One admitted source set of a space.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +47,9 @@ pub(crate) enum LspDocumentError {
     OutsideSourceSets,
     /// The address names no BSL module of the source set layout.
     NotAModule,
+    /// Two source sets of this connection own the file equally: on a host that
+    /// ignores letter case `Foo` and `foo` are one directory.
+    AmbiguousSourceSet(Vec<String>),
     UnknownSourceSet(String),
     NotOpen,
     Change(DocumentChangeError),
@@ -138,17 +142,35 @@ impl LspDocuments {
             .and_then(|url| url.to_file_path().ok())
             .map(|path| canonical(&path))
             .ok_or(LspDocumentError::NotAFile)?;
-        // The innermost source set wins when roots nest.
-        let (space, layout, relative) = self
+        // The innermost source set wins when roots nest. Equal depth under one
+        // file is a configuration fault, not a choice to make here.
+        let owners = self
             .source_sets
             .iter()
             .flat_map(|(space, sets)| sets.iter().map(move |set| (space, set)))
             .filter_map(|(space, set)| {
-                let relative = path.strip_prefix(&set.root).ok()?;
-                Some((space, set, relative.to_path_buf()))
+                let relative = host_path_relative_to(&path, &set.root)?;
+                Some((space, set, relative))
             })
-            .max_by_key(|(_, set, _)| set.root.components().count())
+            .collect::<Vec<_>>();
+        let depth = owners
+            .iter()
+            .map(|(_, set, _)| set.root.components().count())
+            .max()
             .ok_or(LspDocumentError::OutsideSourceSets)?;
+        let mut innermost = owners
+            .into_iter()
+            .filter(|(_, set, _)| set.root.components().count() == depth)
+            .collect::<Vec<_>>();
+        if innermost.len() > 1 {
+            return Err(LspDocumentError::AmbiguousSourceSet(
+                innermost
+                    .iter()
+                    .map(|(_, set, _)| set.name.to_string())
+                    .collect(),
+            ));
+        }
+        let (space, layout, relative) = innermost.remove(0);
         let at = module_address_for_relative(&layout.name, layout.kind, layout.profile, &relative)
             .ok_or(LspDocumentError::NotAModule)?;
         self.spaces
@@ -253,7 +275,9 @@ impl LspDocuments {
         }
         let layout = self.source_set(&location.document.space, &location.source_set)?;
         // Two spaces may both have a `main`: the read must be of this one.
-        if read.source_set() != location.source_set || canonical(read.root_path()) != layout.root {
+        if read.source_set() != location.source_set
+            || !same_host_path(&canonical(read.root_path()), &layout.root)
+        {
             return Err(LspDocumentError::UnknownSourceSet(location.source_set));
         }
         let at = QualifiedAddress::parse(&location.document.address)
