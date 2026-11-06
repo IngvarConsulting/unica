@@ -1,0 +1,109 @@
+{
+  "id": "S-938-autodetected-main-conflict",
+  "issue": 938,
+  "area": "Рабочее пространство",
+  "workspace": "tests/fixtures/acceptance/workspace-autodetected-main-conflict",
+  "task": "Обнаружить базу и два расширения с именем main без v8project.yaml: check называет выбранный и оба пропущенных корня, а view продолжает читать выбранную базу без записи исходников.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "base": {
+          "file": "src/cf/Configuration.xml",
+          "kind": "sha256"
+        },
+        "cfe": {
+          "file": "src/cfe/main/Configuration.xml",
+          "kind": "sha256"
+        },
+        "extensions": {
+          "file": "src/extensions/main/Configuration.xml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/sourceSets/0/name",
+          "eq": "main"
+        },
+        {
+          "pointer": "/data/sourceSets/0/path",
+          "eq": "src/cf"
+        },
+        {
+          "pointer": "/data/sourceSets/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/diagnostics",
+          "someMatches": {
+            "code": "source_set.autodetected_main_conflict",
+            "severity": "warning",
+            "count": 2,
+            "paths": [
+              "src/cf",
+              "src/cfe/main",
+              "src/extensions/main"
+            ],
+            "evidence": [
+              "selected: src/cf",
+              "skipped: src/cfe/main",
+              "skipped: src/extensions/main"
+            ]
+          }
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "noneMatches": {
+            "code": "source_set.name_ambiguous"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/name",
+          "eq": "SelectedBase"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "eq": "$capture.base",
+          "path": "src/cf/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.cfe",
+          "path": "src/cfe/main/Configuration.xml"
+        },
+        {
+          "kind": "sha256",
+          "eq": "$capture.extensions",
+          "path": "src/extensions/main/Configuration.xml"
+        }
+      ]
+    }
+  ]
+}

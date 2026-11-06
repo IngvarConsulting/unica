@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 import xml.etree.ElementTree as ET
 
 MISSING = object()
-OPERATORS = {"eq", "notEq", "contains", "noneMatches", "sameItems", "absent"}
+OPERATORS = {"eq", "notEq", "contains", "someMatches", "noneMatches", "sameItems", "absent"}
 KNOWN_GAP = "form-handler-signature-unchecked"
 FORM_AT = "main:Catalog.Валюты.Form.ФормаЭлемента"
 FORM_FILE = "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
@@ -194,6 +194,8 @@ def assert_value(value, assertion, context):
         passed = not json_equal(value, expected)
     elif op == "noneMatches":
         passed = isinstance(value, list) and not any(json_matches(item, expected) for item in value)
+    elif op == "someMatches":
+        passed = isinstance(value, list) and any(json_matches(item, expected) for item in value)
     elif op == "sameItems":
         passed = same_items(value, expected)
     elif isinstance(value, str) and isinstance(expected, str):
@@ -265,8 +267,8 @@ def validate_controls(step, declared=None):
             if key == "assertions":
                 if set(assertion) != {"pointer", op}:
                     raise ValueError("unknown JSON assertion field")
-                if op == "noneMatches" and not isinstance(assertion[op], dict):
-                    raise ValueError("noneMatches requires an object pattern")
+                if op in {"someMatches", "noneMatches"} and not isinstance(assertion[op], dict):
+                    raise ValueError(f"{op} requires an object pattern")
                 pointer_tokens(assertion["pointer"])
             else:
                 relative_file(assertion.get("path"))
@@ -281,7 +283,7 @@ def validate_controls(step, declared=None):
                     if not isinstance(expected, str) or not (re.fullmatch(r"[a-f0-9]{64}", expected) or expected.startswith("$capture.")):
                         raise ValueError("sha256 requires a digest or an earlier capture")
                 elif kind in {"xml", "xmlTags"}:
-                    if set(assertion) != {"path", "kind", "select", op} or op in {"absent", "noneMatches"}:
+                    if set(assertion) != {"path", "kind", "select", op} or op in {"absent", "someMatches", "noneMatches"}:
                         raise ValueError("unknown XML assertion field or operator")
                     if not isinstance(assertion["select"], str) or not assertion["select"]:
                         raise ValueError("XML select must be nonempty")

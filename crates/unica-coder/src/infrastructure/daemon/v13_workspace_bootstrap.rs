@@ -1711,6 +1711,7 @@ mod medium_tests {
             effective_source_root: None,
             source_selection_error: None,
             configured_format_raw: None,
+            autodetected_main_conflict: None,
         };
 
         let recipe = project_config_recipe(&source_map).unwrap();
@@ -1738,6 +1739,7 @@ mod medium_tests {
             effective_source_root: Some("src".to_string()),
             source_selection_error: None,
             configured_format_raw: None,
+            autodetected_main_conflict: None,
         };
 
         let parsed: serde_yaml::Value =
