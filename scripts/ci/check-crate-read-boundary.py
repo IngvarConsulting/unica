@@ -280,9 +280,7 @@ def crate_sources(root: Path, crate: Crate):
     directory = root / crate.directory
     for path in sorted(directory.rglob("*.rs")):
         relative = path.relative_to(root).as_posix()
-        inside = relative[len(crate.directory) + 1 :]
-        # A crate's own fixtures may hold Rust text that is data, not its code.
-        if inside.startswith("tests/fixtures/") or "/target/" in relative:
+        if "/target/" in relative:
             continue
         yield relative, path.read_text(encoding="utf-8", errors="replace")
 
