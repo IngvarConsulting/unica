@@ -32,6 +32,9 @@ class ActionPinTests(unittest.TestCase):
                 uses = USES_LINE.match(line)
                 if not uses:
                     continue
+                # Свой workflow в синтаксисе своего репозитория: чужого кода нет.
+                if uses["spec"].startswith("$/.github/workflows/"):
+                    continue
                 # Строка с `uses:`, которую страж не разобрал, — отказ, а не пропуск:
                 # иначе лишний пробел перед комментарием выводил бы пин из-под проверки.
                 found = PINNED.match(uses["spec"])

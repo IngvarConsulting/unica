@@ -92,9 +92,9 @@ class FileIoMethodsTests(unittest.TestCase):
         self.assertNotIn("unica-workspace", packages)
 
     def test_gate_clippy_runs_the_pass(self):
-        # Gate and pull request lint both run `clippy.sh all`.
-        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-plugin-release.yml").read_text())
-        runs = [step.get("run", "") for job in ("unica-ci", "pr-checks") for step in workflow["jobs"][job]["steps"]]
+        # The gate runs `clippy.sh all` in the background.
+        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/release.yml").read_text())
+        runs = [step.get("run", "") for job in ("unica-ci",) for step in workflow["jobs"][job]["steps"]]
         self.assertTrue(any("scripts/ci/clippy.sh all" in run for run in runs))
         script = (REPO_ROOT / "scripts/ci/clippy.sh").read_text(encoding="utf-8")
         self.assertIn('"$0" file-io || status=$?', script)
