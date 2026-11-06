@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import contextlib
+import io
 import unittest
 from unittest.mock import patch
 
@@ -35,6 +37,41 @@ class Repository:
     def commit(self, message):
         self.git("commit", "-q", "--allow-empty", "-m", message)
         return self.git("rev-parse", "HEAD")
+
+
+class ExpiredMacosPlanTests(unittest.TestCase):
+    """Инвентарь живёт 90 дней, план 7: истёкший план не роняет следующий выпуск."""
+
+    INVENTORY = {
+        "sha": "b" * 40, "runId": "11", "profile": "release", "jobs": ["Unica CI", "Rust (macos-14)"],
+        "configurations": [{"runner": "ubuntu-latest", "lane": "ordinary"}, {"runner": "macos-14", "lane": "ordinary"}],
+    }
+
+    def document(self, plans):
+        artifact = {"name": "ci-rust-inventory-release", "workflow_run": {"id": 11, "head_sha": "b" * 40}}
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(baseline, "git", return_value="b" * 40), \
+                patch.object(baseline, "find", return_value=artifact), \
+                patch.object(baseline, "download", return_value=json.loads(json.dumps(self.INVENTORY))), \
+                patch.object(baseline, "explanations", return_value={"removedTests": [], "removedTargets": [], "reset": False, "declaredBy": {}, "range": "", "pullRequests": []}), \
+                patch.object(baseline, "previous_macos_plans", plans):
+            return baseline.baseline(Path(temporary), "o/r", 7, "release", None, ["ubuntu-latest", "macos-15"])
+
+    def test_an_expired_plan_drops_only_macos_and_says_so(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            document = self.document(lambda *_: (_ for _ in ()).throw(baseline.ExpiredPlans("run 11 has no live plan-macos-14 artifact")))
+        self.assertEqual([item["runner"] for item in document["inventory"]["configurations"]], ["ubuntu-latest"])
+        self.assertEqual(document["inventory"]["jobs"], ["Unica CI"])
+        self.assertEqual(document["droppedRunners"], ["macos-14"])
+        self.assertNotIn("previousPlans", document)
+        self.assertIn("::warning::macOS не сравнивается", stdout.getvalue())
+
+    def test_any_other_plan_defect_still_stops(self) -> None:
+        def broken(*_):
+            raise ValueError("missing or duplicate previous macos-14 plan artifact")
+        with self.assertRaisesRegex(ValueError, "missing or duplicate"):
+            self.document(broken)
 
 
 class InventoryBaselineTests(unittest.TestCase):

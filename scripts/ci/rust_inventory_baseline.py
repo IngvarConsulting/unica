@@ -49,6 +49,10 @@ class NotFound(RuntimeError):
     pass
 
 
+class ExpiredPlans(ValueError):
+    """Планы macos-14 истекли: перенос на macos-15 сверить не с чем."""
+
+
 def gh(*args: str) -> str:
     completed = subprocess.run(["gh", *args], capture_output=True, text=True)
     if completed.returncode != 0:
@@ -118,6 +122,8 @@ def previous_macos_plans(repository: str, repository_id: int, inventory: dict) -
         raise ValueError("previous macOS plan requires the successful inventory workflow attempt of this repository")
     listed = json.loads(gh("api", f"repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100"))["artifacts"]
     matches = [item for item in listed if item.get("name") == "plan-macos-14" and not item.get("expired")]
+    if not matches:
+        raise ExpiredPlans(f"run {run_id} has no live plan-macos-14 artifact")
     if len(matches) != 1:
         raise ValueError("missing or duplicate previous macos-14 plan artifact")
     artifact = matches[0]
@@ -217,7 +223,18 @@ def baseline(root: Path, repository: str, repository_id: int, profile: str, own:
                 "inventory": inventory,
                 "explanations": explanations(root, repository, source["headSha"], profile, own)}
     if "macos-15" in (runners or []) and any(item.get("runner") == "macos-14" for item in inventory["configurations"]):
-        document["previousPlans"] = previous_macos_plans(repository, repository_id, inventory)
+        try:
+            document["previousPlans"] = previous_macos_plans(repository, repository_id, inventory)
+        except ExpiredPlans as error:
+            # Артефакт плана живёт 7 дней, инвентарь 90. Без плана перенос не сверить,
+            # поэтому macos-14 снимается с базы явно. Linux сравнивается как обычно,
+            # снятые из исходников тесты проверяет `removed_tests.py --baseline`, а
+            # macOS снова сравнивается, как только появится инвентарь на macos-15.
+            print(f"::warning::macOS не сравнивается с базой {source['headSha'][:9]}: {error}", flush=True)
+            inventory["configurations"] = [item for item in inventory["configurations"] if item.get("runner") != "macos-14"]
+            if inventory.get("jobs") is not None:
+                inventory["jobs"] = [job for job in inventory["jobs"] if job != "Rust (macos-14)"]
+            document["droppedRunners"] = ["macos-14"]
     return document
 
 
