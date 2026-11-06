@@ -2247,6 +2247,7 @@ fn an_inserted_text_keeps_its_error_places_across_added_blank_lines() {
 /// #2229: a module that did not parse before the patch stays the source's/// #2229: a module that did not parse before the patch stays the source's
 /// fault, and names its errors the same way, without a place in the text.
 /// rule: INV.SOURCE.CODE-TEXT-SYNTAX-ERRORS
+/// rule: INV.SOURCE.BSL-SYNTAX-ERROR-READING
 #[test]
 fn a_module_that_did_not_parse_names_its_errors_as_the_source() {
     let before = "Procedure Base()\n    Если Истина Тогда\nEndProcedure\n";

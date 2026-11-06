@@ -18,6 +18,8 @@ pub(crate) struct NodeView {
     can: Vec<OperationRef>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     limits: Vec<String>,
+    #[serde(skip)]
+    syntax: unica_bsl::syntax::SyntaxObservation,
 }
 
 /// Предел заголовка узла — тот же, что у компактного свойства: заголовок
@@ -53,6 +55,7 @@ impl NodeView {
             branches: Vec::new(),
             can: Vec::new(),
             limits: Vec::new(),
+            syntax: Default::default(),
         }
     }
 
@@ -86,6 +89,11 @@ impl NodeView {
     #[must_use]
     pub(crate) fn with_can(mut self, can: Vec<OperationRef>) -> Self {
         self.can = can;
+        self
+    }
+
+    pub(crate) fn with_syntax(mut self, syntax: unica_bsl::syntax::SyntaxObservation) -> Self {
+        self.syntax = syntax;
         self
     }
 
@@ -216,6 +224,14 @@ impl NodeViewData {
             Self::Node(node) => node.kind(),
             Self::Collection(collection) => collection.node.kind(),
             Self::Text(text) => text.node.kind(),
+        }
+    }
+
+    pub(crate) fn syntax(&self) -> &unica_bsl::syntax::SyntaxObservation {
+        match self {
+            Self::Node(node) => &node.syntax,
+            Self::Collection(collection) => &collection.node.syntax,
+            Self::Text(text) => &text.node.syntax,
         }
     }
 

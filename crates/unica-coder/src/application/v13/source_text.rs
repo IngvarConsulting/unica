@@ -24,6 +24,13 @@ pub(crate) enum ModuleText {
     },
 }
 
+/// Text window and syntax evidence obtained from the same retained stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModuleBodyRead {
+    pub text: ModuleText,
+    pub syntax: unica_bsl::syntax::SyntaxObservation,
+}
+
 /// Собирает текст модуля из потока байтов, не удерживая больше предела:
 /// начальные U+FEFF снимаются, после предела считается только размер.
 #[derive(Debug, Default)]

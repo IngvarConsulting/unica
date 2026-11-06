@@ -14,8 +14,7 @@ use unica_address::module_routes::ModuleRole;
 use unica_bsl::event_catalog::module_event_catalog_8_3_27;
 use unica_bsl::profile::ModuleCapability;
 use unica_bsl_parser::{
-    parse as parse_bsl_syntax, AnnotationFact, CodeOutlineMethodKind, ExtensionAnnotationKind,
-    ParsedModule,
+    AnnotationFact, CodeOutlineMethodKind, ExtensionAnnotationKind, ParsedModule,
 };
 use unica_forms::events::{
     foreign_handler_signature_8_3_27, form_event_catalog_8_3_27,
@@ -258,9 +257,28 @@ impl std::fmt::Display for DirectiveRuleError {
 
 impl std::error::Error for DirectiveRuleError {}
 
-pub fn project_module(request: ModuleProjectionRequest<'_>) -> Result<ModuleProjectionSet, String> {
+#[derive(Debug, Clone)]
+pub enum ModuleReadProjection {
+    Valid(std::sync::Arc<ModuleProjectionSet>),
+    Invalid(unica_bsl::syntax::SyntaxObservation),
+}
+impl ModuleReadProjection {
+    fn into_strict(self, at: &str) -> Result<ModuleProjectionSet, String> {
+        match self {
+            Self::Valid(projection) => Ok(std::sync::Arc::unwrap_or_clone(projection)),
+            Self::Invalid(syntax) => Err(syntax.diagnostic_messages(at).join("; ")),
+        }
+    }
+}
+pub fn project_module_for_read(
+    request: ModuleProjectionRequest<'_>,
+) -> Result<ModuleReadProjection, String> {
     let specs = module_event_catalog_8_3_27(request.capability);
     project_module_with_specs(request, specs)
+}
+pub fn project_module(request: ModuleProjectionRequest<'_>) -> Result<ModuleProjectionSet, String> {
+    let at = request.at.to_string();
+    project_module_for_read(request)?.into_strict(&at)
 }
 
 pub fn project_module_event_record(
@@ -268,7 +286,9 @@ pub fn project_module_event_record(
     event_at: &str,
 ) -> Result<PlatformEventProjectionRecord, PlatformEventProjectionRecordError> {
     let specs = module_event_catalog_8_3_27(request.capability);
+    let at = request.at.to_string();
     let projection = project_module_with_specs(request, specs)
+        .and_then(|read| read.into_strict(&at))
         .map_err(PlatformEventProjectionRecordError::InvalidSource)?;
     let index = projection
         .events()
@@ -299,7 +319,7 @@ pub fn project_module_event_record(
 fn project_module_with_specs(
     request: ModuleProjectionRequest<'_>,
     possible_events: &'static [PlatformEventSpec],
-) -> Result<ModuleProjectionSet, String> {
+) -> Result<ModuleReadProjection, String> {
     if request.capability.role() == ModuleRole::Common && request.common_module.is_none() {
         return Err(
             "common-module flags are required to build the normalized module summary".to_string(),
@@ -321,28 +341,23 @@ fn project_module_with_specs(
             .iter()
             .map(|spec| available_module_event(request.at, spec, request.platform_event_write))
             .collect();
-        return Ok(ModuleProjectionSet::new(
-            identity,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            events,
-            Vec::new(),
-            Vec::new(),
-        ));
+        return Ok(ModuleReadProjection::Valid(std::sync::Arc::new(
+            ModuleProjectionSet::new(
+                identity,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                events,
+                Vec::new(),
+                Vec::new(),
+            ),
+        )));
     };
 
-    if source.len() > u32::MAX as usize {
-        return Err("BSL module is too large for the analyzer parser".to_string());
+    let (root, syntax) = unica_bsl::syntax::parse_source(source)?;
+    if syntax.is_invalid() {
+        return Ok(ModuleReadProjection::Invalid(syntax));
     }
-    let parsed = parse_bsl_syntax(source);
-    if !parsed.errors().is_empty() {
-        return Err(format!(
-            "BSL module projection failed because the parser reported {} diagnostic(s)",
-            parsed.errors().len()
-        ));
-    }
-    let root = parsed;
     let lines = LineIndex::new(source);
     let compilation = compilation_projection(
         &root,
@@ -382,16 +397,18 @@ fn project_module_with_specs(
         })
         .collect();
 
-    Ok(ModuleProjectionSet::new(
-        identity,
-        methods,
-        regions,
-        interfaces,
-        events,
-        compilation,
-        body,
-    )
-    .with_source(source.to_string()))
+    Ok(ModuleReadProjection::Valid(std::sync::Arc::new(
+        ModuleProjectionSet::new(
+            identity,
+            methods,
+            regions,
+            interfaces,
+            events,
+            compilation,
+            body,
+        )
+        .with_source(source.to_string()),
+    )))
 }
 
 fn available_module_event(

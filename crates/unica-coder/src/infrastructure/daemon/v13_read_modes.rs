@@ -145,9 +145,19 @@ fn inherited_node(data: &Map<String, Value>) -> bool {
 /// template, the format filter. `None` means the dictionary is not computed
 /// for this node: the answer then carries no `can`. A computed dictionary
 /// may be empty (`[]`): nothing applies at this node, which is an answer.
+fn syntax_admits(
+    descriptor: &unica_operations::OperationDescriptor,
+    syntax: &unica_bsl::syntax::SyntaxObservation,
+) -> bool {
+    !syntax.is_invalid()
+        || descriptor
+            .operation::<unica_bsl::operations::CodeOperation>()
+            .is_none()
+}
 fn computed_can_entries(
     data: &Map<String, Value>,
     context: CanContext,
+    syntax: &unica_bsl::syntax::SyntaxObservation,
     color: StyleItemPropertiesLookup<'_>,
 ) -> Option<Vec<Value>> {
     let (at, format, item) = node_site(data, context)?;
@@ -171,6 +181,7 @@ fn computed_can_entries(
                 )
             })
             .filter(|descriptor| !inherited || descriptor.content_resource().is_none())
+            .filter(|descriptor| syntax_admits(descriptor, syntax))
             .map(|descriptor| {
                 json!({
                     "op": descriptor.name(),
@@ -185,17 +196,26 @@ fn computed_can_entries(
 /// what `apply` accepts here is part of the answer, not a separate question.
 #[cfg(test)]
 pub(super) fn attach_can(data: &mut Value, context: CanContext) {
-    attach_can_with_color(data, context, &|_| None);
+    attach_can_with_syntax_and_color(data, context, &Default::default(), &|_| None);
 }
-pub(super) fn attach_can_with_color(
+#[cfg(test)]
+pub(super) fn attach_can_with_syntax(
     data: &mut Value,
     context: CanContext,
+    syntax: &unica_bsl::syntax::SyntaxObservation,
+) {
+    attach_can_with_syntax_and_color(data, context, syntax, &|_| None);
+}
+pub(super) fn attach_can_with_syntax_and_color(
+    data: &mut Value,
+    context: CanContext,
+    syntax: &unica_bsl::syntax::SyntaxObservation,
     color: StyleItemPropertiesLookup<'_>,
 ) {
     let Some(node) = data.as_object_mut() else {
         return;
     };
-    if let Some(entries) = computed_can_entries(node, context, color) {
+    if let Some(entries) = computed_can_entries(node, context, syntax, color) {
         node.insert("can".to_string(), Value::Array(entries));
     }
 }
@@ -216,11 +236,52 @@ pub(super) fn operation_node(
 /// The same with the role of an ancestor form item, read by the caller: a
 /// retired operation's route skips an ancestor field that does not accept
 /// the replacement, as `apply` preflight does.
+#[cfg(test)]
 pub(super) fn operation_node_with(
     data: &Value,
     operation: &str,
     at: &str,
     context: CanContext,
+    ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+    color: StyleItemPropertiesLookup<'_>,
+) -> Result<Value, ReadModeError> {
+    operation_node_with_syntax_and_color(
+        data,
+        operation,
+        at,
+        context,
+        &Default::default(),
+        ancestor_role,
+        color,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn operation_node_with_syntax(
+    data: &Value,
+    operation: &str,
+    at: &str,
+    context: CanContext,
+    syntax: &unica_bsl::syntax::SyntaxObservation,
+    ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
+) -> Result<Value, ReadModeError> {
+    operation_node_with_syntax_and_color(
+        data,
+        operation,
+        at,
+        context,
+        syntax,
+        ancestor_role,
+        &|_| None,
+    )
+}
+
+pub(super) fn operation_node_with_syntax_and_color(
+    data: &Value,
+    operation: &str,
+    at: &str,
+    context: CanContext,
+    syntax: &unica_bsl::syntax::SyntaxObservation,
     ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
     color: StyleItemPropertiesLookup<'_>,
 ) -> Result<Value, ReadModeError> {
@@ -246,6 +307,24 @@ pub(super) fn operation_node_with(
             color,
         ));
     };
+    if !syntax_admits(&descriptor, syntax) {
+        let module_at = if owner
+            .segments()
+            .last()
+            .is_some_and(|segment| segment.kind() == NodeKind::Body)
+        {
+            owner.prefix(owner.segments().len() - 1)
+        } else {
+            owner.clone()
+        };
+        return Err(ReadModeError {
+            code: RefusalCode::InvalidSource,
+            message: syntax
+                .diagnostic_messages(&module_at.to_string())
+                .join("; "),
+            next: None,
+        });
+    }
     if inherited_node(data) && descriptor.content_resource().is_some() {
         return Err(ReadModeError::bad_value(format!(
             "operation `{operation}` writes content this borrowed node inherits from the parent; read the parent named by props.extends"
@@ -1013,6 +1092,66 @@ mod inherited_can_tests {
             extension(),
         ) {
             assert!(!error.to_string().contains("inherits from the parent"));
+        }
+    }
+}
+
+#[cfg(test)]
+mod broken_bsl_dictionary_tests {
+    use super::*;
+    /// rule: INV.SOURCE.BSL-SYNTAX-ERROR-READING
+    #[test]
+    fn broken_bsl_typed_evidence_gates_dictionary_and_direct_contract_together() {
+        let at = "main:Catalog.Items.Module.Object.Body";
+        let (_, invalid) =
+            unica_bsl::syntax::parse_source("Процедура А()\nЕсли Истина Тогда\nКонецПроцедуры")
+                .unwrap();
+        for syntax in [
+            unica_bsl::syntax::SyntaxObservation::Valid,
+            unica_bsl::syntax::SyntaxObservation::Unassessed,
+            invalid,
+        ] {
+            let mut metadata = json!({"at":"main:Catalog.Items", "kind":"Catalog", "props":{}});
+            attach_can_with_syntax(&mut metadata, configuration_context(), &syntax);
+            assert!(metadata["can"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["op"] == "props.set"));
+            assert!(operation_node_with_syntax(
+                &metadata,
+                "props.set",
+                "main:Catalog.Items",
+                configuration_context(),
+                &syntax,
+                &|_| None
+            )
+            .is_ok());
+            let mut data = json!({"at":at,"kind":"Body","props":{"syntax":"valid"},"limits":["not authoritative"]});
+            attach_can_with_syntax(&mut data, configuration_context(), &syntax);
+            for operation in ["code.insert", "code.replace"] {
+                assert_eq!(
+                    data["can"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry["op"] == operation),
+                    !syntax.is_invalid()
+                );
+                let result = operation_node_with_syntax(
+                    &data,
+                    operation,
+                    at,
+                    configuration_context(),
+                    &syntax,
+                    &|_| None,
+                );
+                if syntax.is_invalid() {
+                    assert_eq!(result.unwrap_err().code(), RefusalCode::InvalidSource);
+                } else {
+                    assert!(result.is_ok());
+                }
+            }
         }
     }
 }

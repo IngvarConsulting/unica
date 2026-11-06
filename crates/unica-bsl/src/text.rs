@@ -69,7 +69,7 @@ pub enum ValidationStatus {
     Failed,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationDiagnostic {
     pub code: &'static str,

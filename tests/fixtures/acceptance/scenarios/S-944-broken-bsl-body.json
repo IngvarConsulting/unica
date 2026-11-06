@@ -1,0 +1,1057 @@
+{
+  "id": "S-944-broken-bsl-body",
+  "issue": 944,
+  "area": "Код BSL",
+  "workspace": "tests/fixtures/acceptance/workspace-broken-bsl-body",
+  "task": "Прочитать полный и ограниченный Body повреждённого BSL с конкретной диагностикой вне окна, не выдавая недоступную структуру за пустую. Не предлагать и не выполнять запись повреждённого модуля; сохранить чтение здорового соседа и все байты.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Module.Object.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "Процедура Сломано()\nЕсли Истина Тогда\nКонецПроцедуры\n"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "Ожидалось 'КонецЕсли'"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "line 3, column 1"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "main:Catalog.Пример.Module.Object"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Module.Object.Body#L1-L2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "Процедура Сломано()\nЕсли Истина Тогда\n"
+        },
+        {
+          "pointer": "/data/props/lines",
+          "eq": {
+            "state": "range",
+            "from": 1,
+            "to": 2
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "Ожидалось 'КонецЕсли'"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "line 3, column 1"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "main:Catalog.Пример.Module.Object"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Module.Object"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_source"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "Ожидалось 'КонецЕсли'"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "line 3, column 1"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Пример.Module.Object.Body"
+        }
+      ],
+      "refusal": "invalid_source: line 3, column 1: Ожидалось 'КонецЕсли', встречено КонецПроцедуры (main:Catalog.Пример.Module.Object); dependent changes are stopped. Restore a confirmed workin"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Module.Object.Method"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_source"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "Ожидалось 'КонецЕсли'"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "line 3, column 1"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Пример.Module.Object.Body"
+        }
+      ],
+      "refusal": "invalid_source: line 3, column 1: Ожидалось 'КонецЕсли', встречено КонецПроцедуры (main:Catalog.Пример.Module.Object); dependent changes are stopped. Restore a confirmed workin"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Module.Object.Event"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_source"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "Ожидалось 'КонецЕсли'"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "line 3, column 1"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Пример.Module.Object.Body"
+        }
+      ],
+      "refusal": "invalid_source: line 3, column 1: Ожидалось 'КонецЕсли', встречено КонецПроцедуры (main:Catalog.Пример.Module.Object); dependent changes are stopped. Restore a confirmed workin"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Module.Object.Body.Can.code.replace"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_source"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "Ожидалось 'КонецЕсли'"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "line 3, column 1"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Пример.Module.Object.Body"
+        }
+      ],
+      "refusal": "invalid_source: line 3, column 1: Ожидалось 'КонецЕсли', встречено КонецПроцедуры (main:Catalog.Пример.Module.Object)"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Module.Object.Body.Can.code.insert"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_source"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "Ожидалось 'КонецЕсли'"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "line 3, column 1"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Пример.Module.Object.Body"
+        }
+      ],
+      "refusal": "invalid_source: line 3, column 1: Ожидалось 'КонецЕсли', встречено КонецПроцедуры (main:Catalog.Пример.Module.Object)"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Module.Object.Can.code.replace"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_source"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "Ожидалось 'КонецЕсли'"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "line 3, column 1"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Пример.Module.Object.Body"
+        }
+      ],
+      "refusal": "invalid_source: line 3, column 1: Ожидалось 'КонецЕсли', встречено КонецПроцедуры (main:Catalog.Пример.Module.Object); dependent changes are stopped. Restore a confirmed workin"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Пример.Module.Object.Can.code.insert"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_source"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "Ожидалось 'КонецЕсли'"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "line 3, column 1"
+        },
+        {
+          "pointer": "/next/0/tool",
+          "eq": "unica.view"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Пример.Module.Object.Body"
+        }
+      ],
+      "refusal": "invalid_source: line 3, column 1: Ожидалось 'КонецЕсли', встречено КонецПроцедуры (main:Catalog.Пример.Module.Object); dependent changes are stopped. Restore a confirmed workin"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Пример.Module.Object.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "Процедура Исправлено()\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: original BSL module does not parse: Ожидалось 'КонецЕсли', встречено КонецПроцедуры at line 3, column 1",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/1/code",
+          "eq": "bsl-parse-error"
+        },
+        {
+          "pointer": "/diagnostics/1/focus/range/startLine",
+          "eq": 2
+        },
+        {
+          "pointer": "/diagnostics/1/focus/range/startColumn",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Пример.Module.Object.Body",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "Процедура Исправлено()\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: original BSL module does not parse: Ожидалось 'КонецЕсли', встречено КонецПроцедуры at line 3, column 1",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/1/code",
+          "eq": "bsl-parse-error"
+        },
+        {
+          "pointer": "/diagnostics/1/focus/range/startLine",
+          "eq": 2
+        },
+        {
+          "pointer": "/diagnostics/1/focus/range/startColumn",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Здоровый.Module.Object"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Здоровый.Module.Object.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "Процедура ПередЗаписью(Отказ)\n    Проверка();\nКонецПроцедуры\n\nПроцедура Проверка()\n    Значение = 1;\nКонецПроцедуры\n"
+        },
+        {
+          "pointer": "/diagnostics",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can/0/op",
+          "eq": "code.insert"
+        },
+        {
+          "pointer": "/data/can/1/op",
+          "eq": "code.replace"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Здоровый.Module.Object.Method"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Здоровый.Module.Object.Method.ПередЗаписью"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Catalog.Здоровый.Module.Object.Method.Проверка"
+        },
+        {
+          "pointer": "/page/stoppedBy",
+          "eq": "complete"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Здоровый.Module.Object.Event"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Catalog.Здоровый.Module.Object.Event.BeforeWrite"
+        },
+        {
+          "pointer": "/data/items/1/props/state",
+          "eq": "implemented"
+        },
+        {
+          "pointer": "/data/items/1/props/implementationAt",
+          "eq": "main:Catalog.Здоровый.Module.Object.Method.ПередЗаписью"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Здоровый.Module.Object.Body.Can.code.replace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "code.replace"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Здоровый.Module.Object.Can.code.insert"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Здоровый/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "9d3c4cc159514e0df4cdb1db59ccc0527be0cb8fe08a520ab65b9fe66d43121f"
+        },
+        {
+          "path": "src/Catalogs/Здоровый.xml",
+          "kind": "sha256",
+          "eq": "2f6d76e9a7c82b81954cf35513e65f126999152f4d5bca7d708c6c8b17ca6fe4"
+        },
+        {
+          "path": "src/Catalogs/Пример/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "5b1f4b6a7697e6dda9dba7e41c619cf41df01c2acaddec3090e47b08a848c397"
+        },
+        {
+          "path": "src/Catalogs/Пример.xml",
+          "kind": "sha256",
+          "eq": "0f242a4f2bb6b17d5b7f1d1c2f1a314a016809e7448f9caff56e0d9c7cf471fc"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "533b374afd5c91dbaf7b8395518326be9a812ba416e15a2bc1183675ed5a499d"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "c7f085cd887d83080db5fd09c5d6f0b823714fe4ce3bfa744b5f183e8fd51e1d"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "code.insert"
+        }
+      ]
+    }
+  ]
+}
