@@ -199,7 +199,13 @@
                 "allowedCount": 2,
                 "deniedCount": 0,
                 "objectKind": "Catalog"
-              }
+              },
+              "branches": [
+                {
+                  "at": "main:Role.Reader.Right.Catalog_Existing.RLS",
+                  "count": 0
+                }
+              ]
             },
             {
               "at": "main:Role.Reader.Right.Document_New",
@@ -209,7 +215,13 @@
                 "allowedCount": 1,
                 "deniedCount": 0,
                 "objectKind": "Document"
-              }
+              },
+              "branches": [
+                {
+                  "at": "main:Role.Reader.Right.Document_New.RLS",
+                  "count": 0
+                }
+              ]
             }
           ]
         },

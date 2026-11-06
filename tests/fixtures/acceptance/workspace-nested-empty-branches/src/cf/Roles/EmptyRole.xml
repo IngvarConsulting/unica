@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core">
+	<Role uuid="a752b9f9-45fc-53ee-a25d-80fa5defb854">
+		<Properties>
+			<Name>EmptyRole</Name>
+			<Synonym>
+				<v8:item>
+					<v8:lang>ru</v8:lang>
+					<v8:content>Читатель продаж</v8:content>
+				</v8:item>
+			</Synonym>
+			<Comment/>
+		</Properties>
+	</Role>
+</MetaDataObject>

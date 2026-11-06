@@ -35,6 +35,49 @@ fn role_group_data(groups: Vec<RoleInfoGroup>) -> Vec<RoleGroupData> {
 fn role_attribute(value: &str) -> Option<String> {
     (!value.is_empty()).then(|| value.to_string())
 }
+const ROLE_INFO_NS: &str = "http://v8.1c.ru/8.2/roles";
+
+fn role_info_limit(limits: &mut Vec<String>, reason: &str) {
+    let message = format!("Rights.xml: {reason}");
+    if !limits.contains(&message) {
+        limits.push(message);
+    }
+}
+
+fn role_info_nil(node: roxmltree::Node<'_, '_>) -> bool {
+    node.attributes().any(|attribute| {
+        attribute.name() == "nil"
+            && attribute.namespace() == Some("http://www.w3.org/2001/XMLSchema-instance")
+            && !matches!(attribute.value().trim(), "false" | "0")
+    })
+}
+
+fn role_info_text(node: roxmltree::Node<'_, '_>) -> bool {
+    node.children()
+        .any(|child| child.is_text() && child.text().is_some_and(|text| !text.trim().is_empty()))
+}
+
+fn role_info_scalar(parent: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
+    let mut value = None;
+    for node in parent
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == name)
+    {
+        if node.tag_name().namespace() != Some(ROLE_INFO_NS)
+            || role_info_nil(node)
+            || node.children().any(|child| child.is_element())
+        {
+            return None;
+        }
+        let text = unica_xml_format::read::direct_text(node).trim().to_string();
+        if text.is_empty() || value.as_ref().is_some_and(|previous| previous != &text) {
+            return None;
+        }
+        value = Some(text);
+    }
+    value
+}
+
 pub fn parse_role_info_xml(
     rights_text: &str,
     descriptor_text: Option<&str>,
@@ -45,116 +88,231 @@ pub fn parse_role_info_xml(
     let doc = Document::parse(rights_text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error in Rights.xml: {err}"))?;
     let root = doc.root_element();
+    if !unica_xml_format::names::element_has_name(root, "Rights", Some(ROLE_INFO_NS))
+        || role_info_nil(root)
+    {
+        return Err("Rights.xml: unexpected root name, namespace or nil root".to_string());
+    }
+    let mut limits = Vec::new();
     let set_for_new = root.attribute("setForNewObjects").unwrap_or("");
     let set_for_attrs = root.attribute("setForAttributesByDefault").unwrap_or("");
     let independent_child = root
         .attribute("independentRightsOfChildObjects")
         .unwrap_or("");
+    for value in [set_for_new, set_for_attrs, independent_child] {
+        if !matches!(value, "" | "true" | "false") {
+            role_info_limit(&mut limits, "invalid default flag");
+        }
+    }
+    let mut observed = Vec::<(String, RoleRight)>::new();
+    let mut known_objects = Vec::<RoleGroupData>::new();
+    let mut blocked = std::collections::HashSet::<(String, String)>::new();
+    let mut templates = Vec::new();
+    if role_info_text(root) {
+        role_info_limit(&mut limits, "unexpected text outside an object");
+    }
+    for obj in root.children().filter(|node| node.is_element()) {
+        if obj.tag_name().namespace() != Some(ROLE_INFO_NS) || role_info_nil(obj) {
+            role_info_limit(&mut limits, "foreign or nil root entry was not read");
+            continue;
+        }
+        match obj.tag_name().name() {
+            "setForNewObjects"
+            | "setForAttributesByDefault"
+            | "independentRightsOfChildObjects" => {
+                // These platform flags are legitimate root children, separate
+                // from the object's rights. Keep the existing attribute API.
+                if !matches!(
+                    role_info_scalar(root, obj.tag_name().name()).as_deref(),
+                    Some("true" | "false")
+                ) {
+                    role_info_limit(&mut limits, "invalid default flag");
+                }
+                continue;
+            }
+            "restrictionTemplate" => {
+                let name = role_info_scalar(obj, "name");
+                if name.is_none()
+                    || role_info_text(obj)
+                    || obj.children().filter(|node| node.is_element()).any(|node| {
+                        node.tag_name().namespace() != Some(ROLE_INFO_NS)
+                            || !matches!(node.tag_name().name(), "name" | "condition")
+                    })
+                {
+                    role_info_limit(&mut limits, "restriction template is only partially known");
+                }
+                if let Some(mut name) = name {
+                    if let Some(index) = name.find('(').filter(|index| *index > 0) {
+                        name.truncate(index);
+                    }
+                    templates.push(name);
+                }
+                continue;
+            }
+            "object" => {}
+            _ => {
+                role_info_limit(&mut limits, "unsupported root entry was not read");
+                continue;
+            }
+        }
+        let Some(obj_name) = role_info_scalar(obj, "name").filter(|name| {
+            name.contains('.')
+                && name
+                    .split('.')
+                    .all(unica_xml_format::names::xml_ncname_is_valid)
+        }) else {
+            role_info_limit(&mut limits, "object has no readable identity");
+            continue;
+        };
+        let (kind, name) = obj_name.split_once('.').expect("validated object identity");
+        let group_index = known_objects
+            .iter()
+            .position(|group| group.kind == kind)
+            .unwrap_or_else(|| {
+                known_objects.push(RoleGroupData {
+                    kind: kind.to_string(),
+                    objects: Vec::new(),
+                });
+                known_objects.len() - 1
+            });
+        if !known_objects[group_index]
+            .objects
+            .iter()
+            .any(|object| object.name == name)
+        {
+            known_objects[group_index].objects.push(RoleObjectData {
+                name: name.to_string(),
+                rights: Vec::new(),
+            });
+        }
+        if role_info_text(obj) {
+            role_info_limit(&mut limits, "unexpected object text");
+        }
+        for child in obj.children().filter(|node| node.is_element()) {
+            if child.tag_name().namespace() == Some(ROLE_INFO_NS)
+                && child.tag_name().name() == "name"
+            {
+                continue;
+            }
+            if !unica_xml_format::names::element_has_name(child, "right", Some(ROLE_INFO_NS))
+                || role_info_nil(child)
+            {
+                role_info_limit(&mut limits, "unsupported or nil object entry was not read");
+                continue;
+            }
+            let Some(right_name) = role_info_scalar(child, "name")
+                .filter(|name| unica_xml_format::names::xml_ncname_is_valid(name))
+            else {
+                role_info_limit(&mut limits, "right has no readable identity");
+                continue;
+            };
+            let Some(right_value) = role_info_scalar(child, "value")
+                .filter(|value| matches!(value.as_str(), "true" | "false"))
+            else {
+                role_info_limit(&mut limits, "right value is absent, invalid or ambiguous");
+                blocked.insert((obj_name.clone(), right_name));
+                continue;
+            };
+            if role_info_text(child)
+                || child
+                    .children()
+                    .filter(|node| node.is_element())
+                    .any(|node| {
+                        node.tag_name().namespace() != Some(ROLE_INFO_NS)
+                            || !matches!(
+                                node.tag_name().name(),
+                                "name" | "value" | "restrictionByCondition"
+                            )
+                    })
+            {
+                role_info_limit(&mut limits, "right has unsupported content");
+            }
+            let restrictions: Vec<_> = child
+                .children()
+                .filter(|node| {
+                    unica_xml_format::names::element_has_name(
+                        *node,
+                        "restrictionByCondition",
+                        Some(ROLE_INFO_NS),
+                    )
+                })
+                .collect();
+            if restrictions.iter().any(|node| {
+                role_info_nil(*node)
+                    || role_info_text(*node)
+                    || node
+                        .children()
+                        .filter(|entry| entry.is_element())
+                        .any(|entry| {
+                            entry.tag_name().namespace() != Some(ROLE_INFO_NS)
+                                || entry.tag_name().name() != "condition"
+                        })
+            }) {
+                role_info_limit(&mut limits, "right restriction is only partially known");
+            }
+            observed.push((
+                obj_name.clone(),
+                RoleRight {
+                    name: right_name,
+                    value: right_value,
+                    condition: (!restrictions.is_empty()).then(String::new),
+                },
+            ));
+        }
+    }
+    let mut states = std::collections::HashMap::new();
+    for (object, right) in &observed {
+        let key = (object.clone(), right.name.clone());
+        let state = (right.value.clone(), right.condition.is_some());
+        if states.get(&key).is_some_and(|previous| previous != &state) {
+            role_info_limit(&mut limits, "conflicting right values are ambiguous");
+            blocked.insert(key);
+        } else {
+            states.insert(key, state);
+        }
+    }
     let mut allowed = Vec::<RoleInfoGroup>::new();
     let mut denied = Vec::<RoleInfoGroup>::new();
     let mut rls_objects = Vec::<String>::new();
-    let mut total_allowed = 0usize;
-    let mut total_denied = 0usize;
-    for obj in root.children().filter(|node| {
-        unica_xml_format::names::element_has_name(
-            *node,
-            "object",
-            Some("http://v8.1c.ru/8.2/roles"),
-        )
-    }) {
-        let mut obj_name = String::new();
-        let mut rights = Vec::<RoleRight>::new();
-        for child in obj.children().filter(|node| node.is_element()) {
-            if unica_xml_format::names::element_has_name(
-                child,
-                "name",
-                Some("http://v8.1c.ru/8.2/roles"),
-            ) {
-                obj_name = child.text().unwrap_or("").to_string();
-            }
-            if unica_xml_format::names::element_has_name(
-                child,
-                "right",
-                Some("http://v8.1c.ru/8.2/roles"),
-            ) {
-                let mut right_name = String::new();
-                let mut right_value = String::new();
-                let mut has_rls = false;
-                for rc in child.children().filter(|node| node.is_element()) {
-                    match rc.tag_name().name() {
-                        "name" => right_name = rc.text().unwrap_or("").to_string(),
-                        "value" => right_value = rc.text().unwrap_or("").to_string(),
-                        "restrictionByCondition" => has_rls = true,
-                        _ => {}
-                    }
-                }
-                if !right_name.is_empty() && !right_value.is_empty() {
-                    rights.push(RoleRight {
-                        name: right_name,
-                        value: right_value,
-                        condition: has_rls.then(String::new),
-                    });
-                }
-            }
-        }
-        if obj_name.is_empty() || rights.is_empty() {
+    let mut total_allowed = 0;
+    let mut total_denied = 0;
+    for (object, right) in &observed {
+        if blocked.contains(&(object.clone(), right.name.clone())) {
             continue;
         }
-        let Some(dot_idx) = obj_name.find('.') else {
-            continue;
-        };
-        let type_prefix = &obj_name[..dot_idx];
-        let short_name = &obj_name[dot_idx + 1..];
-        for right in rights {
-            if right.value == "true" {
-                total_allowed += 1;
-                if right.condition.is_some() {
-                    rls_objects.push(format!("{type_prefix}.{short_name} ({})", right.name));
-                }
-                add_role_info_right(
-                    &mut allowed,
-                    type_prefix,
-                    short_name,
-                    RoleInfoRightSummary {
-                        name: right.name,
-                        rls: right.condition.is_some(),
-                    },
-                );
-            } else {
-                total_denied += 1;
-                add_role_info_right(
-                    &mut denied,
-                    type_prefix,
-                    short_name,
-                    RoleInfoRightSummary {
-                        name: right.name,
-                        rls: false,
-                    },
-                );
+        let (type_prefix, short_name) = object.split_once('.').expect("validated object identity");
+        if right.value == "true" {
+            total_allowed += 1;
+            if right.condition.is_some() {
+                rls_objects.push(format!("{object} ({})", right.name));
             }
+            add_role_info_right(
+                &mut allowed,
+                type_prefix,
+                short_name,
+                RoleInfoRightSummary {
+                    name: right.name.clone(),
+                    rls: right.condition.is_some(),
+                },
+            );
+        } else {
+            total_denied += 1;
+            add_role_info_right(
+                &mut denied,
+                type_prefix,
+                short_name,
+                RoleInfoRightSummary {
+                    name: right.name.clone(),
+                    rls: false,
+                },
+            );
         }
     }
-    let mut templates = Vec::<String>::new();
-    for template in root.children().filter(|node| {
-        unica_xml_format::names::element_has_name(
-            *node,
-            "restrictionTemplate",
-            Some("http://v8.1c.ru/8.2/roles"),
-        )
-    }) {
-        for child in template.children().filter(|node| node.is_element()) {
-            if child.tag_name().name() == "name" {
-                let mut name = child.text().unwrap_or("").to_string();
-                if let Some(paren_idx) = name.find('(') {
-                    if paren_idx > 0 {
-                        name.truncate(paren_idx);
-                    }
-                }
-                templates.push(name);
-            }
-        }
-    }
+    let rights_complete = limits.is_empty();
     Ok(RoleInfoData {
+        limits,
+        rights_complete,
+        known_objects,
         name: role_name,
         synonym: (!role_synonym.is_empty()).then_some(role_synonym),
         support,
@@ -173,6 +331,7 @@ pub fn parse_role_info_xml(
         templates,
     })
 }
+
 pub fn role_info_metadata_xml(
     descriptor_text: Option<&str>,
     fallback_name: &str,

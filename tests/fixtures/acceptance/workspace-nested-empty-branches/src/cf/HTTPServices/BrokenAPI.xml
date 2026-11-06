@@ -1,0 +1,6 @@
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.20"><HTTPService uuid="f3308438-305a-5668-b88b-28042110900d"><Properties><Name>BrokenAPI</Name></Properties><ChildObjects><URLTemplate uuid="c0ad9c07-2a73-5291-b950-c2253ee9a3c5">
+        <Properties><Name>Broken</Name><Template>/v1/kpi/</Template></Properties>
+        <ChildObjects>
+          <Method><Properties><Name/></Properties></Method>
+        </ChildObjects>
+      </URLTemplate></ChildObjects></HTTPService></MetaDataObject>

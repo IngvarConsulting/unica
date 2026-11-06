@@ -17,9 +17,34 @@ struct RoleObject {
     name: String,
     allowed: Vec<Value>,
     denied: Vec<Value>,
+    rights_complete: bool,
+    limits: Vec<String>,
 }
 
 pub(super) fn project_role(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    let mut view = project_role_inner(address, payload, suffix)?;
+    for limit in role_read_limits(payload) {
+        view = view.with_limit(limit);
+    }
+    Ok(view)
+}
+
+fn role_read_limits(payload: &Value) -> Vec<String> {
+    payload
+        .get("limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+fn project_role_inner(
     address: &QualifiedAddress,
     payload: &Value,
     suffix: &[AddressSegment],
@@ -39,10 +64,14 @@ pub(super) fn project_role(
                     .map(|(key, value)| (format!("total{key}"), value)),
             );
         }
-        let mut branches = Vec::new();
-        if !objects.is_empty() {
-            branches.push(BranchRef::new(format!("{}.Right", address), objects.len()));
-        }
+        let known = payload.get("rightsComplete").and_then(Value::as_bool) == Some(true)
+            && ["allowed", "denied"]
+                .into_iter()
+                .all(|key| payload.get(key).is_some_and(Value::is_array));
+        let branches = (!objects.is_empty() || known)
+            .then(|| BranchRef::new(format!("{}.Right", address), objects.len()))
+            .into_iter()
+            .collect();
         return Ok(NodeViewData::Node(
             NodeView::new(
                 address.to_string(),
@@ -137,7 +166,7 @@ fn project_role_object_suffix(
 
 fn role_objects(payload: &Value) -> Result<Vec<RoleObject>, ViewError> {
     let mut result = BTreeMap::<(String, String), RoleObject>::new();
-    for key in ["allowed", "denied"] {
+    for key in ["knownObjects", "allowed", "denied"] {
         for group in payload
             .get(key)
             .and_then(Value::as_array)
@@ -169,6 +198,9 @@ fn role_objects(payload: &Value) -> Result<Vec<RoleObject>, ViewError> {
                         name: name.to_string(),
                         allowed: Vec::new(),
                         denied: Vec::new(),
+                        rights_complete: payload.get("rightsComplete").and_then(Value::as_bool)
+                            == Some(true),
+                        limits: role_read_limits(payload),
                     });
                 let rights = object
                     .get("rights")
@@ -278,11 +310,12 @@ fn role_object_node(address: &QualifiedAddress, object: &RoleObject) -> NodeView
         ]),
     )
     .with_branches(
-        (restricted > 0)
+        (restricted > 0 || object.rights_complete)
             .then(|| BranchRef::new(format!("{}.RLS", address), restricted))
             .into_iter()
             .collect(),
     )
+    .with_limits(object.limits.clone())
 }
 
 fn restricted_rights(object: &RoleObject) -> BTreeMap<String, Value> {

@@ -19,13 +19,13 @@
           "eq": "Form"
         },
         {
-          "pointer": "/data/branches/3/at",
+          "pointer": "/data/branches/5/at",
           "eq": "main:CommonForm.Appearance.Setting"
         }
       ],
       "captures": {
         "settings": {
-          "pointer": "/data/branches/3/at"
+          "pointer": "/data/branches/5/at"
         },
         "attributes": {
           "pointer": "/data/branches/1/at"

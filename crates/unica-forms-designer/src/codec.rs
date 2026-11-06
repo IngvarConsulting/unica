@@ -1338,34 +1338,123 @@ fn form_info_binding(
     }
 }
 
-/// Typed counterpart of [`form_build_tree`]. The report collapsed deep pages
-/// behind `-Expand`; data has no reason to hide them, so the whole tree is
-/// always walked.
-fn form_info_tree(child_items: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> {
-    child_items
-        .children()
-        .filter(|child| {
-            child.is_element() && !form_skip_elements().contains(&child.tag_name().name())
-        })
-        .map(form_info_element)
-        .collect()
+fn form_info_collection_damage(
+    collection: FormInfoCollection,
+    limits: &mut Vec<String>,
+    incomplete: &mut Vec<FormInfoCollection>,
+) {
+    if !incomplete.contains(&collection) {
+        incomplete.push(collection);
+    }
+    let message = format!("form {collection:?} collection is only partially known: malformed, foreign or duplicate container/entry");
+    if !limits.contains(&message) {
+        limits.push(message);
+    }
 }
 
-/// Элементы владельца, как их адресует `view`: его автоматическая командная
-/// панель (у формы и таблицы), затем `ChildItems`. Панель — место кнопок,
-/// которые добавляет `item.add` по её адресу (#1355); остальные
-/// companions (`ContextMenu`, `ExtendedTooltip`, …) в дерево не входят.
-fn form_info_children(owner: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> {
-    form_child(owner, "AutoCommandBar")
-        .filter(|bar| bar.attribute("name").is_some_and(|name| !name.is_empty()))
-        .map(form_info_element)
-        .into_iter()
-        .chain(
-            form_child(owner, "ChildItems")
-                .map(form_info_tree)
-                .unwrap_or_default(),
+fn form_info_nil(node: roxmltree::Node<'_, '_>) -> bool {
+    node.attributes().any(|attribute| {
+        attribute.name() == "nil"
+            && attribute.namespace() == Some("http://www.w3.org/2001/XMLSchema-instance")
+            && !matches!(attribute.value().trim(), "false" | "0")
+    })
+}
+
+fn form_info_collection_nodes<'a>(
+    owner: roxmltree::Node<'a, 'a>,
+    container: &str,
+    entry: Option<&str>,
+    collection: FormInfoCollection,
+    limits: &mut Vec<String>,
+    incomplete: &mut Vec<FormInfoCollection>,
+) -> Vec<roxmltree::Node<'a, 'a>> {
+    let containers: Vec<_> = owner
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == container)
+        .collect();
+    if containers.len() > 1 {
+        form_info_collection_damage(collection, limits, incomplete);
+    }
+    let mut nodes = Vec::new();
+    for container in containers {
+        if container.tag_name().namespace() != Some(FORM_LOGFORM_NS) || form_info_nil(container) {
+            form_info_collection_damage(collection, limits, incomplete);
+            continue;
+        }
+        if container
+            .children()
+            .any(|node| node.is_text() && node.text().is_some_and(|text| !text.trim().is_empty()))
+        {
+            form_info_collection_damage(collection, limits, incomplete);
+        }
+        for node in container.children().filter(|node| node.is_element()) {
+            if collection == FormInfoCollection::Item
+                && form_skip_elements().contains(&node.tag_name().name())
+            {
+                continue;
+            }
+            if node.tag_name().namespace() != Some(FORM_LOGFORM_NS)
+                || entry.is_some_and(|name| node.tag_name().name() != name)
+                || form_info_nil(node)
+                || !node
+                    .attribute("name")
+                    .is_some_and(unica_xml_format::names::xml_ncname_is_valid)
+            {
+                form_info_collection_damage(collection, limits, incomplete);
+                continue;
+            }
+            nodes.push(node);
+        }
+    }
+    nodes
+}
+
+fn form_info_children_observed(
+    owner: roxmltree::Node<'_, '_>,
+    limits: &mut Vec<String>,
+    incomplete: &mut Vec<FormInfoCollection>,
+) -> Vec<FormInfoElement> {
+    let bars: Vec<_> = owner
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "AutoCommandBar")
+        .collect();
+    if bars.len() > 1 {
+        form_info_collection_damage(FormInfoCollection::Item, limits, incomplete);
+    }
+    let mut children = Vec::new();
+    for bar in bars {
+        if bar.tag_name().namespace() != Some(FORM_LOGFORM_NS) || form_info_nil(bar) {
+            form_info_collection_damage(FormInfoCollection::Item, limits, incomplete);
+        } else if bar
+            .attribute("name")
+            .is_some_and(unica_xml_format::names::xml_ncname_is_valid)
+        {
+            children.push(form_info_element(bar));
+        } else if bar.attribute("name").is_some() {
+            // An unnamed default bar is an existing supported convention;
+            // a present but invalid identity cannot prove an empty Item list.
+            form_info_collection_damage(FormInfoCollection::Item, limits, incomplete);
+        }
+    }
+    children.extend(
+        form_info_collection_nodes(
+            owner,
+            "ChildItems",
+            None,
+            FormInfoCollection::Item,
+            limits,
+            incomplete,
         )
-        .collect()
+        .into_iter()
+        .map(form_info_element),
+    );
+    children
+}
+
+/// Read helpers keep all independently observed native containers. Semantic
+/// event evidence shares the same items but does not consume collection limits.
+fn form_info_children(owner: roxmltree::Node<'_, '_>) -> Vec<FormInfoElement> {
+    form_info_children_observed(owner, &mut Vec::new(), &mut Vec::new())
 }
 
 fn form_info_element(child: roxmltree::Node<'_, '_>) -> FormInfoElement {
@@ -1373,7 +1462,13 @@ fn form_info_element(child: roxmltree::Node<'_, '_>) -> FormInfoElement {
     let mut binding_limits = Vec::new();
     let data_path = form_info_binding_property(child, "DataPath", &mut binding_limits);
     let command_name = form_info_binding_property(child, "CommandName", &mut binding_limits);
+    let mut read_limits = Vec::new();
+    let mut incomplete_collections = Vec::new();
+    let children =
+        form_info_children_observed(child, &mut read_limits, &mut incomplete_collections);
     FormInfoElement {
+        read_limits,
+        incomplete_collections,
         tag: form_element_tag(child),
         event_kind: FormElementKind::from_xml_tag(child.tag_name().name()),
         title: form_title_differs(child, &name),
@@ -1388,83 +1483,72 @@ fn form_info_element(child: roxmltree::Node<'_, '_>) -> FormInfoElement {
         events: form_child(child, "Events")
             .map(form_info_events_section)
             .unwrap_or_default(),
-        children: form_info_children(child),
+        children,
     }
 }
 
-fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute> {
-    form_children(attrs, "Attribute")
+fn form_info_attribute(attr: roxmltree::Node<'_, '_>) -> FormInfoAttribute {
+    let type_name = crate::column_add::observed_value_table_type(attr).or_else(|| {
+        form_child(attr, "Type")
+            .map(form_format_type)
+            .and_then(form_info_optional)
+            .filter(|type_name| type_name != "ValueTable")
+    });
+    let dynamic_list = dynamic_list::is_dynamic_list(attr).then(|| dynamic_list::read(attr));
+    let type_name = if dynamic_list.is_some() {
+        Some("DynamicList".to_string())
+    } else {
+        type_name
+    };
+    let main_table = (type_name.as_deref() == Some("DynamicList"))
+        .then(|| form_child(attr, "Settings").and_then(|s| form_child_text(s, "MainTable")))
+        .flatten();
+    let mut read_limits = Vec::new();
+    let mut incomplete_collections = Vec::new();
+    // Recover repeated column containers only for an observed table/tree.
+    // Each column still obtains authoring evidence from the unchanged strict
+    // parent reader, which rejects ambiguous ancestry or an unsupported type.
+    let columns = if matches!(type_name.as_deref(), Some("ValueTable" | "ValueTree")) {
+        form_info_collection_nodes(
+            attr,
+            "Columns",
+            Some("Column"),
+            FormInfoCollection::Column,
+            &mut read_limits,
+            &mut incomplete_collections,
+        )
         .into_iter()
-        .map(|attr| {
-            let type_name = crate::column_add::observed_value_table_type(attr).or_else(|| {
-                form_child(attr, "Type")
-                    .map(form_format_type)
-                    .and_then(form_info_optional)
-                    // The display formatter alone does not prove the table's
-                    // namespace or complete type shape for column creation.
-                    .filter(|type_name| type_name != "ValueTable")
-            });
-            let dynamic_list =
-                dynamic_list::is_dynamic_list(attr).then(|| dynamic_list::read(attr));
-            let type_name = if dynamic_list.is_some() {
-                Some("DynamicList".to_string())
-            } else {
-                type_name
-            };
-            // The attribute's mainTable keeps the form_child_text reading:
-            // trimmed text, empty is null. The settings keep the raw text.
-            let main_table = (type_name.as_deref() == Some("DynamicList"))
-                .then(|| form_child(attr, "Settings").and_then(|s| form_child_text(s, "MainTable")))
-                .flatten();
-            let columns = if matches!(type_name.as_deref(), Some("ValueTable") | Some("ValueTree"))
-            {
-                form_child(attr, "Columns")
-                    .map(|columns| {
-                        form_children(columns, "Column")
-                            .into_iter()
-                            .map(|column| FormInfoColumn {
-                                parent_type: crate::column_type::observed_parent_type(column),
-                                name: column.attribute("name").unwrap_or("").to_string(),
-                                type_name: form_child(column, "Type")
-                                    .map(form_format_type)
-                                    .and_then(form_info_optional),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            FormInfoAttribute {
-                name: attr.attribute("name").unwrap_or("").to_string(),
-                type_name,
-                is_main: form_child_text(attr, "MainAttribute").as_deref() == Some("true"),
-                main_table,
-                dynamic_list,
-                columns,
-            }
-        })
-        .collect()
-}
-
-fn form_info_parameters(params: roxmltree::Node<'_, '_>) -> Vec<FormInfoParameter> {
-    form_children(params, "Parameter")
-        .into_iter()
-        .map(|param| FormInfoParameter {
-            name: param.attribute("name").unwrap_or("").to_string(),
-            type_name: form_child(param, "Type")
+        .map(|column| FormInfoColumn {
+            parent_type: crate::column_type::observed_parent_type(column),
+            name: column.attribute("name").unwrap_or("").to_string(),
+            type_name: form_child(column, "Type")
                 .map(form_format_type)
                 .and_then(form_info_optional),
-            is_key: form_child_text(param, "KeyParameter").as_deref() == Some("true"),
         })
         .collect()
+    } else {
+        Vec::new()
+    };
+    FormInfoAttribute {
+        read_limits,
+        incomplete_collections,
+        name: attr.attribute("name").unwrap_or("").to_string(),
+        type_name,
+        is_main: form_child_text(attr, "MainAttribute").as_deref() == Some("true"),
+        main_table,
+        dynamic_list,
+        columns,
+    }
 }
 
-fn form_info_commands(commands: roxmltree::Node<'_, '_>) -> Vec<FormInfoCommand> {
-    form_children_in_ns(commands, "Command", FORM_LOGFORM_NS)
-        .into_iter()
-        .map(command_properties::read)
-        .collect()
+fn form_info_parameter(param: roxmltree::Node<'_, '_>) -> FormInfoParameter {
+    FormInfoParameter {
+        name: param.attribute("name").unwrap_or("").to_string(),
+        type_name: form_child(param, "Type")
+            .map(form_format_type)
+            .and_then(form_info_optional),
+        is_key: form_child_text(param, "KeyParameter").as_deref() == Some("true"),
+    }
 }
 
 fn form_event_evidence_from_root(root: roxmltree::Node<'_, '_>) -> FormEventEvidence {
@@ -1474,9 +1558,17 @@ fn form_event_evidence_from_root(root: roxmltree::Node<'_, '_>) -> FormEventEvid
             .map(form_info_events_section)
             .unwrap_or_default(),
         elements: form_info_children(root),
-        commands: form_child(root, "Commands")
-            .map(form_info_commands)
-            .unwrap_or_default(),
+        commands: form_info_collection_nodes(
+            root,
+            "Commands",
+            Some("Command"),
+            FormInfoCollection::Command,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .into_iter()
+        .map(command_properties::read)
+        .collect(),
     }
 }
 
@@ -1486,9 +1578,17 @@ pub fn parse_form_attributes_xml(text: &str) -> Result<Vec<FormInfoAttribute>, S
         .map_err(|error| format!("Form XML parse error: {error}"))?;
     let root = doc.root_element();
     require_form_root(root)?;
-    Ok(form_child(root, "Attributes")
-        .map(form_info_attributes)
-        .unwrap_or_default())
+    Ok(form_info_collection_nodes(
+        root,
+        "Attributes",
+        Some("Attribute"),
+        FormInfoCollection::Attribute,
+        &mut Vec::new(),
+        &mut Vec::new(),
+    )
+    .into_iter()
+    .map(form_info_attribute)
+    .collect())
 }
 
 pub fn parse_form_event_evidence_xml(text: &str) -> Result<FormEventEvidence, String> {
@@ -1513,6 +1613,13 @@ pub fn parse_form_info_xml(
         .map_err(|err| format!("Form XML parse error: {err}"))?;
     let root = doc.root_element();
     require_form_root(root)?;
+    if root.attributes().any(|attr| {
+        attr.namespace() == Some("http://www.w3.org/2001/XMLSchema-instance")
+            && attr.name() == "nil"
+            && !matches!(attr.value(), "false" | "0")
+    }) {
+        return Err("Form root cannot be nil".to_string());
+    }
     let base_form = form_child(root, "BaseForm");
     let is_extension = base_form.is_some();
     let form_title = form_child(root, "Title")
@@ -1543,7 +1650,67 @@ pub fn parse_form_info_xml(
         Vec::new()
     };
     let event_evidence = form_event_evidence_from_root(root);
+    let mut read_limits = Vec::new();
+    let mut incomplete_collections = Vec::new();
+    if root
+        .children()
+        .any(|node| node.is_text() && node.text().is_some_and(|text| !text.trim().is_empty()))
+    {
+        read_limits.push("form root has unexpected text".to_string());
+        let native = |name| {
+            root.children()
+                .any(|node| node.has_tag_name((FORM_LOGFORM_NS, name)))
+        };
+        if !native("ChildItems") || !native("AutoCommandBar") {
+            incomplete_collections.push(FormInfoCollection::Item);
+        }
+        for (collection, container) in [
+            (FormInfoCollection::Attribute, "Attributes"),
+            (FormInfoCollection::Parameter, "Parameters"),
+            (FormInfoCollection::Command, "Commands"),
+        ] {
+            if !native(container) {
+                incomplete_collections.push(collection);
+            }
+        }
+    }
+    let elements = form_info_children_observed(root, &mut read_limits, &mut incomplete_collections);
+    let attributes = form_info_collection_nodes(
+        root,
+        "Attributes",
+        Some("Attribute"),
+        FormInfoCollection::Attribute,
+        &mut read_limits,
+        &mut incomplete_collections,
+    )
+    .into_iter()
+    .map(form_info_attribute)
+    .collect();
+    let parameters = form_info_collection_nodes(
+        root,
+        "Parameters",
+        Some("Parameter"),
+        FormInfoCollection::Parameter,
+        &mut read_limits,
+        &mut incomplete_collections,
+    )
+    .into_iter()
+    .map(form_info_parameter)
+    .collect();
+    let commands = form_info_collection_nodes(
+        root,
+        "Commands",
+        Some("Command"),
+        FormInfoCollection::Command,
+        &mut read_limits,
+        &mut incomplete_collections,
+    )
+    .into_iter()
+    .map(command_properties::read)
+    .collect();
     Ok(FormInfoData {
+        read_limits,
+        incomplete_collections,
         name: form_name,
         title: form_title,
         object_context: (!object_context.is_empty()).then_some(object_context),
@@ -1556,14 +1723,10 @@ pub fn parse_form_info_xml(
         events: event_evidence.events,
         auto_command_bar,
         command_bar_location,
-        elements: event_evidence.elements,
-        attributes: form_child(root, "Attributes")
-            .map(form_info_attributes)
-            .unwrap_or_default(),
-        parameters: form_child(root, "Parameters")
-            .map(form_info_parameters)
-            .unwrap_or_default(),
-        commands: event_evidence.commands,
+        elements,
+        attributes,
+        parameters,
+        commands,
         conditional_appearance: conditional_appearance::read(root),
         event_context: event_evidence.context,
     })

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<DataCompositionSchema xmlns="http://v8.1c.ru/8.1/data-composition-system/schema"
+		xmlns:dcscom="http://v8.1c.ru/8.1/data-composition-system/common"
+		xmlns:dcscor="http://v8.1c.ru/8.1/data-composition-system/core"
+		xmlns:dcsset="http://v8.1c.ru/8.1/data-composition-system/settings"
+		xmlns:v8="http://v8.1c.ru/8.1/data/core"
+		xmlns:v8ui="http://v8.1c.ru/8.1/data/ui"
+		xmlns:xs="http://www.w3.org/2001/XMLSchema"
+		xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<dataSet xsi:type="DataSetQuery"><name>EmptyQuery</name><query/></dataSet><dataSet xsi:type="DataSetQuery"><name>FullQuery</name><query>a
+b
+</query></dataSet><dataSet xsi:type="DataSetObject"><name>EmptyObject</name><objectName>Rows</objectName></dataSet><dataSet xsi:type="DataSetUnion"><name>EmptyUnion</name></dataSet><settingsVariant><dcsset:name>Empty</dcsset:name><dcsset:settings/></settingsVariant><settingsVariant><dcsset:name>Structure</dcsset:name><dcsset:settings><dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Group</dcsset:name></dcsset:item><dcsset:item xsi:type="dcsset:StructureItemTable"><dcsset:name>Table</dcsset:name></dcsset:item><dcsset:item xsi:type="dcsset:StructureItemChart"><dcsset:name>Chart</dcsset:name></dcsset:item><dcsset:item xsi:type="dcsset:StructureItemNestedObject"><dcsset:name>NestedObject</dcsset:name></dcsset:item><dcsset:item xsi:type="dcsset:StructureItemFuture"><dcsset:name>Future</dcsset:name></dcsset:item><dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Full</dcsset:name><dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Zeta</dcsset:name></dcsset:item><dcsset:item xsi:type="dcsset:StructureItemGroup"><dcsset:name>Alpha</dcsset:name></dcsset:item></dcsset:item></dcsset:settings></settingsVariant></DataCompositionSchema>

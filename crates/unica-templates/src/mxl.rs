@@ -4,6 +4,11 @@ use unica_metadata::support_state::ObjectSupportData as DomainObjectSupportData;
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MxlInfoData {
+    pub areas_complete: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unread_areas: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_limits: Vec<String>,
     pub name: String,
     pub support: DomainObjectSupportData,
     pub rows: i64,
@@ -25,6 +30,10 @@ pub struct MxlColumnSetData {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MxlAreaData {
+    pub params_complete: bool,
+    pub body_complete: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_limits: Vec<String>,
     pub name: String,
     /// `Rows`, `Columns`, `Rectangle` or `Drawing`.
     pub kind: String,

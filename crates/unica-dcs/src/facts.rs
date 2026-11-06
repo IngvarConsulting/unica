@@ -1,12 +1,31 @@
 //! Факты схемы компоновки, которые чтение отдаёт независимо от представления.
 use unica_metadata::support_state::ObjectSupportData;
 
+/// Collections whose complete membership could not be established while reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub enum DcsReadCollection {
+    DataSource,
+    DataSet,
+    Field,
+    Query,
+    CalculatedField,
+    Total,
+    Parameter,
+    Setting,
+    Item,
+    Property,
+}
+
 /// Typed answer of `unica.dcs.info` (ADR-0023). Eleven `Mode` values each
 /// rendered its own report; the data carries every section at once and a caller
 /// projects what it needs, so `Limit` and `Offset` go away with the line layout.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DcsFacts {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_limits: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub incomplete_collections: Vec<DcsReadCollection>,
     pub support: ObjectSupportData,
     pub data_sources: Vec<DcsInfoDataSource>,
     pub data_sets: Vec<DcsInfoDataSet>,
@@ -29,6 +48,10 @@ pub struct DcsInfoDataSource {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DcsInfoDataSet {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_limits: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub incomplete_collections: Vec<DcsReadCollection>,
     pub name: String,
     /// `Query`, `Object`, `Union` or the raw `xsi:type` when it is none of them.
     pub kind: String,

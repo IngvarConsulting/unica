@@ -137,6 +137,8 @@ pub struct MetaElementData {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub property_limits: Vec<String>,
     pub attributes: Vec<MetaElementData>,
+    pub attributes_complete: bool,
+    pub child_collections_complete: bool,
 }
 
 fn is_false(value: &bool) -> bool {

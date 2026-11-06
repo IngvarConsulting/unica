@@ -488,9 +488,9 @@ impl RealReaderFixture {
   <Subsystem><Properties><Name>Sales</Name><Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Продажи</v8:content></v8:item></Synonym><IncludeInCommandInterface>true</IncludeInCommandInterface><UseOneCommand>false</UseOneCommand><Content><xr:Item xsi:type="xr:MDObjectRef">Catalog.Items</xr:Item></Content></Properties><ChildObjects/></Subsystem>
 </MetaDataObject>"#;
         write(&source.join("Subsystems/Sales.xml"), subsystem);
-        copy_fixture(
-            "unica_mcp_script_parity/meta-remove/Subsystems/Sales/Ext/CommandInterface.xml",
+        write(
             &source.join("Subsystems/Sales/Ext/CommandInterface.xml"),
+            r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
         );
         copy_fixture(
             "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",

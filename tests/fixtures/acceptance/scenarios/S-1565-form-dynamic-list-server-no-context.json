@@ -57,11 +57,15 @@
         {
           "pointer": "/data/props/tag",
           "eq": "[Table]"
+        },
+        {
+          "pointer": "/data/branches/1/at",
+          "eq": "main:Catalog.Items.Form.List.Item.List.Event"
         }
       ],
       "captures": {
         "dynamicEvents": {
-          "pointer": "/data/branches/0/at"
+          "pointer": "/data/branches/1/at"
         }
       }
     },

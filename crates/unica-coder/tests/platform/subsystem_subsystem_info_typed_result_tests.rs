@@ -814,7 +814,7 @@ fn subsystem_info_answers_content_and_command_interface_at_once() {
         .command_interface
         .expect("the subsystem ships a command interface");
     assert_eq!(interface.visibility.len(), 1);
-    assert!(!interface.visibility[0].visible);
+    assert_eq!(interface.visibility[0].visible, Some(false));
     let _ = fs::remove_dir_all(root);
 }
 

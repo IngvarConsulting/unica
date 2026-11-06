@@ -58,6 +58,8 @@ std::thread_local! {
     static COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST: std::cell::RefCell<Option<(String, Vec<String>)>> = const { std::cell::RefCell::new(None) };
 }
 
+type TemplateBodyBranches = (Vec<(NodeKind, usize)>, Vec<String>);
+
 /// Counts successful complete typed projections of one address on this thread.
 #[cfg(test)]
 pub(crate) struct CompletedViewProjectionProbeForTest {
@@ -2951,13 +2953,15 @@ impl LogicalViewReadAuthority<'_> {
                 projected = projected.with_prop("format", json!(kind.descriptor_value()));
             }
         }
-        for (kind, count) in self.template_body_branches(&child)? {
-            if count > 0 {
-                projected = projected.with_branch(BranchRef::new(
-                    format!("{}.{}", route.at(), kind.as_str()),
-                    count,
-                ));
-            }
+        let (branches, limits) = self.template_body_branches(&child)?;
+        for (kind, count) in branches {
+            projected = projected.with_branch(BranchRef::new(
+                format!("{}.{}", route.at(), kind.as_str()),
+                count,
+            ));
+        }
+        for limit in limits {
+            projected = projected.with_limit(limit);
         }
         Ok(projected)
     }
@@ -2965,7 +2969,7 @@ impl LogicalViewReadAuthority<'_> {
     fn template_body_branches(
         &self,
         child: &MetadataAddress,
-    ) -> Result<Vec<(NodeKind, usize)>, ViewError> {
+    ) -> Result<TemplateBodyBranches, ViewError> {
         Ok(match self.read.metadata_child_profile(child) {
             Ok(unica_metadata::validation_subject::MetadataChildProfile::Template(
                 unica_metadata::validation_subject::MetadataTemplateType::DataCompositionSchema,
@@ -2973,7 +2977,10 @@ impl LogicalViewReadAuthority<'_> {
                 let payload = self
                     .read
                     .dcs_payload(child, &mut || self.read_checkpoint())?;
-                crate::infrastructure::v13_read_projection::dcs_template_branches(&payload)
+                (
+                    crate::infrastructure::v13_read_projection::dcs_template_branches(&payload),
+                    crate::infrastructure::v13_read_projection::reader_read_limits(&payload),
+                )
             }
             Ok(unica_metadata::validation_subject::MetadataChildProfile::Template(
                 unica_metadata::validation_subject::MetadataTemplateType::SpreadsheetDocument,
@@ -2981,17 +2988,16 @@ impl LogicalViewReadAuthority<'_> {
                 let payload = self
                     .read
                     .mxl_payload(child, false, &mut || self.read_checkpoint())?;
-                vec![(
-                    NodeKind::Area,
-                    payload
-                        .get("areas")
-                        .and_then(Value::as_array)
-                        .map_or(0, Vec::len),
-                )]
+                (
+                    crate::infrastructure::v13_read_projection::mxl_template_branches(&payload),
+                    crate::infrastructure::v13_read_projection::reader_read_limits(&payload),
+                )
             }
             // Text, HTML, binary, add-in and appearance templates have no
             // addressable interior: addressing stops at the template.
-            Ok(unica_metadata::validation_subject::MetadataChildProfile::Template(_)) => Vec::new(),
+            Ok(unica_metadata::validation_subject::MetadataChildProfile::Template(_)) => {
+                (Vec::new(), Vec::new())
+            }
             Ok(
                 unica_metadata::validation_subject::MetadataChildProfile::Form
                 | unica_metadata::validation_subject::MetadataChildProfile::OrdinaryForm
@@ -3002,7 +3008,7 @@ impl LogicalViewReadAuthority<'_> {
                     "template registry points to a non-template descriptor",
                 ));
             }
-            Err(error) if error.code() == RefusalCode::NotFound => Vec::new(),
+            Err(error) if error.code() == RefusalCode::NotFound => (Vec::new(), Vec::new()),
             Err(error) => return Err(error),
         })
     }
@@ -3570,21 +3576,7 @@ fn module_projection_view_data(
                 .collect();
             module_collection(requested, NodeKind::Compilation, items)
         }
-        (NodeKind::Region, None, None) => module_collection(
-            requested,
-            NodeKind::Region,
-            projections
-                .regions()
-                .iter()
-                .map(region_item_value)
-                .collect(),
-        ),
-        (NodeKind::Region, _, _) => {
-            let region = projections
-                .region(&requested.to_string())
-                .map_err(|error| ViewError::new(RefusalCode::NotFound, error.to_string()))?;
-            Ok(NodeViewData::Node(region_node(requested, region)))
-        }
+        (NodeKind::Region, _, _) => region_projection_view(requested, suffix, projections),
         // Срез `Public`/`Library`/`Override` — элемент без адреса: у
         // `Interface` нет имени, и `…Interface.Public` грамматика отвергает.
         // Адресуются методы среза (#1467).
@@ -3797,7 +3789,85 @@ fn method_node_value(method: &MethodProjection) -> Value {
     serde_json::to_value(method_node(method)).unwrap_or(Value::Null)
 }
 
-fn region_node(requested: &QualifiedAddress, region: &RegionProjection) -> NodeView {
+fn region_projection_view(
+    requested: &QualifiedAddress,
+    suffix: &[AddressSegment],
+    projections: &ModuleProjectionSet,
+) -> Result<NodeViewData, ViewError> {
+    if suffix
+        .iter()
+        .any(|segment| segment.kind() != NodeKind::Region)
+        || suffix[..suffix.len().saturating_sub(1)]
+            .iter()
+            .any(|segment| segment.name().is_none())
+    {
+        return Err(ViewError::new(
+            RefusalCode::NotFound,
+            "region projection did not consume the complete suffix",
+        ));
+    }
+    let regions = projections.regions();
+    let mut child_counts = vec![0; regions.len()];
+    for region in regions {
+        if let Some(parent) = region.parent {
+            let count = child_counts.get_mut(parent).ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "BSL region parent is outside its projection",
+                )
+            })?;
+            *count += 1;
+        }
+    }
+    let index_for = |at: &str| {
+        regions
+            .iter()
+            .position(|region| region.at.as_deref() == Some(at))
+            .ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::NotFound,
+                    format!("region `{at}` was not found"),
+                )
+            })
+    };
+    if suffix
+        .last()
+        .is_some_and(|segment| segment.name().is_none())
+    {
+        let parent = if suffix.len() == 1 {
+            None
+        } else {
+            let at = QualifiedAddress {
+                source_set: requested.source_set().to_string(),
+                segments: requested.segments()[..requested.segments().len() - 1].to_vec(),
+                line_range: None,
+            };
+            Some(index_for(&at.to_string())?)
+        };
+        return module_collection(
+            requested,
+            NodeKind::Region,
+            regions
+                .iter()
+                .enumerate()
+                .filter(|(_, region)| parent.is_none_or(|index| region.parent == Some(index)))
+                .map(|(index, region)| region_item_value(region, child_counts[index]))
+                .collect(),
+        );
+    }
+    let index = index_for(&requested.to_string())?;
+    Ok(NodeViewData::Node(region_node(
+        requested,
+        &regions[index],
+        child_counts[index],
+    )))
+}
+
+fn region_node(
+    requested: &QualifiedAddress,
+    region: &RegionProjection,
+    child_count: usize,
+) -> NodeView {
     NodeView::new(
         requested.to_string(),
         NodeKind::Region.as_str(),
@@ -3809,9 +3879,13 @@ fn region_node(requested: &QualifiedAddress, region: &RegionProjection) -> NodeV
             ("children".to_string(), json!(region.children)),
         ]),
     )
+    .with_branches(vec![BranchRef::new(
+        format!("{requested}.Region"),
+        child_count,
+    )])
 }
 
-fn region_item_value(region: &RegionProjection) -> Value {
+fn region_item_value(region: &RegionProjection, child_count: usize) -> Value {
     let Some(at) = region.at.as_deref() else {
         return json!({
             "name": region.name,
@@ -3823,7 +3897,7 @@ fn region_item_value(region: &RegionProjection) -> Value {
     let Ok(at) = QualifiedAddress::parse(at) else {
         return json!({"name": region.name, "addressable": false});
     };
-    serde_json::to_value(region_node(&at, region)).unwrap_or(Value::Null)
+    serde_json::to_value(region_node(&at, region, child_count)).unwrap_or(Value::Null)
 }
 
 pub(super) fn event_node(event: &EventProjection) -> NodeView {

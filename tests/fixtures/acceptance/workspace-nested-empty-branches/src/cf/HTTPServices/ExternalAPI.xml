@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject version="2.20" xmlns="http://v8.1c.ru/8.3/MDClasses">
+  <HTTPService uuid="55555555-5555-4555-8555-555555555555">
+    <Properties><Name>ExternalAPI</Name><RootURL>api</RootURL></Properties>
+    <ChildObjects>
+      <URLTemplate uuid="a461082d-8595-5e19-b327-76947edfd290">
+        <Properties><Name>Empty</Name><Template>/v1/kpi/</Template></Properties>
+        <ChildObjects>
+
+        </ChildObjects>
+      </URLTemplate><URLTemplate uuid="55555555-5555-4555-8555-555555555556">
+        <Properties><Name>Metrics</Name><Template>/v1/kpi/</Template></Properties>
+        <ChildObjects>
+          <Method uuid="55555555-5555-4555-8555-555555555557">
+            <Properties><Name>Get</Name><HTTPMethod>GET</HTTPMethod><Handler>MetricsGet</Handler></Properties>
+          </Method>
+        </ChildObjects>
+      </URLTemplate>
+    </ChildObjects>
+  </HTTPService>
+</MetaDataObject>

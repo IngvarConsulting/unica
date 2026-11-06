@@ -62,6 +62,9 @@ pub struct XdtoBoundsInfo {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XdtoAnonymousTypeInfo {
+    pub properties_complete: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_limits: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base: Option<XdtoQNameInfo>,
     #[serde(skip_serializing_if = "crate::facets::ValueFacets::is_empty")]
@@ -97,6 +100,9 @@ pub struct XdtoQNameInfo {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XdtoTypeInfo {
+    pub properties_complete: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_limits: Vec<String>,
     #[serde(skip_serializing_if = "crate::facets::ValueFacets::is_empty")]
     pub facets: crate::facets::ValueFacets,
     pub kind: XdtoTypeKind,
@@ -123,6 +129,10 @@ pub struct XdtoTypeSummary {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XdtoInfoData {
+    pub types_complete: bool,
+    pub global_properties_complete: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_limits: Vec<String>,
     pub source_set: String,
     pub metadata_path: String,
     pub location: XdtoLocation,
