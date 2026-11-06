@@ -23,11 +23,15 @@ pub struct CfInfoData {
     /// панелями, группа — массив имён. Без документа ключа нет.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub panels: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CfInfoProperties {
+    #[serde(flatten)]
+    pub information: CfInformationProperties,
     pub compatibility_mode: Option<String>,
     pub default_run_mode: Option<String>,
     pub script_variant: Option<String>,
@@ -44,6 +48,29 @@ pub struct CfInfoProperties {
     pub name_prefix: Option<String>,
     pub update_catalog_address: Option<String>,
 }
+
+/// Explicit configuration information; missing and unreadable facts stay unset.
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfInformationProperties {
+    pub use_managed_form_in_ordinary_application: Option<bool>,
+    pub use_ordinary_form_in_managed_application: Option<bool>,
+    pub brief_information: Option<Vec<crate::MetaLocalizedText>>,
+    pub detailed_information: Option<Vec<crate::MetaLocalizedText>>,
+    pub copyright: Option<Vec<crate::MetaLocalizedText>>,
+    pub vendor_information_address: Option<Vec<crate::MetaLocalizedText>>,
+    pub configuration_information_address: Option<Vec<crate::MetaLocalizedText>>,
+}
+
+pub const CONFIGURATION_INFORMATION_PROPERTIES: &[&str] = &[
+    "UseManagedFormInOrdinaryApplication",
+    "UseOrdinaryFormInManagedApplication",
+    "BriefInformation",
+    "DetailedInformation",
+    "Copyright",
+    "VendorInformationAddress",
+    "ConfigurationInformationAddress",
+];
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
