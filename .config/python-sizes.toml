@@ -31,6 +31,14 @@ skip = [
   "tests.dev.test_verify_8_3_27_platform",
 ]
 
+# `medium`, которые очередь исполняет при выборе тестов: смоук продукта и снимки контрактов.
+[queue]
+keep-medium = [
+  "test_smoke_unica_mcp.SmokeUnicaMcpTests",
+  "test_tool_surface_ledger.ToolSurfaceLedgerTests",
+  "test_unica_mcp_smoke.UnicaMcpSmokeTests",
+]
+
 [medium]
 entries = [
   # родной Job Object: запуск CLI-подобного процесса и проверка потомков
