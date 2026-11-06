@@ -3,7 +3,7 @@ name: Unica CI
 # Ворота pull request и очереди слияния: одна джоба Linux без маршрутов.
 # Что идёт, задают профили `pr` и `queue` в `scripts/ci/run-tests.py`
 # и `.config/nextest.toml`. Windows и macOS целиком, тяжёлые тесты и упаковка
-# идут ночью и в выпуске, в `unica-plugin-release.yml`.
+# идут ночью и в выпуске, в `release.yml`.
 on:
   pull_request:
     # Черновик не занимает раннер. Перевод в готовые запускает прогон:

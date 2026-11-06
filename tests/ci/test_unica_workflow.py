@@ -1087,8 +1087,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(cache["with"]["path"], ".build/tool-work/${{ matrix.target }}/cargo-target")
         self.assertEqual(
             normalized(cache["with"]["key"]),
-            "cargo-${{ runner.os }}-${{ matrix.target }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}",
+            "cargo-${{ runner.os }}-${{ matrix.target }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ steps.lock.outputs.hash }}",
         )
+        # Номер alpha в Cargo.lock не меняет ключ: иначе каждая ночь писала бы новую запись.
+        self.assertIn("grep -v -- '-alpha", step_by_id(build, "lock")["run"])
+        self.assertLess(steps(build).index(step_by_id(build, "lock")), steps(build).index(cache))
         self.assertNotIn("restore-keys", cache["with"])
         first_build = next(index for index, step in enumerate(steps(build)) if "scripts/ci/build-unica-tools.py" in step.get("run", ""))
         self.assertLess(steps(build).index(cache), first_build)
@@ -1607,8 +1610,41 @@ class CandidateChannelTests(unittest.TestCase):
         self.assertEqual(needs(stage), ["gate"])
         self.assertEqual(
             condition(stage),
-            "needs.gate.outputs.channel == 'stable' || needs.gate.outputs.channel == 'next'",
+            "${{ !cancelled() && needs.gate.result == 'success' && (needs.gate.outputs.channel == 'stable' || needs.gate.outputs.channel == 'next') }}",
         )
+
+    def test_a_skipped_ancestor_does_not_silently_stop_the_publication(self) -> None:
+        # На теге пропущены `alpha-tag`, проба и `p0-release-proof`. Без статусной
+        # функции GitHub подставляет `success()`, и выпуск молча не доходил бы до
+        # каталога при зелёном прогоне.
+        required = {
+            "gate": ["needs.delivery-ci.result == 'success'"],
+            "stage": ["needs.gate.result == 'success'"],
+            "anchor": ["needs.stage.result == 'success'"],
+            "verify-fresh-install": ["needs.anchor.result == 'success'"],
+            "verify-upgrade": ["needs.anchor.result == 'success'"],
+            "promote": ["needs.anchor.result == 'success'", "needs.verify-fresh-install.result == 'success'",
+                        "needs.verify-upgrade.result == 'success'"],
+        }
+        for job_id, clauses in required.items():
+            with self.subTest(job_id=job_id):
+                gate = normalized(condition(job(self.publish, job_id)))
+                self.assertIn("!cancelled()", gate)
+                for clause in clauses:
+                    self.assertIn(clause, gate)
+        # То же для всех заданий, чей предок может быть пропущен.
+        skippable = {"alpha-tag", "windows-clippy", "probe-thin-bootstrap", "p0-release-proof", "release-assessment"}
+        for job_id, found in jobs(self.release).items():
+            ancestors, frontier = set(), set(needs(found))
+            while frontier:
+                current = frontier.pop()
+                if current not in ancestors:
+                    ancestors.add(current)
+                    frontier |= set(needs(job(self.release, current)))
+            if ancestors & skippable:
+                with self.subTest(job_id=job_id):
+                    gate = condition(found)
+                    self.assertTrue("!cancelled()" in gate or "always()" in gate, gate)
 
     def test_channel_rules_come_from_main_without_credentials(self) -> None:
         # Код тега не исполняется рядом с токеном маркетплейса: правила канала

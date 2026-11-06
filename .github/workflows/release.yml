@@ -637,6 +637,11 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
+      # Номер alpha есть в Cargo.lock: без этой строки каждая ночь промахивалась бы
+      # мимо кэша и писала новую запись на несколько гигабайт.
+      - id: lock
+        shell: bash
+        run: echo "hash=$(grep -v -- '-alpha\.' Cargo.lock | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       # Сборка тега читает только кэш, записанный прогонами main; pull request
       # пишет лишь в свою область и до релизной сборки не дотягивается.
       - id: cargo-cache # zizmor: ignore[cache-poisoning] кэш пишут только прогоны main, pull request в их область не пишет
@@ -645,7 +650,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build/tool-work/${{ matrix.target }}/cargo-target
-          key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ matrix.target }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ steps.lock.outputs.hash }}
       # Скачанные инструменты из tools.lock.json лежат по своей sha256 и сверяются
       # с ней при каждом чтении, поэтому кеш не может подменить инструмент.
       - name: Кэш проверенных инструментов # zizmor: ignore[cache-poisoning] запись кеша адресуется sha256 из lock и сверяется с ней при каждом чтении
@@ -1437,7 +1442,12 @@ jobs:
   # SemVer держит scripts/ci/release-channel.py.
   #
   # Токен маркетплейса лежит в окружении `marketplace`, которое принимает только
-  # теги `v*`. Задания с ним не берут checkout кода тега.
+  # теги `v*`. Задания с ним не берут checkout кода тега, но их шаги приходят из
+  # этого файла на коммите тега: кто ставит тег `v*`, тот задаёт и эти шаги.
+  #
+  # Без статусной функции GitHub подставляет `success()`, а он ложен, если пропущен
+  # любой предок; на теге пропущены `alpha-tag`, проба и `p0-release-proof`. Поэтому
+  # у каждого задания ниже условие явное, иначе выпуск молча не дошёл бы до каталога.
   gate:
     name: Какой канал получит выпуск
     # Канал решает конвейер, а не память того, кто его запускал: стабильный
@@ -1479,7 +1489,7 @@ jobs:
 
   stage:
     needs: gate
-    if: needs.gate.outputs.channel == 'stable' || needs.gate.outputs.channel == 'next'
+    if: ${{ !cancelled() && needs.gate.result == 'success' && (needs.gate.outputs.channel == 'stable' || needs.gate.outputs.channel == 'next') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: marketplace
@@ -1633,6 +1643,7 @@ jobs:
     # Проверкам установки неизменный ref на проверяемых байтах нужен раньше:
     # это якорь `candidate-vX` на коммите stage.
     needs: stage
+    if: ${{ !cancelled() && needs.stage.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: marketplace
@@ -1682,6 +1693,7 @@ jobs:
 
   verify-fresh-install:
     needs: [gate, stage, anchor]
+    if: ${{ !cancelled() && needs.anchor.result == 'success' }}
     environment: marketplace
     strategy:
       fail-fast: false
@@ -1775,6 +1787,7 @@ jobs:
 
   verify-upgrade:
     needs: [gate, stage, anchor]
+    if: ${{ !cancelled() && needs.anchor.result == 'success' }}
     environment: marketplace
     strategy:
       fail-fast: false
@@ -1895,6 +1908,7 @@ jobs:
     # moves a catalog, and it runs only behind green consumer installs. The
     # release tag `vX` is born here, in the same push as the catalog naming it.
     needs: [gate, stage, anchor, verify-fresh-install, verify-upgrade]
+    if: ${{ !cancelled() && needs.anchor.result == 'success' && needs.verify-fresh-install.result == 'success' && needs.verify-upgrade.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: marketplace

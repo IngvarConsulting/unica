@@ -1978,8 +1978,7 @@ class ProductContractTests(unittest.TestCase):
         self.assertIn("needs: [gate, stage, anchor, verify-fresh-install, verify-upgrade]", publish)
         self.assertIn("needs: [gate, stage, anchor]", publish)
         # A published tag never moves; a rerun proves sameness instead.
-        marketplace = publish[publish.index("  gate:
-"):]
+        marketplace = publish[publish.index("  gate:" + chr(10)):]
         self.assertNotIn("git tag -f", marketplace)
         self.assertNotIn("--force", marketplace)
         # No scheduled babysitter exists anymore; the pipeline is one pass.

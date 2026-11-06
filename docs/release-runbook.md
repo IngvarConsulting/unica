@@ -74,7 +74,13 @@ come from the tag is the channel: every marketplace job checks out only
 `scripts/ci/release-channel.py`, sparsely, from `main`, and nothing in those
 jobs checks out the tag's code. `UNICA_MARKETPLACE_TOKEN` lives in the
 `marketplace` environment, which accepts `v*` tags only, so a branch or a manual
-run cannot read it.
+run cannot read it. The jobs holding the token still come from the tagged
+commit's `release.yml`, so whoever can create a `v*` tag defines those steps. Old
+tags also run against the current `release-channel.py` from `main`, so keep its
+commands compatible with them.
+
+The site job deploys through the `github-pages` environment, which must allow
+`main`, `release-v*` and `v*`: a ref it refuses ends the run red after the release.
 
 A release line carries its own `release.yml`. A line without it has no workflow
 that publishes: bring the workflow onto the line before tagging a patch.
