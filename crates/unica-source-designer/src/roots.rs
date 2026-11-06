@@ -285,6 +285,12 @@ mod tests {
             ),
             (
                 "http://v8.1c.ru/8.3/xcf/extrnprops",
+                "Style",
+                ExactRootVersion,
+                ContainerScoped,
+            ),
+            (
+                "http://v8.1c.ru/8.3/xcf/extrnprops",
                 "JobSchedule",
                 ExactRootVersion,
                 ContainerScoped,
