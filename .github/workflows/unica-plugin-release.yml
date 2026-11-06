@@ -12,23 +12,9 @@ on:
         type: choice
         options: [main, large]
         default: main
-  pull_request:
-    # Смена меток не запускает основной workflow: новый suite без `Unica CI`
-    # заменяет для ruleset успешный suite той же головы PR. Метка `ci:full`
-    # читается из снимка pull request при следующем push (`synchronize`).
-    types: [opened, synchronize, reopened]
-  # Очередь слияния: прогон на будущем состоянии main пачкой pull request.
-  # Здесь ловится то, что отбор по размеру на pull request пропускает.
-  merge_group:
-    types: [checks_requested]
-  # Push в релизную линию — ворота линии: очереди там нет, поэтому полный
-  # набор тестов без отбора по файлам и без упаковки; отсюда сайт собирает
-  # отчёт линии (`workflow_run` в unica-pages.yml). Push в `main` приходит из
-  # очереди, и его дерево уже проверено: тестов здесь нет, Rust-джоба идёт
-  # только ради записи кэша зависимостей, когда сменился его ключ или сам
-  # конвейер. Упаковка, холодный старт и оценка остаются у тега и кнопки.
+  # Выпуск по тегу. Ворота pull request и очереди живут в `ci.yml`. Имя workflow
+  # и вход `profile` нужны ночному запуску, сайту и публикации маркетплейса.
   push:
-    branches: [main, "release-v*"]
     tags:
       - "v*"
 

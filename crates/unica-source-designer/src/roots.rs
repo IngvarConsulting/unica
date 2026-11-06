@@ -89,6 +89,13 @@ pub static PLATFORM_XML_ROOTS: &[PlatformXmlRoot] = &[
         publication: PlatformXmlPublicationPolicy::ExactRootVersion,
         owner: PlatformXmlOwnerPolicy::ContainerScoped,
     },
+    // Styles/*/Ext/Style.xml
+    PlatformXmlRoot {
+        namespace: "http://v8.1c.ru/8.3/xcf/extrnprops",
+        local_name: "Style",
+        publication: PlatformXmlPublicationPolicy::ExactRootVersion,
+        owner: PlatformXmlOwnerPolicy::ContainerScoped,
+    },
     // ScheduledJobs/*/Ext/Schedule.xml
     PlatformXmlRoot {
         namespace: "http://v8.1c.ru/8.3/xcf/extrnprops",
@@ -273,6 +280,12 @@ mod tests {
             (
                 "http://v8.1c.ru/8.3/xcf/extrnprops",
                 "ExtPicture",
+                ExactRootVersion,
+                ContainerScoped,
+            ),
+            (
+                "http://v8.1c.ru/8.3/xcf/extrnprops",
+                "Style",
                 ExactRootVersion,
                 ContainerScoped,
             ),

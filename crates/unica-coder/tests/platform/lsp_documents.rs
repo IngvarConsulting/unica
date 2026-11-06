@@ -94,6 +94,16 @@ fn files_and_unica_uris_map_both_ways_and_two_mains_do_not_mix() {
         documents.uri_of_file(&file_uri(&stray)),
         Err(LspDocumentError::NotAModule)
     ));
+    // Neither does an absent file below an absent directory of the source set,
+    // nor one in a sibling whose name only starts with the source set's.
+    assert!(matches!(
+        documents.uri_of_file(&file_uri(&ut.root.join("src/Absent/Other.bsl"))),
+        Err(LspDocumentError::NotAModule)
+    ));
+    assert!(matches!(
+        documents.uri_of_file(&file_uri(&ut.root.join("src-other/Module.bsl"))),
+        Err(LspDocumentError::OutsideSourceSets)
+    ));
     assert!(matches!(
         documents.uri_of_file(&file_uri(&ut.root.join("README.md"))),
         Err(LspDocumentError::OutsideSourceSets)

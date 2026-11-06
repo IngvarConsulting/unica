@@ -28,6 +28,7 @@ import prepared_binary  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 RELEASE_WORKFLOW = WORKFLOWS_DIR / "unica-plugin-release.yml"
+CI_WORKFLOW = WORKFLOWS_DIR / "ci.yml"
 CLIPPY_SCRIPT = REPO_ROOT / "scripts" / "ci" / "clippy.sh"
 NIGHTLY_WORKFLOW = WORKFLOWS_DIR / "unica-nightly.yml"
 PAGES_WORKFLOW = WORKFLOWS_DIR / "unica-pages.yml"
@@ -274,19 +275,26 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("python scripts/ci/check-version-contract.py", script(gate))
 
     def test_label_changes_cannot_replace_the_stable_pull_request_gate(self) -> None:
-        on = triggers(self.release)
+        ci = load(CI_WORKFLOW)
+        on = triggers(ci)
+        ci_gate = job(ci, "unica-ci")
         gate = job(self.release, "unica-ci")
 
         # Изменение метки не должно создавать новый suite этого workflow:
         # ruleset смотрит на последний suite головы PR и перестаёт видеть
         # обязательный `Unica CI`, если тот suite состоит из skipped-джоб.
-        self.assertEqual(on["pull_request"]["types"], ["opened", "synchronize", "reopened"])
+        self.assertEqual(on["pull_request"]["types"], ["opened", "synchronize", "reopened", "ready_for_review"])
         self.assertNotIn("paths", on["pull_request"])
-        self.assertNotIn("paths", on["push"])
         self.assertNotIn("label ignored", "\n".join(strings(self.release)))
-        self.assertEqual(gate["name"], "Unica CI")
+        self.assertEqual(ci_gate["name"], "Unica CI")
         # Пропущенную обязательную проверку ruleset засчитал бы как пройденную:
-        # у гейта нет ни условия, ни `needs`, которые могли бы его пропустить.
+        # условие пропускает только черновик, который влить нельзя, а `needs` нет.
+        self.assertEqual(
+            normalized(ci_gate["if"]),
+            "${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}",
+        )
+        self.assertEqual(needs(ci_gate), [])
+        self.assertEqual(gate["name"], "Unica CI")
         self.assertNotIn("if", gate)
         self.assertEqual(needs(gate), [])
         self.assertEqual(
@@ -734,12 +742,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertNotIn("github.event_name == 'pull_request'", probe)
         self.assertIn("startsWith(github.ref, 'refs/tags/')", publish)
 
-    def test_release_line_push_is_the_gate_the_site_reports_from(self) -> None:
-        """Push в релизную линию гоняет все тесты: очереди там нет, отсюда сайт берёт отчёт линии."""
-        push = triggers(self.release)["push"]
+    def test_release_workflow_runs_only_by_tag_and_dispatch(self) -> None:
+        """Ворота pull request и очереди живут в `ci.yml`, здесь выпуск и кнопка."""
+        on = triggers(self.release)
 
-        self.assertEqual(push["branches"], ["main", "release-v*"])
-        self.assertEqual(push["tags"], ["v*"])
+        self.assertEqual(set(on), {"workflow_dispatch", "push"})
+        self.assertEqual(on["push"], {"tags": ["v*"]})
 
     def test_main_push_after_the_queue_only_refreshes_the_dependency_cache(self) -> None:
         main_push = "(github.event_name == 'push' && github.ref == 'refs/heads/main')"
@@ -1044,8 +1052,13 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             "github.event_name == 'workflow_dispatch' && inputs.profile || "
             "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')) && 'release' || 'main' }}",
         )
-        # Очередь слияния: конвейер отвечает на merge_group, иначе очередь ждёт вечно.
-        self.assertEqual(triggers(self.release)["merge_group"], {"types": ["checks_requested"]})
+        # Очередь слияния: ворота отвечают на merge_group, иначе очередь ждёт вечно.
+        ci = load(CI_WORKFLOW)
+        self.assertEqual(triggers(ci)["merge_group"], {"types": ["checks_requested"]})
+        self.assertEqual(
+            normalized(ci["env"]["GATE_PROFILE"]),
+            "${{ github.event_name == 'merge_group' && 'queue' || 'pr' }}",
+        )
         self.assertNotIn("run-tests.py --profile all", all_scripts(self.release))
 
     def test_line_rides_in_the_signature_and_tags_resolve_to_a_release_line(self) -> None:

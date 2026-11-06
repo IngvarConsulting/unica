@@ -561,6 +561,11 @@ pub fn parse_bsl_analyzer_search(
             )
             .expect("dependency-pending bsl-analyzer section is valid");
         }
+        if let Some(raw_hits) = envelope.get("hits").and_then(Value::as_array) {
+            let mut locations =
+                SearchLocationProjector::with_resolver(context, cancellation, bindings.resolver);
+            return parse_bsl_analyzer_search_envelope(&envelope, raw_hits, &mut locations);
+        }
         return failed_section(
             ProviderId::BslAnalyzer,
             format!("unexpected bsl-analyzer search envelope: {trimmed}"),
@@ -673,6 +678,112 @@ pub fn parse_bsl_analyzer_search(
     };
     section.unwrap_or_else(|error| {
         ProviderSearchSection::failed(ProviderId::BslAnalyzer.identity(), error)
+    })
+}
+
+/// Ответ анализатора, упёршийся в свой бюджет вывода: вместо текста он отдаёт
+/// JSON с теми же попаданиями, а лишние отбрасывает (`shown` меньше `total`).
+/// На большой конфигурации так отвечает обычный запрос, поэтому это частичный
+/// результат, а не сбой поставщика.
+fn parse_bsl_analyzer_search_envelope(
+    envelope: &Value,
+    raw_hits: &[Value],
+    locations: &mut SearchLocationProjector<'_>,
+) -> ProviderSearchSection {
+    let mut diagnostics: Vec<String> = envelope
+        .pointer("/freshness/completeness/reasons")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|reason| reason.get("detail").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    let mut hits = Vec::new();
+    let mut discarded_result = false;
+    for raw in raw_hits {
+        match parse_bsl_analyzer_envelope_hit(raw, locations) {
+            Ok(hit) => hits.push(hit),
+            Err(error) if error.starts_with(CANCELLED_PREFIX) => {
+                return failed_section(ProviderId::BslAnalyzer, error);
+            }
+            Err(error) => {
+                discarded_result = true;
+                diagnostics.push(format!(
+                    "ignored malformed bsl-analyzer search hit: {error}"
+                ));
+            }
+        }
+    }
+    if hits.is_empty() {
+        diagnostics.insert(
+            0,
+            "bsl-analyzer returned an envelope without any valid search hits".to_string(),
+        );
+        return ProviderSearchSection::failed(
+            ProviderId::BslAnalyzer.identity(),
+            diagnostics.join("; "),
+        );
+    }
+    for (index, hit) in hits.iter_mut().enumerate() {
+        hit.rank = Some(index + 1);
+    }
+    let budget_exhausted = envelope.get("budget_exhausted").and_then(Value::as_bool) == Some(true);
+    let section = if budget_exhausted || discarded_result {
+        ProviderSearchSection::partial(
+            ProviderId::BslAnalyzer.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    } else {
+        ProviderSearchSection::complete(
+            ProviderId::BslAnalyzer.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    };
+    section.unwrap_or_else(|error| {
+        ProviderSearchSection::failed(ProviderId::BslAnalyzer.identity(), error)
+    })
+}
+
+fn parse_bsl_analyzer_envelope_hit(
+    raw: &Value,
+    locations: &mut SearchLocationProjector<'_>,
+) -> Result<ProviderSearchHit, String> {
+    let text = |field: &str| raw.get(field).and_then(Value::as_str);
+    let path = raw
+        .pointer("/location/path")
+        .and_then(Value::as_str)
+        .or_else(|| text("path"))
+        .ok_or_else(|| "path is missing".to_string())?;
+    let line = raw
+        .get("line_start")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "line start is missing".to_string())? as usize;
+    let mut attributes = Map::new();
+    if let Some(modality) = text("modality") {
+        attributes.insert("modality".to_string(), json!(modality));
+    }
+    if let Some(graph_id) = text("graph_id") {
+        attributes.insert("graphId".to_string(), json!(graph_id));
+    }
+    Ok(ProviderSearchHit {
+        rank: None,
+        provider_score: None,
+        location: locations.project(Path::new(path))?,
+        line,
+        end_line: raw
+            .get("line_end")
+            .and_then(Value::as_u64)
+            .map(|line| line as usize),
+        symbol: text("symbol").map(str::to_string),
+        kind: text("kind").map(str::to_string),
+        snippet: text("snippet").unwrap_or_default().to_string(),
+        attributes,
     })
 }
 
