@@ -224,7 +224,7 @@ CI выбирает профиль по событию: pull request испол�
 Порядок ворот описан в [разделе CONTRIBUTING](../../../CONTRIBUTING.md#ворота-pull-request).
 
 На PR тестов Rust нет, поэтому перед снятием черновика обязателен локальный прогон
-затронутых крейтов (при правке строк `pub` — и прямо зависимых):
+затронутых крейтов:
 `python scripts/ci/run-static-tests.py` и
 `cargo nextest run --profile queue -p <крейт>`.
 
