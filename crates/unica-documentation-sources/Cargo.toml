@@ -31,4 +31,4 @@ tempfile.workspace = true
 unica-network = { path = "../unica-network", features = ["test-support"] }
 
 [package.metadata.unica]
-read-outside-baseline = 1
+inputs = ["crates/unica-metadata/src/platform-event-catalog-8.3.27.2074.json"]

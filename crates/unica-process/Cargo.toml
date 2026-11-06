@@ -26,4 +26,4 @@ uuid.workspace = true
 tempfile.workspace = true
 
 [package.metadata.unica]
-read-outside-baseline = 1
+inputs = ["tests/fixtures/analyzer/private-failure-producer.rs"]
