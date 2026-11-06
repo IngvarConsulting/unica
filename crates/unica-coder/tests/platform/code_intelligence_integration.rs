@@ -806,6 +806,48 @@ mod medium_tests {
     /// rule: INV.APP.CODE-SEARCH-SOURCE-BOUNDARIES
     #[test]
     fn git_grep_excludes_the_generated_cache_from_the_lexical_corpus() {
+        struct TracedGit;
+        impl ProcessRunner for TracedGit {
+            fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+                unica_process::runner::system_process_runner().run(command)
+            }
+
+            fn run_streaming(
+                &self,
+                command: &ProcessCommand,
+                max_line_bytes: usize,
+                on_line: &mut dyn FnMut(usize, &[u8]) -> unica_process::StreamControl,
+            ) -> Result<unica_process::runner::ProcessStreamOutput, String> {
+                eprintln!("git-grep command={command:?}");
+                let mut records = 0;
+                let started = Instant::now();
+                let result = unica_process::runner::system_process_runner().run_streaming(
+                    command,
+                    max_line_bytes,
+                    &mut |number, bytes| {
+                        records += 1;
+                        let reply = on_line(number, bytes);
+                        eprintln!("git-grep record={number} bytes={bytes:?} consumer={reply:?}");
+                        reply
+                    },
+                );
+                eprintln!(
+                    "git-grep stream elapsed={:?} records={records} result={result:?}",
+                    started.elapsed()
+                );
+                // Compare the same command after a missing record without
+                // replacing or retrying the provider result.
+                if records == 0 {
+                    let mut diagnostic_command = command.clone();
+                    diagnostic_command.capture_limits = Some((4096, 4096));
+                    diagnostic_command.timeout = Some(Duration::from_secs(2));
+                    let direct =
+                        unica_process::runner::system_process_runner().run(&diagnostic_command);
+                    eprintln!("git-grep direct={direct:?}");
+                }
+                result
+            }
+        }
         let root = std::env::temp_dir().join(format!(
             "unica-git-grep-generated-cache-{}-{}",
             std::process::id(),
@@ -833,6 +875,14 @@ mod medium_tests {
         std::fs::write(&database, &database_bytes).unwrap();
         std::fs::write(&sidecar, "index entry ПолитикаУчетаСерий\n").unwrap();
         std::fs::write(&nested, "index entry ПолитикаУчетаСерий\n").unwrap();
+        // BSL-shaped cache entries pass the positive corpus pathspec; only
+        // the generated-directory exclusion can keep them out of the result.
+        for generated in [
+            source_root.join(".build/Module.bsl"),
+            source_root.join("Catalogs/.build/Module.bsl"),
+        ] {
+            std::fs::write(generated, "// ПолитикаУчетаСерий\n").unwrap();
+        }
         std::fs::write(&module, "// ПолитикаУчетаСерий\n").unwrap();
         assert!(std::process::Command::new("git")
             .args(["init", "--quiet"])
@@ -860,7 +910,11 @@ mod medium_tests {
         // One result is the whole budget here: the generated file would take it
         // and leave the module unreachable, so the assertion below states which
         // of the two the lexical role is allowed to spend it on.
-        let section = crate::infrastructure::analysis_composition::lexical_provider().search(
+        let section = GitGrepProvider::with_runner(
+            &TracedGit,
+            crate::infrastructure::analysis_composition::source_bindings(),
+        )
+        .search(
             &SearchRequest {
                 query: "ПолитикаУчетаСерий".to_string(),
                 limit: 1,
@@ -879,7 +933,12 @@ mod medium_tests {
             !paths.iter().any(|path| path.contains(".build")),
             "the generated cache is outside the lexical corpus: {paths:?}"
         );
-        assert_eq!(paths, ["CommonModules/Продажи/Ext/Module.bsl"]);
+        eprintln!("git-grep section={section:#?}");
+        assert_eq!(
+            paths,
+            ["CommonModules/Продажи/Ext/Module.bsl"],
+            "{section:#?}"
+        );
         assert!(
             section.diagnostics.is_empty(),
             "an excluded corpus reports nothing about it: {:?}",

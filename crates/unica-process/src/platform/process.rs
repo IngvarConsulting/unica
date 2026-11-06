@@ -3425,6 +3425,7 @@ where
                 let count = match pipe.read(&mut chunk) {
                     Ok(0) => break,
                     Ok(count) => count,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) => {
                         let _ = sender.send(LineMessage::ReadError(line_number, error.to_string()));
                         return;
@@ -6662,6 +6663,120 @@ mod medium_tests {
         assert!(!output.timed_out && !output.cancelled && output.line_error.is_none());
         assert_eq!(output.stderr, "stderr-before\nstderr-after\n");
         assert_eq!(managed.state, ChildState::Reaped);
+    }
+
+    #[cfg(unix)]
+    struct InterruptedChildStdout {
+        pipe: std::process::ChildStdout,
+        delivery_gate: Option<std::sync::mpsc::Receiver<()>>,
+        bytes_before_interrupt: usize,
+        interrupted: bool,
+    }
+
+    #[cfg(unix)]
+    impl Read for InterruptedChildStdout {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(gate) = self.delivery_gate.take() {
+                gate.recv_timeout(Duration::from_secs(5))
+                    .expect("leader exit must release stdout delivery");
+            }
+            if !self.interrupted && self.bytes_before_interrupt == 0 {
+                self.interrupted = true;
+                return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+            }
+            let limit = if self.interrupted {
+                bytes.len()
+            } else {
+                bytes.len().min(self.bytes_before_interrupt)
+            };
+            let count = self.pipe.read(&mut bytes[..limit])?;
+            if !self.interrupted {
+                self.bytes_before_interrupt -= count;
+            }
+            Ok(count)
+        }
+    }
+
+    #[cfg(unix)]
+    fn assert_interrupted_child_stdout_preserves_record(bytes_before_interrupt: usize) {
+        let record = concat!(
+            "CommonModules/Продажи/Ext/Module.bsl\0",
+            "1\0// ПолитикаУчетаСерий"
+        );
+        // The child produces actual NUL-delimited Git-shaped bytes in an OS
+        // pipe. The wrapper injects only the transient read failure, never a
+        // substitute record or captured process output.
+        let mut child = ChildCleanupGuard(Some(
+            Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "printf 'CommonModules/Продажи/Ext/Module.bsl\\0001\\000// ПолитикаУчетаСерий\\n'",
+                ])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        let pipe = child.child_mut().stdout.take().unwrap();
+        let (release, delivery_gate) = std::sync::mpsc::channel();
+        let stdout = super::start_line_reader(
+            Some(InterruptedChildStdout {
+                pipe,
+                delivery_gate: Some(delivery_gate),
+                bytes_before_interrupt,
+                interrupted: false,
+            }),
+            super::StreamFraming::Lines { max_bytes: 1024 },
+        );
+        let stderr =
+            super::start_reader(child.child_mut().stderr.take(), super::STDERR_CAPTURE_LIMIT);
+        // No reader callback can run until the real child has exited. This
+        // exercises the completed-process drain independently of scheduling.
+        let status = child.child_mut().wait().unwrap();
+        assert!(status.success());
+        release.send(()).unwrap();
+        let mut records = Vec::new();
+        let mut first_error = None;
+        let output = super::finish_completed_line_output(
+            status,
+            &stdout,
+            stderr,
+            &mut |number, bytes: &[u8]| {
+                records.push((number, bytes.to_vec()));
+                StreamControl::Continue
+            },
+            &mut first_error,
+        );
+        assert!(output.status_success, "{output:?}");
+        assert!(!output.timed_out && !output.cancelled && !output.stopped_by_consumer);
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert!(
+            output.line_error.is_none(),
+            "{output:?}; records={records:?}"
+        );
+        assert_eq!(records, [(1, record.as_bytes().to_vec())], "{output:?}");
+    }
+
+    #[cfg_attr(
+        not(unix),
+        ignore = "host capability Unix shell: fixture writes stdout through /bin/sh"
+    )]
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    #[test]
+    fn interrupted_stdout_before_first_record_survives_leader_exit() {
+        #[cfg(unix)]
+        assert_interrupted_child_stdout_preserves_record(0);
+    }
+
+    #[cfg_attr(
+        not(unix),
+        ignore = "host capability Unix shell: fixture writes stdout through /bin/sh"
+    )]
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    #[test]
+    fn interrupted_stdout_between_fragments_survives_leader_exit() {
+        #[cfg(unix)]
+        assert_interrupted_child_stdout_preserves_record(7);
     }
 
     enum ControlledReaderFault {
