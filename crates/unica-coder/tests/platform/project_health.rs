@@ -1773,12 +1773,13 @@ fn root_answer(workspace: &Path, tool: &str) -> StatusResult {
 
     let structured = response["result"]["structuredContent"].clone();
     let ok = structured["ok"] == Value::Bool(true);
-    // Diagnostics live under `data`, and a call that fails before producing a
-    // structured answer carries none: reading them from the wrong place left
-    // every failure reporting an empty list. The JSON-RPC error is the
-    // fallback, so a refusal names itself instead of showing `[]`.
+    // A verdict carries its diagnostics under `data`, a refusal at the top of
+    // the result, and a call that fails before producing a structured answer
+    // carries none: the JSON-RPC error is the fallback, so a refusal names
+    // itself instead of showing `[]`.
     let errors = structured["data"]["diagnostics"]
         .as_array()
+        .or_else(|| structured["diagnostics"].as_array())
         .map(|items| {
             items
                 .iter()

@@ -668,14 +668,14 @@ fn two_frontends_reuse_the_actor_for_one_canonical_worktree() {
         .get_or_create(
             &first_context,
             [source_input("main", &source)],
-            "legacy-bsl-rlm",
+            "legacy-bsl",
         )
         .unwrap();
     let second = registry
         .get_or_create(
             &second_context,
             [source_input("main", root.join("frontend/../src"))],
-            "legacy-bsl-rlm",
+            "legacy-bsl",
         )
         .unwrap();
 

@@ -92,7 +92,7 @@ mod tests {
     fn a_working_state_serializes_with_the_protocol_vocabulary() {
         let state = WorkState {
             status: WorkStatus::Working,
-            status_message: "delivering rlm-tools-bsl: 12 of 69 bytes".to_owned(),
+            status_message: "delivering bsl-analyzer: 12 of 69 bytes".to_owned(),
             poll_interval_ms: Some(5_000),
         };
 

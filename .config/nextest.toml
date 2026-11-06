@@ -451,6 +451,14 @@ workspace-stdio = { max-threads = 1 }
 filter = 'binary(unica_coder) & test(/^infrastructure::daemon::medium_receipt_runtime_tests::(exact|task_id)_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled$/)'
 threads-required = "num-cpus"
 
+# Сравнивает задержку вызова MCP под потоком hover с задержкой без него. Обе
+# медианы снимаются по очереди, поэтому соседи по прогону, появившиеся между
+# замерами, выглядят как задержка от LSP. Допуск не меняется; тест занимает
+# машину целиком, и замеры делят её только с его собственным потоком hover.
+[[profile.default.overrides]]
+filter = 'binary(unica_coder) & test(/^interfaces::lsp::tests::medium_an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call$/)'
+threads-required = "num-cpus"
+
 [[profile.default.overrides]]
 filter = 'binary(unica_coder) & test(/^infrastructure::daemon::medium_receipt_runtime_tests::/)'
 test-group = "receipt-runtime"

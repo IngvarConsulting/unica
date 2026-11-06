@@ -104,6 +104,54 @@
       "review": null
     },
     {
+      "id": "bsl-analyzer.search-output-budget-tokens",
+      "class": "step",
+      "resource": "Бюджет вывода одного запроса search_code к анализатору",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-adapter-bsl-analyzer/src/provider.rs",
+        "symbol": "BSL_ANALYZER_SEARCH_OUTPUT_BUDGET"
+      },
+      "expr": "50_000",
+      "value": 50000,
+      "applied": [
+        "crates/unica-adapter-bsl-analyzer/src/provider.rs"
+      ],
+      "status": "unproven",
+      "origin": "умолчание анализатора 6000 токенов срезало окно до 9–10 попаданий на настоящей конфигурации",
+      "problem": "без явного бюджета анализатор обрезал результат раньше своего предела в 50 попаданий",
+      "onReach": "секция сообщает limitReached и нижнюю оценку, причина остаётся в диагностике",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": "50 попаданий на Бухгалтерии для Казахстана заняли 25 КБ текста; предел проверен на одной конфигурации"
+    },
+    {
+      "id": "bsl-analyzer.stderr-reason-chars",
+      "class": "step",
+      "resource": "Длина причины из stderr анализатора в ответе поиска",
+      "unit": "chars",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-adapter-bsl-analyzer/src/provider.rs",
+        "symbol": "BSL_ANALYZER_STDERR_REASON_MAX_CHARS"
+      },
+      "expr": "300",
+      "value": 300,
+      "applied": [
+        "crates/unica-adapter-bsl-analyzer/src/provider.rs"
+      ],
+      "status": "unproven",
+      "origin": "журнал сборки индекса занимал страницу ответа и вытеснял попадания",
+      "problem": "журнал процесса растёт вместе с процессом, а в ответ нужна короткая причина",
+      "onReach": "строка обрезается; журнал в ответ не попадает",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": "предел одной строки причины; журнал отсекается независимо от него"
+    },
+    {
       "id": "bsl-analyzer.cancel-notice-timeout-ms",
       "class": "deadline",
       "resource": "Срок записи уведомления notifications/cancelled для вызова анализатора, брошенного по сроку или отмене.",
@@ -147,155 +195,6 @@
       "origin": "f06737f56",
       "problem": null,
       "onReach": "строка длиннее предела прерывает поток лексического поиска ошибкой",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
-      "id": "rlm.generation-collection-interval",
-      "class": "retry",
-      "resource": "Наименьшая пауза между осмотрами одного корня пары рабочего пространства и исходников уборкой прежних поколений RLM в одном процессе.",
-      "unit": "ms",
-      "scope": "process",
-      "source": {
-        "file": "crates/unica-adapter-rlm/src/generation_collection.rs",
-        "symbol": "COLLECTION_RETRY_AFTER"
-      },
-      "expr": "Duration::from_secs(60 * 60)",
-      "value": 3600000,
-      "applied": [
-        "crates/unica-adapter-rlm/src/generation_collection.rs"
-      ],
-      "status": "unproven",
-      "origin": "#1277",
-      "problem": null,
-      "onReach": "повторная уборка той же пары раньше часа не запускается; чтение индекса идёт без неё",
-      "issue": null,
-      "evidence": [],
-      "decision": {
-        "date": "2026-10-07",
-        "text": "закреплено правилом INV.CACHE.RLM-GENERATION-COLLECTION",
-        "source": "arch/rules/analysis/rlm-generation-collection.md"
-      },
-      "review": null
-    },
-    {
-      "id": "rlm.idle-walk-depth",
-      "class": "format",
-      "resource": "Глубина обхода каталога поколения индекса RLM при проверке его простоя.",
-      "unit": "depth",
-      "scope": "traversal",
-      "source": {
-        "file": "crates/unica-adapter-rlm/src/generation_collection.rs",
-        "symbol": "MAX_IDLE_WALK_DEPTH"
-      },
-      "expr": "6",
-      "value": 6,
-      "applied": [
-        "crates/unica-adapter-rlm/src/generation_collection.rs"
-      ],
-      "status": "unproven",
-      "origin": "#1277",
-      "problem": "необойдённое содержимое не может доказать простой поколения",
-      "onReach": "тихо: непустой каталог на этой глубине не обходится, поколение считается занятым и сохраняется",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
-      "id": "rlm.index-info-timeout",
-      "class": "deadline",
-      "resource": "Срок команды `rlm-bsl-index index info` при проверке состояния индекса RLM.",
-      "unit": "ms",
-      "scope": "process",
-      "source": {
-        "file": "crates/unica-adapter-rlm/src/index.rs",
-        "symbol": "INDEX_TIMEOUT"
-      },
-      "expr": "Duration::from_secs(30)",
-      "value": 30000,
-      "applied": [
-        "crates/unica-adapter-rlm/src/index.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит 198e09871 (v15)",
-      "problem": null,
-      "onReach": "процесс прерывается по сроку, проверка индекса завершается ошибкой таймаута",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
-      "id": "rlm.index-lock-heartbeat",
-      "class": "step",
-      "resource": "Интервал обновления аренды блокировки построителя индекса RLM, пока идёт сборка.",
-      "unit": "ms",
-      "scope": "process",
-      "source": {
-        "file": "crates/unica-adapter-rlm/src/index.rs",
-        "symbol": "LOCK_HEARTBEAT_INTERVAL"
-      },
-      "expr": "Duration::from_secs(5)",
-      "value": 5000,
-      "applied": [
-        "crates/unica-adapter-rlm/src/index.rs"
-      ],
-      "status": "unproven",
-      "origin": "коммит fab3e74d9 (Recover stale RLM index locks)",
-      "problem": null,
-      "onReach": "по истечении интервала аренда обновляется; если обновить не удалось, владение считается потерянным и сборка отменяется",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
-      "id": "rlm.index-process-timeout",
-      "class": "deadline",
-      "resource": "Срок процесса построения индекса RLM.",
-      "unit": "ms",
-      "scope": "process",
-      "source": {
-        "file": "crates/unica-adapter-rlm/src/index.rs",
-        "literal": "timeout: Duration::from_secs(24 * 60 * 60)",
-        "count": 1
-      },
-      "expr": "Duration::from_secs(24 * 60 * 60)",
-      "value": 86400000,
-      "applied": [
-        "crates/unica-adapter-rlm/src/index.rs"
-      ],
-      "status": "unproven",
-      "origin": null,
-      "problem": null,
-      "onReach": "процесс индексации прерывается по сроку",
-      "issue": null,
-      "evidence": [],
-      "decision": null,
-      "review": null
-    },
-    {
-      "id": "rlm.logical-session-retries",
-      "class": "retry",
-      "resource": "Число повторных попыток открыть логическую сессию RLM или выполнить в ней операцию после повторяемой ошибки.",
-      "unit": "count",
-      "scope": "operation",
-      "source": {
-        "file": "crates/unica-adapter-rlm/src/session.rs",
-        "symbol": "RLM_LOGICAL_SESSION_RETRY_LIMIT"
-      },
-      "expr": "2",
-      "value": 2,
-      "applied": [
-        "crates/unica-adapter-rlm/src/session.rs"
-      ],
-      "status": "unproven",
-      "origin": "#231",
-      "problem": null,
-      "onReach": "после второго повтора возвращается последняя ошибка сессии RLM",
       "issue": null,
       "evidence": [],
       "decision": null,
@@ -508,7 +407,7 @@
     {
       "id": "service.request-timeout",
       "class": "deadline",
-      "resource": "Внутреннее умолчание срока рабочего запроса к workspace-сервису (RLM, анализатор BSL) без явного срока вызывающего.",
+      "resource": "Внутреннее умолчание срока рабочего запроса к workspace-сервису (анализатор BSL) без явного срока вызывающего.",
       "unit": "ms",
       "scope": "request",
       "source": {
@@ -560,7 +459,7 @@
     {
       "id": "service.session-teardown-grace",
       "class": "deadline",
-      "resource": "Срок остановки сессий поставщиков и фоновых задач обслуживания RLM при выходе workspace-сервиса.",
+      "resource": "Срок остановки сессий поставщиков при выходе workspace-сервиса.",
       "unit": "ms",
       "scope": "process",
       "source": {
@@ -926,14 +825,14 @@
       "review": null
     },
     {
-      "id": "search.rlm-timeout-default",
+      "id": "search.semantic-timeout-default",
       "class": "deadline",
-      "resource": "Срок поставщика семантического поиска (RLM) по умолчанию.",
+      "resource": "Срок поставщика смыслового поиска по умолчанию.",
       "unit": "s",
       "scope": "request",
       "source": {
         "file": "crates/unica-code-intelligence/src/deadlines.rs",
-        "symbol": "SEARCH_RLM_DEFAULT_SECONDS"
+        "symbol": "SEARCH_SEMANTIC_DEFAULT_SECONDS"
       },
       "expr": "300",
       "value": 300,

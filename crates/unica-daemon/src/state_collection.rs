@@ -188,7 +188,7 @@ mod tests {
             .unwrap();
         let retired_protocol = root.join(format!("daemon-p3-{}", "d".repeat(64)));
         std::fs::create_dir(&retired_protocol).unwrap();
-        let unrelated = root.join("rlm-index");
+        let unrelated = root.join("provider-index");
         std::fs::create_dir(&unrelated).unwrap();
         let interrupted = root.join(format!("{TRASH_PREFIX}left-over"));
         std::fs::create_dir_all(interrupted.join("receipts")).unwrap();

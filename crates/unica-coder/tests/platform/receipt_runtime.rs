@@ -5092,7 +5092,7 @@ impl crate::infrastructure::daemon::server::CanonicalInvocationService for IdleI
         let release = Arc::clone(&self.release);
         let (_, lease) = invocation
             .join_index_work(
-                "rlm",
+                "bsl-analyzer",
                 "idle-test-profile",
                 "idle-test-generation",
                 move |_| {
@@ -6338,7 +6338,10 @@ fn wait_task_terminal(
         ) {
             return snapshot;
         }
-        assert!(Instant::now() < until, "Task stayed open past {limit:?}");
+        assert!(
+            Instant::now() < until,
+            "Task stayed open past {limit:?}: {snapshot:?}"
+        );
     }
 }
 

@@ -94,6 +94,16 @@ fn files_and_unica_uris_map_both_ways_and_two_mains_do_not_mix() {
         documents.uri_of_file(&file_uri(&stray)),
         Err(LspDocumentError::NotAModule)
     ));
+    // Neither does an absent file below an absent directory of the source set,
+    // nor one in a sibling whose name only starts with the source set's.
+    assert!(matches!(
+        documents.uri_of_file(&file_uri(&ut.root.join("src/Absent/Other.bsl"))),
+        Err(LspDocumentError::NotAModule)
+    ));
+    assert!(matches!(
+        documents.uri_of_file(&file_uri(&ut.root.join("src-other/Module.bsl"))),
+        Err(LspDocumentError::OutsideSourceSets)
+    ));
     assert!(matches!(
         documents.uri_of_file(&file_uri(&ut.root.join("README.md"))),
         Err(LspDocumentError::OutsideSourceSets)
@@ -319,4 +329,27 @@ fn unica_uris_of_common_object_and_form_modules_read_the_disk_without_open() {
         }
         assert_eq!(documents.file_of_uri(&uri).unwrap(), file_uri(&path));
     }
+}
+
+/// `src` and `SRC` are one directory on Windows: the file has no single source
+/// set, and the connection says so rather than choosing one.
+#[cfg(windows)]
+#[test]
+fn source_sets_differing_only_in_letter_case_do_not_merge_silently() {
+    let space = space("");
+    let mut shared = layout("shared", &space.root);
+    let mut other = shared.source_sets[0].clone();
+    other.name = "other".to_owned();
+    other.root = space.root.join("SRC");
+    shared.source_sets.push(other);
+    let documents = LspDocuments::new("session", vec![shared]);
+
+    let error = documents
+        .uri_of_file(&file_uri(&space.root.join("src").join(MODULE)))
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, LspDocumentError::AmbiguousSourceSet(names) if names.len() == 2),
+        "{error:?}"
+    );
 }

@@ -40,7 +40,7 @@ struct ManifestTool {
     name: String,
     version: Option<String>,
     /// Из какого архива приходит инструмент. Несколько инструментов делят
-    /// один: `rlm-tools-bsl` несёт два. Отсутствует — артефакт зовётся как
+    /// один: `archive-tools` несёт два. Отсутствует — артефакт зовётся как
     /// инструмент.
     artifact: Option<String>,
     binaries: Option<BTreeMap<String, ManifestBinary>>,
@@ -364,7 +364,7 @@ fn artifact_delivery_key(
 }
 
 /// Имя архива, в котором приезжает инструмент. Несколько инструментов делят
-/// один: `rlm-tools-bsl` несёт два.
+/// один: `archive-tools` несёт два.
 pub(crate) fn artifact_for(plugin_root: &Path, tool_name: &str) -> Option<String> {
     let manifest = read_manifest(plugin_root)?;
     let tool = manifest.tools.iter().find(|tool| tool.name == tool_name)?;
@@ -913,11 +913,15 @@ mod medium_tests {
 
     #[test]
     fn tools_sharing_one_archive_resolve_to_one_artifact() {
-        // rlm-tools-bsl несёт два инструмента в одном файле на 69 МБ: кеш по
+        // archive-tools несёт два инструмента в одном файле на 69 МБ: кеш по
         // имени инструмента скачал бы его дважды.
         let plugin_root = temp_plugin_root("shared-artifact");
         fs::create_dir_all(plugin_root.join("bin/darwin-arm64")).unwrap();
-        fs::write(plugin_root.join("bin/darwin-arm64/rlm-bsl-index"), "index").unwrap();
+        fs::write(
+            plugin_root.join("bin/darwin-arm64/archive-tool-index"),
+            "index",
+        )
+        .unwrap();
         fs::write(
             plugin_root.join("third-party/manifest.json"),
             r#"{
@@ -925,10 +929,10 @@ mod medium_tests {
   "targetTriple": "aarch64-apple-darwin",
   "tools": [
     {
-      "name": "rlm-bsl-index",
+      "name": "archive-tool-index",
       "version": "1.33.0",
-      "artifact": "rlm-tools-bsl",
-      "binaryPath": "bin/darwin-arm64/rlm-bsl-index",
+      "artifact": "archive-tools",
+      "binaryPath": "bin/darwin-arm64/archive-tool-index",
       "sha256": "3c9b8f2e6d1a4c7b0e5f8a2d6c9b3e7f1a4d8c2b5e9f3a7d1c4b8e2f6a9d3c7b"
     }
   ]
@@ -937,17 +941,17 @@ mod medium_tests {
         .unwrap();
         let cache = plugin_root.join("..").join("shared-cache");
         let installed = cache
-            .join("rlm-tools-bsl")
+            .join("archive-tools")
             .join("1.33.0")
             .join("darwin-arm64")
             .join("bin/darwin-arm64");
         fs::create_dir_all(&installed).unwrap();
-        fs::write(installed.join("rlm-bsl-index"), "index").unwrap();
+        fs::write(installed.join("archive-tool-index"), "index").unwrap();
 
         let tool = resolve_bundled_tool_in(
             &plugin_root,
             Some(cache.as_path()),
-            "rlm-bsl-index",
+            "archive-tool-index",
             "darwin-arm64",
             false,
         )
@@ -955,7 +959,7 @@ mod medium_tests {
 
         assert_eq!(
             tool.program,
-            installed.join("rlm-bsl-index"),
+            installed.join("archive-tool-index"),
             "путь строится по артефакту, а не по имени инструмента"
         );
     }
@@ -1051,7 +1055,7 @@ mod medium_delivery_tests {
     use std::fs;
 
     #[test]
-    fn installer_and_runtime_resolve_both_tools_from_one_immutable_rlm_delivery() {
+    fn installer_and_runtime_resolve_both_tools_from_one_immutable_delivery() {
         use flate2::write::GzEncoder;
         use flate2::Compression;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1111,10 +1115,10 @@ mod medium_delivery_tests {
         for host in HostTarget::ALL {
             let target = host.as_str();
             let suffix = if target == "win-x64" { ".exe" } else { "" };
-            let mcp = format!("rlm-bsl-mcp{suffix}");
-            let index = format!("rlm-bsl-index{suffix}");
+            let mcp = format!("archive-tool-server{suffix}");
+            let index = format!("archive-tool-index{suffix}");
             let bytes = archive(&[(mcp.as_str(), script), (index.as_str(), script)]);
-            let asset_name = format!("rlm-tools-bsl-{target}.tar.gz");
+            let asset_name = format!("archive-tools-{target}.tar.gz");
             let asset_sha = format!("{:x}", Sha256::digest(&bytes));
             archives.insert(asset_name.clone(), bytes);
             let analyzer_name = format!("bsl-analyzer-{target}{suffix}");
@@ -1139,7 +1143,7 @@ mod medium_delivery_tests {
             engine_targets.insert(target.to_owned(), serde_json::json!({
                 "asset": {
                     "name": asset_name,
-                    "url": format!("https://github.com/IngvarConsulting/unica-toolchain/releases/download/rlm-tools-bsl-v1.33.0-build.3/{asset_name}"),
+                    "url": format!("https://github.com/IngvarConsulting/unica-toolchain/releases/download/archive-tools-v1.33.0-build.3/{asset_name}"),
                     "mediaType": "application/gzip",
                     "sha256": asset_sha,
                 },
@@ -1190,7 +1194,7 @@ mod medium_delivery_tests {
             },
             "artifacts": {
                 "unica": {"version": env!("CARGO_PKG_VERSION"), "role": "core", "targets": core_targets},
-                "rlm-tools-bsl": {"version": "1.33.0", "role": "engine", "targets": engine_targets},
+                "archive-tools": {"version": "1.33.0", "role": "engine", "targets": engine_targets},
                 "bsl-analyzer": {"version": "0.2.67", "role": "engine", "targets": analyzer_targets},
             },
         }))
@@ -1206,16 +1210,16 @@ mod medium_delivery_tests {
         for host in HostTarget::ALL {
             let target = host.as_str();
             let asset = &runtime
-                .artifact_target("rlm-tools-bsl", host)
+                .artifact_target("archive-tools", host)
                 .unwrap()
                 .asset;
             let analyzer_asset = &runtime.artifact_target("bsl-analyzer", host).unwrap().asset;
             let plugin_manifest = serde_json::json!({
                 "schemaVersion": 2,
-                "artifactAssets": {"rlm-tools-bsl": asset, "bsl-analyzer": analyzer_asset},
+                "artifactAssets": {"archive-tools": asset, "bsl-analyzer": analyzer_asset},
                 "tools": [
-                    {"name": "rlm-bsl-index", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaries": index_binaries},
-                    {"name": "rlm-bsl-mcp", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaries": mcp_binaries},
+                    {"name": "archive-tool-index", "artifact": "archive-tools", "version": "1.33.0", "binaries": index_binaries},
+                    {"name": "archive-tool-server", "artifact": "archive-tools", "version": "1.33.0", "binaries": mcp_binaries},
                     {"name": "bsl-analyzer", "version": "0.2.67", "binaries": analyzer_binaries},
                 ],
             });
@@ -1225,16 +1229,16 @@ mod medium_delivery_tests {
             )
             .unwrap();
             let installed = installer
-                .ensure_artifact(&runtime, "rlm-tools-bsl", host, &SilentDownload)
+                .ensure_artifact(&runtime, "archive-tools", host, &SilentDownload)
                 .unwrap();
             assert_eq!(
                 installed,
                 cache
-                    .join("rlm-tools-bsl")
+                    .join("archive-tools")
                     .join(format!("1.33.0--{}", asset.sha256))
                     .join(target)
             );
-            for tool in ["rlm-bsl-index", "rlm-bsl-mcp"] {
+            for tool in ["archive-tool-index", "archive-tool-server"] {
                 let resolved = resolve_from_artifact_cache(&plugin, &cache, tool, target, true)
                     .unwrap()
                     .expect("installed tool is resolved");
@@ -1242,7 +1246,7 @@ mod medium_delivery_tests {
                 assert_eq!(fs::read(&resolved.program).unwrap(), script);
                 if target != "win-x64"
                     && target == crate::infrastructure::platform::current_target_id().unwrap()
-                    && tool == "rlm-bsl-mcp"
+                    && tool == "archive-tool-server"
                 {
                     let output = std::process::Command::new(&resolved.program)
                         .output()
@@ -1252,7 +1256,7 @@ mod medium_delivery_tests {
                 }
             }
             installer
-                .ensure_artifact(&runtime, "rlm-tools-bsl", host, &SilentDownload)
+                .ensure_artifact(&runtime, "archive-tools", host, &SilentDownload)
                 .unwrap();
             let analyzer_root = installer
                 .ensure_artifact(&runtime, "bsl-analyzer", host, &SilentDownload)
@@ -1371,14 +1375,14 @@ mod medium_delivery_tests {
   "schemaVersion": 2,
   "tools": [
     {
-      "name": "rlm-bsl-mcp",
+      "name": "archive-tool-server",
       "version": "1.33.0",
-      "artifact": "rlm-tools-bsl",
+      "artifact": "archive-tools",
       "binaries": {
         "darwin-arm64": {
           "targetTriple": "aarch64-apple-darwin",
-          "binaryPath": "bin/darwin-arm64/rlm-bsl-mcp",
-          "deliveredPath": "rlm-bsl-mcp",
+          "binaryPath": "bin/darwin-arm64/archive-tool-server",
+          "deliveredPath": "archive-tool-server",
           "sha256": "e4002e1adb76d4e2bb4846ab27463ff6368d18b727eb2bd519e1579f0baf491b"
         }
       }
@@ -1389,16 +1393,16 @@ mod medium_delivery_tests {
         .unwrap();
         let cache = plugin_root.join("..").join("delivered-cache");
         let installed = cache
-            .join("rlm-tools-bsl")
+            .join("archive-tools")
             .join("1.33.0")
             .join("darwin-arm64");
         fs::create_dir_all(&installed).unwrap();
-        fs::write(installed.join("rlm-bsl-mcp"), "engine").unwrap();
+        fs::write(installed.join("archive-tool-server"), "engine").unwrap();
 
         let found = resolve_from_artifact_cache(
             &plugin_root,
             cache.as_path(),
-            "rlm-bsl-mcp",
+            "archive-tool-server",
             "darwin-arm64",
             false,
         )
@@ -1406,7 +1410,7 @@ mod medium_delivery_tests {
 
         assert_eq!(
             found.map(|tool| tool.program),
-            Some(installed.join("rlm-bsl-mcp"))
+            Some(installed.join("archive-tool-server"))
         );
     }
 
@@ -1510,8 +1514,8 @@ mod medium_delivery_tests {
             r#"{
   "schemaVersion": 2,
   "tools": [
-    {"name": "rlm-bsl-index", "version": "1.33.0", "artifact": "rlm-tools-bsl"},
-    {"name": "rlm-bsl-mcp", "version": "1.33.0", "artifact": "rlm-tools-bsl"},
+    {"name": "archive-tool-index", "version": "1.33.0", "artifact": "archive-tools"},
+    {"name": "archive-tool-server", "version": "1.33.0", "artifact": "archive-tools"},
     {"name": "v8-runner", "version": "0.4.0"}
   ]
 }"#,
@@ -1519,12 +1523,12 @@ mod medium_delivery_tests {
         .unwrap();
 
         assert_eq!(
-            artifact_for(&plugin_root, "rlm-bsl-index").as_deref(),
-            Some("rlm-tools-bsl")
+            artifact_for(&plugin_root, "archive-tool-index").as_deref(),
+            Some("archive-tools")
         );
         assert_eq!(
-            artifact_for(&plugin_root, "rlm-bsl-mcp").as_deref(),
-            Some("rlm-tools-bsl")
+            artifact_for(&plugin_root, "archive-tool-server").as_deref(),
+            Some("archive-tools")
         );
         assert_eq!(
             artifact_for(&plugin_root, "v8-runner").as_deref(),

@@ -919,7 +919,7 @@ fn bind_prerequisite_ancestor_topology(
     prerequisite: &Path,
     target: &MetadataAddress,
 ) -> Result<(), unica_metadata::request::MetaFailure> {
-    if !prerequisite.starts_with(source_root) {
+    if !unica_workspace::paths::path_starts_with_host_root(prerequisite, source_root) {
         return Err(provider_failure(
             target,
             "metadata prerequisite is outside its selected source set".to_string(),
@@ -927,10 +927,10 @@ fn bind_prerequisite_ancestor_topology(
     }
     let mut directory = prerequisite.parent();
     while let Some(ancestor) = directory {
-        if ancestor == source_root {
+        if unica_workspace::paths::same_host_path(ancestor, source_root) {
             break;
         }
-        if !ancestor.starts_with(source_root) {
+        if !unica_workspace::paths::path_starts_with_host_root(ancestor, source_root) {
             return Err(provider_failure(
                 target,
                 "metadata prerequisite ancestry left its selected source set".to_string(),
@@ -1039,6 +1039,11 @@ pub(super) fn transaction_changed_paths(
     let canonical_root = workspace_root
         .canonicalize()
         .unwrap_or_else(|_| workspace_root.to_path_buf());
+    let below_workspace = |path: &std::path::Path| {
+        unica_workspace::paths::host_path_relative_to(path, &canonical_root)
+            .or_else(|| unica_workspace::paths::host_path_relative_to(path, workspace_root))
+            .unwrap_or_else(|| path.to_path_buf())
+    };
     transaction
         .planned_changes()
         .into_iter()
@@ -1048,10 +1053,7 @@ pub(super) fn transaction_changed_paths(
                 PlannedChangeKind::Update => MetaPublicationAction::Update,
                 PlannedChangeKind::Remove => MetaPublicationAction::Remove,
             },
-            path: path
-                .strip_prefix(&canonical_root)
-                .or_else(|_| path.strip_prefix(workspace_root))
-                .unwrap_or(&path)
+            path: below_workspace(&path)
                 .display()
                 .to_string()
                 .replace('\\', "/"),
@@ -1940,5 +1942,42 @@ pub(crate) mod medium_typed_add_publication_tests {
                         if owner.as_str() == "CommonModule.Proof"
                 )
             }));
+    }
+}
+
+#[cfg(test)]
+mod host_path_tests {
+    use super::*;
+    use std::path::Path;
+    use unica_workspace::test_support::{
+        extended_length_spelling_for_test, other_letter_case_for_test,
+    };
+
+    #[test]
+    fn an_absent_prerequisite_and_a_changed_path_follow_the_host_spelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let plain = unica_workspace::paths::normalize_path_identity(temp.path()).unwrap();
+        let extended = extended_length_spelling_for_test(&plain);
+        std::fs::create_dir_all(plain.join("src/Catalogs")).unwrap();
+        let relative = Path::new("src/Catalogs/Absent.xml");
+        let target = MetadataAddress::parse(
+            unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "Catalog.Absent",
+        )
+        .unwrap();
+
+        let mut transaction = CompileTransaction::new();
+        bind_prerequisite_ancestor_topology(
+            &mut transaction,
+            &extended.join("src"),
+            &plain.join(relative),
+            &target,
+        )
+        .unwrap_or_else(|failure| panic!("{failure:?}"));
+
+        let mut transaction = CompileTransaction::new();
+        transaction.create_text(plain.join(relative), "x").unwrap();
+        let changed = transaction_changed_paths(&transaction, &other_letter_case_for_test(&plain));
+        assert_eq!(changed[0].path, "src/Catalogs/Absent.xml");
     }
 }

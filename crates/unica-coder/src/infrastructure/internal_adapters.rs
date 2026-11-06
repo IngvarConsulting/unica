@@ -4644,8 +4644,11 @@ analyze_timeout_seconds = 900
             )
             .unwrap();
             fs::write(
-                plugin_root.join("bin").join(target).join("rlm-bsl-index"),
-                "rlm-index",
+                plugin_root
+                    .join("bin")
+                    .join(target)
+                    .join("archive-tool-index"),
+                "archive-index",
             )
             .unwrap();
         }
@@ -4661,8 +4664,10 @@ analyze_timeout_seconds = 900
         )
         .unwrap();
         fs::write(
-            plugin_root.join("bin/win-x64").join("rlm-bsl-index.exe"),
-            "rlm-index",
+            plugin_root
+                .join("bin/win-x64")
+                .join("archive-tool-index.exe"),
+            "archive-index",
         )
         .unwrap();
         fs::write(
@@ -4679,11 +4684,11 @@ analyze_timeout_seconds = 900
       }
     },
     {
-      "name": "rlm-bsl-index",
+      "name": "archive-tool-index",
       "binaries": {
-        "darwin-arm64": {"targetTriple": "aarch64-apple-darwin", "binaryPath": "bin/darwin-arm64/rlm-bsl-index", "sha256": "fa6a77fa531fa57e7781010a7cec69b7be4b7b58903365153bf1f66e851ab213"},
-        "linux-x64": {"targetTriple": "x86_64-unknown-linux-gnu", "binaryPath": "bin/linux-x64/rlm-bsl-index", "sha256": "fa6a77fa531fa57e7781010a7cec69b7be4b7b58903365153bf1f66e851ab213"},
-        "win-x64": {"targetTriple": "x86_64-pc-windows-msvc", "binaryPath": "bin/win-x64/rlm-bsl-index.exe", "sha256": "fa6a77fa531fa57e7781010a7cec69b7be4b7b58903365153bf1f66e851ab213"}
+        "darwin-arm64": {"targetTriple": "aarch64-apple-darwin", "binaryPath": "bin/darwin-arm64/archive-tool-index", "sha256": "fa6a77fa531fa57e7781010a7cec69b7be4b7b58903365153bf1f66e851ab213"},
+        "linux-x64": {"targetTriple": "x86_64-unknown-linux-gnu", "binaryPath": "bin/linux-x64/archive-tool-index", "sha256": "fa6a77fa531fa57e7781010a7cec69b7be4b7b58903365153bf1f66e851ab213"},
+        "win-x64": {"targetTriple": "x86_64-pc-windows-msvc", "binaryPath": "bin/win-x64/archive-tool-index.exe", "sha256": "fa6a77fa531fa57e7781010a7cec69b7be4b7b58903365153bf1f66e851ab213"}
       }
     },
     {

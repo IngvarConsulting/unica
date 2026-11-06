@@ -1,3 +1,4 @@
+// module: private
 //! Strict existing TypeReductionMode mutation and its semantic evidence.
 use roxmltree::{Document, Node};
 use unica_metadata::{MetaDiagnostic, MetaDiagnosticCode};

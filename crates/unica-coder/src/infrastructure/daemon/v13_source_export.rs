@@ -423,17 +423,14 @@ fn validate_envelope(
             format!("v8-runner {phase} returned an invalid export target: {error}"),
         )
     })?;
-    let target = target_absolute
-        .strip_prefix(root_identity)
-        .ok()
+    let target = unica_workspace::paths::host_path_relative_to(&target_absolute, root_identity)
         .filter(|relative| !relative.as_os_str().is_empty())
         .ok_or_else(|| {
             reject(
                 RefusalCode::InvalidResult,
                 format!("v8-runner {phase} placed the export target outside the workspace"),
             )
-        })?
-        .to_path_buf();
+        })?;
     let performed_mode = performed_mode(&data["mode"]).ok_or_else(|| {
         reject(
             RefusalCode::InvalidResult,
@@ -1353,6 +1350,8 @@ mod medium_tests {
     #[test]
     fn full_export_publishes_configuration_and_extension_from_a_private_stage() {
         for (set, extension) in [("main", None), ("Sales", Some("Sales"))] {
+            let validations_before =
+                unica_workspace::full_dump::test_support::semantic_validations_on_this_thread();
             let root = workspace();
             let target = root.path().join(set);
             write_valid_dump(&target, extension.is_some());
@@ -1402,6 +1401,13 @@ mod medium_tests {
                 &runner,
             );
             assert!(result.ok, "{set}: {result:?}");
+            // Содержимое разбирается один раз: дальше достаточно сверки байт со снимком.
+            assert_eq!(
+                unica_workspace::full_dump::test_support::semantic_validations_on_this_thread()
+                    - validations_before,
+                1,
+                "{set}"
+            );
             assert_eq!(result.data.as_ref().unwrap()["files"], 3);
             assert_eq!(result.data.as_ref().unwrap()["state"], "replaced");
             assert_eq!(result.data.as_ref().unwrap()["extension"], json!(extension));
@@ -2852,6 +2858,24 @@ mod medium_tests {
                 result.diagnostics[0]["code"], "invalid_result",
                 "{field}: {result:?}"
             );
+        }
+    }
+
+    #[test]
+    fn an_export_target_inside_the_workspace_is_recognised_in_any_host_spelling() {
+        let root = workspace();
+        let request = prepared(root.path(), ExportMode::Incremental, None, None, false);
+        let inputs = capture_inputs(&request).unwrap();
+        let plain = normalize_path_identity(root.path()).unwrap();
+        let extended = unica_workspace::test_support::extended_length_spelling_for_test(&plain);
+        for (target, identity) in [
+            (extended.join("main"), plain.clone()),
+            (plain.join("main"), extended.clone()),
+        ] {
+            let mut performed = envelope(root.path(), "main", "INCREMENTAL", None, true);
+            performed["data"]["target_path"] = json!(target);
+            validate_envelope(&request, &inputs, &identity, &performed, true)
+                .unwrap_or_else(|result| panic!("{target:?} under {identity:?}: {result:?}"));
         }
     }
 

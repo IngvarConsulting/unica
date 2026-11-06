@@ -195,7 +195,6 @@ pub enum RuntimeJobAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CodeIntelligenceOperation {
     Search,
-    Definition,
     Outline,
 }
 
@@ -783,19 +782,6 @@ pub fn tools() -> Vec<ToolSpec> {
             },
             handler: ToolHandler::CodeIntelligence {
                 operation: CodeIntelligenceOperation::Search,
-            },
-        },
-        ToolSpec {
-            name: "unica.code.definition",
-            description: "Find BSL method definitions through the typed Unica code index boundary.",
-            execution: ToolExecution::Read,
-            result_contract: ResultContract::Typed,
-            cache_access: CacheAccess {
-                reads: &["bsl_index"],
-                writes: &[],
-            },
-            handler: ToolHandler::CodeIntelligence {
-                operation: CodeIntelligenceOperation::Definition,
             },
         },
         ToolSpec {
@@ -2096,16 +2082,6 @@ fn code_intelligence_read_request(
     args: &Map<String, Value>,
 ) -> Result<CodeIntelligenceReadRequest, String> {
     match operation {
-        CodeIntelligenceOperation::Definition => Ok(CodeIntelligenceReadRequest::Definition {
-            name: required_code_intelligence_string(args, "name")?.to_string(),
-            module_hint: args
-                .get("moduleHint")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
-            limit: code_intelligence_limit(args, 50),
-        }),
         CodeIntelligenceOperation::Outline => Ok(CodeIntelligenceReadRequest::Outline {
             path: required_code_intelligence_string(args, "path")?.to_string(),
             include_methods: args
@@ -2128,13 +2104,6 @@ fn required_code_intelligence_string<'a>(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("missing required `{name}` argument"))
-}
-
-fn code_intelligence_limit(args: &Map<String, Value>, default: usize) -> usize {
-    args.get("limit")
-        .and_then(Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
-        .unwrap_or(default)
 }
 
 fn runtime_xml_route_guard(
@@ -2817,7 +2786,7 @@ pub(crate) mod medium_tests {
         use unica_source_contract::location::SourceLocation;
 
         let section = ProviderSearchSection::partial(
-            ProviderId::Rlm.identity(),
+            ProviderId::SemanticFixture.identity(),
             SearchRanking::Provider,
             SearchOrdering::Provider,
             vec![ProviderSearchHit {
@@ -2835,7 +2804,7 @@ pub(crate) mod medium_tests {
                 snippet: "Post".to_string(),
                 attributes: Map::new(),
             }],
-            vec!["ignored malformed RLM result #1".to_string()],
+            vec!["ignored malformed provider result #1".to_string()],
         )
         .unwrap();
         let schema = code_search_output_schema();
@@ -3347,12 +3316,12 @@ pub(crate) mod medium_tests {
 
     impl unica_code_intelligence::model::CodeIntelligenceProvider for FullRangeReadProvider {
         fn identity(&self) -> unica_code_intelligence::model::ProviderIdentity {
-            unica_code_intelligence::model::ProviderId::Rlm.identity()
+            unica_code_intelligence::model::ProviderId::SemanticFixture.identity()
         }
 
         fn capabilities(&self) -> &[unica_code_intelligence::model::ProviderCapability] {
             &[
-                unica_code_intelligence::model::ProviderCapability::Definition,
+                unica_code_intelligence::model::ProviderCapability::Search,
                 unica_code_intelligence::model::ProviderCapability::Outline,
             ]
         }
@@ -3364,7 +3333,14 @@ pub(crate) mod medium_tests {
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> unica_code_intelligence::model::ProviderSearchSection {
-            unreachable!("read-only fixture")
+            unica_code_intelligence::model::ProviderSearchSection::complete(
+                unica_code_intelligence::model::ProviderId::SemanticFixture.identity(),
+                unica_code_intelligence::model::SearchRanking::Provider,
+                unica_code_intelligence::model::SearchOrdering::Provider,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap()
         }
 
         fn read(
@@ -3375,16 +3351,6 @@ pub(crate) mod medium_tests {
             _cancellation: &CancellationToken,
         ) -> Result<unica_code_intelligence::model::ProviderReadOutcome, String> {
             let data = match request {
-                CodeIntelligenceReadRequest::Definition { name, .. } => {
-                    unica_code_intelligence::model::CodeIntelligenceReadData::Definition(
-                        unica_code_intelligence::model::CodeDefinitionResult {
-                            name: name.clone(),
-                            definitions: Vec::new(),
-                            index_freshness: None,
-                            index_build_id: None,
-                        },
-                    )
-                }
                 CodeIntelligenceReadRequest::Outline { path, .. } => {
                     unica_code_intelligence::model::CodeIntelligenceReadData::Outline(
                         unica_bsl::outline::CodeOutlineResult {
@@ -3409,7 +3375,7 @@ pub(crate) mod medium_tests {
                 }
             };
             Ok(unica_code_intelligence::model::ProviderReadOutcome {
-                provider: unica_code_intelligence::model::ProviderId::Rlm.identity(),
+                provider: unica_code_intelligence::model::ProviderId::SemanticFixture.identity(),
                 ok: true,
                 summary: "read".to_string(),
                 warnings: Vec::new(),
@@ -4018,20 +3984,18 @@ pub(crate) mod medium_tests {
         app.call_tool("unica.code.diagnostics", &analyze).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
 
-        for (tool_name, args) in [
-            (
+        {
+            let (tool_name, args) = (
                 "unica.code.search",
                 json!({"query": "needle", "sourceDir": "."}),
-            ),
-            ("unica.code.definition", json!({"name": "Needle"})),
-        ] {
+            );
             let error = app
                 .call_tool(tool_name, args.as_object().unwrap())
                 .unwrap_err();
             assert!(error.contains("should not be resolved"), "{error}");
         }
-        assert_eq!(ports.load_calls.load(Ordering::SeqCst), 3);
-        assert_eq!(ports.code_context_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(ports.load_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(ports.code_context_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -4063,7 +4027,6 @@ pub(crate) mod medium_tests {
                 "unica.code.search",
                 json!({"query": "needle", "sourceDir": "."}),
             ),
-            ("unica.code.definition", json!({"name": "Needle"})),
             (
                 "unica.code.diagnostics",
                 json!({"action": "analyze", "sourceSet": "main", "timeoutSeconds": 900}),
@@ -4114,7 +4077,7 @@ pub(crate) mod medium_tests {
     }
 
     #[test]
-    fn public_definition_and_outline_accept_full_positive_i64_config_budget() {
+    fn public_search_accepts_full_positive_i64_config_budget() {
         let workspace = std::env::temp_dir().join(format!(
             "unica-public-full-range-read-{}-{}",
             std::process::id(),
@@ -4124,9 +4087,14 @@ pub(crate) mod medium_tests {
             OperationalConfigRecordingPorts::with_full_range_code_provider(workspace.clone()),
         ));
 
-        let tool_name = "unica.code.definition";
+        let tool_name = "unica.code.search";
         let result = app
-            .call_tool(tool_name, json!({"name": "Needle"}).as_object().unwrap())
+            .call_tool(
+                tool_name,
+                json!({"query": "Needle", "sourceSet": "main"})
+                    .as_object()
+                    .unwrap(),
+            )
             .expect("valid full-range config must not panic public dispatch");
         assert!(
             result.ok,
@@ -4301,13 +4269,7 @@ pub(crate) mod medium_tests {
 
     #[test]
     fn provider_neutral_tools_use_typed_code_intelligence_handlers() {
-        let expected = [
-            ("unica.code.search", CodeIntelligenceOperation::Search),
-            (
-                "unica.code.definition",
-                CodeIntelligenceOperation::Definition,
-            ),
-        ];
+        let expected = [("unica.code.search", CodeIntelligenceOperation::Search)];
 
         for (name, operation) in expected {
             let tool = tools().into_iter().find(|tool| tool.name == name).unwrap();

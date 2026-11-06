@@ -28,10 +28,11 @@ fn prefixed(source: &str) -> String {
 }
 
 fn unprefixed(source: &str) -> String {
-    source
-        .replace("<md:", "<")
-        .replace("</md:", "</")
-        .replacen(&format!("xmlns:md=\"{MD}\""), &format!("xmlns=\"{MD}\""), 1)
+    source.replace("<md:", "<").replace("</md:", "</").replacen(
+        &format!("xmlns:md=\"{MD}\""),
+        &format!("xmlns=\"{MD}\""),
+        1,
+    )
 }
 
 fn element_names(source: &str) -> Vec<(Option<String>, String)> {
