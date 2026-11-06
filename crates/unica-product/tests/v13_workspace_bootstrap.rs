@@ -385,14 +385,15 @@ fn canonical_check_has_no_aggregate_size_refusal_above_256_mib() {
     mcp.finish();
 }
 
+/// rule: INV.WIRE.ROOT-FACTS-AND-VERDICT
 #[test]
-#[ignore = "stale expectation: data.checks is no longer an empty array (#1899)"]
 fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
     let root = tempfile::tempdir().expect("bootstrap integration root");
     let workspace = root.path().join("workspace");
     let state = root.path().join("state");
     std::fs::create_dir(&workspace).unwrap();
     std::fs::create_dir(&state).unwrap();
+    let before = unica_workspace::test_support::tree_snapshot(&workspace);
     let mut mcp = McpProcess::start(&workspace, &state);
 
     let initialized = mcp.exchange(json!({
@@ -406,10 +407,6 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
         }
     }));
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
-    assert!(initialized["result"]["instructions"]
-        .as_str()
-        .unwrap()
-        .contains("unica.view using an empty object"));
     mcp.notify(json!({
         "jsonrpc": "2.0",
         "method": "notifications/initialized",
@@ -423,14 +420,11 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
         "params": {}
     }));
     let tools = listed["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 11);
-    assert!(tools.iter().all(|tool| tool["description"]
-        .as_str()
-        .is_some_and(|description| !description.is_empty())));
     let view = tools
         .iter()
         .find(|tool| tool["name"] == "unica.view")
         .unwrap();
+    assert!(view["inputSchema"].is_object(), "{view:#}");
     assert!(!view["inputSchema"]["required"]
         .as_array()
         .is_some_and(|required| required.iter().any(|name| name == "at")));
@@ -443,115 +437,90 @@ fn canonical_stdio_bootstraps_an_empty_workspace_before_address_discovery() {
     }));
     let result = &response["result"]["structuredContent"];
     assert_eq!(result["ok"], true, "{response:#}");
-    assert_eq!(
-        result["summary"],
-        "workspace is uninitialized; no v8project.yaml or 1C source roots were found"
-    );
-    assert_eq!(result["data"]["config"]["state"], "missing");
-    assert_eq!(result["data"]["setup"]["path"], "v8project.yaml");
-    assert_eq!(result["data"]["setup"]["content"], Value::Null);
-    assert_eq!(result["data"]["checks"], json!([]));
-    assert_eq!(result["data"]["diagnostics"].as_array().unwrap().len(), 1);
-    assert_eq!(
-        result["data"]["diagnostics"][0]["code"],
-        "source_roots_missing"
-    );
-    assert_eq!(
-        result["next"],
-        json!([{
-            "tool": "unica.run",
-            "args": {},
-            "reason": "inspect the implemented and planned workspace initialization routes"
-        }])
-    );
+    let data = &result["data"];
+    assert_eq!(data["config"]["state"], "missing");
+    assert_eq!(data["config"]["path"], "v8project.yaml");
+    assert_eq!(data["sourceSets"], json!([]));
+    assert_eq!(data["setup"]["path"], "v8project.yaml");
+    assert_eq!(data["setup"]["content"], Value::Null);
+    for field in [
+        "ready",
+        "discoveredReady",
+        "repositoryReady",
+        "readinessState",
+        "checks",
+        "diagnostics",
+    ] {
+        assert_eq!(
+            data.get(field),
+            None,
+            "{field} belongs to check {{}}: {result:#}"
+        );
+    }
     assert!(!serde_json::to_string(result)
         .unwrap()
         .contains("unica.project."));
+    let check = result["next"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|next| next["tool"] == "unica.check" && next["args"] == json!({}))
+        .unwrap_or_else(|| panic!("empty workspace must offer its verdict: {result:#}"));
 
-    let dictionary = mcp.exchange(json!({
+    let mut response = mcp.exchange(json!({
         "jsonrpc": "2.0",
         "id": 4,
         "method": "tools/call",
-        "params": {"name": "unica.run", "arguments": {}}
+        "params": {"name": check["tool"], "arguments": check["args"]}
     }));
-    let operations = dictionary["result"]["structuredContent"]["data"]["operations"]
-        .as_array()
-        .unwrap();
-    let source_attach = operations
-        .iter()
-        .find(|operation| operation["op"] == "workspace.initialize")
-        .unwrap();
-    assert!(source_attach.get("implemented").is_none());
-    assert_eq!(source_attach["execution"], "previewApply");
-    assert_eq!(source_attach["effects"], json!(["workspaceFiles"]));
-    assert!(source_attach["description"]
-        .as_str()
-        .is_some_and(|description| description.contains("v8project.yaml")));
-    assert_eq!(source_attach["previewRequired"], false);
-    assert_eq!(source_attach["dryRunRequired"], true);
-    assert!(source_attach.get("ifRevRequiredOnApply").is_none());
-    assert_eq!(
-        source_attach["argsSchema"],
-        json!({
-            "type": "object",
-            "additionalProperties": false,
-            "properties": {},
-            "required": []
-        })
-    );
-    assert!(operations
-        .iter()
-        .all(|operation| operation.get("implemented").is_none()));
-    assert_eq!(
-        operations
-            .iter()
-            .map(|operation| operation["op"].as_str().unwrap())
-            .collect::<std::collections::BTreeSet<_>>(),
-        std::collections::BTreeSet::from(["workspace.initialize", "cf.export", "infobase.export",])
-    );
-    for operation in ["cf.export", "infobase.export"] {
-        assert!(operations
-            .iter()
-            .find(|candidate| candidate["op"] == operation)
-            .unwrap()["argsSchema"]
-            .is_object());
-    }
-
-    for (id, op, expected_summary) in [
-        (
-            41,
-            "source.create",
-            "canonical run operation `source.create` is not implemented yet",
-        ),
-        (42, "test.run", "unknown canonical run operation `test.run`"),
-    ] {
-        let unsupported = mcp.exchange(json!({
+    for id in 5..=14 {
+        let Some(task_id) =
+            response["result"]["structuredContent"]["data"]["task"]["taskId"].as_str()
+        else {
+            break;
+        };
+        response = mcp.exchange(json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "tools/call",
-            "params": {"name": "unica.run", "arguments": {"op": op, "args": {}}}
+            "params": {"name": "unica.task.result", "arguments": {"taskId": task_id, "waitMs": 7000}}
         }));
-        let unsupported = &unsupported["result"]["structuredContent"];
-        assert_eq!(unsupported["ok"], false, "{unsupported:#}");
-        assert_eq!(unsupported["summary"], expected_summary);
+    }
+    let verdict = &response["result"]["structuredContent"];
+    assert!(verdict.is_object(), "{response:#}");
+    assert!(
+        verdict["data"].get("task").is_none(),
+        "check did not finish: {response:#}"
+    );
+    assert_eq!(verdict["ok"], true, "{response:#}");
+    let data = &verdict["data"];
+    assert_eq!(data["status"], "failed", "{verdict:#}");
+    assert_eq!(data["ready"], false, "{verdict:#}");
+    assert_eq!(
+        verdict.get("rev"),
+        None,
+        "root check has no source revision: {verdict:#}"
+    );
+    for field in ["sources", "sourceSets"] {
         assert_eq!(
-            unsupported["diagnostics"],
-            json!([{"code": "unsupported_operation", "message": expected_summary}])
+            data.get(field),
+            None,
+            "{field} belongs to view {{}}: {verdict:#}"
         );
     }
-
-    let invalid_dictionary = mcp.exchange(json!({
-        "jsonrpc": "2.0",
-        "id": 5,
-        "method": "tools/call",
-        "params": {"name": "unica.run", "arguments": {"dryRun": true}}
-    }));
+    let diagnostics = data["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 1, "{verdict:#}");
     assert_eq!(
-        invalid_dictionary["result"]["structuredContent"]["diagnostics"][0]["code"],
-        "bad_value"
+        diagnostics[0]["code"], "source_roots_missing",
+        "{verdict:#}"
     );
 
     mcp.finish();
+    drop(mcp);
+    assert_eq!(
+        before,
+        unica_workspace::test_support::tree_snapshot(&workspace)
+    );
 }
 
 // Исключение из отключённого яруса: живой процесс — единственное место, где
