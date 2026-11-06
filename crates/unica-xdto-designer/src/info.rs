@@ -94,7 +94,30 @@ pub fn build_xdto_info(
         )
     };
     let location = addressed_location(identity);
+    let types_complete = model.root_content_complete
+        && !model.top_level.iter().any(|node| {
+            matches!(
+                node.unreadable_collection,
+                Some(model::UnreadableCollection::Types | model::UnreadableCollection::Unknown)
+            )
+        });
+    let global_properties_complete = model.root_content_complete
+        && !model.top_level.iter().any(|node| {
+            matches!(
+                node.unreadable_collection,
+                Some(
+                    model::UnreadableCollection::Properties | model::UnreadableCollection::Unknown
+                )
+            )
+        });
     Ok(XdtoInfoData {
+        types_complete,
+        global_properties_complete,
+        read_limits: if types_complete && global_properties_complete {
+            Vec::new()
+        } else {
+            vec!["XDTO package contains unreadable child declarations".to_string()]
+        },
         source_set: identity.source_set().to_string(),
         metadata_path: identity.metadata_path().to_string(),
         location,
@@ -202,7 +225,14 @@ fn type_info(
     model: &PackageModel,
     named: &model::NamedType,
 ) -> XdtoTypeInfo {
+    let read_limits = if named.properties_complete {
+        Vec::new()
+    } else {
+        vec!["XDTO type contains unreadable property declarations".to_string()]
+    };
     XdtoTypeInfo {
+        properties_complete: read_limits.is_empty(),
+        read_limits,
         facets: named.facets.clone(),
         kind: match named.kind {
             model::TypeKind::Value => XdtoTypeKind::Value,
@@ -262,7 +292,14 @@ fn anonymous_type_info(
     package: &impl XdtoIdentity,
     anonymous: &model::AnonymousObject,
 ) -> XdtoAnonymousTypeInfo {
+    let read_limits = if anonymous.properties_complete {
+        Vec::new()
+    } else {
+        vec!["XDTO inline type contains unreadable property declarations".to_string()]
+    };
     XdtoAnonymousTypeInfo {
+        properties_complete: read_limits.is_empty(),
+        read_limits,
         facets: anonymous.facets.clone(),
         base: anonymous.base.as_ref().map(qname_info),
         discriminator: anonymous

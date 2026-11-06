@@ -128,6 +128,8 @@ pub struct SubsystemInfoData {
     pub explanation: Option<String>,
     pub picture: String,
     pub content_items: Vec<String>,
+    pub content_complete: bool,
+    pub children_complete: bool,
     pub groups: Vec<(String, Vec<String>)>,
     pub child_names: Vec<String>,
     pub has_ci: bool,
@@ -204,6 +206,8 @@ pub struct SubsystemInfoResult {
     pub use_one_command: Option<String>,
     pub support: DomainObjectSupportData,
     pub content: Vec<String>,
+    pub content_complete: bool,
+    pub children_complete: bool,
     pub groups: Vec<SubsystemGroupData>,
     pub children: Vec<String>,
     /// A focused registered tree: one ancestor chain down to this subsystem,
@@ -225,9 +229,13 @@ pub struct SubsystemGroupData {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubsystemCommandInterfaceData {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub incomplete_sections: Vec<SubsystemCommandInterfaceSection>,
     pub visibility: Vec<SubsystemCommandVisibilityData>,
     pub placement: Vec<SubsystemCommandPlacementData>,
-    pub order: Vec<SubsystemGroupData>,
+    pub order: Vec<SubsystemCommandOrderData>,
     /// Порядок групп панели. Отдельная секция, а не порядок ключей в
     /// `order`: группа может быть объявлена в порядке и не иметь ни одной
     /// команды.
@@ -237,16 +245,36 @@ pub struct SubsystemCommandInterfaceData {
     pub subsystem_order: Vec<String>,
 }
 
+/// Sections whose contents cannot be treated as complete after a local read error.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum SubsystemCommandInterfaceSection {
+    CommandsVisibility,
+    CommandsPlacement,
+    CommandsOrder,
+    GroupsOrder,
+    SubsystemsOrder,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubsystemCommandOrderData {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub items: Vec<String>,
+}
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubsystemCommandVisibilityData {
     pub command: String,
-    pub visible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
     /// Сколько ролей переопределяют общее значение. Замер на боевой
     /// конфигурации: 99 блоков видимости из 1050 несут такие значения, то
     /// есть каждая одиннадцатая команда. Умолчать о них значило бы отдать
     /// `visible` за всю правду.
-    pub role_overrides: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role_overrides: Option<usize>,
 }
 
 #[derive(serde::Serialize)]

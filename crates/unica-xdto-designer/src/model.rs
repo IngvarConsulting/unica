@@ -60,8 +60,16 @@ pub enum TopLevelKind {
     Unsupported,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnreadableCollection {
+    Properties,
+    Types,
+    Unknown,
+}
+
 #[derive(Clone, Debug)]
 pub struct TopLevelNode {
+    pub unreadable_collection: Option<UnreadableCollection>,
     pub kind: TopLevelKind,
     pub key: String,
     pub span: SourceSpan,
@@ -111,6 +119,7 @@ impl Property {
 
 #[derive(Clone, Debug)]
 pub struct AnonymousObject {
+    pub properties_complete: bool,
     pub base: Option<QNameRef>,
     pub facets: super::facets::ValueFacets,
     pub key: String,
@@ -121,6 +130,7 @@ pub struct AnonymousObject {
 
 #[derive(Clone, Debug)]
 pub struct NamedType {
+    pub properties_complete: bool,
     pub facets: super::facets::ValueFacets,
     pub kind: TypeKind,
     pub key: String,
@@ -132,6 +142,7 @@ pub struct NamedType {
 
 #[derive(Clone, Debug)]
 pub struct PackageModel {
+    pub root_content_complete: bool,
     pub root_span: SourceSpan,
     pub target_namespace: Option<LocatedValue>,
     pub top_level: Vec<TopLevelNode>,
@@ -156,7 +167,13 @@ impl PackageModel {
             span: SourceSpan { start: 0, end: 0 },
         })?;
         let root = document.root_element();
-        if !root.has_tag_name((XDTO_NS, "package")) {
+        if !root.has_tag_name((XDTO_NS, "package"))
+            || root.attributes().any(|attr| {
+                attr.namespace() == Some("http://www.w3.org/2001/XMLSchema-instance")
+                    && attr.name() == "nil"
+                    && !matches!(attr.value(), "false" | "0")
+            })
+        {
             return Err(ModelError {
                 code: "not_an_xdto_package",
                 message: "Package.bin root must be {http://v8.1c.ru/8.1/xdto}package".to_string(),
@@ -167,6 +184,10 @@ impl PackageModel {
         let root_span = root.range().into();
         let target_namespace = attribute(root, None, "targetNamespace");
         let mut model = Self {
+            root_content_complete: root
+                .children()
+                .filter(Node::is_text)
+                .all(|node| node.text().is_none_or(|text| text.trim().is_empty())),
             root_span,
             target_namespace,
             top_level: Vec::new(),
@@ -239,6 +260,13 @@ impl PackageModel {
                 (TopLevelKind::Unsupported, key)
             };
             model.top_level.push(TopLevelNode {
+                unreadable_collection: (kind == TopLevelKind::Unsupported).then_some(
+                    match child.tag_name().name() {
+                        "property" => UnreadableCollection::Properties,
+                        "valueType" | "objectType" => UnreadableCollection::Types,
+                        _ => UnreadableCollection::Unknown,
+                    },
+                ),
                 kind,
                 key,
                 span: child.range().into(),
@@ -336,6 +364,13 @@ fn parse_named_type(
         super::facets::ValueFacets::default()
     });
     NamedType {
+        properties_complete: node
+            .attribute((XSI_NS, "nil"))
+            .is_none_or(|value| matches!(value.trim(), "false" | "0"))
+            && node.children().all(|child| {
+                (!child.is_element() || child.has_tag_name((XDTO_NS, "property")))
+                    && (!child.is_text() || child.text().is_none_or(|text| text.trim().is_empty()))
+            }),
         facets,
         kind,
         key,
@@ -435,6 +470,13 @@ fn parse_type_def(
         super::facets::ValueFacets::default()
     });
     AnonymousObject {
+        properties_complete: node
+            .attribute((XSI_NS, "nil"))
+            .is_none_or(|value| matches!(value.trim(), "false" | "0"))
+            && node.children().all(|child| {
+                (!child.is_element() || child.has_tag_name((XDTO_NS, "property")))
+                    && (!child.is_text() || child.text().is_none_or(|text| text.trim().is_empty()))
+            }),
         base: qname_attribute(node, "base"),
         facets,
         key,

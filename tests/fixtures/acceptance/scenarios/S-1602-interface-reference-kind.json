@@ -97,9 +97,15 @@
       ],
       "captures": {
         "crmInterface": {
-          "pointer": "/data/branches/0/at"
+          "pointer": "/data/branches/2/at"
         }
-      }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/2/at",
+          "eq": "main:Subsystem.CRMИМаркетинг.Interface"
+        }
+      ]
     },
     {
       "tool": "unica.view",
@@ -114,7 +120,7 @@
           "pointer": "/data/limits",
           "eq": [
             "Команды, заданные ссылкой по идентификатору, логического адреса не имеют (1): 0:bdebc888-2581-426c-9f5e-c09fbba5f6e2",
-            "Чтение именованных ссылок на команды не поддерживается профилем логических адресов (2): DocumentJournal.РеестрТорговыхДокументов.StandardCommand.OpenList, Report.КонтактнаяИнформация.StandardCommand.Open",
+            "Чтение именованных ссылок на команды не поддерживается профилем логических адресов (4): Catalog.Глоссарий.StandardCommand.OpenList, Constant.ИспользоватьДемонстрационныеСценарии.StandardCommand.Open, DocumentJournal.РеестрТорговыхДокументов.StandardCommand.OpenList, Report.КонтактнаяИнформация.StandardCommand.Open",
             "Обнаружено повреждённое или нераспознанное представление ссылок на команды; проверьте исходное описание интерфейса (1): broken-command"
           ]
         },
@@ -157,7 +163,7 @@
           "pointer": "/data/limits",
           "eq": [
             "Команды, заданные ссылкой по идентификатору, логического адреса не имеют (1): 0:bdebc888-2581-426c-9f5e-c09fbba5f6e2",
-            "Чтение именованных ссылок на команды не поддерживается профилем логических адресов (2): DocumentJournal.РеестрТорговыхДокументов.StandardCommand.OpenList, Report.КонтактнаяИнформация.StandardCommand.Open",
+            "Чтение именованных ссылок на команды не поддерживается профилем логических адресов (4): Catalog.Глоссарий.StandardCommand.OpenList, Constant.ИспользоватьДемонстрационныеСценарии.StandardCommand.Open, DocumentJournal.РеестрТорговыхДокументов.StandardCommand.OpenList, Report.КонтактнаяИнформация.StandardCommand.Open",
             "Обнаружено повреждённое или нераспознанное представление ссылок на команды; проверьте исходное описание интерфейса (1): broken-command"
           ]
         },
@@ -211,7 +217,7 @@
           "pointer": "/data/limits",
           "eq": [
             "Команды, заданные ссылкой по идентификатору, логического адреса не имеют (1): 0:bdebc888-2581-426c-9f5e-c09fbba5f6e2",
-            "Чтение именованных ссылок на команды не поддерживается профилем логических адресов (2): DocumentJournal.РеестрТорговыхДокументов.StandardCommand.OpenList, Report.КонтактнаяИнформация.StandardCommand.Open",
+            "Чтение именованных ссылок на команды не поддерживается профилем логических адресов (4): Catalog.Глоссарий.StandardCommand.OpenList, Constant.ИспользоватьДемонстрационныеСценарии.StandardCommand.Open, DocumentJournal.РеестрТорговыхДокументов.StandardCommand.OpenList, Report.КонтактнаяИнформация.StandardCommand.Open",
             "Обнаружено повреждённое или нераспознанное представление ссылок на команды; проверьте исходное описание интерфейса (1): broken-command"
           ]
         },
@@ -516,9 +522,15 @@
       ],
       "captures": {
         "processInterface": {
-          "pointer": "/data/branches/0/at"
+          "pointer": "/data/branches/2/at"
         }
-      }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/2/at",
+          "eq": "main:Subsystem.ОписаниеПроцессов.Interface"
+        }
+      ]
     },
     {
       "tool": "unica.view",
@@ -537,7 +549,16 @@
         },
         {
           "pointer": "/data/branches",
-          "absent": true
+          "eq": [
+            {
+              "at": "main:Subsystem.ОписаниеПроцессов.Interface.Group",
+              "count": 0
+            },
+            {
+              "at": "main:Subsystem.ОписаниеПроцессов.Interface.Subsystem",
+              "count": 0
+            }
+          ]
         }
       ],
       "fileAssertions": [

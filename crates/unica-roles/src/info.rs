@@ -19,6 +19,11 @@ pub struct RoleInfoGroup {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RoleInfoData {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub limits: Vec<String>,
+    pub rights_complete: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub known_objects: Vec<RoleGroupData>,
     pub name: String,
     pub synonym: Option<String>,
     pub support: DomainObjectSupportData,

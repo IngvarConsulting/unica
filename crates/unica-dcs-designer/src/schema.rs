@@ -381,9 +381,96 @@ fn dcs_info_order_items(
     .collect()
 }
 
+fn dcs_read_identity(node: roxmltree::Node<'_, '_>, tag: &str, namespace: &str) -> Option<String> {
+    let mut matching = node
+        .children()
+        .filter(|child| child.is_element() && child.tag_name().name() == tag);
+    let value = matching.next()?;
+    if matching.next().is_some()
+        || value.tag_name().namespace() != Some(namespace)
+        || value.children().any(|child| child.is_element())
+        || value
+            .attributes()
+            .any(|attr| attr.name() == "nil" && attr.value() != "false")
+    {
+        return None;
+    }
+    dcs_info_opt(
+        unica_xml_format::read::direct_text(value)
+            .trim()
+            .to_string(),
+    )
+}
+
+fn dcs_read_collection_complete(
+    node: roxmltree::Node<'_, '_>,
+    tag: &str,
+    identity: Option<&str>,
+    namespace: &str,
+) -> bool {
+    node.children()
+        .filter(|child| child.is_element() && child.tag_name().name() == tag)
+        .all(|child| {
+            child.tag_name().namespace() == Some(namespace)
+                && !child
+                    .attributes()
+                    .any(|attr| attr.name() == "nil" && attr.value() != "false")
+                && identity.is_none_or(|key| dcs_read_identity(child, key, namespace).is_some())
+        })
+}
+
 fn dcs_info_data_set(data_set: roxmltree::Node<'_, '_>, ns_schema: &str) -> DcsInfoDataSet {
     let kind = dcs_info_dataset_type(data_set);
+    let mut incomplete_collections = Vec::new();
+    let mut read_limits = Vec::new();
+    if data_set.attributes().any(|attr| {
+        attr.namespace() == Some("http://www.w3.org/2001/XMLSchema-instance")
+            && attr.name() == "nil"
+            && !matches!(attr.value(), "false" | "0")
+    }) || data_set
+        .children()
+        .any(|child| child.is_text() && child.text().is_some_and(|text| !text.trim().is_empty()))
+    {
+        incomplete_collections.extend([
+            DcsReadCollection::Field,
+            DcsReadCollection::DataSet,
+            DcsReadCollection::Query,
+        ]);
+        read_limits.push(
+            "DataSet membership is unreadable because its owner is nil or contains unexpected text"
+                .to_string(),
+        );
+    }
+    for (tag, identity, branch) in [
+        ("field", Some("dataPath"), DcsReadCollection::Field),
+        ("item", Some("name"), DcsReadCollection::DataSet),
+    ] {
+        if !dcs_read_collection_complete(data_set, tag, identity, ns_schema) {
+            incomplete_collections.push(branch);
+            read_limits.push(format!(
+                "DataSet {tag}: collection contains unreadable entries"
+            ));
+        }
+    }
+    let queries: Vec<_> = data_set
+        .children()
+        .filter(|child| child.is_element() && child.tag_name().name() == "query")
+        .collect();
+    if queries.len() > 1
+        || queries.iter().any(|query| {
+            query.tag_name().namespace() != Some(ns_schema)
+                || query.children().any(|child| child.is_element())
+                || query
+                    .attributes()
+                    .any(|attr| attr.name() == "nil" && attr.value() != "false")
+        })
+    {
+        incomplete_collections.push(DcsReadCollection::Query);
+        read_limits.push("DataSet query is not represented uniquely as text".to_string());
+    }
     DcsInfoDataSet {
+        read_limits,
+        incomplete_collections: incomplete_collections.clone(),
         name: unica_xml_format::read::child_element_in_namespace(data_set, "name", ns_schema)
             .map(dcs_text_of)
             .unwrap_or_default(),
@@ -392,14 +479,17 @@ fn dcs_info_data_set(data_set: roxmltree::Node<'_, '_>, ns_schema: &str) -> DcsI
         // `dcs_inner_text`, not `dcs_all_text`: a 1C query carries meaningful
         // leading whitespace in its `|` continuation lines, and the retired
         // `Raw` mode existed precisely to hand it back untrimmed.
-        query: unica_xml_format::read::child_element_in_namespace(data_set, "query", ns_schema)
-            .map(dcs_inner_text)
-            .and_then(dcs_info_opt),
+        query: if incomplete_collections.contains(&DcsReadCollection::Query) {
+            None
+        } else {
+            unica_xml_format::read::child_element_in_namespace(data_set, "query", ns_schema)
+                .map(dcs_inner_text)
+        },
         fields: unica_xml_format::read::child_elements_in_namespace(data_set, "field", ns_schema)
             .into_iter()
             .filter_map(|field| {
                 Some(DcsInfoField {
-                    data_path: dcs_info_child_text(field, "dataPath", ns_schema)?,
+                    data_path: dcs_read_identity(field, "dataPath", ns_schema)?,
                     field: dcs_info_child_text(field, "field", ns_schema),
                     title: unica_xml_format::read::child_element_in_namespace(
                         field, "title", ns_schema,
@@ -427,7 +517,44 @@ fn dcs_info_collect(
     ns_settings: &str,
     support: DomainObjectSupportData,
 ) -> DcsFacts {
+    let mut read_limits = Vec::new();
+    let mut incomplete_collections = Vec::new();
+    if root
+        .children()
+        .any(|child| child.is_text() && child.text().is_some_and(|text| !text.trim().is_empty()))
+    {
+        incomplete_collections.extend([
+            DcsReadCollection::DataSource,
+            DcsReadCollection::DataSet,
+            DcsReadCollection::CalculatedField,
+            DcsReadCollection::Total,
+            DcsReadCollection::Parameter,
+            DcsReadCollection::Setting,
+            DcsReadCollection::Item,
+        ]);
+        read_limits.push("DCS root contains unreadable text outside its sections".to_string());
+    }
+    for (tag, identity, branch) in [
+        ("dataSource", Some("name"), DcsReadCollection::DataSource),
+        ("dataSet", Some("name"), DcsReadCollection::DataSet),
+        (
+            "calculatedField",
+            Some("dataPath"),
+            DcsReadCollection::CalculatedField,
+        ),
+        ("totalField", Some("dataPath"), DcsReadCollection::Total),
+        ("parameter", Some("name"), DcsReadCollection::Parameter),
+        ("settingsVariant", None, DcsReadCollection::Setting),
+        ("dataSetLink", None, DcsReadCollection::Item),
+    ] {
+        if !dcs_read_collection_complete(root, tag, identity, ns_schema) {
+            incomplete_collections.push(branch);
+            read_limits.push(format!("DCS {tag}: collection contains unreadable entries"));
+        }
+    }
     DcsFacts {
+        read_limits,
+        incomplete_collections,
         support,
         data_sources: unica_xml_format::read::child_elements_in_namespace(
             root,
@@ -481,7 +608,7 @@ fn dcs_info_collect(
         .into_iter()
         .filter_map(|field| {
             Some(DcsInfoCalculatedField {
-                data_path: dcs_info_child_text(field, "dataPath", ns_schema)?,
+                data_path: dcs_read_identity(field, "dataPath", ns_schema)?,
                 expression: unica_xml_format::read::child_element_in_namespace(
                     field,
                     "expression",
@@ -506,7 +633,7 @@ fn dcs_info_collect(
         .into_iter()
         .filter_map(|total| {
             Some(DcsInfoTotalField {
-                data_path: dcs_info_child_text(total, "dataPath", ns_schema)?,
+                data_path: dcs_read_identity(total, "dataPath", ns_schema)?,
                 expression: unica_xml_format::read::child_element_in_namespace(
                     total,
                     "expression",
@@ -648,6 +775,13 @@ pub fn parse_dcs_info_xml(
         .map_err(|err| format!("DCS XML parse error: {err}"))?;
     let root = doc.root_element();
     require_dcs_root(root)?;
+    if root.attributes().any(|attr| {
+        attr.namespace() == Some("http://www.w3.org/2001/XMLSchema-instance")
+            && attr.name() == "nil"
+            && !matches!(attr.value(), "false" | "0")
+    }) {
+        return Err("DataCompositionSchema root cannot be nil".to_string());
+    }
     Ok(dcs_info_collect(root, NS_SCHEMA, NS_SETTINGS, support))
 }
 

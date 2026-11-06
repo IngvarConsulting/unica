@@ -914,12 +914,14 @@ pub fn build_subsystem_info_result(
         use_one_command: subsystem_optional(data.use_one_command),
         support,
         content: data.content_items,
+        content_complete: data.content_complete,
         groups: data
             .groups
             .into_iter()
             .map(|(name, items)| SubsystemGroupData { name, items })
             .collect(),
         children: data.child_names,
+        children_complete: data.children_complete,
         tree,
         command_interface,
     }
@@ -1028,6 +1030,149 @@ pub fn subsystem_command_interface_data(
     parse_subsystem_command_interface_data(&ci_path, &text).map(Some)
 }
 
+const SUBSYSTEM_CI_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
+const SUBSYSTEM_CI_READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
+
+fn ci_section_name(section: SubsystemCommandInterfaceSection) -> &'static str {
+    use SubsystemCommandInterfaceSection as Section;
+    match section {
+        Section::CommandsVisibility => "CommandsVisibility",
+        Section::CommandsPlacement => "CommandsPlacement",
+        Section::CommandsOrder => "CommandsOrder",
+        Section::GroupsOrder => "GroupsOrder",
+        Section::SubsystemsOrder => "SubsystemsOrder",
+    }
+}
+
+fn ci_incomplete(
+    data: &mut SubsystemCommandInterfaceData,
+    section: SubsystemCommandInterfaceSection,
+    reason: &str,
+) {
+    if !data.incomplete_sections.contains(&section) {
+        data.incomplete_sections.push(section);
+    }
+    let limit = format!("CommandInterface {}: {reason}", ci_section_name(section));
+    if !data.limits.contains(&limit) {
+        data.limits.push(limit);
+    }
+}
+
+fn ci_has_text(node: roxmltree::Node<'_, '_>) -> bool {
+    node.children()
+        .any(|child| child.is_text() && child.text().is_some_and(|text| !text.trim().is_empty()))
+}
+
+fn ci_is_nil(node: roxmltree::Node<'_, '_>) -> bool {
+    node.attributes().any(|attribute| {
+        attribute.name() == "nil"
+            && attribute.namespace() == Some("http://www.w3.org/2001/XMLSchema-instance")
+            && !matches!(attribute.value().trim(), "false" | "0")
+    })
+}
+
+/// A named scalar can be absent; a duplicate, foreign or structured value is
+/// damaged, not an invitation to choose the first or to invent a default.
+fn ci_scalar(
+    parent: roxmltree::Node<'_, '_>,
+    name: &str,
+    namespace: &str,
+) -> Result<Option<String>, ()> {
+    let mut matching = parent
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == name);
+    let Some(node) = matching.next() else {
+        return Ok(None);
+    };
+    if matching.next().is_some()
+        || node.tag_name().namespace() != Some(namespace)
+        || node.children().any(|child| child.is_element())
+        || ci_is_nil(node)
+    {
+        return Err(());
+    }
+    let text = unica_xml_format::read::direct_text(node).trim().to_string();
+    if text.is_empty() {
+        Err(())
+    } else {
+        Ok(Some(text))
+    }
+}
+
+fn ci_visibility(command: roxmltree::Node<'_, '_>) -> (Option<bool>, Option<usize>, bool) {
+    let mut matching = command
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Visibility");
+    let Some(visibility) = matching.next() else {
+        // Preserve the reader's existing convention for a command without a
+        // visibility override, but not in place of unknown command content.
+        return if command.children().any(|node| node.is_element()) || ci_has_text(command) {
+            (None, None, true)
+        } else {
+            (Some(true), Some(0), false)
+        };
+    };
+    if matching.next().is_some()
+        || visibility.tag_name().namespace() != Some(SUBSYSTEM_CI_NS)
+        || ci_is_nil(visibility)
+    {
+        return (None, None, true);
+    }
+    let common = ci_scalar(visibility, "Common", SUBSYSTEM_CI_READABLE_NS);
+    let visible = match common {
+        Ok(Some(value)) if value == "true" => Some(true),
+        Ok(Some(value)) if value == "false" => Some(false),
+        // A present Visibility without a readable Common is not evidence
+        // for either boolean value.
+        Ok(None) => None,
+        _ => None,
+    };
+    let mut role_names = HashSet::new();
+    let mut roles_known = !ci_has_text(visibility);
+    let mut damaged = visible.is_none() || !roles_known;
+    for child in visibility.children().filter(|node| node.is_element()) {
+        if child.tag_name().name() == "Common" {
+            if child.tag_name().namespace() != Some(SUBSYSTEM_CI_READABLE_NS) {
+                damaged = true;
+            }
+            continue;
+        }
+        if child.tag_name().name() != "Value"
+            || child.tag_name().namespace() != Some(SUBSYSTEM_CI_READABLE_NS)
+            || child.children().any(|node| node.is_element())
+            || ci_is_nil(child)
+            || !matches!(
+                unica_xml_format::read::direct_text(child).trim(),
+                "true" | "false"
+            )
+        {
+            roles_known = false;
+            damaged = true;
+            continue;
+        }
+        if !child
+            .attribute("name")
+            .filter(|name| !name.trim().is_empty())
+            .is_some_and(|name| role_names.insert(name))
+        {
+            roles_known = false;
+            damaged = true;
+        }
+    }
+    if command
+        .children()
+        .filter(|node| node.is_element())
+        .any(|node| {
+            node.tag_name().name() != "Visibility"
+                || node.tag_name().namespace() != Some(SUBSYSTEM_CI_NS)
+        })
+        || ci_has_text(command)
+    {
+        damaged = true;
+    }
+    (visible, roles_known.then_some(role_names.len()), damaged)
+}
+
 pub fn parse_subsystem_command_interface_data(
     ci_path: &Path,
     text: &str,
@@ -1035,97 +1180,205 @@ pub fn parse_subsystem_command_interface_data(
     let doc = Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error in {}: {err}", ci_path.display()))?;
     let root = doc.root_element();
-    const CI_NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
-
-    let mut visibility = Vec::new();
-    if let Some(section) = root.children().find(|node| {
-        unica_xml_format::names::element_has_name(*node, "CommandsVisibility", Some(CI_NS))
-    }) {
-        for cmd in section
-            .children()
-            .filter(|node| unica_xml_format::names::element_has_name(*node, "Command", Some(CI_NS)))
-        {
-            let common = cmd
-                .descendants()
-                .find(|node| unica_xml_format::names::element_has_name(*node, "Common", None))
-                .and_then(|node| node.text());
-            let role_overrides = cmd
-                .descendants()
-                .filter(|node| unica_xml_format::names::element_has_name(*node, "Value", None))
-                .filter(|node| node.attribute("name").is_some_and(|name| !name.is_empty()))
-                .count();
-            visibility.push(SubsystemCommandVisibilityData {
-                command: cmd.attribute("name").unwrap_or("").to_string(),
-                visible: common != Some("false"),
-                role_overrides,
-            });
-        }
-    }
-
-    let mut placement = Vec::new();
-    if let Some(section) = root.children().find(|node| {
-        unica_xml_format::names::element_has_name(*node, "CommandsPlacement", Some(CI_NS))
-    }) {
-        for cmd in section
-            .children()
-            .filter(|node| unica_xml_format::names::element_has_name(*node, "Command", Some(CI_NS)))
-        {
-            placement.push(SubsystemCommandPlacementData {
-                command: cmd.attribute("name").unwrap_or("").to_string(),
-                group: subsystem_optional(unica_xml_format::read::child_text(
-                    cmd,
-                    "CommandGroup",
-                    Some(CI_NS),
-                )),
-                placement: subsystem_optional(unica_xml_format::read::child_text(
-                    cmd,
-                    "Placement",
-                    Some(CI_NS),
-                )),
-            });
-        }
-    }
-
-    let mut order = Vec::<(String, Vec<String>)>::new();
-    if let Some(section) = root
-        .children()
-        .find(|node| unica_xml_format::names::element_has_name(*node, "CommandsOrder", Some(CI_NS)))
+    if !unica_xml_format::names::element_has_name(root, "CommandInterface", Some(SUBSYSTEM_CI_NS))
+        || ci_is_nil(root)
     {
-        for cmd in section
+        return Err(format!(
+            "CommandInterface in {}: unexpected root name or namespace",
+            ci_path.display()
+        ));
+    }
+    use SubsystemCommandInterfaceSection as Section;
+    let sections = [
+        Section::CommandsVisibility,
+        Section::CommandsPlacement,
+        Section::CommandsOrder,
+        Section::GroupsOrder,
+        Section::SubsystemsOrder,
+    ];
+    let mut data = SubsystemCommandInterfaceData {
+        limits: Vec::new(),
+        incomplete_sections: Vec::new(),
+        visibility: Vec::new(),
+        placement: Vec::new(),
+        order: Vec::new(),
+        groups_order: Vec::new(),
+        subsystem_order: Vec::new(),
+    };
+    let unknown_root_content = ci_has_text(root)
+        || root
             .children()
-            .filter(|node| unica_xml_format::names::element_has_name(*node, "Command", Some(CI_NS)))
-        {
-            let group = unica_xml_format::read::child_text(cmd, "CommandGroup", Some(CI_NS));
-            unica_operation_contract::collections::push_group_item(
-                &mut order,
-                if group.is_empty() { "?" } else { &group },
-                cmd.attribute("name").unwrap_or("").to_string(),
+            .filter(|node| node.is_element())
+            .any(|node| {
+                !sections
+                    .iter()
+                    .any(|section| ci_section_name(*section) == node.tag_name().name())
+            });
+    if unknown_root_content {
+        data.limits
+            .push("CommandInterface: unknown root content was not read".to_string());
+    }
+    for section_kind in sections {
+        let name = ci_section_name(section_kind);
+        let native: Vec<_> = root
+            .children()
+            .filter(|node| {
+                unica_xml_format::names::element_has_name(*node, name, Some(SUBSYSTEM_CI_NS))
+            })
+            .collect();
+        let foreign = root.children().any(|node| {
+            node.is_element()
+                && node.tag_name().name() == name
+                && node.tag_name().namespace() != Some(SUBSYSTEM_CI_NS)
+        });
+        if foreign {
+            if native.is_empty() {
+                ci_incomplete(&mut data, section_kind, "foreign section was not read");
+            } else {
+                data.limits.push(format!(
+                    "CommandInterface {name}: foreign section was not read"
+                ));
+            }
+        }
+        if native.len() > 1 {
+            ci_incomplete(
+                &mut data,
+                section_kind,
+                "duplicate native sections leave collection order incomplete",
             );
         }
+        if native.is_empty() && unknown_root_content {
+            ci_incomplete(
+                &mut data,
+                section_kind,
+                "unknown root content prevents proving absence",
+            );
+        }
+        let entry_name = match section_kind {
+            Section::GroupsOrder => "Group",
+            Section::SubsystemsOrder => "Subsystem",
+            _ => "Command",
+        };
+        // Identity observations span all native containers; no container is
+        // selected as the winner, and independent rows survive duplication.
+        let mut identities = HashSet::new();
+        for section in native {
+            if ci_is_nil(section) {
+                ci_incomplete(&mut data, section_kind, "nil section was not read");
+                continue;
+            }
+            if ci_has_text(section) {
+                ci_incomplete(&mut data, section_kind, "unexpected section text");
+            }
+            for entry in section.children().filter(|node| node.is_element()) {
+                if !unica_xml_format::names::element_has_name(
+                    entry,
+                    entry_name,
+                    Some(SUBSYSTEM_CI_NS),
+                ) {
+                    ci_incomplete(
+                        &mut data,
+                        section_kind,
+                        "unsupported section entry was not read",
+                    );
+                    continue;
+                }
+                if ci_is_nil(entry) {
+                    ci_incomplete(&mut data, section_kind, "nil entry was not read");
+                    continue;
+                }
+                if entry_name != "Command" {
+                    let value = unica_xml_format::read::direct_text(entry)
+                        .trim()
+                        .to_string();
+                    if entry.children().any(|node| node.is_element()) || value.is_empty() {
+                        ci_incomplete(&mut data, section_kind, "order entry has no readable name");
+                        continue;
+                    }
+                    if !identities.insert(value.clone()) {
+                        ci_incomplete(&mut data, section_kind, "duplicate order entry");
+                        continue;
+                    }
+                    match section_kind {
+                        Section::GroupsOrder => data.groups_order.push(value),
+                        Section::SubsystemsOrder => data.subsystem_order.push(value),
+                        _ => unreachable!(),
+                    }
+                    continue;
+                }
+                let Some(command) = entry
+                    .attribute("name")
+                    .filter(|name| !name.trim().is_empty())
+                else {
+                    ci_incomplete(
+                        &mut data,
+                        section_kind,
+                        "command entry has no readable identity",
+                    );
+                    continue;
+                };
+                if section_kind != Section::CommandsOrder && !identities.insert(command.to_string())
+                {
+                    ci_incomplete(&mut data, section_kind, "duplicate command identity");
+                }
+                if section_kind == Section::CommandsVisibility {
+                    let (visible, role_overrides, damaged) = ci_visibility(entry);
+                    if damaged {
+                        ci_incomplete(
+                            &mut data,
+                            section_kind,
+                            "command visibility is only partially known",
+                        );
+                    }
+                    data.visibility.push(SubsystemCommandVisibilityData {
+                        command: command.to_string(),
+                        visible,
+                        role_overrides,
+                    });
+                    continue;
+                }
+                let group = ci_scalar(entry, "CommandGroup", SUBSYSTEM_CI_NS);
+                let placement = ci_scalar(entry, "Placement", SUBSYSTEM_CI_NS);
+                let allowed = |node: roxmltree::Node<'_, '_>| {
+                    node.tag_name().namespace() == Some(SUBSYSTEM_CI_NS)
+                        && (node.tag_name().name() == "CommandGroup"
+                            || (section_kind == Section::CommandsPlacement
+                                && node.tag_name().name() == "Placement"))
+                };
+                if !matches!(&group, Ok(Some(_)))
+                    || (section_kind == Section::CommandsPlacement
+                        && !matches!(&placement, Ok(Some(_))))
+                    || ci_has_text(entry)
+                    || entry
+                        .children()
+                        .filter(|node| node.is_element())
+                        .any(|node| !allowed(node))
+                {
+                    ci_incomplete(
+                        &mut data,
+                        section_kind,
+                        "command fields are only partially known",
+                    );
+                }
+                let group = group.ok().flatten();
+                if section_kind == Section::CommandsPlacement {
+                    data.placement.push(SubsystemCommandPlacementData {
+                        command: command.to_string(),
+                        group,
+                        placement: placement.ok().flatten(),
+                    });
+                } else if let Some(existing) = data.order.iter_mut().find(|row| row.name == group) {
+                    existing.items.push(command.to_string());
+                } else {
+                    data.order.push(SubsystemCommandOrderData {
+                        name: group,
+                        items: vec![command.to_string()],
+                    });
+                }
+            }
+        }
     }
-
-    let listed = |section: &str, item: &str| -> Vec<String> {
-        root.children()
-            .find(|node| unica_xml_format::names::element_has_name(*node, section, Some(CI_NS)))
-            .into_iter()
-            .flat_map(|section| section.children())
-            .filter(|node| unica_xml_format::names::element_has_name(*node, item, Some(CI_NS)))
-            .filter_map(|node| node.text())
-            .map(|text| text.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .collect()
-    };
-
-    Ok(SubsystemCommandInterfaceData {
-        visibility,
-        placement,
-        order: order
-            .into_iter()
-            .map(|(name, items)| SubsystemGroupData { name, items })
-            .collect(),
-        groups_order: listed("GroupsOrder", "Group"),
-        subsystem_order: listed("SubsystemsOrder", "Subsystem"),
-    })
+    Ok(data)
 }
 
 pub fn subsystem_info_ci_lines(
@@ -2150,6 +2403,62 @@ pub fn parse_subsystem_info_data(
     );
     parse_subsystem_info_xml(path, text, has_ci)
 }
+fn subsystem_observed_collection(
+    owner: roxmltree::Node<'_, '_>,
+    container_name: &str,
+    item_name: &str,
+    item_namespace: &str,
+    named_child: bool,
+    limits: &mut Vec<String>,
+) -> (Vec<String>, bool) {
+    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let containers: Vec<_> = owner
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == container_name)
+        .collect();
+    let mut complete = true;
+    let mut invalidate = |reason| {
+        complete = false;
+        let message = format!("source_unreadable: Subsystem {container_name} {reason}");
+        if !limits.contains(&message) {
+            limits.push(message);
+        }
+    };
+    if containers.is_empty() {
+        invalidate("was not observed");
+    } else if containers.len() > 1 {
+        invalidate("has duplicated containers");
+    }
+    let mut values = Vec::new();
+    for container in containers {
+        if container.tag_name().namespace() != Some(MD_NS) || ci_is_nil(container) {
+            invalidate("has a foreign or nil container");
+            continue;
+        }
+        if ci_has_text(container) {
+            invalidate("has unexpected container text");
+        }
+        for item in container.children().filter(|node| node.is_element()) {
+            if !unica_xml_format::names::element_has_name(item, item_name, Some(item_namespace))
+                || ci_is_nil(item)
+                || item.children().any(|node| node.is_element())
+            {
+                invalidate("has an unreadable entry");
+                continue;
+            }
+            let value = unica_xml_format::read::direct_text(item).trim().to_string();
+            if value.is_empty()
+                || (named_child && !unica_xml_format::names::xml_ncname_is_valid(&value))
+            {
+                invalidate("has an entry without a readable identity");
+                continue;
+            }
+            values.push(value);
+        }
+    }
+    (values, complete)
+}
+
 pub fn parse_subsystem_info_xml(
     path: &Path,
     text: &str,
@@ -2158,30 +2467,34 @@ pub fn parse_subsystem_info_xml(
     let doc = Document::parse(text.trim_start_matches('\u{feff}'))
         .map_err(|err| format!("XML parse error in {}: {err}", path.display()))?;
     let root = doc.root_element();
-    let Some(sub) = root.children().find(|node| {
-        unica_xml_format::names::element_has_name(
-            *node,
-            "Subsystem",
-            Some("http://v8.1c.ru/8.3/MDClasses"),
-        )
-    }) else {
-        return Err(format!(
-            "[ERROR] Not a valid subsystem XML: {}",
-            path.display()
-        ));
+    const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
+    let invalid = || format!("[ERROR] Not a valid subsystem XML: {}", path.display());
+    if !unica_xml_format::names::element_has_name(root, "MetaDataObject", Some(MD_NS))
+        || ci_is_nil(root)
+    {
+        return Err(invalid());
+    }
+    let subsystems: Vec<_> = root
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Subsystem")
+        .collect();
+    let [sub] = subsystems.as_slice() else {
+        return Err(invalid());
     };
-    let Some(props) = sub.children().find(|node| {
-        unica_xml_format::names::element_has_name(
-            *node,
-            "Properties",
-            Some("http://v8.1c.ru/8.3/MDClasses"),
-        )
-    }) else {
-        return Err(format!(
-            "[ERROR] Not a valid subsystem XML: {}",
-            path.display()
-        ));
+    if sub.tag_name().namespace() != Some(MD_NS) || ci_is_nil(*sub) {
+        return Err(invalid());
+    }
+    let properties: Vec<_> = sub
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+        .collect();
+    let [props] = properties.as_slice() else {
+        return Err(invalid());
     };
+    if props.tag_name().namespace() != Some(MD_NS) || ci_is_nil(*props) {
+        return Err(invalid());
+    }
+    let (sub, props) = (*sub, *props);
 
     let name =
         unica_xml_format::read::child_text(props, "Name", Some("http://v8.1c.ru/8.3/MDClasses"));
@@ -2225,9 +2538,23 @@ pub fn parse_subsystem_info_xml(
         })
         .unwrap_or("")
         .to_string();
-    let content_items = subsystem_content_items(props);
+    let (content_items, content_complete) = subsystem_observed_collection(
+        props,
+        "Content",
+        "Item",
+        "http://v8.1c.ru/8.3/xcf/readable",
+        false,
+        &mut property_limits,
+    );
     let groups = subsystem_group_content(&content_items);
-    let child_names = subsystem_child_names(sub);
+    let (child_names, children_complete) = subsystem_observed_collection(
+        sub,
+        "ChildObjects",
+        "Subsystem",
+        MD_NS,
+        true,
+        &mut property_limits,
+    );
     Ok((
         SubsystemInfoData {
             name,
@@ -2238,8 +2565,10 @@ pub fn parse_subsystem_info_xml(
             explanation,
             picture,
             content_items,
+            content_complete,
             groups,
             child_names,
+            children_complete,
             has_ci,
             property_limits,
         },

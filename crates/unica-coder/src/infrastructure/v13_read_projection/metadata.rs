@@ -434,7 +434,16 @@ fn project_metadata(
         )
     })?;
     let mut kind = first.kind();
+    let mut inherited_limits = Vec::new();
     for segment in &suffix[1..] {
+        inherited_limits.extend(
+            item.get("propertyLimits")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_string),
+        );
         if kind == NodeKind::TabularSection
             && segment.kind() == NodeKind::StandardAttribute
             && item.get("standardAttributes").is_some_and(Value::is_null)
@@ -476,18 +485,16 @@ fn project_metadata(
                     kind.as_str(),
                     kind.as_str(),
                     Map::new(),
-                ),
+                )
+                .with_limits(inherited_limits),
                 metadata_items(address, kind, next, payload, member_profile),
             )));
         }
     }
-    Ok(NodeViewData::Node(metadata_item_with_context(
-        address,
-        kind,
-        item,
-        payload,
-        member_profile,
-    )))
+    Ok(NodeViewData::Node(
+        metadata_item_with_context(address, kind, item, payload, member_profile)
+            .with_additional_limits(inherited_limits),
+    ))
 }
 
 fn metadata_limits(payload: &Value) -> Vec<String> {
@@ -1029,10 +1036,27 @@ fn metadata_item_node(
         ("standardAttributes", NodeKind::StandardAttribute),
     ]
     .into_iter()
-    .filter_map(|(field, kind)| {
+    .filter_map(|(field, child_kind)| {
         let items = item.get(field)?.as_array()?;
-        (!items.is_empty())
-            .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), items.len()))
+        let admitted = matches!(
+            (kind, child_kind),
+            (
+                NodeKind::TabularSection,
+                NodeKind::Attribute | NodeKind::StandardAttribute
+            ) | (
+                NodeKind::StandardTabularSection,
+                NodeKind::StandardAttribute
+            ) | (NodeKind::UrlTemplate, NodeKind::Method)
+                | (NodeKind::Operation, NodeKind::Parameter)
+        );
+        let complete = item
+            .get("childCollectionsComplete")
+            .and_then(Value::as_bool)
+            != Some(false)
+            && (child_kind != NodeKind::Attribute
+                || item.get("attributesComplete").and_then(Value::as_bool) != Some(false));
+        (!items.is_empty() || (admitted && complete))
+            .then(|| BranchRef::new(format!("{}.{}", address, child_kind.as_str()), items.len()))
     })
     .collect::<Vec<_>>();
     branches.extend(
@@ -1044,7 +1068,10 @@ fn metadata_item_node(
                 let kind = branch.get("kind")?.as_str()?;
                 let count = usize::try_from(branch.get("count")?.as_u64()?).ok()?;
                 let kind = NodeKind::parse(kind).ok()?;
-                (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
+                Some(BranchRef::new(
+                    format!("{}.{}", address, kind.as_str()),
+                    count,
+                ))
             }),
     );
     // Пределы элемента приходят от читателя: профиль свойств переносит их

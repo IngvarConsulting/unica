@@ -1,4 +1,18 @@
 use super::*;
+
+/// rule: CTR.SOURCE.EMPTY-BRANCHES
+#[test]
+fn command_interface_order_keeps_text_around_comments_and_cdata() {
+    let xml = r#"<ci:CommandInterface xmlns:ci="http://v8.1c.ru/8.3/xcf/extrnprops">
+      <ci:SubsystemsOrder><ci:Subsystem>Subsystem.Par<!--note-->ent</ci:Subsystem></ci:SubsystemsOrder>
+      <ci:GroupsOrder><ci:Group>Navigation<![CDATA[Panel]]><!--note-->Ordinary</ci:Group></ci:GroupsOrder>
+    </ci:CommandInterface>"#;
+    let result =
+        parse_subsystem_command_interface_data(Path::new("CommandInterface.xml"), xml).unwrap();
+    assert_eq!(result.subsystem_order, ["Subsystem.Parent"]);
+    assert_eq!(result.groups_order, ["NavigationPanelOrdinary"]);
+}
+
 #[test]
 fn subsystem_edit_emits_platform_canonical_utf8_declaration() {
     let xml = emit_subsystem_edit_model(&SubsystemEditModel {

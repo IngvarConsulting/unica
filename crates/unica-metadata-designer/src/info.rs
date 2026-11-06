@@ -342,6 +342,8 @@ pub fn typed_element(
             standard_attributes: None,
             property_limits: Vec::new(),
             attributes: Vec::new(),
+            attributes_complete: false,
+            child_collections_complete: false,
         });
     };
     // Диагностики самого элемента (тип, значение заполнения, флаг
@@ -530,28 +532,69 @@ pub fn typed_element(
     } else {
         None
     };
-    let attributes = if nested_attributes {
-        typed_elements_profiled(
-            xml,
-            crate::info_projection::direct_md_child(node, "ChildObjects"),
-            ElementReadRoute {
-                tag: "Attribute",
-                nested_attributes: false,
-                field: &format!("{field}.attributes"),
-                profile: member_profile,
-            },
-            target,
-            diagnostics,
-        )
-    } else {
-        Vec::new()
-    };
+    let child_collections_complete = !node.attributes().any(|attr| {
+        attr.namespace() == Some("http://www.w3.org/2001/XMLSchema-instance")
+            && attr.name() == "nil"
+            && !matches!(attr.value(), "false" | "0")
+    }) && !node
+        .children()
+        .any(|child| child.is_text() && child.text().is_some_and(|text| !text.trim().is_empty()));
+    let containers: Vec<_> = node
+        .children()
+        .filter(|child| child.is_element() && child.tag_name().name() == "ChildObjects")
+        .collect();
+    let mut attributes_complete = !nested_attributes
+        || (containers.len() <= 1
+            && containers.iter().all(|container| {
+                container.tag_name().namespace()
+                    == Some(crate::info_projection::MD_CLASSES_NAMESPACE)
+                    && !container
+                        .attributes()
+                        .any(|attr| attr.name() == "nil" && !matches!(attr.value(), "false" | "0"))
+                    && !container.children().any(|child| {
+                        child.is_text() && child.text().is_some_and(|text| !text.trim().is_empty())
+                    })
+            }));
+    let mut attributes = Vec::new();
+    if nested_attributes {
+        for container in containers.iter().copied().filter(|container| {
+            container.tag_name().namespace() == Some(crate::info_projection::MD_CLASSES_NAMESPACE)
+        }) {
+            let expected = container
+                .children()
+                .filter(|child| child.is_element())
+                .count();
+            let rows = typed_elements_profiled(
+                xml,
+                Some(container),
+                ElementReadRoute {
+                    tag: "Attribute",
+                    nested_attributes: false,
+                    field: &format!("{field}.attributes"),
+                    profile: member_profile,
+                },
+                target,
+                diagnostics,
+            );
+            attributes_complete &=
+                rows.len() == expected && rows.iter().all(|row| !row.name.is_empty());
+            attributes.extend(rows);
+        }
+    }
     let (profile_properties, property_limits) = member_profile.map_or_else(
         || (Vec::new(), Vec::new()),
         |profile| super::member_properties::observe(node, profile, field, target, diagnostics),
     );
     incomplete |= !property_limits.is_empty();
-    let property_limits = own_limits.into_iter().chain(property_limits).collect();
+    let mut property_limits: Vec<_> = own_limits.into_iter().chain(property_limits).collect();
+    if !child_collections_complete {
+        incomplete = true;
+        property_limits.push("Metadata child collections are incomplete because their owner is nil or contains unexpected text".to_string());
+    }
+    if !attributes_complete && nested_attributes {
+        incomplete = true;
+        property_limits.push("TabularSection Attribute collection is incomplete: duplicate, foreign or unreadable ChildObjects entries".to_string());
+    }
     let properties_readback = properties_readback
         .into_iter()
         .chain(profile_properties)
@@ -572,6 +615,8 @@ pub fn typed_element(
         standard_attributes,
         property_limits,
         attributes,
+        attributes_complete,
+        child_collections_complete,
     })
 }
 /// Предел элемента по его диагностике: поле, код и сообщение. Код отличает

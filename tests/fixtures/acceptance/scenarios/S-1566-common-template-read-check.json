@@ -311,6 +311,10 @@
         {
           "pointer": "/data/props/format",
           "eq": "DataCompositionSchema"
+        },
+        {
+          "pointer": "/data/branches/4/at",
+          "eq": "main:CommonTemplate.Schema.Parameter"
         }
       ],
       "captures": {
@@ -318,7 +322,7 @@
           "pointer": "/data/branches/1/at"
         },
         "commonDcsParameters": {
-          "pointer": "/data/branches/2/at"
+          "pointer": "/data/branches/4/at"
         }
       }
     },
@@ -459,7 +463,12 @@
         },
         {
           "pointer": "/data/branches",
-          "absent": true
+          "eq": [
+            {
+              "at": "main:CommonTemplate.Empty.Area",
+              "count": 0
+            }
+          ]
         },
         {
           "pointer": "/data/title",

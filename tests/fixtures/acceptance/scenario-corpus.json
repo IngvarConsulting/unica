@@ -9536,8 +9536,24 @@
          "count": 1
         },
         {
+         "at": "cf:Report.F05Report.Template.F05Schema.CalculatedField",
+         "count": 0
+        },
+        {
+         "at": "cf:Report.F05Report.Template.F05Schema.Total",
+         "count": 0
+        },
+        {
+         "at": "cf:Report.F05Report.Template.F05Schema.Parameter",
+         "count": 0
+        },
+        {
          "at": "cf:Report.F05Report.Template.F05Schema.Setting",
          "count": 1
+        },
+        {
+         "at": "cf:Report.F05Report.Template.F05Schema.Item",
+         "count": 0
         }
        ]
       }
@@ -9600,7 +9616,13 @@
           "groupBy": [
            "Category"
           ]
-         }
+         },
+         "branches": [
+          {
+           "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group.Item",
+           "count": 0
+          }
+         ]
         }
        ]
       }
@@ -9989,7 +10011,13 @@
           "groupBy": [
            "Amount"
           ]
-         }
+         },
+         "branches": [
+          {
+           "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group.Item",
+           "count": 0
+          }
+         ]
         }
        ]
       }
@@ -10747,7 +10775,13 @@
           "groupBy": [
            "Amount"
           ]
-         }
+         },
+         "branches": [
+          {
+           "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group.Item",
+           "count": 0
+          }
+         ]
         }
        ]
       }
@@ -11239,8 +11273,28 @@
          "count": 1
         },
         {
+         "at": "cf:Report.F05Report.Template.NewSkeleton.DataSet",
+         "count": 0
+        },
+        {
+         "at": "cf:Report.F05Report.Template.NewSkeleton.CalculatedField",
+         "count": 0
+        },
+        {
+         "at": "cf:Report.F05Report.Template.NewSkeleton.Total",
+         "count": 0
+        },
+        {
+         "at": "cf:Report.F05Report.Template.NewSkeleton.Parameter",
+         "count": 0
+        },
+        {
          "at": "cf:Report.F05Report.Template.NewSkeleton.Setting",
          "count": 1
+        },
+        {
+         "at": "cf:Report.F05Report.Template.NewSkeleton.Item",
+         "count": 0
         }
        ]
       }

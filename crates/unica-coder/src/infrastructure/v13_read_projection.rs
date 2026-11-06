@@ -109,7 +109,61 @@ fn project_typed_payload_inner(
     project_known_suffix(route.reader(), route.at(), &payload, suffix)
 }
 
+pub(super) fn reader_read_limits(value: &Value) -> Vec<String> {
+    value
+        .get("readLimits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+fn reader_collection_known(value: &Value, kind: NodeKind) -> bool {
+    !value
+        .get("incompleteCollections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|entry| entry.as_str() == Some(kind.as_str()))
+}
+
+fn dcs_dataset_child(dataset: &Value, kind: NodeKind) -> Option<&Value> {
+    let dataset_kind = dataset.get("kind").and_then(Value::as_str);
+    let (field, admitted) = match kind {
+        NodeKind::DataSet => ("items", dataset_kind == Some("Union")),
+        NodeKind::Field => (
+            "fields",
+            matches!(dataset_kind, Some("Query" | "Object" | "Union")),
+        ),
+        NodeKind::Query => ("query", dataset_kind == Some("Query")),
+        _ => return None,
+    };
+    let value = dataset.get(field)?;
+    let count = if kind == NodeKind::Query {
+        value.as_str()?.lines().count()
+    } else {
+        value.as_array()?.len()
+    };
+    // Unknown dataset kinds retain observed content without claiming that
+    // an absent child is a supported, completely known empty collection.
+    (admitted || count > 0).then_some(value)
+}
+
 fn project_dcs(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    let mut view = project_dcs_inner(address, payload, suffix)?;
+    for limit in reader_read_limits(payload) {
+        view = view.with_limit(limit);
+    }
+    Ok(view)
+}
+
+fn project_dcs_inner(
     address: &QualifiedAddress,
     payload: &Value,
     suffix: &[AddressSegment],
@@ -191,6 +245,14 @@ fn project_dcs(
         .iter()
         .take_while(|segment| segment.kind() == NodeKind::DataSet)
     {
+        if let Some(parent) = current {
+            datasets = dcs_dataset_child(parent, NodeKind::DataSet).ok_or_else(|| {
+                ViewError::new(
+                    RefusalCode::NotFound,
+                    "DCS dataset has no nested DataSet collection",
+                )
+            })?;
+        }
         consumed += 1;
         let Some(name) = segment.name() else {
             if consumed != suffix.len() {
@@ -218,7 +280,6 @@ fn project_dcs(
         }
         let selected = matches[0];
         current = Some(selected);
-        datasets = selected.get("items").unwrap_or(&Value::Null);
     }
     let dataset =
         current.ok_or_else(|| ViewError::new(RefusalCode::NotFound, "dataset was not found"))?;
@@ -229,7 +290,10 @@ fn project_dcs(
             .get("parameters")
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
-        if count > 0 {
+        if count > 0
+            || (payload.get("parameters").is_some_and(Value::is_array)
+                && reader_collection_known(payload, NodeKind::Parameter))
+        {
             branches.push(BranchRef::new(format!("{address}.Parameter"), count));
         }
         return Ok(NodeViewData::Node(node.with_branches(branches)));
@@ -241,16 +305,33 @@ fn project_dcs(
         ));
     };
     let selected = match detail.kind() {
-        NodeKind::Field => dataset.get("fields"),
+        NodeKind::Field | NodeKind::Query => dcs_dataset_child(dataset, detail.kind()),
         NodeKind::Parameter => payload.get("parameters"),
-        NodeKind::Query => dataset.get("query"),
         _ => None,
     }
     .ok_or_else(|| {
-        ViewError::new(
-            RefusalCode::NotFound,
-            format!("DCS dataset has no {} projection", detail.kind().as_str()),
-        )
+        let applicable = match detail.kind() {
+            NodeKind::Query => dataset.get("kind").and_then(Value::as_str) == Some("Query"),
+            NodeKind::Field => matches!(
+                dataset.get("kind").and_then(Value::as_str),
+                Some("Query" | "Object" | "Union")
+            ),
+            _ => false,
+        };
+        if applicable && !reader_collection_known(dataset, detail.kind()) {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                format!(
+                    "DCS dataset {} projection is incomplete",
+                    detail.kind().as_str()
+                ),
+            )
+        } else {
+            ViewError::new(
+                RefusalCode::NotFound,
+                format!("DCS dataset has no {} projection", detail.kind().as_str()),
+            )
+        }
     })?;
     if detail.name().is_none() {
         return Ok(NodeViewData::Collection(CollectionView::new(
@@ -259,7 +340,8 @@ fn project_dcs(
                 detail.kind().as_str(),
                 detail.kind().as_str(),
                 Map::new(),
-            ),
+            )
+            .with_limits(reader_read_limits(dataset)),
             collection_items(LogicalReader::Dcs, address, detail.kind(), selected),
         )));
     }
@@ -270,12 +352,15 @@ fn project_dcs(
             format!("DCS {} `{name}` was not found", detail.kind().as_str()),
         )
     })?;
-    Ok(NodeViewData::Node(NodeView::new(
-        address.to_string(),
-        detail.kind().as_str(),
-        name,
-        reader_node_props(LogicalReader::Dcs, detail.kind(), item),
-    )))
+    Ok(NodeViewData::Node(
+        NodeView::new(
+            address.to_string(),
+            detail.kind().as_str(),
+            name,
+            reader_node_props(LogicalReader::Dcs, detail.kind(), item),
+        )
+        .with_limits(reader_read_limits(dataset)),
+    ))
 }
 
 fn dcs_structure_props(row: &Value) -> Map<String, Value> {
@@ -289,13 +374,21 @@ fn dcs_structure_props(row: &Value) -> Map<String, Value> {
         .collect()
 }
 
+fn dcs_structure_admits_children(row: &Value) -> bool {
+    matches!(
+        row.get("kind").and_then(Value::as_str),
+        Some("Group" | "Table" | "Chart")
+    )
+}
+
 fn dcs_structure_node(address: &QualifiedAddress, rows: &[Value], index: usize) -> NodeView {
     let name = rows[index]
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("Item");
     let count = unica_dcs::structure::dcs_structure_scope(rows, Some(index)).len();
-    let branches = (count > 0)
+    let admits_children = dcs_structure_admits_children(&rows[index]);
+    let branches = (count > 0 || admits_children)
         .then(|| BranchRef::new(format!("{address}.Item"), count))
         .into_iter()
         .collect();
@@ -339,7 +432,12 @@ fn project_dcs_structure(
         .get("structureItems")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
-        .unwrap_or_default();
+        .ok_or_else(|| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "DCS setting structure was not observed",
+            )
+        })?;
     let mut scope = None;
     for (position, segment) in rest.iter().enumerate() {
         if segment.kind() != NodeKind::Item {
@@ -356,6 +454,14 @@ fn project_dcs_structure(
                 ));
             }
             let members = unica_dcs::structure::dcs_structure_scope(rows, scope);
+            if members.is_empty()
+                && scope.is_some_and(|index| !dcs_structure_admits_children(&rows[index]))
+            {
+                return Err(ViewError::new(
+                    RefusalCode::NotFound,
+                    "DCS structure item has no confirmed child collection",
+                ));
+            }
             let items = members
                 .iter()
                 .map(|index| {
@@ -456,7 +562,66 @@ fn reader_node_props_with_path(item: &Value) -> Map<String, Value> {
     props
 }
 
+pub(crate) fn mxl_template_branches(payload: &Value) -> Vec<(NodeKind, usize)> {
+    let count = payload
+        .get("areas")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len)
+        + payload
+            .get("unreadAreas")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+    (count > 0
+        || (payload.get("areas").is_some_and(Value::is_array)
+            && payload.get("areasComplete").and_then(Value::as_bool) != Some(false)))
+    .then_some((NodeKind::Area, count))
+    .into_iter()
+    .collect()
+}
+
 fn project_mxl(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    let mut payload = payload.clone();
+    if let Some(names) = payload
+        .get("unreadAreas")
+        .and_then(Value::as_array)
+        .cloned()
+    {
+        let read_limits = reader_read_limits(&payload);
+        if let Some(areas) = payload.get_mut("areas").and_then(Value::as_array_mut) {
+            for name in names {
+                areas.push(
+                    json!({"name":name, "paramsComplete":false, "bodyComplete":false,
+                    "params":[], "content":[], "readLimits":read_limits}),
+                );
+            }
+        }
+        payload.as_object_mut().unwrap().remove("unreadAreas");
+    }
+    let mut view = project_mxl_inner(address, &payload, suffix)?;
+    for limit in reader_read_limits(&payload) {
+        view = view.with_limit(limit);
+    }
+    // Area-local uncertainty also accompanies its children and details.
+    if let Some(name) = suffix.first().and_then(AddressSegment::name) {
+        if let Some(area) = payload
+            .get("areas")
+            .and_then(|areas| select_named(areas, name))
+        {
+            if suffix.len() > 1 {
+                for limit in reader_read_limits(area) {
+                    view = view.with_limit(limit);
+                }
+            }
+        }
+    }
+    Ok(view)
+}
+
+fn project_mxl_inner(
     address: &QualifiedAddress,
     payload: &Value,
     suffix: &[AddressSegment],
@@ -504,7 +669,10 @@ fn project_mxl(
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
         let mut branches = Vec::new();
-        if parameter_count > 0 {
+        if parameter_count > 0
+            || (area.get("params").is_some_and(Value::is_array)
+                && area.get("paramsComplete").and_then(Value::as_bool) != Some(false))
+        {
             branches.push(BranchRef::new(
                 format!("{}.Parameter", address),
                 parameter_count,
@@ -516,7 +684,10 @@ fn project_mxl(
             .get("contentCount")
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        if content_count > 0 {
+        if content_count > 0
+            || (area.get("contentCount").and_then(Value::as_u64).is_some()
+                && area.get("bodyComplete").and_then(Value::as_bool) != Some(false))
+        {
             branches.push(BranchRef::new(
                 format!("{}.{}", address, NodeKind::Body.as_str()),
                 content_count as usize,
@@ -951,6 +1122,9 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
         LogicalReader::Metadata => metadata::PAYLOAD_KEYS,
         LogicalReader::Form => form::PAYLOAD_KEYS,
         LogicalReader::Role => &[
+            "limits",
+            "rightsComplete",
+            "knownObjects",
             "name",
             "synonym",
             "support",
@@ -962,6 +1136,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "templates",
         ],
         LogicalReader::Subsystem | LogicalReader::Interface => &[
+            "contentComplete",
+            "childrenComplete",
             "propertyLimits",
             "name",
             "synonym",
@@ -979,6 +1155,8 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "libraryRoot",
         ],
         LogicalReader::Dcs => &[
+            "readLimits",
+            "incompleteCollections",
             "support",
             "dataSources",
             "dataSets",
@@ -990,6 +1168,9 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "templates",
         ],
         LogicalReader::Mxl => &[
+            "readLimits",
+            "areasComplete",
+            "unreadAreas",
             "name",
             "support",
             "rows",
@@ -1001,6 +1182,9 @@ fn validate_reader_payload(reader: LogicalReader, payload: &Value) -> Result<(),
             "drawingCount",
         ],
         LogicalReader::Xdto => &[
+            "readLimits",
+            "typesComplete",
+            "globalPropertiesComplete",
             "Comment",
             "commentError",
             "sourceSet",
@@ -1130,6 +1314,26 @@ fn project_subsystem(
     payload: &Value,
     suffix: &[AddressSegment],
 ) -> Result<NodeViewData, ViewError> {
+    let mut view = project_subsystem_inner(address, payload, suffix)?;
+    if !suffix.is_empty() {
+        for limit in payload
+            .get("propertyLimits")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            view = view.with_limit(limit);
+        }
+    }
+    Ok(view)
+}
+
+fn project_subsystem_inner(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
     let (content, dangling) = subsystem_content(address, payload);
     let children = subsystem_children(address, payload, suffix);
     if suffix.is_empty() {
@@ -1143,14 +1347,24 @@ fn project_subsystem(
                 .filter_map(Value::as_str)
                 .map(str::to_string),
         );
+        limits.extend(interface_read_limits(
+            payload.get("commandInterface").unwrap_or(&Value::Null),
+        ));
         let mut branches = Vec::new();
-        if !content.is_empty() {
+        if !content.is_empty()
+            || (payload.get("content").is_some_and(Value::is_array)
+                && payload.get("contentComplete").and_then(Value::as_bool) == Some(true)
+                && dangling.is_empty())
+        {
             branches.push(BranchRef::new(
                 format!("{address}.{}", NodeKind::Relation.as_str()),
                 content.len(),
             ));
         }
-        if !children.is_empty() {
+        if !children.is_empty()
+            || (payload.get("children").is_some_and(Value::is_array)
+                && payload.get("childrenComplete").and_then(Value::as_bool) == Some(true))
+        {
             branches.push(BranchRef::new(
                 format!("{address}.{}", NodeKind::Subsystem.as_str()),
                 children.len(),
@@ -1287,7 +1501,42 @@ fn content_limits(dangling: &[String]) -> Vec<String> {
     )]
 }
 
+fn interface_read_limits(interface: &Value) -> Vec<String> {
+    interface
+        .get("limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect()
+}
+
+fn interface_section_known(interface: &Value, key: &str, section: &str) -> bool {
+    interface.get(key).is_some_and(Value::is_array)
+        && !interface
+            .get("incompleteSections")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|value| value.as_str() == Some(section))
+}
+
 fn project_subsystem_interface(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    let mut view = project_subsystem_interface_inner(address, payload, suffix)?;
+    if let Some(interface) = payload.get("commandInterface") {
+        for limit in interface_read_limits(interface) {
+            view = view.with_limit(limit);
+        }
+    }
+    Ok(view)
+}
+
+fn project_subsystem_interface_inner(
     address: &QualifiedAddress,
     payload: &Value,
     suffix: &[AddressSegment],
@@ -1325,16 +1574,26 @@ fn project_subsystem_interface(
     let subsystems = interface_listed(interface, "subsystemOrder");
     if suffix.len() == 1 {
         let mut branches = Vec::new();
-        if !addressable.is_empty() {
+        let command_lists_known = [
+            ("visibility", "CommandsVisibility"),
+            ("placement", "CommandsPlacement"),
+            ("order", "CommandsOrder"),
+        ]
+        .into_iter()
+        .all(|(key, section)| interface_section_known(interface, key, section));
+        if !addressable.is_empty() || (command_lists_known && dangling_limits(&dangling).is_empty())
+        {
             branches.push(BranchRef::new(
                 format!("{}.Command", address),
                 addressable.len(),
             ));
         }
-        if !groups.is_empty() {
+        if !groups.is_empty() || interface_section_known(interface, "groupsOrder", "GroupsOrder") {
             branches.push(BranchRef::new(format!("{}.Group", address), groups.len()));
         }
-        if !subsystems.is_empty() {
+        if !subsystems.is_empty()
+            || interface_section_known(interface, "subsystemOrder", "SubsystemsOrder")
+        {
             branches.push(BranchRef::new(
                 format!("{}.Subsystem", address),
                 subsystems.len(),
@@ -1368,12 +1627,15 @@ fn project_subsystem_interface(
                 .iter()
                 .enumerate()
                 .map(|(index, reference)| {
-                    json!({
-                        "order": index + 1,
+                    let mut row = json!({
                         // Ссылка платформы дополняется до адреса: читателю
                         // нужен адрес, по которому можно спуститься.
                         "at": format!("{}:{reference}", address.source_set()),
-                    })
+                    });
+                    if interface_section_known(interface, "subsystemOrder", "SubsystemsOrder") {
+                        row["order"] = json!(index + 1);
+                    }
+                    row
                 })
                 .collect(),
         )));
@@ -1393,7 +1655,7 @@ fn project_subsystem_interface(
                             name,
                             reader_node_props(LogicalReader::Interface, NodeKind::Command, item),
                         )
-                        .with_limits(Vec::new()),
+                        .with_limits(interface_read_limits(interface)),
                     )
                     .ok()
                 })
@@ -1530,13 +1792,23 @@ fn project_interface_groups(
                 .iter()
                 .enumerate()
                 .map(|(index, group)| {
-                    json!({
+                    let count = commands_of(group).len();
+                    let mut row = json!({
                         "at": member_address(address, group),
                         "kind": "Group",
                         "title": group,
-                        "order": index + 1,
-                        "commands": commands_of(group).len(),
-                    })
+                    });
+                    if interface_section_known(interface, "groupsOrder", "GroupsOrder") {
+                        row["order"] = json!(index + 1);
+                    }
+                    if count > 0 || interface_section_known(interface, "order", "CommandsOrder") {
+                        row["commands"] = json!(count);
+                    }
+                    let limits = interface_read_limits(interface);
+                    if !limits.is_empty() {
+                        row["limits"] = json!(limits);
+                    }
+                    row
                 })
                 .collect(),
         )));
@@ -1552,56 +1824,90 @@ fn project_interface_groups(
         commands_of(name)
             .into_iter()
             .enumerate()
-            .map(|(index, command)| json!({"order": index + 1, "command": command}))
+            .map(|(index, command)| {
+                let mut row = json!({"command": command});
+                if interface_section_known(interface, "order", "CommandsOrder") {
+                    row["order"] = json!(index + 1);
+                }
+                row
+            })
             .collect(),
     )))
 }
 
 fn interface_commands(interface: &Value) -> Vec<Value> {
     let mut commands = std::collections::BTreeMap::<String, Map<String, Value>>::new();
-    for item in interface
-        .get("visibility")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        if let Some(name) = item.get("command").and_then(Value::as_str) {
-            let entry = commands.entry(name.to_string()).or_default();
-            entry.insert("name".to_string(), json!(name));
-            entry.insert(
-                "visible".to_string(),
-                item.get("visible").cloned().unwrap_or(Value::Null),
-            );
-            // Закрытый признак вместо умолчания: ноль говорит «переопределений
-            // нет», а не «не смотрели». Без него `visible` читался бы как вся
-            // правда о видимости команды.
-            entry.insert(
-                "roleOverrides".to_string(),
-                item.get("roleOverrides").cloned().unwrap_or(json!(0)),
-            );
+    // Duplicate rows may disagree. A conflict removes only that scalar, never
+    // chooses a winner or hides the independently known command identity.
+    let mut conflicts = std::collections::HashSet::<(String, String)>::new();
+    let mut merge = |name: &str, key: &str, value: &Value| {
+        let entry = commands.entry(name.to_string()).or_default();
+        entry.insert("name".to_string(), json!(name));
+        if value.is_null() {
+            entry.remove(key);
+            conflicts.insert((name.to_string(), key.to_string()));
+            return;
+        }
+        if conflicts.contains(&(name.to_string(), key.to_string())) {
+            return;
+        }
+        if entry.get(key).is_some_and(|previous| previous != value) {
+            entry.remove(key);
+            conflicts.insert((name.to_string(), key.to_string()));
+        } else {
+            entry.insert(key.to_string(), value.clone());
+        }
+    };
+    for (section, fields) in [
+        ("visibility", &["visible", "roleOverrides"][..]),
+        ("placement", &["group", "placement"][..]),
+    ] {
+        for item in interface
+            .get(section)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(name) = item.get("command").and_then(Value::as_str) {
+                merge(name, "name", &json!(name));
+                for key in fields {
+                    merge(name, key, item.get(*key).unwrap_or(&Value::Null));
+                }
+            }
         }
     }
-    for item in interface
-        .get("placement")
+    for group in interface
+        .get("order")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
     {
-        if let Some(name) = item.get("command").and_then(Value::as_str) {
-            let entry = commands.entry(name.to_string()).or_default();
-            entry.insert("name".to_string(), json!(name));
-            for key in ["group", "placement"] {
-                entry.insert(
-                    key.to_string(),
-                    item.get(key).cloned().unwrap_or(Value::Null),
-                );
-            }
+        for name in group
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            merge(name, "name", &json!(name));
         }
     }
     commands.into_values().map(Value::Object).collect()
 }
 
 fn project_xdto(
+    address: &QualifiedAddress,
+    payload: &Value,
+    suffix: &[AddressSegment],
+) -> Result<NodeViewData, ViewError> {
+    let mut view = project_xdto_inner(address, payload, suffix)?;
+    for limit in reader_read_limits(payload) {
+        view = view.with_limit(limit);
+    }
+    Ok(view)
+}
+
+fn project_xdto_inner(
     address: &QualifiedAddress,
     payload: &Value,
     suffix: &[AddressSegment],
@@ -1649,10 +1955,19 @@ fn project_xdto(
         {
             branches.push(BranchRef::new(format!("{}.Namespace", address), 1));
         }
-        if type_count > 0 {
+        if type_count > 0
+            || (payload.get("types").is_some_and(Value::is_array)
+                && payload.get("typesComplete").and_then(Value::as_bool) != Some(false))
+        {
             branches.push(BranchRef::new(format!("{}.Type", address), type_count));
         }
-        if property_count > 0 {
+        if property_count > 0
+            || (payload.get("globalProperties").is_some_and(Value::is_array)
+                && payload
+                    .get("globalPropertiesComplete")
+                    .and_then(Value::as_bool)
+                    != Some(false))
+        {
             branches.push(BranchRef::new(
                 format!("{}.Property", address),
                 property_count,
@@ -1723,7 +2038,7 @@ fn project_xdto(
             ));
         }
         let mut props = reader_node_props(LogicalReader::Xdto, segment.kind(), item);
-        let mut limits = Vec::new();
+        let mut limits = reader_read_limits(item);
         for key in ["base", "baseAt", "facets"] {
             if let Some(value) = item.get(key) {
                 if let Some(value) = bounded_prop(key, value) {
@@ -1762,7 +2077,8 @@ fn project_xdto(
                 ));
             }
             return Ok(NodeViewData::Collection(CollectionView::new(
-                NodeView::new(address.to_string(), "Property", "Properties", Map::new()),
+                NodeView::new(address.to_string(), "Property", "Properties", Map::new())
+                    .with_limits(xdto_nested_read_limits(current)),
                 collection_items(LogicalReader::Xdto, address, NodeKind::Property, properties),
             )));
         };
@@ -1791,7 +2107,14 @@ fn project_xdto(
 /// разрешается выбором одного из них.
 fn xdto_nested_properties(node: &Value) -> Result<Option<&Value>, ViewError> {
     if let Some(properties) = node.get("properties").filter(|value| !value.is_null()) {
-        return Ok(Some(properties));
+        return Ok(match node.get("kind").and_then(Value::as_str) {
+            Some("objectType") => Some(properties),
+            Some("valueType") => None,
+            _ => properties
+                .as_array()
+                .filter(|items| !items.is_empty())
+                .map(|_| properties),
+        });
     }
     match node
         .get("typeDefs")
@@ -1799,9 +2122,19 @@ fn xdto_nested_properties(node: &Value) -> Result<Option<&Value>, ViewError> {
         .map(Vec::as_slice)
     {
         None | Some([]) => Ok(None),
-        Some([definition]) => Ok(definition
-            .get("properties")
-            .filter(|value| !value.is_null())),
+        Some([definition]) => {
+            let properties = definition
+                .get("properties")
+                .filter(|value| !value.is_null());
+            Ok(
+                match definition.get("discriminator").and_then(Value::as_str) {
+                    Some("ObjectType") => properties,
+                    Some("ValueType") => None,
+                    _ => properties
+                        .filter(|value| value.as_array().is_some_and(|items| !items.is_empty())),
+                },
+            )
+        }
         Some(_) => Err(ViewError::detailed(
             RefusalDetail::SourceUnreadable,
             "XDTO property has more than one nested type definition",
@@ -1809,13 +2142,36 @@ fn xdto_nested_properties(node: &Value) -> Result<Option<&Value>, ViewError> {
     }
 }
 
+fn xdto_nested_read_limits(node: &Value) -> Vec<String> {
+    let mut limits = reader_read_limits(node);
+    if let Some([definition]) = node
+        .get("typeDefs")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    {
+        limits.extend(reader_read_limits(definition));
+    }
+    limits
+}
+
 fn xdto_property_branch(
     address: &QualifiedAddress,
     node: &Value,
 ) -> Result<Vec<BranchRef>, ViewError> {
+    let owner = node
+        .get("typeDefs")
+        .and_then(Value::as_array)
+        .and_then(|items| match items.as_slice() {
+            [definition] => Some(definition),
+            _ => None,
+        })
+        .unwrap_or(node);
     Ok(xdto_nested_properties(node)?
         .and_then(Value::as_array)
-        .filter(|items| !items.is_empty())
+        .filter(|items| {
+            !items.is_empty()
+                || owner.get("propertiesComplete").and_then(Value::as_bool) != Some(false)
+        })
         .map(|items| vec![BranchRef::new(format!("{address}.Property"), items.len())])
         .unwrap_or_default())
 }
@@ -1827,6 +2183,7 @@ fn xdto_property_node(address: &QualifiedAddress, name: &str, property: &Value) 
         .filter(|(input, output)| property.get(*input).is_some() && !props.contains_key(*output))
         .map(|(_, key)| compact_limit(&format!("XDTO property {key}"), address, key))
         .collect();
+    limits.extend(xdto_nested_read_limits(property));
     if let Some(bounds) = property.get("bounds") {
         for (explicit, key) in [
             ("lowerExplicit", "lowerBound"),
@@ -2188,9 +2545,10 @@ fn node_from_value(
         })
         .unwrap_or_else(|| kind.as_str());
     let props = reader_node_props(reader, kind, value);
-    let limits = dropped_by_size(value, &props, address, |probe| {
+    let mut limits = dropped_by_size(value, &props, address, |probe| {
         reader_node_props(reader, kind, probe)
     });
+    limits.extend(reader_read_limits(value));
     let node = NodeView::new(address.to_string(), kind.as_str(), title, props);
     if limits.is_empty() {
         node
@@ -2276,21 +2634,21 @@ fn reader_node_props(reader: LogicalReader, kind: NodeKind, value: &Value) -> Ma
 /// Ветви макета-схемы: адресуемые источники, наборы, вычисляемые поля,
 /// итоги, параметры и варианты; связи наборов — строки ветви `Item`.
 pub(crate) fn dcs_template_branches(payload: &Value) -> Vec<(NodeKind, usize)> {
-    let count = |key: &str| {
-        payload
-            .get(key)
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len)
-    };
-    vec![
-        (NodeKind::DataSource, count("dataSources")),
-        (NodeKind::DataSet, count("dataSets")),
-        (NodeKind::CalculatedField, count("calculatedFields")),
-        (NodeKind::Total, count("totalFields")),
-        (NodeKind::Parameter, count("parameters")),
-        (NodeKind::Setting, count("variants")),
-        (NodeKind::Item, count("links")),
+    [
+        (NodeKind::DataSource, "dataSources"),
+        (NodeKind::DataSet, "dataSets"),
+        (NodeKind::CalculatedField, "calculatedFields"),
+        (NodeKind::Total, "totalFields"),
+        (NodeKind::Parameter, "parameters"),
+        (NodeKind::Setting, "variants"),
+        (NodeKind::Item, "links"),
     ]
+    .into_iter()
+    .filter_map(|(kind, key)| {
+        let count = payload.get(key)?.as_array()?.len();
+        (count > 0 || reader_collection_known(payload, kind)).then_some((kind, count))
+    })
+    .collect()
 }
 
 fn known_reader_node(
@@ -2304,7 +2662,6 @@ fn known_reader_node(
     if matches!(reader, LogicalReader::Dcs) && kind == NodeKind::Template {
         branches = dcs_template_branches(value)
             .into_iter()
-            .filter(|(_, count)| *count > 0)
             .map(|(kind, count)| BranchRef::new(format!("{address}.{}", kind.as_str()), count))
             .collect();
     }
@@ -2321,18 +2678,40 @@ fn known_reader_branches(
         && address
             .segments()
             .last()
+            .is_some_and(|segment| segment.kind() == NodeKind::DataSet && segment.name().is_some())
+    {
+        return [NodeKind::DataSet, NodeKind::Field, NodeKind::Query]
+            .into_iter()
+            .filter_map(|kind| {
+                let child = dcs_dataset_child(value, kind)?;
+                let count = if kind == NodeKind::Query {
+                    child.as_str()?.lines().count()
+                } else {
+                    child.as_array()?.len()
+                };
+                (count > 0 || reader_collection_known(value, kind))
+                    .then(|| BranchRef::new(format!("{address}.{}", kind.as_str()), count))
+            })
+            .collect();
+    }
+    if matches!(reader, LogicalReader::Mxl) {
+        return mxl_template_branches(value)
+            .into_iter()
+            .map(|(_, count)| BranchRef::new(format!("{address}.Area"), count))
+            .collect();
+    }
+    if matches!(reader, LogicalReader::Dcs)
+        && address
+            .segments()
+            .last()
             .is_some_and(|segment| segment.kind() == NodeKind::Setting && segment.name().is_some())
     {
         let mut branches = Vec::new();
         let structure = dcs_structure_root_count(value);
-        if structure > 0 {
+        if value.get("structureItems").is_some_and(Value::is_array) {
             branches.push(BranchRef::new(format!("{address}.Item"), structure));
         }
-        if let Some(items) = value
-            .get("settingItems")
-            .and_then(Value::as_array)
-            .filter(|items| !items.is_empty())
-        {
+        if let Some(items) = value.get("settingItems").and_then(Value::as_array) {
             branches.push(BranchRef::new(format!("{address}.Property"), items.len()));
         }
         return branches;

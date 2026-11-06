@@ -173,17 +173,17 @@
           "eq": "cf:Report.F05Report.Template.F05Schema.DataSet"
         },
         {
-          "pointer": "/data/branches/2/at",
+          "pointer": "/data/branches/4/at",
           "eq": "cf:Report.F05Report.Template.F05Schema.Parameter"
         },
         {
-          "pointer": "/data/branches/2/count",
+          "pointer": "/data/branches/4/count",
           "eq": 4
         }
       ],
       "captures": {
         "parameters": {
-          "pointer": "/data/branches/2/at"
+          "pointer": "/data/branches/4/at"
         },
         "datasets": {
           "pointer": "/data/branches/1/at"

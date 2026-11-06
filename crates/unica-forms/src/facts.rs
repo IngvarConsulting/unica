@@ -7,9 +7,23 @@ use unica_metadata::support_state::ObjectSupportData as DomainObjectSupportData;
 /// Typed answer of `unica.form.info` (ADR-0023). The report sliced a form into
 /// numbered lines and hid deep pages behind `-Expand`; the data carries the
 /// whole form at once, so a caller never has to ask for the rest.
+/// Finite read collections whose contents may be only partially observed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum FormInfoCollection {
+    Item,
+    Attribute,
+    Parameter,
+    Command,
+    Column,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FormInfoData {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_limits: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub incomplete_collections: Vec<FormInfoCollection>,
     pub name: String,
     /// The form title when it declares one; `null` otherwise.
     pub title: Option<String>,
@@ -105,6 +119,10 @@ pub struct FormInfoEvent {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FormInfoElement {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_limits: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub incomplete_collections: Vec<FormInfoCollection>,
     pub tag: String,
     /// Closed platform element kind retained for internal event projection.
     /// The V12 serialized `tag` remains the human-readable tree marker.
@@ -142,6 +160,10 @@ pub struct FormInfoBinding {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FormInfoAttribute {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub read_limits: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub incomplete_collections: Vec<FormInfoCollection>,
     pub name: String,
     #[serde(rename = "type")]
     pub type_name: Option<String>,

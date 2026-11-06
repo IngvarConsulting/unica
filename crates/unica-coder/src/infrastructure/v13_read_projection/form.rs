@@ -1,4 +1,7 @@
-use super::{dropped_by_size, item_identity, place_prop, select_named, selected_scalar_props};
+use super::{
+    dropped_by_size, item_identity, place_prop, reader_collection_known, reader_read_limits,
+    select_named, selected_scalar_props,
+};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_bsl::projection::EventProjection;
 use unica_execution_contract::view_error::ViewError;
@@ -18,6 +21,8 @@ const FORM_ROOT_SCALAR_KEYS: &[&str] = &[
 
 pub(super) const PAYLOAD_KEYS: &[&str] = &[
     "name",
+    "readLimits",
+    "incompleteCollections",
     "title",
     "objectContext",
     "isExtension",
@@ -113,9 +118,10 @@ pub(super) fn project_form(
         let mut props = selected_scalar_props(payload, FORM_ROOT_SCALAR_KEYS);
         // Заголовок длиннее предела не пропадает молча: предел называет
         // адрес, по которому он читается целиком.
-        let limits = dropped_by_size(payload, &props, address, |probe| {
+        let mut limits = dropped_by_size(payload, &props, address, |probe| {
             selected_scalar_props(probe, FORM_ROOT_SCALAR_KEYS)
         });
+        limits.extend(reader_read_limits(payload));
         if let Some(properties) = root_properties(payload) {
             props.insert("properties".to_string(), properties);
         }
@@ -144,8 +150,9 @@ pub(super) fn project_form(
                     }
                 }
                 let values = form_child_values(payload, kind)?;
-                let count = values.as_array().map_or(0, Vec::len);
-                (count > 0).then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
+                let count = values.as_array()?.len();
+                (count > 0 || (kind != NodeKind::Event && reader_collection_known(payload, kind)))
+                    .then(|| BranchRef::new(format!("{}.{}", address, kind.as_str()), count))
             })
             .collect::<Vec<_>>();
         if payload
@@ -183,7 +190,7 @@ pub(super) fn project_form(
                 "form collection did not consume the complete suffix",
             ));
         }
-        return form_collection(address, first.kind(), values, semantic_events);
+        return form_collection(address, first.kind(), values, payload, semantic_events);
     }
     let mut kind = first.kind();
     let mut item = select_named(values, first.name().unwrap()).ok_or_else(|| {
@@ -213,7 +220,7 @@ pub(super) fn project_form(
                     "form collection did not consume the complete suffix",
                 ));
             }
-            return form_collection(address, kind, values, semantic_events);
+            return form_collection(address, kind, values, item, semantic_events);
         };
         item = select_named(values, name).ok_or_else(|| {
             missing_form_child(
@@ -304,8 +311,27 @@ fn form_child_values(payload: &Value, kind: NodeKind) -> Option<&Value> {
 
 fn form_nested_values(item: &Value, kind: NodeKind) -> Option<&Value> {
     match kind {
-        NodeKind::Item => item.get("children"),
-        NodeKind::Column => item.get("columns"),
+        NodeKind::Item => {
+            let values = item.get("children")?;
+            let observed = !values.as_array()?.is_empty();
+            let admitted = item.get("tag").and_then(Value::as_str).is_some_and(|tag| {
+                matches!(
+                    unica_forms::FormItemRole::from_tag(tag),
+                    unica_forms::FormItemRole::Container
+                        | unica_forms::FormItemRole::AutoCommandBar
+                )
+            });
+            (observed || admitted).then_some(values)
+        }
+        NodeKind::Column => {
+            let values = item.get("columns")?;
+            let observed = !values.as_array()?.is_empty();
+            let admitted = matches!(
+                item.get("type").and_then(Value::as_str),
+                Some("ValueTable" | "ValueTree")
+            );
+            (observed || admitted).then_some(values)
+        }
         NodeKind::Event => item.get("events").or_else(|| item.get("actions")),
         _ => None,
     }
@@ -315,6 +341,7 @@ fn form_collection(
     address: &QualifiedAddress,
     kind: NodeKind,
     values: &Value,
+    owner: &Value,
     semantic_events: Option<&[EventProjection]>,
 ) -> Result<NodeViewData, ViewError> {
     let items = values
@@ -333,7 +360,8 @@ fn form_collection(
             kind.as_str(),
             kind.as_str(),
             Map::new(),
-        ),
+        )
+        .with_additional_limits(reader_read_limits(owner)),
         items,
     )))
 }
@@ -346,6 +374,7 @@ fn form_node(
 ) -> NodeView {
     let mut props = node_props(kind, item);
     let mut limits = dropped_by_size(item, &props, address, |probe| node_props(kind, probe));
+    limits.extend(reader_read_limits(item));
     if kind == NodeKind::Attribute
         && item.get("type").and_then(Value::as_str) == Some("DynamicList")
     {
@@ -457,9 +486,11 @@ fn form_node(
                     }
                 }
                 let values = form_nested_values(item, *child_kind)?;
-                let count = values.as_array().map_or(0, Vec::len);
-                (count > 0)
-                    .then(|| BranchRef::new(format!("{}.{}", address, child_kind.as_str()), count))
+                let count = values.as_array()?.len();
+                (count > 0
+                    || (*child_kind != NodeKind::Event
+                        && reader_collection_known(item, *child_kind)))
+                .then(|| BranchRef::new(format!("{}.{}", address, child_kind.as_str()), count))
             })
             .collect(),
     );

@@ -1,0 +1,2399 @@
+{
+  "id": "S-2222-nested-empty-branches",
+  "issue": 2222,
+  "area": "Навигация",
+  "task": "Следовать выданным адресам вложенных content-ветвей метаданных, сервисов, форм, СКД, MXL, XDTO, прав, подсистем, интерфейса и BSL. Отличить подтверждённые пустые коллекции от неприменимого вида, повреждённой идентичности, неизвестного владельца и унаследованного содержимого; сохранить порядок непустых коллекций и число строк Query/Body.",
+  "workspace": "tests/fixtures/acceptance/workspace-nested-empty-branches",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.TabularSection.Lines",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Catalog.Items.TabularSection.Lines.Attribute",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:Catalog.Items.TabularSection.Lines.StandardAttribute",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch1": {
+          "pointer": "/data/branches/0/at"
+        },
+        "branch2": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch1",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch2",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:ChartOfAccounts.Accounts.StandardTabularSection.ExtDimensionTypes.StandardAttribute",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch3": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch3",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.ExternalAPI.URLTemplate.Empty",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:HTTPService.ExternalAPI.URLTemplate.Empty.Method",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch4": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch4",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.ExternalAPI.URLTemplate.Metrics",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method",
+            "count": 1
+          }
+        }
+      ],
+      "captures": {
+        "branch5": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch5",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:HTTPService.ExternalAPI.URLTemplate.Metrics.Method.Get"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WebService.Exchange.Operation.Empty",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:WebService.Exchange.Operation.Empty.Parameter",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch6": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch6",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:WebService.Exchange.Operation.Send",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:WebService.Exchange.Operation.Send.Parameter",
+            "count": 1
+          }
+        }
+      ],
+      "captures": {
+        "branch7": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch7",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:WebService.Exchange.Operation.Send.Parameter.Payload"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonForm.EmptyForm",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:CommonForm.EmptyForm.Item",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:CommonForm.EmptyForm.Attribute",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/2",
+          "eq": {
+            "at": "main:CommonForm.EmptyForm.Parameter",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/3",
+          "eq": {
+            "at": "main:CommonForm.EmptyForm.Command",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch8": {
+          "pointer": "/data/branches/0/at"
+        },
+        "branch9": {
+          "pointer": "/data/branches/1/at"
+        },
+        "branch10": {
+          "pointer": "/data/branches/2/at"
+        },
+        "branch11": {
+          "pointer": "/data/branches/3/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch8",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch9",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch10",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch11",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.ItemForm",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Catalog.Items.Form.ItemForm.Item",
+            "count": 3
+          }
+        },
+        {
+          "pointer": "/data/branches/2",
+          "eq": {
+            "at": "main:Catalog.Items.Form.ItemForm.Parameter",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch12": {
+          "pointer": "/data/branches/0/at"
+        },
+        "branch13": {
+          "pointer": "/data/branches/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch12",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Items.Form.ItemForm.Item.Empty"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Catalog.Items.Form.ItemForm.Item.Goods"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:Catalog.Items.Form.ItemForm.Item.Future"
+        },
+        {
+          "pointer": "/data/items/3",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch13",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.ItemForm.Item.Empty",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Catalog.Items.Form.ItemForm.Item.Empty.Item",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch14": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch14",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.ItemForm.Item.Goods",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Catalog.Items.Form.ItemForm.Item.Goods.Item",
+            "count": 1
+          }
+        }
+      ],
+      "captures": {
+        "branch15": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch15",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Items.Form.ItemForm.Item.Goods.Item.Quantity"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.ItemForm.Item.Future",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Catalog.Items.Form.ItemForm.Item.Future.Item",
+            "count": 1
+          }
+        }
+      ],
+      "captures": {
+        "branch16": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch16",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Items.Form.ItemForm.Item.Future.Item.Observed"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.ItemForm.Attribute.Rows",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Catalog.Items.Form.ItemForm.Attribute.Rows.Column",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch17": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch17",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.ItemForm.Command.Run",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Catalog.Items.Form.ItemForm.Command.Run.Event",
+            "count": 1
+          }
+        }
+      ],
+      "captures": {
+        "branch18": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch18",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Items.Form.ItemForm.Command.Run.Event.Execute"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.ItemForm.Setting.ConditionalAppearance",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Catalog.Items.Form.ItemForm.Setting.ConditionalAppearance.Item",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch19": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch19",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.DataSource",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/2",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.CalculatedField",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/3",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.Total",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/4",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.Parameter",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/6",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.Item",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch20": {
+          "pointer": "/data/branches/0/at"
+        },
+        "branch21": {
+          "pointer": "/data/branches/2/at"
+        },
+        "branch22": {
+          "pointer": "/data/branches/3/at"
+        },
+        "branch23": {
+          "pointer": "/data/branches/4/at"
+        },
+        "branch24": {
+          "pointer": "/data/branches/6/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch20",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch21",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch22",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch23",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch24",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.DataSet.EmptyQuery",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.DataSet.EmptyQuery.Field",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.DataSet.EmptyQuery.Query",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/2",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.DataSet.EmptyQuery.Parameter",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch25": {
+          "pointer": "/data/branches/0/at"
+        },
+        "branch26": {
+          "pointer": "/data/branches/1/at"
+        },
+        "branch27": {
+          "pointer": "/data/branches/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch25",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch26",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch27",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.DataSet.FullQuery",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.DataSet.FullQuery.Query",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "branch28": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch28",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "line": 1,
+              "text": "a"
+            },
+            {
+              "line": 2,
+              "text": "b"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.DataSet.EmptyObject",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.DataSet.EmptyObject.Field",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch29": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch29",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.DataSet.EmptyUnion",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.DataSet.EmptyUnion.DataSet",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.DataSet.EmptyUnion.Field",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch30": {
+          "pointer": "/data/branches/0/at"
+        },
+        "branch31": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch30",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch31",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.Setting.Empty",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.Setting.Empty.Item",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch32": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch32",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.Group",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.Group.Item",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch33": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch33",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.Table",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.Table.Item",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch34": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch34",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.Chart",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.Chart.Item",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch35": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch35",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.Full",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.Full.Item",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "branch36": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch36",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.Full.Item.Zeta"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.Full.Item.Alpha"
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.BarePrint",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.BarePrint.Area",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch37": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch37",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.EmptyPrint.Area.Header",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.EmptyPrint.Area.Header.Parameter",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.EmptyPrint.Area.Header.Body",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch38": {
+          "pointer": "/data/branches/0/at"
+        },
+        "branch39": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch38",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch39",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.Print.Area.Header",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:Report.ParityReport.Template.Print.Area.Header.Body",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "branch40": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch40",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "index": 1,
+              "template": false,
+              "text": "Sales report"
+            },
+            {
+              "index": 2,
+              "template": true,
+              "text": "Period: [Since]"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EmptyPackage",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:XDTOPackage.EmptyPackage.Type",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/2",
+          "eq": {
+            "at": "main:XDTOPackage.EmptyPackage.Property",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch41": {
+          "pointer": "/data/branches/1/at"
+        },
+        "branch42": {
+          "pointer": "/data/branches/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch41",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch42",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.СоставнойЛюбойОбъект",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.СоставнойЛюбойОбъект.Property",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch43": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch43",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch44": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch44",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.EmptyRole",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Role.EmptyRole.Right",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch45": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch45",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Document_SalesOrder",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Role.SalesReader.Right.Document_SalesOrder.RLS",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch46": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch46",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Catalog_Products",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Role.SalesReader.Right.Catalog_Products.RLS",
+            "count": 1
+          }
+        }
+      ],
+      "captures": {
+        "branch47": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch47",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Role.SalesReader.Right.Catalog_Products.RLS.View"
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Sales.Subsystem.Empty",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Subsystem.Sales.Subsystem.Empty.Relation",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:Subsystem.Sales.Subsystem.Empty.Subsystem",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch48": {
+          "pointer": "/data/branches/0/at"
+        },
+        "branch49": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch48",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch49",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Sales.Interface",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Subsystem.Sales.Interface.Command",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:Subsystem.Sales.Interface.Group",
+            "count": 0
+          }
+        },
+        {
+          "pointer": "/data/branches/2",
+          "eq": {
+            "at": "main:Subsystem.Sales.Interface.Subsystem",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch50": {
+          "pointer": "/data/branches/0/at"
+        },
+        "branch51": {
+          "pointer": "/data/branches/1/at"
+        },
+        "branch52": {
+          "pointer": "/data/branches/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch50",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch51",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch52",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Sales.Subsystem.Full.Interface",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/1",
+          "eq": {
+            "at": "main:Subsystem.Sales.Subsystem.Full.Interface.Group",
+            "count": 2
+          }
+        },
+        {
+          "pointer": "/data/branches/2",
+          "eq": {
+            "at": "main:Subsystem.Sales.Subsystem.Full.Interface.Subsystem",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "branch53": {
+          "pointer": "/data/branches/1/at"
+        },
+        "branch54": {
+          "pointer": "/data/branches/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch53",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Subsystem.Sales.Subsystem.Full.Interface.Group.NavigationPanelSeeAlso"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Subsystem.Sales.Subsystem.Full.Interface.Group.NavigationPanelImportant"
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch54",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Subsystem.Sales.Subsystem.Empty"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Subsystem.Sales"
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Region.Outer",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:CommonModule.Probe.Region.Outer.Region",
+            "count": 2
+          }
+        }
+      ],
+      "captures": {
+        "branch55": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch55",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CommonModule.Probe.Region.Outer.Region.Zeta"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:CommonModule.Probe.Region.Outer.Region.Alpha"
+        },
+        {
+          "pointer": "/data/items/2",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.Probe.Region.Outer.Region.Zeta",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:CommonModule.Probe.Region.Outer.Region.Zeta.Region",
+            "count": 0
+          }
+        }
+      ],
+      "captures": {
+        "branch56": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.branch56",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.ItemForm.Attribute.Scalar.Column",
+        "limit": 50
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: form node has no Column collection"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Form.ItemForm.Item.Empty.Event",
+        "limit": 50
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: form owner has no applicable events"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ВерсияФормата.Property",
+        "limit": 50
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: XDTO node has no nested properties"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.DataSet.EmptyObject.Query",
+        "limit": 50
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: DCS dataset has no Query projection"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.NestedObject.Item",
+        "limit": 50
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: DCS structure item has no confirmed child collection"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.ParityReport.Template.MainSchema.Setting.Structure.Item.Future.Item",
+        "limit": 50
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: DCS structure item has no confirmed child collection"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.ExternalAPI.URLTemplate.Missing.Method",
+        "limit": 50
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: metadata node `Missing` was not found"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Sales.Subsystem.Empty.Interface",
+        "limit": 50
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: subsystem has no command interface document"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.BrokenAPI.URLTemplate.Broken.Method",
+        "limit": 50
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "ext:Catalog.Items.Form.ItemForm.Item",
+        "limit": 50
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: `ext:Catalog.Items.Form.ItemForm.Item` lies inside content this borrowed object does not carry: the extension has no `Form.xml`, so its content is inherited fro"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.BrokenInterface.Interface",
+        "limit": 50
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.MixedInterface.Interface",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/limits",
+          "notEq": []
+        },
+        {
+          "pointer": "/data/props",
+          "absent": true
+        },
+        {
+          "pointer": "/data/branches/0",
+          "eq": {
+            "at": "main:Subsystem.MixedInterface.Interface.Group",
+            "count": 1
+          }
+        }
+      ],
+      "captures": {
+        "mixedGroupCollection": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mixedGroupCollection",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Subsystem.MixedInterface.Interface.Group.NavigationPanelImportant"
+        },
+        {
+          "pointer": "/data/items/0/commands",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/limits",
+          "notEq": []
+        },
+        {
+          "pointer": "/data/items/1",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "mixedKnownGroup": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mixedKnownGroup",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": []
+        },
+        {
+          "pointer": "/data/limits",
+          "notEq": []
+        }
+      ]
+    }
+  ]
+}

@@ -92,6 +92,196 @@ type MxlDecompileStyleResult = (
     BTreeMap<i64, String>,
 );
 
+fn mxl_read_children<'a, 'input>(
+    parent: roxmltree::Node<'a, 'input>,
+    name: &str,
+) -> Vec<roxmltree::Node<'a, 'input>> {
+    parent
+        .children()
+        .filter(|node| node.is_element() && node.tag_name().name() == name)
+        .collect()
+}
+
+fn mxl_read_scalar(node: roxmltree::Node<'_, '_>) -> Option<String> {
+    if node.tag_name().namespace() != Some(MXL_DOCUMENT_NS)
+        || node.children().any(|child| child.is_element())
+        || node
+            .attribute(("http://www.w3.org/2001/XMLSchema-instance", "nil"))
+            .is_some_and(|value| !matches!(value, "false" | "0"))
+    {
+        return None;
+    }
+    let value = unica_xml_format::read::direct_text(node);
+    (!value.trim().is_empty()).then_some(value)
+}
+
+fn mxl_read_integer(node: roxmltree::Node<'_, '_>) -> Option<i64> {
+    mxl_read_scalar(node)?.trim().parse().ok()
+}
+
+fn mxl_area_coordinates_complete(area: roxmltree::Node<'_, '_>) -> bool {
+    if !mxl_read_container_complete(area) {
+        return false;
+    }
+    let kinds = mxl_read_children(area, "type");
+    let [kind] = kinds.as_slice() else {
+        return false;
+    };
+    let Some(kind) = mxl_read_scalar(*kind) else {
+        return false;
+    };
+    let axes: &[(&str, &str)] = match kind.as_str() {
+        "Rows" => &[("beginRow", "endRow")],
+        "Columns" => &[("beginColumn", "endColumn")],
+        "Rectangle" => &[("beginRow", "endRow"), ("beginColumn", "endColumn")],
+        _ => return false,
+    };
+    area.tag_name().namespace() == Some(MXL_DOCUMENT_NS)
+        && axes.iter().all(|(begin, end)| {
+            let starts = mxl_read_children(area, begin);
+            let ends = mxl_read_children(area, end);
+            let ([start], [end]) = (starts.as_slice(), ends.as_slice()) else {
+                return false;
+            };
+            match (mxl_read_integer(*start), mxl_read_integer(*end)) {
+                (Some(start), Some(end)) => {
+                    start >= -1 && end >= -1 && (start == -1 || end == -1 || start <= end)
+                }
+                _ => false,
+            }
+        })
+}
+
+fn mxl_read_container_complete(node: roxmltree::Node<'_, '_>) -> bool {
+    node.tag_name().namespace() == Some(MXL_DOCUMENT_NS)
+        && node
+            .attribute(("http://www.w3.org/2001/XMLSchema-instance", "nil"))
+            .is_none_or(|value| matches!(value.trim(), "false" | "0"))
+        && node
+            .children()
+            .filter(|child| child.is_text())
+            .all(|child| child.text().is_none_or(|text| text.trim().is_empty()))
+}
+
+fn mxl_row_cells_complete(row_item: roxmltree::Node<'_, '_>) -> bool {
+    if !mxl_read_container_complete(row_item) {
+        return false;
+    }
+    let rows = mxl_read_children(row_item, "row");
+    let [row] = rows.as_slice() else {
+        return false;
+    };
+    if !mxl_read_container_complete(*row) {
+        return false;
+    }
+    mxl_read_children(*row, "c").into_iter().all(|group| {
+        if !mxl_read_container_complete(group) {
+            return false;
+        }
+        let cells = mxl_read_children(group, "c");
+        matches!(cells.as_slice(), [cell] if mxl_read_container_complete(*cell))
+    })
+}
+
+fn mxl_text_payload_complete(tl: roxmltree::Node<'_, '_>) -> bool {
+    const CORE_NS: &str = "http://v8.1c.ru/8.1/data/core";
+    let present = |node: roxmltree::Node<'_, '_>| {
+        node.attribute(("http://www.w3.org/2001/XMLSchema-instance", "nil"))
+            .is_none_or(|value| matches!(value.trim(), "false" | "0"))
+    };
+    let scalar = |node: roxmltree::Node<'_, '_>, namespace: &str| {
+        node.tag_name().namespace() == Some(namespace)
+            && present(node)
+            && !node.children().any(|child| child.is_element())
+            && unica_xml_format::read::direct_text(node) == node.text().unwrap_or("")
+    };
+    let locale = |owner: roxmltree::Node<'_, '_>| {
+        owner.has_tag_name((CORE_NS, "item"))
+            && present(owner)
+            && owner
+                .children()
+                .filter(|node| node.is_text())
+                .all(|node| node.text().is_none_or(|text| text.trim().is_empty()))
+            && mxl_read_children(owner, "lang").len() <= 1
+            && owner
+                .children()
+                .filter(|node| node.is_element())
+                .all(|node| {
+                    matches!(node.tag_name().name(), "lang" | "content") && scalar(node, CORE_NS)
+                })
+    };
+    if !mxl_read_container_complete(tl) {
+        return false;
+    }
+    // Match the decoder's existing first-locale policy, but never turn a
+    // first-winner scalar or an unreadable locale frame into proven emptiness.
+    let selected = tl
+        .descendants()
+        .find(|node| unica_xml_format::names::element_has_name(*node, "content", None));
+    if let Some(content) = selected {
+        let Some(owner) = content.parent().filter(|node| node.is_element()) else {
+            return false;
+        };
+        let namespace = if owner == tl {
+            MXL_DOCUMENT_NS // Existing direct-content fixture representation.
+        } else if locale(owner) {
+            CORE_NS
+        } else {
+            return false;
+        };
+        mxl_read_children(owner, "content").len() == 1 && scalar(content, namespace)
+    } else {
+        tl.children().filter(|node| node.is_element()).all(locale)
+    }
+}
+
+/// Parameters and text are independent facts, except that text may also
+/// contribute template placeholders to the parameter collection.
+fn mxl_row_payload_completeness(row_item: roxmltree::Node<'_, '_>) -> (bool, bool) {
+    if !mxl_row_cells_complete(row_item) {
+        return (false, false);
+    }
+    let row = mxl_read_children(row_item, "row")[0];
+    let mut parameters_complete = true;
+    let mut body_complete = true;
+    for group in mxl_read_children(row, "c") {
+        let cell = mxl_read_children(group, "c")[0];
+        let parameters = mxl_read_children(cell, "parameter");
+        let parameter_known = match parameters.as_slice() {
+            [] => true,
+            [parameter] => {
+                parameter.tag_name().namespace() == Some(MXL_DOCUMENT_NS)
+                    && parameter
+                        .attribute(("http://www.w3.org/2001/XMLSchema-instance", "nil"))
+                        .is_none_or(|value| matches!(value.trim(), "false" | "0"))
+                    && !parameter.children().any(|child| child.is_element())
+            }
+            _ => false,
+        };
+        let texts = mxl_read_children(cell, "tl");
+        let text_known = match texts.as_slice() {
+            [] => true,
+            [text] => mxl_text_payload_complete(*text),
+            _ => false,
+        };
+        parameters_complete &= parameter_known && text_known;
+        body_complete &= text_known;
+    }
+    (parameters_complete, body_complete)
+}
+
+fn mxl_named_item_has_known_type(item: roxmltree::Node<'_, '_>, expected: &str) -> bool {
+    let Some(value) = item.attribute(("http://www.w3.org/2001/XMLSchema-instance", "type")) else {
+        return false;
+    };
+    let value = value.trim();
+    let (namespace, local) = match value.split_once(':') {
+        Some((prefix, local)) => (item.lookup_namespace_uri(Some(prefix)), local),
+        None => (item.lookup_namespace_uri(None), value),
+    };
+    namespace == Some(MXL_DOCUMENT_NS) && local == expected
+}
+
 pub fn parse_mxl_info_xml(
     bytes: &[u8],
     template_name: &str,
@@ -103,7 +293,22 @@ pub fn parse_mxl_info_xml(
         .map_err(|err| format!("XML parse error in Template.xml: {err}"))?;
     let root = doc.root_element();
     require_mxl_document_root(root)?;
+    if root.attributes().any(|attr| {
+        attr.namespace() == Some("http://www.w3.org/2001/XMLSchema-instance")
+            && attr.name() == "nil"
+            && !matches!(attr.value(), "false" | "0")
+    }) {
+        return Err("spreadsheet document root cannot be nil".to_string());
+    }
 
+    let mut areas_complete = !root
+        .children()
+        .any(|child| child.is_text() && child.text().is_some_and(|text| !text.trim().is_empty()));
+    let mut read_limits = Vec::new();
+    let mut unreadable_parameter_rows = Vec::<Option<i64>>::new();
+    let mut unreadable_body_rows = Vec::<Option<i64>>::new();
+    let mut unread_areas = Vec::new();
+    let mut unconfirmed_area_names = HashSet::new();
     let mut column_sets = Vec::<(String, i64)>::new();
     let mut default_col_count = 0i64;
     for cols in root
@@ -128,11 +333,41 @@ pub fn parse_mxl_info_xml(
     let doc_height = mxl_logical_height(root, &row_nodes);
     let mut row_map = Vec::<(i64, roxmltree::Node<'_, '_>)>::new();
     for row_item in &row_nodes {
-        if let Ok(index) =
-            unica_xml_format::read::child_text(*row_item, "index", None).parse::<i64>()
-        {
+        let indices = mxl_read_children(*row_item, "index");
+        let index = if let [node] = indices.as_slice() {
+            mxl_read_integer(*node).filter(|value| *value >= 0)
+        } else {
+            None
+        };
+        if let Some(index) = index {
             row_map.push((index, *row_item));
+            let (parameters_complete, body_complete) = mxl_row_payload_completeness(*row_item);
+            if !parameters_complete {
+                unreadable_parameter_rows.push(Some(index));
+            }
+            if !body_complete {
+                unreadable_body_rows.push(Some(index));
+            }
+        } else {
+            unreadable_parameter_rows.push(None);
+            unreadable_body_rows.push(None);
         }
+    }
+    let mut seen_rows = HashSet::new();
+    let mut duplicate_rows = HashSet::new();
+    for (index, _) in &row_map {
+        if !seen_rows.insert(*index) {
+            duplicate_rows.insert(*index);
+        }
+    }
+    row_map.retain(|(index, _)| !duplicate_rows.contains(index));
+    unreadable_parameter_rows.extend(duplicate_rows.iter().copied().map(Some));
+    unreadable_body_rows.extend(duplicate_rows.into_iter().map(Some));
+    if !unreadable_parameter_rows.is_empty() {
+        read_limits.push("MXL contains unreadable parameter payloads or row data".to_string());
+    }
+    if !unreadable_body_rows.is_empty() {
+        read_limits.push("MXL contains unreadable text payloads or row data".to_string());
     }
 
     let mut named_areas = Vec::<MxlNamedArea>::new();
@@ -142,12 +377,39 @@ pub fn parse_mxl_info_xml(
         .filter(|node| unica_xml_format::names::element_has_name(*node, "namedItem", None))
     {
         let item_type = unica_xml_format::read::attribute_by_local_name(item, "type").unwrap_or("");
-        let name = unica_xml_format::read::child_text(item, "name", None);
+        let names = mxl_read_children(item, "name");
+        let name = match names.as_slice() {
+            [node] => mxl_read_scalar(*node),
+            _ => None,
+        };
+        let Some(name) = name else {
+            areas_complete = false;
+            continue;
+        };
+        if !mxl_read_container_complete(item) {
+            areas_complete = false;
+            if item.tag_name().namespace() == Some(MXL_DOCUMENT_NS) {
+                unread_areas.push(name);
+            }
+            continue;
+        }
         if item_type.contains("NamedItemCells") {
-            if let Some(area) = item
-                .children()
-                .find(|node| unica_xml_format::names::element_has_name(*node, "area", None))
-            {
+            if !mxl_named_item_has_known_type(item, "NamedItemCells") {
+                areas_complete = false;
+                unconfirmed_area_names.insert(name.clone());
+            }
+            let area_nodes = mxl_read_children(item, "area");
+            if let [area] = area_nodes.as_slice() {
+                let area = *area;
+                if name.trim().is_empty() {
+                    areas_complete = false;
+                    continue;
+                }
+                if !mxl_area_coordinates_complete(area) {
+                    areas_complete = false;
+                    unread_areas.push(name);
+                    continue;
+                }
                 named_areas.push(MxlNamedArea {
                     name,
                     area_type: unica_xml_format::read::child_text(area, "type", None),
@@ -168,13 +430,34 @@ pub fn parse_mxl_info_xml(
                         (!value.is_empty()).then_some(value)
                     },
                 });
+            } else {
+                areas_complete = false;
+                if !name.trim().is_empty() {
+                    unread_areas.push(name);
+                }
             }
         } else if item_type.contains("NamedItemDrawing") {
-            named_drawings.push((
-                name,
-                unica_xml_format::read::child_text(item, "drawingID", None),
-            ));
+            if !mxl_named_item_has_known_type(item, "NamedItemDrawing") {
+                areas_complete = false;
+                unconfirmed_area_names.insert(name.clone());
+            }
+            if name.trim().is_empty() {
+                areas_complete = false;
+                continue;
+            }
+            let drawing_id = unica_xml_format::read::child_text(item, "drawingID", None);
+            if drawing_id.is_empty() {
+                areas_complete = false;
+                unread_areas.push(name);
+                continue;
+            }
+            named_drawings.push((name, drawing_id));
+        } else {
+            areas_complete = false;
         }
+    }
+    if !areas_complete {
+        read_limits.push("MXL contains unreadable named area declarations".to_string());
     }
     named_areas.sort_by(|left, right| {
         let left_key = if left.area_type == "Columns" {
@@ -251,21 +534,54 @@ pub fn parse_mxl_info_xml(
     // a JSON string inside the JSON envelope. Data replaces both.
     let areas = area_data
         .iter()
-        .map(|item| MxlAreaData {
-            name: item.area.name.clone(),
-            kind: item.area.area_type.clone(),
-            begin_row: item.area.begin_row,
-            end_row: item.area.end_row,
-            begin_col: item.area.begin_col,
-            end_col: item.area.end_col,
-            columns_id: item.area.columns_id.clone(),
-            drawing_id: None,
-            params: item.params.clone(),
-            details: item.details.clone(),
-            content_count: item.content_count,
-            content: include_text.then(|| item.content.clone()),
+        .map(|item| {
+            let overlaps = |index: &Option<i64>| {
+                index.is_none_or(|index| {
+                    (item.area.begin_row == -1 || index >= item.area.begin_row)
+                        && (item.area.end_row == -1 || index <= item.area.end_row)
+                })
+            };
+            let known_type = !unconfirmed_area_names.contains(&item.area.name);
+            let params_complete = known_type && !unreadable_parameter_rows.iter().any(overlaps);
+            let body_complete = known_type && !unreadable_body_rows.iter().any(overlaps);
+            let mut area_limits = Vec::new();
+            if !known_type {
+                area_limits.push("MXL named item type is not supported".to_string());
+            } else {
+                if !params_complete {
+                    area_limits
+                        .push("MXL area parameter contents are only partially known".to_string());
+                }
+                if !body_complete {
+                    area_limits.push("MXL area text contents are only partially known".to_string());
+                }
+            }
+            MxlAreaData {
+                params_complete,
+                body_complete,
+                read_limits: area_limits,
+                name: item.area.name.clone(),
+                kind: item.area.area_type.clone(),
+                begin_row: item.area.begin_row,
+                end_row: item.area.end_row,
+                begin_col: item.area.begin_col,
+                end_col: item.area.end_col,
+                columns_id: item.area.columns_id.clone(),
+                drawing_id: None,
+                params: item.params.clone(),
+                details: item.details.clone(),
+                content_count: item.content_count,
+                content: include_text.then(|| item.content.clone()),
+            }
         })
         .chain(named_drawings.iter().map(|(name, drawing_id)| MxlAreaData {
+            params_complete: !unconfirmed_area_names.contains(name),
+            body_complete: !unconfirmed_area_names.contains(name),
+            read_limits: if unconfirmed_area_names.contains(name) {
+                vec!["MXL named item type is not supported".to_string()]
+            } else {
+                Vec::new()
+            },
             name: name.clone(),
             kind: "Drawing".to_string(),
             begin_row: 0,
@@ -282,6 +598,9 @@ pub fn parse_mxl_info_xml(
         .collect::<Vec<_>>();
 
     let data = MxlInfoData {
+        areas_complete,
+        unread_areas,
+        read_limits,
         name: template_name.to_string(),
         support,
         rows: doc_height,
