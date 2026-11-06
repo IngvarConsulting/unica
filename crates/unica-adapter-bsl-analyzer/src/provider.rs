@@ -1,7 +1,9 @@
 use serde_json::{json, Map, Value};
 use std::path::Path;
 use std::time::Duration;
-use unica_analysis_services::{WorkspaceServiceBslCall, WorkspaceServiceManager};
+use unica_analysis_services::{
+    BslFailureKind, ClassifiedBslCallError, WorkspaceServiceBslCall, WorkspaceServiceManager,
+};
 use unica_code_intelligence::current_outline::render_current_source_outline;
 use unica_code_intelligence::model::*;
 use unica_code_intelligence::provider_sections::*;
@@ -34,6 +36,20 @@ pub trait BslToolClient: Send + Sync {
         cancellation: &CancellationToken,
     ) -> Result<McpToolOutput, String>;
 
+    /// A typed origin, when the client observed one. Legacy clients retain
+    /// an unclassified error rather than inferring a cause from its text.
+    fn call_classified(
+        &self,
+        tool: &'static str,
+        context: &CodeIntelligenceContext,
+        arguments: Value,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<McpToolOutput, ClassifiedBslCallError> {
+        self.call(tool, context, arguments, timeout, cancellation)
+            .map_err(Into::into)
+    }
+
     /// A call that gives way to the agent's: while it holds the analyzer, an
     /// arriving MCP call cancels it there, and it fails with a `cancelled:`
     /// error. The editor's door calls this way (`mcp-priority`).
@@ -65,6 +81,23 @@ pub struct WorkspaceBslToolClient {
 }
 
 impl BslToolClient for WorkspaceBslToolClient {
+    fn call_classified(
+        &self,
+        tool: &'static str,
+        context: &CodeIntelligenceContext,
+        arguments: Value,
+        timeout: Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<McpToolOutput, ClassifiedBslCallError> {
+        WorkspaceServiceManager::new((self.environment)())
+            .call_bsl_mcp_cancellable_with_budget_classified(
+                &context.workspace,
+                &context.source_root.path,
+                WorkspaceServiceBslCall::new(tool, arguments, timeout, timeout),
+                cancellation,
+            )
+    }
+
     fn call(
         &self,
         tool: &'static str,
@@ -340,7 +373,7 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
         });
         match self
             .client
-            .call("search", context, arguments, timeout, cancellation)
+            .call_classified("search", context, arguments, timeout, cancellation)
         {
             Ok(output) => {
                 let mut section = parse_bsl_analyzer_search(
@@ -387,11 +420,36 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                 section
             }
             Err(error) if (self.bindings.engine_absent)(&context.workspace.cwd, "bsl-analyzer") => {
-                unavailable_section(ProviderId::BslAnalyzer, error)
+                unavailable_section(ProviderId::BslAnalyzer, error.message)
             }
-            Err(error) => failed_section(ProviderId::BslAnalyzer, error),
+            Err(error) => failed_bsl_call(error),
         }
     }
+}
+
+fn failed_bsl_call(error: ClassifiedBslCallError) -> ProviderSearchSection {
+    use ProviderSearchFailureKind as Kind;
+    let kind = match error.kind {
+        Some(BslFailureKind::DeadlineElapsed) => {
+            return ProviderSearchSection::timed_out(
+                ProviderId::BslAnalyzer.identity(),
+                SearchRanking::Provider,
+                SearchOrdering::Provider,
+                Vec::new(),
+                vec![error.message],
+            )
+            .expect("a timed-out search without hits is valid");
+        }
+        Some(BslFailureKind::Cancelled) => {
+            return failed_section(ProviderId::BslAnalyzer, error.message);
+        }
+        Some(BslFailureKind::RequestWriteFailed) => Kind::RequestWrite,
+        Some(BslFailureKind::ResponseReadFailed) => Kind::ConnectionRead,
+        Some(BslFailureKind::MalformedToolResult) => Kind::MalformedToolResult,
+        Some(BslFailureKind::RemoteProviderFailed) => Kind::RemoteProviderFailure,
+        Some(BslFailureKind::Unknown) | None => Kind::Unknown,
+    };
+    failed_section(ProviderId::BslAnalyzer, error.message).with_failure_kind(kind)
 }
 
 /// The pending reason of a no-hits answer whose footer names exactly the
@@ -564,7 +622,8 @@ pub fn parse_bsl_analyzer_search(
         return failed_section(
             ProviderId::BslAnalyzer,
             format!("unexpected bsl-analyzer search envelope: {trimmed}"),
-        );
+        )
+        .with_failure_kind(ProviderSearchFailureKind::UnrecognizedResponse);
     }
 
     let mut hits = Vec::new();
@@ -640,7 +699,8 @@ pub fn parse_bsl_analyzer_search(
         return ProviderSearchSection::failed(
             ProviderId::BslAnalyzer.identity(),
             diagnostics.join("; "),
-        );
+        )
+        .with_failure_kind(ProviderSearchFailureKind::UnrecognizedResponse);
     }
     let provider_limit_reached = returned_headers >= effective_limit;
     if (discarded_result || output_budget_truncated) && provider_limit_reached {

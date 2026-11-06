@@ -1,0 +1,67 @@
+{
+  "id": "S-2470-search-response-diagnosis",
+  "issue": 2470,
+  "area": "Код BSL",
+  "task": "Неизвестный ответ управляемого анализатора даёт безопасную причину преобразования, а не пустую выдачу",
+  "workspace": "tests/fixtures/acceptance/workspace-git-search",
+  "profile": "fault-injection",
+  "driver": "analyzer-search-failure",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "QueryPrivate2470",
+        "role": "symbol",
+        "scope": "main:Configuration",
+        "limit": 2
+      },
+      "expect": [
+        "provider-failed"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/summary",
+          "eq": "search provider response conversion failed: unsupported search payload"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_failed"
+        },
+        {
+          "pointer": "/diagnostics/0/outcome",
+          "eq": "deadEnd"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "search provider response conversion failed: unsupported search payload"
+        },
+        {
+          "pointer": "/data/matches/0/status",
+          "eq": "failed"
+        },
+        {
+          "pointer": "/data/matches/0/searchComplete",
+          "eq": false
+        },
+        {
+          "pointer": "/data/matches/0/matches",
+          "eq": {
+            "returned": 0,
+            "relation": "unknown"
+          }
+        },
+        {
+          "pointer": "/data/matches/0/termination",
+          "eq": {
+            "code": "providerFailed",
+            "retryable": false
+          }
+        }
+      ]
+    }
+  ]
+}

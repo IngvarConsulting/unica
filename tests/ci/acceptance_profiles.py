@@ -180,7 +180,17 @@ def select_profile(corpus, profile):
             else:
                 raise ValueError(f"{scenario['id']}: invalid delivery driver or fixture")
         elif current == "fault-injection":
-            if driver == "analyzer-delivery-failure":
+            if driver == "analyzer-search-failure":
+                if (workspace != "tests/fixtures/acceptance/workspace-git-search"
+                        or "evaluation" in scenario
+                        or len(scenario["wire"]) != 1
+                        or scenario["wire"][0]["tool"] != "unica.search"
+                        or type(scenario["wire"][0]["args"].get("limit")) is not int
+                        or scenario["wire"][0]["args"] != {
+                            "query": "QueryPrivate2470", "role": "symbol",
+                            "scope": "main:Configuration", "limit": 2}):
+                    raise ValueError(f"{scenario['id']}: invalid managed search failure wire")
+            elif driver == "analyzer-delivery-failure":
                 if workspace != DIAGNOSTICS_WORKSPACE or "evaluation" in scenario or any(
                     step["tool"] != "unica.view"
                     or step["args"] != {"at": step["args"].get("at")}
