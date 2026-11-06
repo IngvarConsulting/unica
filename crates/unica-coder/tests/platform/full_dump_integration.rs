@@ -3605,6 +3605,11 @@ mod tests {
             StagedRootVersionPolicy::ExactRootVersion,
         ),
         (
+            "Styles/Основной/Ext/Style.xml",
+            br#"<Style xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
+            StagedRootVersionPolicy::ExactRootVersion,
+        ),
+        (
             "Catalogs/Товары/Ext/Help.xml",
             br#"<Help xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.20"/>"#,
             StagedRootVersionPolicy::ExactRootVersion,
