@@ -1320,6 +1320,26 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "FilterCriterion" {
+            match unica_metadata_designer::filter_criterion_read::FilterCriterionFacts::read(
+                target,
+                &descriptor,
+            ) {
+                Ok(facts) => facts.publish(&mut payload),
+                Err(message) => {
+                    payload["relations"]["filterCriterionContent"] = Value::Null;
+                    let mut unreadable = payload["unreadable"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    unreadable.extend([
+                        json!({"field":"relations.filterCriterionContent", "message":message}),
+                        json!({"field":"properties.UseStandardCommands", "message":message}),
+                    ]);
+                    payload["unreadable"] = json!(unreadable);
+                }
+            }
+        }
         Ok(payload)
     }
 
