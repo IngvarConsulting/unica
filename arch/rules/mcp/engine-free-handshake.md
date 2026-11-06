@@ -1,6 +1,5 @@
 ---
 id: INV.WIRE.ENGINE-FREE-HANDSHAKE
-gap: https://github.com/IngvarConsulting/unica/issues/966
 ---
 
 # Открытие MCP и список инструментов не запускают анализаторы
