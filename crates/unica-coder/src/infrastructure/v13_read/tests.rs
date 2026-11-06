@@ -10,6 +10,7 @@ mod form_command_properties;
 mod form_conditional_appearance;
 mod form_item_bindings;
 mod form_support;
+mod integration_channels;
 mod interface_reference_kind;
 mod job_schedule;
 mod metadata;

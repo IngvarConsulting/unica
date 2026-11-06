@@ -1,0 +1,2 @@
+Procedure ProcessInput() Export
+EndProcedure
