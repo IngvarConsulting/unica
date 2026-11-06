@@ -1509,6 +1509,66 @@ mod medium_tests {
     }
 
     #[test]
+    fn bsl_analyzer_budget_envelope_keeps_its_hits_as_a_partial_result() {
+        // Так анализатор отвечает на обычный запрос к большой конфигурации:
+        // вывод не помещается в его бюджет, и лишние попадания отброшены.
+        let envelope = serde_json::json!({
+            "action": "search_code",
+            "budget_exhausted": true,
+            "freshness": {"completeness": {"status": "partial", "reasons": [
+                {"code": "output_budget", "detail": "hits trimmed to fit max_output_tokens"}
+            ]}},
+            "shown": 1,
+            "total": 20,
+            "hits": [{
+                "rank": 1,
+                "graph_id": "method/common/Module/Run",
+                "kind": "procedure",
+                "line_start": 3,
+                "line_end": 7,
+                "location": {"path": "Module.bsl"},
+                "modality": "L",
+                "path": "Module.bsl",
+                "snippet": "Procedure Run()",
+                "symbol": "Run"
+            }]
+        });
+
+        let section = parse_bsl_analyzer_search(&envelope.to_string(), &context());
+
+        assert_eq!(section.status, ProviderSectionStatus::Partial);
+        assert_eq!(section.hits.len(), 1);
+        let hit = &section.hits[0];
+        assert_eq!(hit.rank, Some(1));
+        assert_eq!(hit.line, 3);
+        assert_eq!(hit.end_line, Some(7));
+        assert_eq!(hit.symbol.as_deref(), Some("Run"));
+        assert_eq!(hit.kind.as_deref(), Some("procedure"));
+        assert_eq!(hit.snippet, "Procedure Run()");
+        assert_eq!(hit.attributes["graphId"], "method/common/Module/Run");
+        assert!(section
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("max_output_tokens")));
+    }
+
+    #[test]
+    fn bsl_analyzer_budget_envelope_cannot_name_a_place_outside_the_source() {
+        let envelope = serde_json::json!({
+            "budget_exhausted": true,
+            "hits": [{"line_start": 2, "location": {"path": "/outside/Secret.bsl"}}]
+        });
+
+        let section = parse_bsl_analyzer_search(&envelope.to_string(), &context());
+
+        assert_eq!(section.status, ProviderSectionStatus::Failed);
+        assert!(section.hits.is_empty());
+        assert!(!serde_json::to_string(&section)
+            .unwrap()
+            .contains("Secret.bsl"));
+    }
+
+    #[test]
     fn bsl_analyzer_not_ready_envelope_is_a_retryable_dependency() {
         // The analyzer names this state `Pending` and ships `retry_after_ms`
         // alongside: it promises the next attempt can differ. Flattening that
