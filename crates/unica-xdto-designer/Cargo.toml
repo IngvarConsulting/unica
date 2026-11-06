@@ -20,3 +20,6 @@ roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 unica-xml-format = { path = "../unica-xml-format" }
+
+[package.metadata.unica]
+read-outside-baseline = 2

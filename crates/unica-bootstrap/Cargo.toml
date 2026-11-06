@@ -27,3 +27,6 @@ flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true
 uuid.workspace = true
+
+[package.metadata.unica]
+read-outside-baseline = 2

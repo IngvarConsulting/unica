@@ -27,3 +27,6 @@ unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 unica-work-control = { path = "../unica-work-control" }
 unica-process = { path = "../unica-process", features = ["test-support"] }
 tempfile.workspace = true
+
+[package.metadata.unica]
+read-outside-baseline = 1

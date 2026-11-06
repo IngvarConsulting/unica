@@ -26,3 +26,6 @@ unica-source-designer = { path = "../unica-source-designer" }
 roxmltree.workspace = true
 memchr.workspace = true
 chrono.workspace = true
+
+[package.metadata.unica]
+read-outside-baseline = 55

@@ -24,3 +24,6 @@ serde_json.workspace = true
 
 [dev-dependencies]
 unica-metadata = { path = "../unica-metadata" }
+
+[package.metadata.unica]
+read-outside-baseline = 1
