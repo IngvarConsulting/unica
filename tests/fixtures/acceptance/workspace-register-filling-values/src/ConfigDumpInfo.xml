@@ -1,0 +1,14 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="e51dfef5cdd58f44b1f868c1d33c3b0b00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="24ea3c935b3d764c89eed97c572381da00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ManagedApplicationModule" id="00000000-0000-0000-0000-000000000002.6" configVersion="ba39b323b523b249aaf0cef374ace60d00000000"/>
+		<Metadata name="InformationRegister.Facts" id="1c3ee8f4-98be-418f-ae73-f34488aae3cd" configVersion="ea73ee9ae7b2854c88f442d4ed25efae00000000">
+			<Metadata name="InformationRegister.Facts.Resource.ResourceValue" id="403ebbb9-f233-41e7-8b8b-61e807859f56"/>
+			<Metadata name="InformationRegister.Facts.Dimension.DimensionValue" id="bf509c49-e6c4-4802-9799-af178c0d3708"/>
+			<Metadata name="InformationRegister.Facts.Attribute.AttributeValue" id="fe4b878c-32d7-44da-a3fe-e02c43ba34de"/>
+		</Metadata>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="a40d6eb2b6d2de40b4060485c607136f00000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

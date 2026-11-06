@@ -1,0 +1,24 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Catalog.Items" id="164c3640-2956-48cf-944b-d3c458c1d72d" configVersion="303163c4958d7645949a11cb242c44c400000000">
+			<Metadata name="Catalog.Items.Attribute.FillProbe" id="787e2491-1141-45b3-9334-89166d5bf262"/>
+		</Metadata>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="30abc514607a4045a4af28024efeb80c00000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="4d7b0385fedfcc4fbdd85d134bf20a8600000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ManagedApplicationModule" id="00000000-0000-0000-0000-000000000002.6" configVersion="4c990ec02ba1c04987da97edd8240c5b00000000"/>
+		<Metadata name="DataProcessor.FillProcessor" id="fe4f8a16-94e8-4123-9f2d-10efbc316378" configVersion="dc0e7c01425be84794fb74fe1c12ea2c00000000">
+			<Metadata name="DataProcessor.FillProcessor.TabularSection.Rows" id="2927e93f-0ac4-485f-b80f-ca9ceb38ab6c"/>
+			<Metadata name="DataProcessor.FillProcessor.TabularSection.Rows.Attribute.FillProbe" id="fb215459-f5e2-4d17-9376-f14f39d9f8c9"/>
+		</Metadata>
+		<Metadata name="DataProcessor.FillProcessor.ManagerModule" id="fe4f8a16-94e8-4123-9f2d-10efbc316378.2" configVersion="2a87bd56bbef3141bf5ea11ab317dee300000000"/>
+		<Metadata name="DataProcessor.FillProcessor.ObjectModule" id="fe4f8a16-94e8-4123-9f2d-10efbc316378.0" configVersion="86271aa5c6099e42bbee2c161a9c746f00000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="2cf2b32b9cecc54c937ef07507e41c6100000000"/>
+		<Metadata name="Report.FillReport" id="7be376b2-2fa2-41e6-ab5a-fb22196ba5b2" configVersion="ac6e172a6eb4fd4bbc6516ff5eb1975000000000">
+			<Metadata name="Report.FillReport.TabularSection.Rows" id="9678e054-1e14-4d7c-ac9b-baebcc7b0ddb"/>
+			<Metadata name="Report.FillReport.TabularSection.Rows.Attribute.FillProbe" id="efff9c6d-4bea-49fa-8bae-e3d896bef56f"/>
+		</Metadata>
+		<Metadata name="Report.FillReport.ManagerModule" id="7be376b2-2fa2-41e6-ab5a-fb22196ba5b2.2" configVersion="f5f78c1cc144cb4b8c30972a2a3c140700000000"/>
+		<Metadata name="Report.FillReport.ObjectModule" id="7be376b2-2fa2-41e6-ab5a-fb22196ba5b2.0" configVersion="1f67bc1799b05f40b35ce31ef1836f4900000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

@@ -726,6 +726,7 @@ mod tests {
                         position: None,
                         indexing: None,
                         deny_incomplete_values: Some(true),
+                        fill_from_filling_value: None,
                         master: None,
                         main_filter: None,
                         type_reduction_mode: None,

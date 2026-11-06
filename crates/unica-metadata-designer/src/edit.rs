@@ -1090,6 +1090,31 @@ pub fn typed_operation_effect_value(
                 }),
                 &target,
             )?;
+            let value = if elements
+                .iter()
+                .any(|element| element.fill_from_filling_value.is_some())
+            {
+                crate::member_filling::effect(
+                    xml,
+                    object,
+                    *collection,
+                    scope.as_ref().map(|scope| scope.tabular_section.as_str()),
+                    value,
+                    &elements
+                        .iter()
+                        .filter(|element| element.fill_from_filling_value.is_some())
+                        .map(|element| {
+                            if after {
+                                element.new_name.as_deref().unwrap_or(&element.name)
+                            } else {
+                                &element.name
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                )?
+            } else {
+                value
+            };
             if elements
                 .iter()
                 .any(|element| element.type_reduction_mode.is_some())
@@ -2480,6 +2505,13 @@ pub fn update_typed_element(
             )
         })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    if let Some(value) = update.fill_from_filling_value {
+        if let Some(edit) =
+            crate::member_filling::edit(xml_text, range.clone(), value, collection, scope)?
+        {
+            flag_edits.push(edit);
+        }
+    }
     if let Some(value) = &update.type_reduction_mode {
         if let Some(edit) = crate::dimension_reduction::edit(xml_text, range.clone(), value)? {
             flag_edits.push(edit);

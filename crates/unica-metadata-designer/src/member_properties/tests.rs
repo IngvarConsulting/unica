@@ -64,6 +64,10 @@ fn assert_no_pilot_properties(element: &MetaElementData) {
 
 fn assert_profile_absent(info: &unica_metadata::validation_subject::MetaLocalInfo) {
     assert!(info.member_read_profile.is_none(), "{info:?}");
+    assert_catalog_profile_facts_absent(info);
+}
+
+fn assert_catalog_profile_facts_absent(info: &unica_metadata::validation_subject::MetaLocalInfo) {
     assert!(!info.collections.tabular_sections.is_empty(), "{info:?}");
     for section in &info.collections.tabular_sections {
         assert_no_pilot_properties(section);
@@ -154,6 +158,11 @@ fn catalog_tabular_native_context_does_not_admit_other_platform_owner_kinds() {
         info.member_read_profile,
         Some(unica_metadata::MetaMemberReadProfile::DocumentCommand220)
     );
+    assert_catalog_profile_facts_absent(&info);
+    assert_eq!(
+        info.member_read_profile,
+        Some(unica_metadata::MetaMemberReadProfile::DocumentCommand220)
+    );
     for section in &info.collections.tabular_sections {
         assert_no_pilot_properties(section);
         for attribute in &section.attributes {
@@ -184,6 +193,63 @@ fn catalog_tabular_native_context_does_not_propagate_to_header_or_column_attribu
     assert!(!columns.is_empty());
     for column in columns {
         assert_no_section_properties(column);
+    }
+}
+
+#[test]
+fn filling_info_three_members_preserve_false_absence_and_local_damage() {
+    let native=include_str!("../../../../tests/fixtures/acceptance/workspace-register-filling-values/src/InformationRegisters/Facts.xml");
+    let expected = |dimension: bool, filling: Option<bool>| {
+        let mut properties = if dimension {
+            json!({"Master":{"kind":"boolean","value":false},"MainFilter":{"kind":"boolean","value":false},"DenyIncompleteValues":{"kind":"boolean","value":false},"TypeReductionMode":{"kind":"text","value":"TransformValues"}})
+        } else {
+            json!({})
+        };
+        if let Some(value) = filling {
+            properties["FillFromFillingValue"] = json!({"kind":"boolean","value":value});
+        }
+        properties
+    };
+    for value in [false, true] {
+        let xml = native.replace(
+            "<FillFromFillingValue>true</FillFromFillingValue>",
+            &format!("<FillFromFillingValue>{value}</FillFromFillingValue>"),
+        );
+        let info = read(
+            &xml,
+            "InformationRegister.Facts",
+            Some(SourceSetKind::Configuration),
+        );
+        for (element, dimension) in [
+            (&info.collections.attributes[0], false),
+            (&info.collections.dimensions[0], true),
+            (&info.collections.resources[0], false),
+        ] {
+            let actual = element
+                .properties
+                .iter()
+                .map(|property| {
+                    (
+                        property.name.clone(),
+                        serde_json::to_value(&property.value).unwrap(),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>();
+            assert_eq!(
+                serde_json::Value::Object(actual),
+                expected(dimension, Some(value))
+            );
+            assert!(element.r#type.is_some());
+        }
+    }
+    for replacement in ["","<FillFromFillingValue/>","<FillFromFillingValue>bad</FillFromFillingValue>","<FillFromFillingValue>true</FillFromFillingValue><FillFromFillingValue>true</FillFromFillingValue>","<FillFromFillingValue xmlns=\"urn:foreign\">true</FillFromFillingValue>"] {
+        let info=read(&native.replace("<FillFromFillingValue>true</FillFromFillingValue>",replacement),"InformationRegister.Facts",Some(SourceSetKind::Configuration));
+        for (element, dimension) in [(&info.collections.attributes[0], false),(&info.collections.dimensions[0], true),(&info.collections.resources[0], false)] {
+            let actual = element.properties.iter().map(|property| (property.name.clone(), serde_json::to_value(&property.value).unwrap())).collect::<serde_json::Map<_,_>>();
+            assert_eq!(serde_json::Value::Object(actual), expected(dimension, None));
+            assert!(element.r#type.is_some());
+        }
+        assert_eq!(info.diagnostics.iter().any(|d|d.field.as_deref()==Some("collections.dimensions[0].properties.FillFromFillingValue")),!replacement.is_empty());
     }
 }
 

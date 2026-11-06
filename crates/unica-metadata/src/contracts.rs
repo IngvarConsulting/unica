@@ -189,6 +189,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
         } else {
             fields.remove("templateType");
             fields.insert("typeReductionMode".into(), json!({"type":"string", "enum":["Deny", "TransformValues"]}));
+            fields.insert("fillFromFillingValue".into(), json!({"type":"boolean"}));
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
@@ -260,6 +261,13 @@ fn metadata_element_schema(
             "typeReductionMode".into(),
             json!({"type":"string", "enum":["Deny", "TransformValues"]}),
         );
+    }
+    if update
+        && site.is_some_and(|site| {
+            crate::metadata_filling_data_is_allowed(site.owner, collection, site.in_section)
+        })
+    {
+        fields.insert("fillFromFillingValue".into(), json!({"type":"boolean"}));
     }
     let selector = if update { "newName" } else { "name" };
     fields[selector]

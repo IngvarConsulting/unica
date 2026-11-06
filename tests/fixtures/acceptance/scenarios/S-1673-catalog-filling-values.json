@@ -1,0 +1,1887 @@
+{
+  "id": "S-1673-catalog-filling-values",
+  "issue": 1673,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-member-filling-values",
+  "task": "Переключить FillFromFillingValue true→false→true у существующего поля, сохранив независимый FillValue и остальные байты; preview/token, no-op, closed Can, неверные типы/контекст, atomic refusal и stale token. Нативный сценарий выполняется отдельно на реальных postimages.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Attribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Items.Attribute.FillProbe"
+        },
+        {
+          "pointer": "/data/items/0/props/FillFromFillingValue",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ],
+      "captures": {
+        "field0": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Attribute.FillProbe.Can.attribute.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fillFromFillingValue/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/fillFromFillingValue",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Items.Attribute.FillProbe",
+              "values": {
+                "fillFromFillingValue": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/data/effects",
+          "notEq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "e651c241f37a45922938ced8a21eb68a4a17f58819c5f5f517772c62fa3ee552"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.field0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FillFromFillingValue",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/fillValue",
+          "eq": {
+            "kind": "string",
+            "value": "seed"
+          }
+        },
+        {
+          "pointer": "/data/props/type/variants/0/length",
+          "eq": 20
+        },
+        {
+          "pointer": "/data/props/type/variants/0/allowedLength",
+          "eq": "variable"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "e651c241f37a45922938ced8a21eb68a4a17f58819c5f5f517772c62fa3ee552"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Items.Attribute.FillProbe",
+              "values": {
+                "fillFromFillingValue": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "e651c241f37a45922938ced8a21eb68a4a17f58819c5f5f517772c62fa3ee552"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "e651c241f37a45922938ced8a21eb68a4a17f58819c5f5f517772c62fa3ee552"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Items.Attribute.FillProbe",
+              "values": {
+                "fillFromFillingValue": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/data/effects",
+          "notEq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "e651c241f37a45922938ced8a21eb68a4a17f58819c5f5f517772c62fa3ee552"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.field0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FillFromFillingValue",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/fillValue",
+          "eq": {
+            "kind": "string",
+            "value": "seed"
+          }
+        },
+        {
+          "pointer": "/data/props/type/variants/0/length",
+          "eq": 20
+        },
+        {
+          "pointer": "/data/props/type/variants/0/allowedLength",
+          "eq": "variable"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Items.Attribute.FillProbe",
+              "values": {
+                "fillFromFillingValue": "false"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `fillFromFillingValue` must be a boolean",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Items.Attribute.FillProbe",
+              "values": {
+                "fillFromFillingValue": 0
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `fillFromFillingValue` must be a boolean",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Items.Attribute.FillProbe",
+              "values": {
+                "fillFromFillingValue": null
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `fillFromFillingValue` must be a boolean",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "fillFromFillingValue": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown metadata property `fillFromFillingValue`; supported properties for Catalog: Synonym, Comment, ChoiceMode, CodeAllowedLength, CodeType, DefaultPresentati",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Items.Attribute.FillProbe",
+              "values": {
+                "fillFromFillingValue": false
+              }
+            }
+          },
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Items.Attribute.Missing",
+              "values": {
+                "fillFromFillingValue": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: element `Missing` was not found",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "at": "main:Catalog.Items.Attribute.FillProbe",
+              "values": {
+                "fillFromFillingValue": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/data/effects",
+          "notEq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Concurrent filling update"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "4d7177bc8686e41ffead77fd55fc7354501e4d28e6f0ba1e4e0b21e522f79143"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "concurrent": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Catalogs/Items.xml; input `Catalogs/Items.xml`: source write target; the plan retains its original state to prevent overwriting",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.concurrent"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.field0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FillFromFillingValue",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/fillValue",
+          "eq": {
+            "kind": "string",
+            "value": "seed"
+          }
+        },
+        {
+          "pointer": "/data/props/type/variants/0/length",
+          "eq": 20
+        },
+        {
+          "pointer": "/data/props/type/variants/0/allowedLength",
+          "eq": "variable"
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.concurrent"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "c1ac9bbfdb7f9e67e119d079fcfb43b3a9c231c6b68a4f328b8dd79922eed27f"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "9888ed1f1a1911d0cdf2f09b7cf369e4de47317cf66804525cb73cd0df53685a"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor.xml",
+          "kind": "sha256",
+          "eq": "635639a76d22ddca5ead500056154ea7b15e8a9c2b5dd6008e7d1d20e707fe90"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/DataProcessors/FillProcessor/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "db0ccbd66a71776458b341b2981399704a868ca5fa2424cfc654f2a111abebe2"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/FillReport.xml",
+          "kind": "sha256",
+          "eq": "f0cf4e59b372bf57ad70fbd513c274db72c6cbec3474a64a79241e3c5a9581ec"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Reports/FillReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        }
+      ]
+    }
+  ]
+}

@@ -21,6 +21,7 @@ fn operation(name: &str, value: &str) -> MetaEditOperation {
             main_filter: None,
             deny_incomplete_values: None,
             type_reduction_mode: Some(value.into()),
+            fill_from_filling_value: None,
         }],
     }
 }
