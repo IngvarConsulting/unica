@@ -1120,6 +1120,34 @@ fn every_reference_of_an_object_answers_in_one_relation_branch() {
                 "dataLockField".to_string(),
                 "main:Catalog.Items.Attribute.Code".to_string()
             ),
+            (
+                "characteristicTypesSource".to_string(),
+                "main:Catalog.Items.TabularSection.Lines.Attribute.Quantity".to_string()
+            ),
+            (
+                "characteristicTypesKeyField".to_string(),
+                "main:Catalog.Items.Attribute.Code".to_string()
+            ),
+            (
+                "characteristicTypesFilterField".to_string(),
+                "main:Catalog.Items.Attribute.Code".to_string()
+            ),
+            (
+                "characteristicValuesSource".to_string(),
+                "main:Catalog.Items".to_string()
+            ),
+            (
+                "characteristicValuesObjectField".to_string(),
+                "main:Catalog.Items.Attribute.Code".to_string()
+            ),
+            (
+                "characteristicValuesTypeField".to_string(),
+                "main:Catalog.Items.Attribute.Code".to_string()
+            ),
+            (
+                "characteristicValuesValueField".to_string(),
+                "main:Catalog.Items.Attribute.Code".to_string()
+            ),
             // Membership in a subsystem is the same branch (#2235).
             ("subsystem".to_string(), "main:Subsystem.Sales".to_string()),
         ]

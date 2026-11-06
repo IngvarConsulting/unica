@@ -1,0 +1,528 @@
+{
+  "id": "S-1631-characteristic-reference-relations",
+  "issue": 1631,
+  "area": "Метаданные",
+  "task": "Прочитать семь ролей ссылок характеристики и их реальные цели, проверить анонимность строк Characteristic, страницы Relation и изоляцию main/other без изменения XML.",
+  "workspace": "tests/fixtures/acceptance/workspace-characteristic-reference-relations",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "characteristicTypesSource",
+              "at": "main:Catalog.Types",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "characteristicTypesKeyField",
+              "at": "main:Catalog.Types.Attribute.Key",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "characteristicTypesFilterField",
+              "at": "main:Catalog.Types.Attribute.Filter",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "characteristicValuesSource",
+              "at": "main:Catalog.Values",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "characteristicValuesObjectField",
+              "at": "main:Catalog.Values.Attribute.Object",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "characteristicValuesTypeField",
+              "at": "main:Catalog.Values.Attribute.Type",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "characteristicValuesValueField",
+              "at": "main:Catalog.Values.Attribute.Value",
+              "kind": "Attribute"
+            }
+          ]
+        }
+      ],
+      "captures": {
+        "h0": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        },
+        "h1": {
+          "file": "other/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h2": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h3": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "h4": {
+          "file": "src/Catalogs/Values.xml",
+          "kind": "sha256"
+        },
+        "h5": {
+          "file": "src/Catalogs/Isolation.xml",
+          "kind": "sha256"
+        },
+        "h6": {
+          "file": "src/Catalogs/Types.xml",
+          "kind": "sha256"
+        },
+        "h7": {
+          "file": "other/Catalogs/Items.xml",
+          "kind": "sha256"
+        },
+        "h8": {
+          "file": "other/Catalogs/Values.xml",
+          "kind": "sha256"
+        },
+        "h9": {
+          "file": "other/Catalogs/Isolation.xml",
+          "kind": "sha256"
+        },
+        "h10": {
+          "file": "other/Catalogs/Types.xml",
+          "kind": "sha256"
+        },
+        "target0": {
+          "pointer": "/data/items/0/at"
+        },
+        "target1": {
+          "pointer": "/data/items/1/at"
+        },
+        "target2": {
+          "pointer": "/data/items/2/at"
+        },
+        "target3": {
+          "pointer": "/data/items/3/at"
+        },
+        "target4": {
+          "pointer": "/data/items/4/at"
+        },
+        "target5": {
+          "pointer": "/data/items/5/at"
+        },
+        "target6": {
+          "pointer": "/data/items/6/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Types"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Types.Attribute.Key"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Types.Attribute.Filter"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Values"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Values.Attribute.Object"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Values.Attribute.Type"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.target6"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Values.Attribute.Value"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Characteristic"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/types/source",
+          "eq": "Catalog.Types"
+        },
+        {
+          "pointer": "/data/items/0/values/source",
+          "eq": "Catalog.Values"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Relation",
+        "limit": 3
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "page2": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "characteristicTypesSource",
+              "at": "main:Catalog.Types",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "characteristicTypesKeyField",
+              "at": "main:Catalog.Types.Attribute.Key",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "characteristicTypesFilterField",
+              "at": "main:Catalog.Types.Attribute.Filter",
+              "kind": "Attribute"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Relation",
+        "limit": 3,
+        "cursor": "$capture.page2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "page3": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "characteristicValuesSource",
+              "at": "main:Catalog.Values",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "characteristicValuesObjectField",
+              "at": "main:Catalog.Values.Attribute.Object",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "characteristicValuesTypeField",
+              "at": "main:Catalog.Values.Attribute.Type",
+              "kind": "Attribute"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Relation",
+        "limit": 3,
+        "cursor": "$capture.page3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "characteristicValuesValueField",
+              "at": "main:Catalog.Values.Attribute.Value",
+              "kind": "Attribute"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Relation.Any"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: the relation branch lists targets; read the target at its own address"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.Characteristic.Any"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: a characteristic carries no applied name; the branch lists them as rows"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Types.Attribute.OnlyOther"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        }
+      ],
+      "refusal": "not_found: metadata node `OnlyOther` was not found"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Isolation.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "characteristicTypesSource",
+              "at": "main:Catalog.Types",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "characteristicTypesKeyField",
+              "at": "main:Catalog.Types.Attribute.OnlyOther",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "characteristicTypesFilterField",
+              "at": "main:Catalog.Types.Attribute.Filter",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "characteristicValuesSource",
+              "at": "main:Catalog.Values",
+              "kind": "Catalog"
+            },
+            {
+              "relation": "characteristicValuesObjectField",
+              "at": "main:Catalog.Values.Attribute.Object",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "characteristicValuesTypeField",
+              "at": "main:Catalog.Values.Attribute.Type",
+              "kind": "Attribute"
+            },
+            {
+              "relation": "characteristicValuesValueField",
+              "at": "main:Catalog.Values.Attribute.Value",
+              "kind": "Attribute"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "other:Catalog.Types.Attribute.OnlyOther"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "other:Catalog.Types.Attribute.OnlyOther"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.h0"
+        },
+        {
+          "path": "other/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h1"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h2"
+        },
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.h3"
+        },
+        {
+          "path": "src/Catalogs/Values.xml",
+          "kind": "sha256",
+          "eq": "$capture.h4"
+        },
+        {
+          "path": "src/Catalogs/Isolation.xml",
+          "kind": "sha256",
+          "eq": "$capture.h5"
+        },
+        {
+          "path": "src/Catalogs/Types.xml",
+          "kind": "sha256",
+          "eq": "$capture.h6"
+        },
+        {
+          "path": "other/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.h7"
+        },
+        {
+          "path": "other/Catalogs/Values.xml",
+          "kind": "sha256",
+          "eq": "$capture.h8"
+        },
+        {
+          "path": "other/Catalogs/Isolation.xml",
+          "kind": "sha256",
+          "eq": "$capture.h9"
+        },
+        {
+          "path": "other/Catalogs/Types.xml",
+          "kind": "sha256",
+          "eq": "$capture.h10"
+        }
+      ]
+    }
+  ]
+}
