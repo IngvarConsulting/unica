@@ -1,14 +1,24 @@
-//! Discovers the submodules of `metadata_can_tests` from their directory.
+//! Discovers the submodules of test modules from their directories.
 //!
-//! Every `*.rs` file in `src/infrastructure/daemon/metadata_can_tests/`
-//! becomes `mod <file stem>;` of that test module, in file-name order. A new
-//! test file therefore does not edit a shared registration list, and two
-//! changes that add different files do not conflict.
-//! `scripts/ci/size-filters.py` resolves the same directory for test sizes.
+//! Every `*.rs` file in a directory of `TEST_MODULES` becomes `mod <file stem>;`
+//! of the test module named after it, in file-name order. A new test file
+//! therefore does not edit a shared registration list, and two changes that add
+//! different files do not conflict.
+//! `scripts/ci/removed_tests.py` and `scripts/ci/check-discovered-modules-format.py`
+//! resolve the same directories.
 use std::path::{Path, PathBuf};
 
-const TEST_MODULES: &str = "src/infrastructure/daemon/metadata_can_tests";
-const GENERATED: &str = "metadata_can_tests_modules.rs";
+/// The directory of a test module and the file its declarations are written to.
+const TEST_MODULES: &[(&str, &str)] = &[
+    (
+        "src/infrastructure/daemon/metadata_can_tests",
+        "metadata_can_tests_modules.rs",
+    ),
+    (
+        "src/infrastructure/v13_read/tests",
+        "v13_read_tests_modules.rs",
+    ),
+];
 /// Lowercase Rust keywords, strict and reserved, and `_`: `mod <keyword>;` does
 /// not compile. `gen` is reserved from edition 2024; rejecting it now keeps the
 /// module names valid across an edition change.
@@ -24,10 +34,16 @@ fn main() {
     let manifest = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR"),
     );
-    let directory = manifest.join(TEST_MODULES);
+    for (directory, generated) in TEST_MODULES {
+        write_declarations(&manifest, directory, generated);
+    }
+}
+
+fn write_declarations(manifest: &Path, relative: &str, name: &str) {
+    let directory = manifest.join(relative);
     // A directory makes Cargo rerun the script when any file inside it is
     // added, removed or changed.
-    println!("cargo:rerun-if-changed={TEST_MODULES}");
+    println!("cargo:rerun-if-changed={relative}");
     let mut files = std::fs::read_dir(&directory)
         .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
         .map(|entry| entry.expect("test module entry is readable").path())
@@ -46,8 +62,7 @@ fn main() {
             path.replace('\\', "/")
         ));
     }
-    let output =
-        PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join(GENERATED);
+    let output = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR")).join(name);
     // Rewriting identical bytes would invalidate the crate's incremental state.
     if std::fs::read_to_string(&output).ok().as_deref() != Some(generated.as_str()) {
         std::fs::write(&output, generated)
