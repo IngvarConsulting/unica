@@ -424,3 +424,33 @@ fn every_metadata_write_keeps_the_owner_prefix() {
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
+
+#[test]
+fn root_comment_edits_preserve_a_foreign_default_namespace_in_either_declaration_order() {
+    for foreign_first in [false, true] {
+        let fixture = Fixture::blank();
+        let runtime = runtime();
+        publish(&runtime, &fixture, json!({"at":"main:Configuration","ops":[
+            {"op":"object.create","args":{"values":{"kind":"Catalog","name":"A"}}}
+        ]}));
+        let path = fixture.source.join("Catalogs/A.xml");
+        let original = std::fs::read_to_string(&path).unwrap();
+        let declaration = format!("xmlns:md=\"{MD}\"");
+        let with_default = if foreign_first {
+            format!("xmlns=\"urn:unrelated\" {declaration}")
+        } else {
+            format!("{declaration} xmlns=\"urn:unrelated\"")
+        };
+        let before = prefixed(&original).replacen(&declaration, &with_default, 1);
+        assert!(before.contains("<md:Comment/>"));
+        std::fs::write(&path, &before).unwrap();
+        let request = json!({"at":"main:Catalog.A","ops":[
+            {"op":"props.set","args":{"values":{"Comment":"Note"}}}
+        ]});
+        publish(&runtime, &fixture, request.clone());
+        let expected = before.replace("<md:Comment/>", "<md:Comment>Note</md:Comment>");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        publish(&runtime, &fixture, request);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    }
+}
