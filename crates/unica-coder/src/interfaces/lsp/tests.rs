@@ -224,15 +224,15 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
     assert_eq!(error_code(&early), SERVER_NOT_INITIALIZED);
     let initialized = editor.initialize();
     let capabilities = &initialized["result"]["capabilities"];
+    assert_eq!(capabilities["positionEncoding"], "utf-16");
+    assert!(
+        capabilities.get("hoverProvider").is_none(),
+        "hover is not served yet, so it is not declared"
+    );
     assert_eq!(
-        capabilities,
-        &json!({
-            "positionEncoding": "utf-16",
-            "experimental": {"unica": {"workspaces": [
-                {"folder": "file:///work", "failure": "lsp_not_supported"},
-            ]}},
-        }),
-        "the daemon has no LSP service yet: no capability, and no folder became a space"
+        capabilities["experimental"]["unica"]["workspaces"],
+        json!([{"folder": "file:///work", "failure": "lsp_workspace_unavailable"}]),
+        "a folder that is no workspace gets no space"
     );
     assert_eq!(initialized["result"]["serverInfo"]["name"], "unica");
     assert_eq!(
@@ -384,6 +384,15 @@ fn a_document_notification_the_daemon_would_refuse_keeps_the_session() {
         "the daemon drops the document instead of keeping a text the editor no longer has"
     );
     host.release();
+    // The document is out of sync until the editor opens it again.
+    let held = editor.request("textDocument/hover", hover_params("file:///work/a.bsl"));
+    assert_eq!(error_code(&held), CONTENT_MODIFIED);
+    editor.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {
+            "uri": "file:///work/a.bsl", "languageId": "bsl", "version": 4, "text": "",
+        }}),
+    );
     let hover = editor.request("textDocument/hover", hover_params("file:///work/a.bsl"));
     assert!(hover["result"]["contents"].is_object(), "{hover}");
     assert!(!editor.lost.load(Ordering::Acquire));

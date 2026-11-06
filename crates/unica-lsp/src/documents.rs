@@ -1,34 +1,42 @@
 //! Editor documents of one LSP connection (#2174).
 //!
-//! A document is a BSL module named by `unica://<space>/<set>/<address>`.
-//! The connection keeps the buffers its editor opened and mirrors each
-//! version into the overlay of the workspace actor, so analysis on behalf of
-//! this connection reads the buffer; the file on disk is written only by
-//! `unica.apply`. A `file://` path inside a source set maps to the same
-//! address `unica.resolve` gives it, and back.
+//! A document is the body of a BSL module named by
+//! `unica://<space>/<set>/<address>`, where the address is the one MCP gives
+//! that text: `CommonModule.X.Body`, `Catalog.X.Module.Object.Body`. The
+//! connection keeps the buffers its editor opened and mirrors each version
+//! into the overlay of the workspace actor, so analysis on behalf of this
+//! connection reads the buffer; the file on disk is written only by
+//! `unica.apply`. A file path (`file://`) never names a document.
 
-use crate::application::lsp::document::{ContentChange, DocumentChangeError, OpenDocument};
-use crate::application::lsp::uri::{DocumentUri, SpaceRegistry, UriError, WorkspaceFolder};
-use crate::infrastructure::event_sources::module_address_for_relative;
-use crate::infrastructure::v13_read_port::ProviderReadAuthority;
+use crate::document::{ContentChange, DocumentChangeError, OpenDocument};
+use crate::uri::{DocumentUri, SpaceRegistry, UriError, WorkspaceFolder};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use unica_address::address::QualifiedAddress;
+use unica_address::source_target::MetadataAddress;
 use unica_bsl::profile::PlatformProfile;
 use unica_execution_contract::view_error::ViewError;
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::module_layout::{module_relative, module_source_address};
 use unica_workspace::documents::{DocumentOverlay, DocumentOverlayError, DocumentText};
-use unica_workspace::paths::{host_path_relative_to, same_host_path};
+use unica_workspace::paths::same_host_path;
 
 /// One admitted source set of a space.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SourceSetLayout {
-    pub(crate) name: String,
-    pub(crate) kind: SourceSetKind,
-    pub(crate) root: PathBuf,
-    pub(crate) profile: PlatformProfile,
+pub struct SourceSetLayout {
+    pub name: String,
+    pub kind: SourceSetKind,
+    pub root: PathBuf,
+    pub profile: PlatformProfile,
+}
+
+/// A read of one source set of a space, for one session.
+pub trait ModuleSourceRead {
+    fn source_set(&self) -> &str;
+    fn root_path(&self) -> &Path;
+    /// The text of a module file, without its BOM; `None` when it is absent.
+    fn module_source(&self, target: &MetadataAddress) -> Result<Option<String>, ViewError>;
 }
 
 /// A workspace folder the editor opened and the source sets admitted in it.
@@ -41,15 +49,9 @@ pub(crate) struct SpaceLayout {
 #[derive(Debug)]
 pub(crate) enum LspDocumentError {
     Uri(UriError),
-    /// Not a `file://` URI of a local path.
-    NotAFile,
-    /// The file is in no source set of this connection.
-    OutsideSourceSets,
-    /// The address names no BSL module of the source set layout.
+    /// The address is not the `Body` of a BSL module of the source set
+    /// layout.
     NotAModule,
-    /// Two source sets of this connection own the file equally: on a host that
-    /// ignores letter case `Foo` and `foo` are one directory.
-    AmbiguousSourceSet(Vec<String>),
     UnknownSourceSet(String),
     NotOpen,
     Change(DocumentChangeError),
@@ -83,7 +85,7 @@ pub(crate) struct DocumentLocation {
 
 impl LspDocuments {
     pub(crate) fn new(session: impl Into<String>, mut layouts: Vec<SpaceLayout>) -> Self {
-        // Roots are compared with paths an editor sends, which may come
+        // Roots are compared with the root of a read, which may name them
         // through a symlink (`/tmp` and `/private/tmp` on macOS).
         for layout in &mut layouts {
             for set in &mut layout.source_sets {
@@ -123,8 +125,7 @@ impl LspDocuments {
     /// The space, source set and module file a `unica://` URI names.
     pub(crate) fn locate(&self, uri: &str) -> Result<DocumentLocation, LspDocumentError> {
         let document = self.spaces.parse(uri).map_err(LspDocumentError::Uri)?;
-        let at = QualifiedAddress::parse(&document.address)
-            .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))?;
+        let at = module_of_body(&document)?;
         let layout = self.source_set(&document.space, at.source_set())?;
         let relative = module_file(&at, layout).ok_or(LspDocumentError::NotAModule)?;
         Ok(DocumentLocation {
@@ -132,62 +133,6 @@ impl LspDocuments {
             relative,
             document,
         })
-    }
-
-    /// The `unica://` URI of a module file, as `unica.resolve` addresses it.
-    pub(crate) fn uri_of_file(&self, file_uri: &str) -> Result<String, LspDocumentError> {
-        let path = url::Url::parse(file_uri)
-            .ok()
-            .filter(|url| url.scheme() == "file")
-            .and_then(|url| url.to_file_path().ok())
-            .map(|path| canonical(&path))
-            .ok_or(LspDocumentError::NotAFile)?;
-        // The innermost source set wins when roots nest. Equal depth under one
-        // file is a configuration fault, not a choice to make here.
-        let owners = self
-            .source_sets
-            .iter()
-            .flat_map(|(space, sets)| sets.iter().map(move |set| (space, set)))
-            .filter_map(|(space, set)| {
-                let relative = host_path_relative_to(&path, &set.root)?;
-                Some((space, set, relative))
-            })
-            .collect::<Vec<_>>();
-        let depth = owners
-            .iter()
-            .map(|(_, set, _)| set.root.components().count())
-            .max()
-            .ok_or(LspDocumentError::OutsideSourceSets)?;
-        let mut innermost = owners
-            .into_iter()
-            .filter(|(_, set, _)| set.root.components().count() == depth)
-            .collect::<Vec<_>>();
-        if innermost.len() > 1 {
-            return Err(LspDocumentError::AmbiguousSourceSet(
-                innermost
-                    .iter()
-                    .map(|(_, set, _)| set.name.to_string())
-                    .collect(),
-            ));
-        }
-        let (space, layout, relative) = innermost.remove(0);
-        let at = module_address_for_relative(&layout.name, layout.kind, layout.profile, &relative)
-            .ok_or(LspDocumentError::NotAModule)?;
-        self.spaces
-            .format(&DocumentUri {
-                space: space.clone(),
-                address: at.to_string(),
-            })
-            .map_err(LspDocumentError::Uri)
-    }
-
-    /// The `file://` URI of the module file a `unica://` URI names.
-    pub(crate) fn file_of_uri(&self, uri: &str) -> Result<String, LspDocumentError> {
-        let location = self.locate(uri)?;
-        let layout = self.source_set(&location.document.space, &location.source_set)?;
-        url::Url::from_file_path(layout.root.join(&location.relative))
-            .map(String::from)
-            .map_err(|()| LspDocumentError::NotAFile)
     }
 
     /// `didOpen`: the buffer replaces the file for this connection.
@@ -267,7 +212,7 @@ impl LspDocuments {
     pub(crate) fn content(
         &self,
         uri: &str,
-        read: &ProviderReadAuthority,
+        read: &dyn ModuleSourceRead,
     ) -> Result<Option<String>, LspDocumentError> {
         let location = self.locate(uri)?;
         if let Some(buffer) = self.open.get(&location.document) {
@@ -280,8 +225,7 @@ impl LspDocuments {
         {
             return Err(LspDocumentError::UnknownSourceSet(location.source_set));
         }
-        let at = QualifiedAddress::parse(&location.document.address)
-            .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))?;
+        let at = module_of_body(&location.document)?;
         let target = module_target(&at, layout).ok_or(LspDocumentError::NotAModule)?;
         read.module_source(&target).map_err(LspDocumentError::Read)
     }
@@ -335,21 +279,19 @@ impl LspDocuments {
     }
 }
 
-/// The path with symlinks resolved. An absent file keeps its remaining plain
-/// components below its nearest existing ancestor, so it compares against a
-/// canonical source-set root in that root's own spelling. A path with no such
-/// ancestor or with a non-plain remainder stays as given and matches no root.
-fn canonical(path: &std::path::Path) -> PathBuf {
-    path.ancestors()
-        .find_map(|ancestor| {
-            let resolved = ancestor.canonicalize().ok()?;
-            let remainder = path.strip_prefix(ancestor).ok()?;
-            remainder
-                .components()
-                .all(|component| matches!(component, std::path::Component::Normal(_)))
-                .then(|| resolved.join(remainder))
-        })
-        .unwrap_or_else(|| path.to_owned())
+/// The path with symlinks resolved, or as given when it does not exist.
+fn canonical(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_owned())
+}
+
+/// The module whose `Body` a document address names.
+fn module_of_body(document: &DocumentUri) -> Result<QualifiedAddress, LspDocumentError> {
+    let module = document
+        .address
+        .strip_suffix(".Body")
+        .ok_or(LspDocumentError::NotAModule)?;
+    QualifiedAddress::parse(module)
+        .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))
 }
 
 fn module_target(
@@ -372,5 +314,4 @@ fn module_file(at: &QualifiedAddress, layout: &SourceSetLayout) -> Option<PathBu
 }
 
 #[cfg(test)]
-#[path = "../../tests/platform/lsp_documents.rs"]
 mod tests;

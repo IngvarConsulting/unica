@@ -1536,7 +1536,9 @@ fn bind_workspace_invocation_controlled(
     })
 }
 
-fn closed_daemon_source_relative_path(path: &str) -> Result<std::path::PathBuf, String> {
+pub(in crate::infrastructure::daemon) fn closed_daemon_source_relative_path(
+    path: &str,
+) -> Result<std::path::PathBuf, String> {
     let mut relative = std::path::PathBuf::new();
     for component in std::path::Path::new(path).components() {
         match component {

@@ -15,6 +15,7 @@ receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "u
 
 [dependencies]
 unica-daemon = { path = "../unica-daemon" }
+unica-lsp = { path = "../unica-lsp" }
 unica-bindings = { path = "../unica-bindings" }
 unica-adapter-lexical = { path = "../unica-adapter-lexical" }
 unica-adapter-bsl-analyzer = { path = "../unica-adapter-bsl-analyzer" }
