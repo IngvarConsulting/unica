@@ -20,7 +20,7 @@ class ComponentBoundaryTests(unittest.TestCase):
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         invalid = (
             ("unica-operations", "unica-forms"),
-            ("unica-analysis-services", "unica-adapter-rlm"),
+            ("unica-analysis-services", "unica-adapter-bsl-analyzer"),
             ("unica-analysis-services", "unica-adapter-bsl-analyzer"),
             ("unica-code-intelligence", "unica-adapter-lexical"),
             ("unica-diagnostics", "unica-adapter-bsl-analyzer"),
@@ -36,13 +36,13 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-workspace", "unica-forms-designer"),
             ("unica-project-health", "unica-execution"),
             ("unica-project-health", "unica-metadata-designer"),
-            ("unica-project-health", "unica-adapter-rlm"),
+            ("unica-project-health", "unica-adapter-bsl-analyzer"),
             ("unica-execution", "unica-adapter-v8-runner"),
             ("unica-execution", "unica-daemon"),
             ("unica-execution", "unica-bootstrap"),
             ("unica-execution", "unica-metadata-designer"),
             ("unica-daemon", "unica-forms"),
-            ("unica-daemon", "unica-adapter-rlm"),
+            ("unica-daemon", "unica-adapter-bsl-analyzer"),
             ("unica-daemon", "unica-project-health"),
             ("unica-bsl-parser", "unica-bsl"),
             ("unica-roles", "unica-coder"),
@@ -62,7 +62,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-bindings", "unica-metadata"),
             ("unica-bindings", "unica-bsl"),
             ("unica-analysis-services", "unica-workspace"),
-            ("unica-adapter-rlm", "unica-analysis-services"),
+            ("unica-adapter-bsl-analyzer", "unica-analysis-services"),
             ("unica-adapter-bsl-analyzer", "unica-diagnostics"),
             ("unica-adapter-lexical", "unica-code-intelligence"),
             ("unica-dcs", "unica-templates"),
@@ -168,7 +168,7 @@ class ComponentBoundaryTests(unittest.TestCase):
                 self.assertTrue(checker.edge_errors("unica-workspace", "unica-process", kind))
         # Components that did not exist when the list was written are refused too.
         for target in ("unica-runner", "unica-bootstrap", "unica-artifact-delivery", "unica-project-health",
-                       "unica-operations", "unica-adapter-rlm", "unica-execution", "unica-daemon",
+                       "unica-operations", "unica-adapter-bsl-analyzer", "unica-execution", "unica-daemon",
                        "unica-coder", "unica-future-index"):
             for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
                 with self.subTest(target=target, kind=kind):

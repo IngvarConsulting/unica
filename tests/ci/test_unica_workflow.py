@@ -1101,8 +1101,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             with self.subTest(outcome=outcome):
                 self.assertIn(outcome, report["run"])
         self.assertIn("cargoBuildSeconds", script(build))
-        self.assertIn("archiveDownloadSeconds", script(build))
-        self.assertIn("RLM archive download duration", script(build))
         self.assertIn("GITHUB_STEP_SUMMARY", script(build))
 
     def test_runtime_matrix_builds_verifies_and_exports_narrow_artifacts(self) -> None:
@@ -1487,7 +1485,6 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         self.assertIn("unica-assessment-engine-linux-x64", [upload.get("name") for upload in uploads(self.build)])
         self.assertIn("stage-unica-assessment-engine.py", script(self.build))
         self.assertIn("--artifact bsl-analyzer", script(self.build))
-        self.assertIn("--artifact rlm-tools-bsl", script(self.build))
         self.assertIn("--out-archive .build/unica-assessment-engine-linux-x64.tar.gz", script(self.build))
         self.assertIn("unica-assessment-engine-linux-x64", [download.get("name") for download in downloads(assessment)])
         self.assertIn(
@@ -1526,7 +1523,6 @@ class ArtifactSplitPublicationTests(unittest.TestCase):
         positions = [step_index(self.build, name) for name in ordered_steps]
         self.assertEqual(positions, sorted(positions))
         self.assertIn("tools.json", script(self.build))
-        self.assertIn('manifest["runtimeFiles"]', script(self.build))
         self.assertIn('--target "${{ matrix.target }}"', script(self.build))
 
         expected_needs = {

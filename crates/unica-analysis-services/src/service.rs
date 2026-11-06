@@ -1,11 +1,8 @@
 //! Authenticated workspace provider leases, operation lanes and session lifecycle.
-use crate::backend::{
-    BackgroundTaskTracker, BslBackend, ReadyScope, RlmBackend, RlmIndex, RlmSession,
-    ServiceEnvironment,
-};
+use crate::backend::{BackgroundTaskTracker, BslBackend, ServiceEnvironment};
 use crate::protocol::{
     BslOperationDeadline, BslStopCause, PreparedBslCall, PreparedBslReply, ServiceRequest,
-    ServiceRequestKind, ServiceResponse, WorkspaceRlmOperation,
+    ServiceRequestKind, ServiceResponse,
 };
 use unica_process::mcp_session::{McpRequestDeadline, McpToolOutput, PersistentMcpSession};
 use unica_work_control::elapsed_budget::ElapsedBudgetDeadline;
@@ -41,22 +38,11 @@ impl ServiceMcpDeadline<'_> {
     }
 }
 
-pub trait ServiceElapsedBudget {
-    fn remaining_cancellable(&self, cancellation: &CancellationToken) -> Result<Duration, String>;
-}
-impl ServiceElapsedBudget for ElapsedBudgetDeadline {
-    fn remaining_cancellable(&self, cancellation: &CancellationToken) -> Result<Duration, String> {
-        cancellation_error(cancellation)?;
-        self.remaining()
-            .ok_or_else(|| workspace_service_request_timeout_error(self.budget))
-    }
-}
-
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
 use unica_source_contract::{SourceFormat, SourceProfile, SourceSetKind};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
 use std::env;
 use std::fs;
@@ -79,8 +65,8 @@ use unica_work_control::operation_deadline::OperationDeadline;
 #[cfg(any(test, feature = "test-support"))]
 use unica_workspace::actor::WorkspaceActorRuntimeTestProjection;
 use unica_workspace::actor::{
-    ProviderRootBinding, ProviderSourceLease, WorkspaceActor, WorkspaceActorRuntimeProjection,
-    WorkspaceIdentity, WorkspaceSourceSetInput,
+    ProviderRootBinding, WorkspaceActor, WorkspaceActorRuntimeProjection, WorkspaceIdentity,
+    WorkspaceSourceSetInput,
 };
 use unica_workspace::paths::normalize_path_identity;
 use unica_workspace::state_fs::short_private_runtime_dir;
@@ -101,7 +87,7 @@ pub const SESSION_TEARDOWN_GRACE: Duration = Duration::from_secs(3);
 pub const SERVICE_SPAWN_CLEANUP_WAIT: Duration = Duration::from_secs(2);
 pub const SERVICE_STARTUP_STDERR_TAIL_LIMIT: u64 = 16 * 1024;
 pub const SERVICE_RECORD_LOCK_FILE: &str = "service.record.lock";
-pub const LEGACY_WORKSPACE_SERVICE_PROVIDER_PROFILE: &str = "legacy-bsl-rlm";
+pub const WORKSPACE_SERVICE_PROVIDER_PROFILE: &str = "bsl";
 pub const LEGACY_WORKSPACE_SERVICE_SOURCE_SET: &str = "compat";
 
 pub static SYSTEM_SERVICE_CONNECTOR: SystemServiceConnector = SystemServiceConnector;
@@ -545,123 +531,6 @@ impl<'a> WorkspaceServiceManager<'a> {
             result_text: response.result_text.unwrap_or_default(),
             stderr: response.stderr.unwrap_or_default(),
         })
-    }
-
-    pub fn call_rlm_response(
-        &self,
-        context: &WorkspaceContext,
-        source_root: &Path,
-        operation: WorkspaceRlmOperation,
-        timeout: Duration,
-        cancellation: &CancellationToken,
-    ) -> Result<ServiceResponse, String> {
-        let deadline = WorkspaceServiceCallDeadline::new(timeout);
-        let mut retried_transport = false;
-        loop {
-            let record = self.ensure_service_cancellable_with_deadline(
-                context,
-                source_root,
-                cancellation,
-                &deadline,
-            )?;
-            let send_budget = deadline.remaining(cancellation)?;
-            let response = match self.connector.send(
-                &record,
-                ServiceRequest {
-                    token: record.token.clone(),
-                    kind: ServiceRequestKind::RlmMcp {
-                        operation_id: Uuid::new_v4().to_string(),
-                        operation: operation.clone(),
-                        timeout_seconds: send_budget.as_secs(),
-                        timeout_nanos: send_budget.subsec_nanos(),
-                    },
-                },
-                cancellation,
-                send_budget,
-            ) {
-                Ok(response) => response,
-                Err(error)
-                    if !retried_transport
-                        && is_retryable_workspace_service_transport_error(&error) =>
-                {
-                    retried_transport = true;
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            deadline.remaining(cancellation)?;
-            return Ok(response);
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn rlm_readiness_response(
-        &self,
-        context: &WorkspaceContext,
-        source_root: &Path,
-        args: &Map<String, Value>,
-    ) -> Result<ServiceResponse, String> {
-        self.rlm_readiness_cancellable_response(
-            context,
-            source_root,
-            args,
-            &CancellationToken::new(),
-        )
-    }
-
-    pub fn rlm_readiness_cancellable_response(
-        &self,
-        context: &WorkspaceContext,
-        source_root: &Path,
-        args: &Map<String, Value>,
-        cancellation: &CancellationToken,
-    ) -> Result<ServiceResponse, String> {
-        self.rlm_readiness_cancellable_with_timeout_response(
-            context,
-            source_root,
-            args,
-            SERVICE_REQUEST_TIMEOUT,
-            cancellation,
-        )
-    }
-
-    pub fn rlm_readiness_cancellable_with_timeout_response(
-        &self,
-        context: &WorkspaceContext,
-        source_root: &Path,
-        args: &Map<String, Value>,
-        timeout: Duration,
-        cancellation: &CancellationToken,
-    ) -> Result<ServiceResponse, String> {
-        let deadline = WorkspaceServiceCallDeadline::new(timeout);
-        let record = self.ensure_service_cancellable_with_deadline(
-            context,
-            source_root,
-            cancellation,
-            &deadline,
-        )?;
-        let send_budget = deadline.remaining(cancellation)?;
-        let response = self.connector.send(
-            &record,
-            ServiceRequest {
-                token: record.token.clone(),
-                kind: ServiceRequestKind::RlmReady {
-                    operation_id: Uuid::new_v4().to_string(),
-                    args: Value::Object(args.clone()),
-                    timeout_seconds: send_budget.as_secs(),
-                    timeout_nanos: send_budget.subsec_nanos(),
-                },
-            },
-            cancellation,
-            send_budget,
-        )?;
-        deadline.remaining(cancellation)?;
-        if !response.ok {
-            return Err(response
-                .error
-                .unwrap_or_else(|| "workspace service rlm request failed".to_string()));
-        }
-        Ok(response)
     }
 
     pub fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]) {
@@ -2019,14 +1888,6 @@ impl AnalyzerLane {
         self.acquire_with_hook_before(cancellation, None, || {})
     }
 
-    pub fn acquire_before(
-        &self,
-        cancellation: &CancellationToken,
-        deadline: &ElapsedBudgetDeadline,
-    ) -> Result<AnalyzerLanePermit<'_>, String> {
-        self.acquire_with_hook_before(cancellation, Some(deadline), || {})
-    }
-
     #[cfg(any(test, feature = "test-support"))]
     pub fn acquire_with_hook(
         &self,
@@ -2036,6 +1897,7 @@ impl AnalyzerLane {
         self.acquire_with_hook_before(cancellation, None, queued)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn acquire_with_hook_before(
         &self,
         cancellation: &CancellationToken,
@@ -2129,7 +1991,7 @@ impl Drop for AnalyzerLanePermit<'_> {
     }
 }
 
-pub struct WorkspaceServicesState<B: BslBackend, R: RlmBackend> {
+pub struct WorkspaceServicesState<B: BslBackend> {
     identity: WorkspaceServiceIdentity,
     token: String,
     record_owner: WorkspaceServiceRecord,
@@ -2137,19 +1999,12 @@ pub struct WorkspaceServicesState<B: BslBackend, R: RlmBackend> {
     analyzer: Mutex<Option<PersistentMcpSession>>,
     analyzer_starter: Arc<BslSessionStarter>,
     bsl_backend: Arc<B>,
-    rlm_backend: Arc<R>,
-    rlm_lane: AnalyzerLane,
-    rlm: Mutex<Option<<R as RlmBackend>::Session>>,
-    rlm_starter: Arc<RlmSessionStarter<R>>,
     /// Index maintenance outlives the read that noticed the index was stale, so
     /// it cannot borrow that read's token: the operation is unregistered as soon
     /// as it answers, which would both hide the thread from `begin_shutdown` and
     /// let a late `cancel` for the finished read kill the scheduled update.
-    rlm_maintenance_cancellation: CancellationToken,
-    rlm_maintenance_tasks: Arc<SessionTeardownLifecycle>,
     session_teardowns: SessionTeardownLifecycle,
     analyzer_invalidated: AtomicBool,
-    rlm_invalidated: AtomicBool,
     operations: Mutex<HashMap<String, Arc<OperationControl>>>,
     shutting_down: AtomicBool,
     #[cfg(any(test, feature = "test-support"))]
@@ -2176,9 +2031,7 @@ pub struct WorkspaceServicesState<B: BslBackend, R: RlmBackend> {
     handler_finished_hook: Mutex<Option<Arc<WorkspaceHandlerFinishedHook>>>,
 }
 
-pub struct WorkspaceServicesProjection<'a, B: BslBackend, R: RlmBackend>(
-    &'a WorkspaceServicesState<B, R>,
-);
+pub struct WorkspaceServicesProjection<'a, B: BslBackend>(&'a WorkspaceServicesState<B>);
 
 #[cfg(any(test, feature = "test-support"))]
 pub type AuthenticatedWorkspaceRequestHook = dyn Fn(u16, &ServiceRequestKind) + Send + Sync;
@@ -2203,14 +2056,10 @@ pub enum WorkspaceCallerMonitorPoint {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub struct WorkspaceServicesProjectionMut<'a, B: BslBackend, R: RlmBackend>(
-    &'a mut WorkspaceServicesState<B, R>,
-);
+pub struct WorkspaceServicesProjectionMut<'a, B: BslBackend>(&'a mut WorkspaceServicesState<B>);
 
-impl<B: BslBackend, R: RlmBackend> WorkspaceActorRuntimeProjection
-    for WorkspaceServicesState<B, R>
-{
-    type Projection<'a> = WorkspaceServicesProjection<'a, B, R>;
+impl<B: BslBackend> WorkspaceActorRuntimeProjection for WorkspaceServicesState<B> {
+    type Projection<'a> = WorkspaceServicesProjection<'a, B>;
 
     fn project_for_actor(&self) -> Self::Projection<'_> {
         WorkspaceServicesProjection(self)
@@ -2218,38 +2067,26 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceActorRuntimeProjection
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl<B: BslBackend, R: RlmBackend> WorkspaceActorRuntimeTestProjection
-    for WorkspaceServicesState<B, R>
-{
-    type ProjectionMut<'a> = WorkspaceServicesProjectionMut<'a, B, R>;
+impl<B: BslBackend> WorkspaceActorRuntimeTestProjection for WorkspaceServicesState<B> {
+    type ProjectionMut<'a> = WorkspaceServicesProjectionMut<'a, B>;
 
     fn project_mut_for_actor_test(&mut self) -> Self::ProjectionMut<'_> {
         WorkspaceServicesProjectionMut(self)
     }
 }
 
-pub struct WorkspaceServices<B: BslBackend, R: RlmBackend> {
-    actor: WorkspaceActor<WorkspaceServicesState<B, R>>,
+pub struct WorkspaceServices<B: BslBackend> {
+    actor: WorkspaceActor<WorkspaceServicesState<B>>,
 }
 
 pub type BslSessionStarter = dyn Fn(&WorkspaceContext, &Path, &CancellationToken) -> Result<PersistentMcpSession, String>
     + Send
     + Sync;
-pub type RlmSessionStarter<R> = dyn Fn(
-        &WorkspaceContext,
-        &Path,
-        &Path,
-        &str,
-        &CancellationToken,
-    ) -> Result<<R as RlmBackend>::Session, String>
-    + Send
-    + Sync;
-impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
+impl<B: BslBackend> WorkspaceServices<B> {
     pub fn new(
         identity: WorkspaceServiceIdentity,
         record_owner: &WorkspaceServiceRecord,
         bsl_backend: Arc<B>,
-        rlm_backend: Arc<R>,
         environment: Arc<dyn ServiceEnvironment>,
     ) -> Self {
         let context = WorkspaceContext {
@@ -2258,7 +2095,6 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             cache_root: service_cache_root(&identity.service_dir),
             workspace_epoch: 0,
         };
-        let rlm_maintenance_tasks = Arc::new(SessionTeardownLifecycle::default());
         let actor_identity = WorkspaceIdentity::new(
             &context,
             [WorkspaceSourceSetInput::new(
@@ -2268,7 +2104,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
                 SourceFormat::Unknown,
                 SourceProfile::legacy_workspace_service_compatibility(),
             )],
-            LEGACY_WORKSPACE_SERVICE_PROVIDER_PROFILE,
+            WORKSPACE_SERVICE_PROVIDER_PROFILE,
         )
         .expect("legacy workspace service identity is already canonical and contained");
         let runtime = WorkspaceServicesState {
@@ -2282,17 +2118,8 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
                 move |context, root, cancel| backend.start(context, root, cancel)
             }),
             bsl_backend,
-            rlm_backend: Arc::clone(&rlm_backend),
-            rlm_lane: AnalyzerLane::default(),
-            rlm: Mutex::new(None),
-            rlm_starter: Arc::new(move |context, root, directory, id, cancel| {
-                rlm_backend.start(context, root, directory, id, cancel)
-            }),
-            rlm_maintenance_cancellation: CancellationToken::new(),
-            rlm_maintenance_tasks,
             session_teardowns: SessionTeardownLifecycle::default(),
             analyzer_invalidated: AtomicBool::new(false),
-            rlm_invalidated: AtomicBool::new(false),
             operations: Mutex::new(HashMap::new()),
             shutting_down: AtomicBool::new(false),
             #[cfg(any(test, feature = "test-support"))]
@@ -2354,40 +2181,12 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
         &self.actor.runtime_projection().0.analyzer_starter
     }
 
-    fn rlm_lane(&self) -> &AnalyzerLane {
-        &self.actor.runtime_projection().0.rlm_lane
-    }
-
-    fn rlm(&self) -> &Mutex<Option<<R as RlmBackend>::Session>> {
-        &self.actor.runtime_projection().0.rlm
-    }
-
-    fn rlm_starter(&self) -> &Arc<RlmSessionStarter<R>> {
-        &self.actor.runtime_projection().0.rlm_starter
-    }
-
-    fn rlm_maintenance_cancellation(&self) -> &CancellationToken {
-        &self
-            .actor
-            .runtime_projection()
-            .0
-            .rlm_maintenance_cancellation
-    }
-
-    fn rlm_maintenance_tasks(&self) -> &Arc<SessionTeardownLifecycle> {
-        &self.actor.runtime_projection().0.rlm_maintenance_tasks
-    }
-
     fn session_teardowns(&self) -> &SessionTeardownLifecycle {
         &self.actor.runtime_projection().0.session_teardowns
     }
 
     fn analyzer_invalidated(&self) -> &AtomicBool {
         &self.actor.runtime_projection().0.analyzer_invalidated
-    }
-
-    fn rlm_invalidated(&self) -> &AtomicBool {
-        &self.actor.runtime_projection().0.rlm_invalidated
     }
 
     fn operations(&self) -> &Mutex<HashMap<String, Arc<OperationControl>>> {
@@ -2399,7 +2198,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    fn runtime_mut_for_test(&mut self) -> &mut WorkspaceServicesState<B, R> {
+    fn runtime_mut_for_test(&mut self) -> &mut WorkspaceServicesState<B> {
         self.actor.runtime_projection_mut_for_test().0
     }
 
@@ -2429,6 +2228,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
         self.actor.bind_provider_root(source_set_name, source_root)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn validate_provider_binding(&self, binding: &ProviderRootBinding) -> Result<(), String> {
         self.actor.validate_binding(binding)
     }
@@ -2538,7 +2338,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
     fn register_operation(
         self: &Arc<Self>,
         operation_id: String,
-    ) -> Result<(CancellationToken, OperationGuard<B, R>), String> {
+    ) -> Result<(CancellationToken, OperationGuard<B>), String> {
         let (control, guard) = self.register_control(operation_id)?;
         Ok((control.cancellation.clone(), guard))
     }
@@ -2546,7 +2346,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
     fn register_control(
         self: &Arc<Self>,
         operation_id: String,
-    ) -> Result<(Arc<OperationControl>, OperationGuard<B, R>), String> {
+    ) -> Result<(Arc<OperationControl>, OperationGuard<B>), String> {
         if self.shutting_down().load(Ordering::Acquire) {
             return Err("workspace service is shutting down".to_string());
         }
@@ -2611,8 +2411,6 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
     fn begin_shutdown(&self) -> ServiceResponse {
         self.shutting_down().store(true, Ordering::Release);
         self.session_teardowns().close();
-        self.rlm_maintenance_tasks().close();
-        self.rlm_maintenance_cancellation().cancel();
         let cancellations = self
             .operations()
             .lock()
@@ -2640,19 +2438,10 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take();
-        let rlm = self
-            .rlm()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take();
         if let Some(session) = analyzer {
             self.retire_session(session);
         }
-        if let Some(session) = rlm {
-            self.retire_session(session);
-        }
         let sessions_drained = self.session_teardowns().drain(SESSION_TEARDOWN_GRACE);
-        let maintenance_drained = self.rlm_maintenance_tasks().drain(SESSION_TEARDOWN_GRACE);
         #[cfg(any(test, feature = "test-support"))]
         if let Some(hook) = self
             .provider_sessions_drained_hook()
@@ -2662,13 +2451,12 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
         {
             hook();
         }
-        sessions_drained && maintenance_drained
+        sessions_drained
     }
 
     fn invalidate(&self, events: &[DomainEvent]) -> ServiceResponse {
         if events.iter().any(|event| invalidates_analyzer(event.kind)) {
             self.analyzer_invalidated().store(true, Ordering::Release);
-            self.rlm_invalidated().store(true, Ordering::Release);
         }
         ServiceResponse {
             ok: true,
@@ -2683,22 +2471,6 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
         cancellation: &CancellationToken,
     ) -> Result<AnalyzerLanePermit<'_>, String> {
         self.analyzer_lane().acquire(cancellation)
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    fn acquire_rlm_lane(
-        &self,
-        cancellation: &CancellationToken,
-    ) -> Result<AnalyzerLanePermit<'_>, String> {
-        self.rlm_lane().acquire(cancellation)
-    }
-
-    fn acquire_rlm_lane_before(
-        &self,
-        cancellation: &CancellationToken,
-        deadline: &ElapsedBudgetDeadline,
-    ) -> Result<AnalyzerLanePermit<'_>, String> {
-        self.rlm_lane().acquire_before(cancellation, deadline)
     }
 
     fn handle_bsl_mcp(
@@ -2968,14 +2740,12 @@ pub fn invalidates_analyzer(event: DomainEventKind) -> bool {
     )
 }
 
-pub fn remove_service_record_if_owned<B: BslBackend, R: RlmBackend>(
-    runtime: &WorkspaceServices<B, R>,
-) {
+pub fn remove_service_record_if_owned<B: BslBackend>(runtime: &WorkspaceServices<B>) {
     remove_service_record_if_owned_with_hook(runtime, || {});
 }
 
-pub fn remove_service_record_if_owned_with_hook<B: BslBackend, R: RlmBackend>(
-    runtime: &WorkspaceServices<B, R>,
+pub fn remove_service_record_if_owned_with_hook<B: BslBackend>(
+    runtime: &WorkspaceServices<B>,
     inside_critical_section: impl FnOnce(),
 ) {
     let _ = with_record_lock(runtime.identity(), || {
@@ -2998,15 +2768,15 @@ pub fn remove_service_record_if_owned_with_hook<B: BslBackend, R: RlmBackend>(
     });
 }
 
-pub fn update_service_record_last_access<B: BslBackend, R: RlmBackend>(
-    runtime: &WorkspaceServices<B, R>,
+pub fn update_service_record_last_access<B: BslBackend>(
+    runtime: &WorkspaceServices<B>,
     last_access_at: u64,
 ) {
     update_service_record_last_access_with_hook(runtime, last_access_at, || {});
 }
 
-pub fn update_service_record_last_access_with_hook<B: BslBackend, R: RlmBackend>(
-    runtime: &WorkspaceServices<B, R>,
+pub fn update_service_record_last_access_with_hook<B: BslBackend>(
+    runtime: &WorkspaceServices<B>,
     last_access_at: u64,
     inside_critical_section: impl FnOnce(),
 ) {
@@ -3064,12 +2834,12 @@ impl OperationControl {
     }
 }
 
-pub struct OperationGuard<B: BslBackend, R: RlmBackend> {
-    runtime: Arc<WorkspaceServices<B, R>>,
+pub struct OperationGuard<B: BslBackend> {
+    runtime: Arc<WorkspaceServices<B>>,
     operation_id: String,
 }
 
-impl<B: BslBackend, R: RlmBackend> Drop for OperationGuard<B, R> {
+impl<B: BslBackend> Drop for OperationGuard<B> {
     fn drop(&mut self) {
         let removed = self
             .runtime
@@ -3098,16 +2868,16 @@ impl<B: BslBackend, R: RlmBackend> Drop for OperationGuard<B, R> {
     }
 }
 
-pub trait WorkspaceServiceOperationExecutor<B: BslBackend, R: RlmBackend>: Send + Sync {
+pub trait WorkspaceServiceOperationExecutor<B: BslBackend>: Send + Sync {
     fn execute(
         &self,
-        runtime: &WorkspaceServices<B, R>,
+        runtime: &WorkspaceServices<B>,
         kind: ServiceRequestKind,
         cancellation: &CancellationToken,
     ) -> ServiceResponse;
     fn execute_prepared(
         &self,
-        runtime: &WorkspaceServices<B, R>,
+        runtime: &WorkspaceServices<B>,
         kind: ServiceRequestKind,
         cancellation: &CancellationToken,
         deadline: Option<&ElapsedBudgetDeadline>,
@@ -3121,12 +2891,12 @@ pub trait WorkspaceServiceOperationExecutor<B: BslBackend, R: RlmBackend>: Send 
 
 pub struct SystemWorkspaceServiceOperationExecutor;
 
-impl<B: BslBackend, R: RlmBackend> WorkspaceServiceOperationExecutor<B, R>
+impl<B: BslBackend> WorkspaceServiceOperationExecutor<B>
     for SystemWorkspaceServiceOperationExecutor
 {
     fn execute(
         &self,
-        runtime: &WorkspaceServices<B, R>,
+        runtime: &WorkspaceServices<B>,
         kind: ServiceRequestKind,
         cancellation: &CancellationToken,
     ) -> ServiceResponse {
@@ -3154,24 +2924,12 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServiceOperationExecutor<B, R>
             | ServiceRequestKind::Expire { .. } => {
                 ServiceResponse::error("workspace service control is outside its admission phase")
             }
-            ServiceRequestKind::RlmReady {
-                args,
-                timeout_seconds,
-                timeout_nanos,
-                ..
-            } => runtime.handle_rlm_ready(args, timeout_seconds, timeout_nanos, cancellation),
-            ServiceRequestKind::RlmMcp {
-                operation,
-                timeout_seconds,
-                timeout_nanos,
-                ..
-            } => runtime.handle_rlm_mcp(operation, timeout_seconds, timeout_nanos, cancellation),
             _ => ServiceResponse::error("workspace service received non-work operation"),
         }
     }
     fn execute_prepared(
         &self,
-        runtime: &WorkspaceServices<B, R>,
+        runtime: &WorkspaceServices<B>,
         kind: ServiceRequestKind,
         cancellation: &CancellationToken,
         deadline: Option<&ElapsedBudgetDeadline>,
@@ -3481,10 +3239,9 @@ pub fn service_cache_root(service_dir: &Path) -> PathBuf {
         .unwrap_or_else(|| service_dir.to_path_buf())
 }
 
-pub fn run_workspace_service_from_args<B: BslBackend, R: RlmBackend>(
+pub fn run_workspace_service_from_args<B: BslBackend>(
     args: &[String],
     bsl: Arc<B>,
-    rlm: Arc<R>,
     environment: Arc<dyn ServiceEnvironment>,
 ) -> Result<(), String> {
     let workspace_root = required_arg(args, "--workspace-root")?;
@@ -3504,16 +3261,52 @@ pub fn run_workspace_service_from_args<B: BslBackend, R: RlmBackend>(
         source_root,
         service_dir,
     };
-    run_workspace_service(identity, token, build, idle_secs, bsl, rlm, environment)
+    run_workspace_service(identity, token, build, idle_secs, bsl, environment)
 }
 
-pub fn run_workspace_service<B: BslBackend, R: RlmBackend>(
+/// Индекс снятого поставщика `rlm-bsl` занимает место и больше никем не читается.
+/// Убирается при запуске службы и только каталоги его точного вида `rlm-<sha256>`.
+fn remove_retired_index_state(roots: &[PathBuf]) {
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let retired = name
+                .to_str()
+                .and_then(|name| name.strip_prefix("rlm-"))
+                .is_some_and(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                });
+            if retired && entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+}
+
+fn retired_index_state_roots(cache_root: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![cache_root.join("provider-state")];
+    if let Some(shared) =
+        std::env::var_os("UNICA_PROVIDER_STATE_DIR").filter(|value| !value.is_empty())
+    {
+        roots.push(PathBuf::from(shared));
+    } else if let Some(home) = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()))
+    {
+        roots.push(PathBuf::from(home).join(".unica").join("provider-state"));
+    }
+    roots
+}
+
+pub fn run_workspace_service<B: BslBackend>(
     identity: WorkspaceServiceIdentity,
     token: String,
     build: String,
     idle_secs: u64,
     bsl: Arc<B>,
-    rlm: Arc<R>,
     environment: Arc<dyn ServiceEnvironment>,
 ) -> Result<(), String> {
     fs::create_dir_all(&identity.service_dir)
@@ -3540,14 +3333,10 @@ pub fn run_workspace_service<B: BslBackend, R: RlmBackend>(
         last_access_at: now_secs(),
     };
     write_record(&identity, &record)?;
+    let retired_roots = retired_index_state_roots(&service_cache_root(&identity.service_dir));
+    thread::spawn(move || remove_retired_index_state(&retired_roots));
 
-    let runtime = Arc::new(WorkspaceServices::new(
-        identity,
-        &record,
-        bsl,
-        rlm,
-        environment,
-    ));
+    let runtime = Arc::new(WorkspaceServices::new(identity, &record, bsl, environment));
     serve_workspace_service(
         listener,
         runtime,
@@ -3558,10 +3347,10 @@ pub fn run_workspace_service<B: BslBackend, R: RlmBackend>(
     )
 }
 
-pub fn serve_workspace_service<B: BslBackend, R: RlmBackend>(
+pub fn serve_workspace_service<B: BslBackend>(
     listener: TcpListener,
-    runtime: Arc<WorkspaceServices<B, R>>,
-    executor: Arc<dyn WorkspaceServiceOperationExecutor<B, R>>,
+    runtime: Arc<WorkspaceServices<B>>,
+    executor: Arc<dyn WorkspaceServiceOperationExecutor<B>>,
     idle_timeout: Duration,
     request_header_timeout: Duration,
     shutdown_grace: Duration,
@@ -3686,10 +3475,10 @@ pub fn workspace_service_handler_diagnostic(
     }
 }
 
-pub fn handle_workspace_service_stream<B: BslBackend, R: RlmBackend>(
+pub fn handle_workspace_service_stream<B: BslBackend>(
     stream: TcpStream,
-    runtime: Arc<WorkspaceServices<B, R>>,
-    executor: Arc<dyn WorkspaceServiceOperationExecutor<B, R>>,
+    runtime: Arc<WorkspaceServices<B>>,
+    executor: Arc<dyn WorkspaceServiceOperationExecutor<B>>,
     header_clock: SystemClock,
     header_deadline: Deadline,
 ) -> Result<(), String> {
@@ -3737,10 +3526,10 @@ pub fn handle_workspace_service_stream<B: BslBackend, R: RlmBackend>(
     handle_workspace_service_request(stream, runtime, executor, request)
 }
 
-pub fn handle_workspace_service_request<B: BslBackend, R: RlmBackend>(
+pub fn handle_workspace_service_request<B: BslBackend>(
     stream: TcpStream,
-    runtime: Arc<WorkspaceServices<B, R>>,
-    executor: Arc<dyn WorkspaceServiceOperationExecutor<B, R>>,
+    runtime: Arc<WorkspaceServices<B>>,
+    executor: Arc<dyn WorkspaceServiceOperationExecutor<B>>,
     request: ServiceRequest,
 ) -> Result<(), String> {
     if let Err(error) = runtime.authenticate(&request.token) {
@@ -3805,9 +3594,7 @@ pub fn handle_workspace_service_request<B: BslBackend, R: RlmBackend>(
         ServiceRequestKind::Shutdown => {
             write_service_response(stream, &runtime.begin_shutdown(), false)?;
         }
-        kind @ (ServiceRequestKind::BslMcp { .. }
-        | ServiceRequestKind::RlmReady { .. }
-        | ServiceRequestKind::RlmMcp { .. }) => {
+        kind @ ServiceRequestKind::BslMcp { .. } => {
             let operation_id = kind
                 .operation_id()
                 .expect("work request must carry operation id")
@@ -3838,13 +3625,13 @@ struct PreparedExecutionControl {
     deadline: Option<ElapsedBudgetDeadline>,
 }
 
-fn run_registered_workspace_operation<B: BslBackend, R: RlmBackend>(
+fn run_registered_workspace_operation<B: BslBackend>(
     stream: TcpStream,
-    runtime: Arc<WorkspaceServices<B, R>>,
-    executor: Arc<dyn WorkspaceServiceOperationExecutor<B, R>>,
+    runtime: Arc<WorkspaceServices<B>>,
+    executor: Arc<dyn WorkspaceServiceOperationExecutor<B>>,
     kind: ServiceRequestKind,
     cancellation: CancellationToken,
-    guard: OperationGuard<B, R>,
+    guard: OperationGuard<B>,
     control: Option<PreparedExecutionControl>,
 ) -> Result<(), String> {
     let prepared = control.is_some();
@@ -3981,10 +3768,10 @@ fn write_registered_response(
     }
 }
 
-fn handle_prepared_bsl_request<B: BslBackend, R: RlmBackend>(
+fn handle_prepared_bsl_request<B: BslBackend>(
     mut stream: TcpStream,
-    runtime: Arc<WorkspaceServices<B, R>>,
-    executor: Arc<dyn WorkspaceServiceOperationExecutor<B, R>>,
+    runtime: Arc<WorkspaceServices<B>>,
+    executor: Arc<dyn WorkspaceServiceOperationExecutor<B>>,
     operation_id: String,
     call: PreparedBslCall,
     offered: BslOperationDeadline,
@@ -4151,9 +3938,9 @@ fn handle_prepared_bsl_request<B: BslBackend, R: RlmBackend>(
     )
 }
 
-pub fn configure_workspace_caller_monitor<B: BslBackend, R: RlmBackend>(
+pub fn configure_workspace_caller_monitor<B: BslBackend>(
     stream: &TcpStream,
-    _runtime: &WorkspaceServices<B, R>,
+    _runtime: &WorkspaceServices<B>,
 ) -> io::Result<()> {
     #[cfg(any(test, feature = "test-support"))]
     if _runtime.take_caller_monitor_fault(WorkspaceCallerMonitorPoint::Setup) {
@@ -4162,10 +3949,10 @@ pub fn configure_workspace_caller_monitor<B: BslBackend, R: RlmBackend>(
     stream.set_nonblocking(true)
 }
 
-pub fn peek_workspace_caller<B: BslBackend, R: RlmBackend>(
+pub fn peek_workspace_caller<B: BslBackend>(
     stream: &TcpStream,
     byte: &mut [u8],
-    _runtime: &WorkspaceServices<B, R>,
+    _runtime: &WorkspaceServices<B>,
 ) -> io::Result<usize> {
     #[cfg(any(test, feature = "test-support"))]
     if _runtime.take_caller_monitor_fault(WorkspaceCallerMonitorPoint::Peek) {
@@ -4340,248 +4127,14 @@ pub fn service_key(workspace_root: &str, source_root: &str) -> String {
     format!("svc-{:016x}", hasher.finish())
 }
 
-impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {}
+impl<B: BslBackend> WorkspaceServices<B> {}
 
-impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
-    fn handle_rlm_ready_using<I: RlmIndex>(
-        &self,
-        _args: Value,
-        timeout_seconds: u64,
-        timeout_nanos: u32,
-        cancellation: &CancellationToken,
-        make_index: impl FnOnce(ProviderSourceLease, Arc<dyn BackgroundTaskTracker>) -> I,
-    ) -> ServiceResponse {
-        let timeout = match duration_from_timeout_parts(timeout_seconds, timeout_nanos) {
-            Ok(timeout) => timeout,
-            Err(error) => return ServiceResponse::error(error),
-        };
-        let deadline = ElapsedBudgetDeadline::new(timeout);
-        if let Err(error) = deadline.remaining_cancellable(cancellation) {
-            return ServiceResponse::error(error);
-        }
-        let binding = match self.provider_binding() {
-            Ok(binding) => binding,
-            Err(error) => return ServiceResponse::error(error),
-        };
-        let service = match self
-            .actor
-            .provider_source_lease(&binding)
-            .map(|lease| make_index(lease, self.rlm_maintenance_tasks().clone()))
-        {
-            Ok(service) => service,
-            Err(error) => return ServiceResponse::error(error),
-        };
-        let active = match service.active_build(self.context(), binding.source_root()) {
-            Ok(active) => active,
-            Err(error) => return ServiceResponse::error(error),
-        };
-        if let Err(error) = deadline.remaining_cancellable(cancellation) {
-            return ServiceResponse::error(error);
-        }
-        let changed = self.rlm_invalidated().swap(false, Ordering::AcqRel);
-        let observation = match service.observe_maintenance(
-            self.context(),
-            binding.source_root(),
-            active,
-            changed,
-            self.rlm_maintenance_cancellation(),
-        ) {
-            Ok(observation) => observation,
-            Err(error) => return ServiceResponse::error(error),
-        };
-        if observation.keep_invalidated {
-            self.rlm_invalidated().store(true, Ordering::Release);
-        }
-        service.readiness_response(&observation, false)
-    }
-
-    fn handle_rlm_ready(
-        &self,
-        _args: Value,
-        timeout_seconds: u64,
-        timeout_nanos: u32,
-        cancellation: &CancellationToken,
-    ) -> ServiceResponse {
-        self.handle_rlm_ready_using(
-            _args,
-            timeout_seconds,
-            timeout_nanos,
-            cancellation,
-            |lease, tracker| {
-                self.actor
-                    .runtime_projection()
-                    .0
-                    .rlm_backend
-                    .index(lease, tracker)
-            },
-        )
-    }
-
-    fn handle_rlm_mcp_using<I: RlmIndex>(
-        &self,
-        operation: WorkspaceRlmOperation,
-        timeout_seconds: u64,
-        timeout_nanos: u32,
-        cancellation: &CancellationToken,
-        make_index: impl FnOnce(ProviderSourceLease, Arc<dyn BackgroundTaskTracker>) -> I,
-    ) -> ServiceResponse {
-        if cancellation.is_cancelled() {
-            return ServiceResponse::error(cancelled_error("workspace RLM operation stopped"));
-        }
-        let timeout = match duration_from_timeout_parts(timeout_seconds, timeout_nanos) {
-            Ok(timeout) => timeout,
-            Err(error) => return ServiceResponse::error(error),
-        };
-        let deadline = ElapsedBudgetDeadline::new(timeout);
-        let _lane = match self.acquire_rlm_lane_before(cancellation, &deadline) {
-            Ok(lane) => lane,
-            Err(error) => return ServiceResponse::error(error),
-        };
-        if let Err(error) = deadline.remaining_cancellable(cancellation) {
-            return ServiceResponse::error(error);
-        }
-        let binding = match self.provider_binding() {
-            Ok(binding) => binding,
-            Err(error) => {
-                let stale_session = self
-                    .rlm()
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .take();
-                if let Some(stale_session) = stale_session {
-                    self.retire_session(stale_session);
-                }
-                return ServiceResponse::error(error);
-            }
-        };
-        let mut rlm = self.rlm().lock().unwrap_or_else(|error| error.into_inner());
-        let mut stale_session = None;
-        let service = match self
-            .actor
-            .provider_source_lease(&binding)
-            .map(|lease| make_index(lease, self.rlm_maintenance_tasks().clone()))
-        {
-            Ok(service) => service,
-            Err(error) => return ServiceResponse::error(error),
-        };
-        let active = match service.active_build(self.context(), binding.source_root()) {
-            Ok(active) => active,
-            Err(error) => return ServiceResponse::error(error),
-        };
-        if let Err(error) = deadline.remaining_cancellable(cancellation) {
-            return ServiceResponse::error(error);
-        }
-        let changed = self.rlm_invalidated().swap(false, Ordering::AcqRel);
-        let observation = match service.observe_maintenance(
-            self.context(),
-            binding.source_root(),
-            active,
-            changed,
-            self.rlm_maintenance_cancellation(),
-        ) {
-            Ok(observation) => observation,
-            Err(error) => return ServiceResponse::error(error),
-        };
-        if observation.keep_invalidated {
-            self.rlm_invalidated().store(true, Ordering::Release);
-        }
-        let Some(active) = observation.active.as_ref() else {
-            return service.readiness_response(&observation, true);
-        };
-        if rlm.as_mut().is_some_and(|session| {
-            session.build_id() != active.build_id() || !session.is_reusable()
-        }) {
-            stale_session = rlm.take();
-        }
-        if let Some(stale_session) = stale_session {
-            drop(rlm);
-            self.retire_session(stale_session);
-            rlm = self.rlm().lock().unwrap_or_else(|error| error.into_inner());
-        }
-        let result = self.actor.read(&binding, |source_root| {
-            deadline.remaining_cancellable(cancellation)?;
-            if rlm.is_none() {
-                *rlm = Some((self.rlm_starter())(
-                    self.context(),
-                    source_root,
-                    active.directory(),
-                    active.build_id(),
-                    cancellation,
-                )?);
-            }
-            let remaining = deadline.remaining_cancellable(cancellation)?;
-            rlm.as_mut()
-                .expect("RLM session must exist after start")
-                .execute(&operation, remaining, cancellation)
-        });
-        match result {
-            Ok(output) => {
-                if let Err(error) = self.validate_provider_binding(&binding) {
-                    let stale_session = rlm.take();
-                    drop(rlm);
-                    if let Some(stale_session) = stale_session {
-                        self.retire_session(stale_session);
-                    }
-                    return ServiceResponse::error(error);
-                }
-                ServiceResponse {
-                    ok: true,
-                    result_text: Some(output.result_text),
-                    stderr: Some(output.stderr),
-                    index_freshness: Some("unknown".to_string()),
-                    index_build_id: Some(active.build_id().to_string()),
-                    index_maintenance: observation.maintenance,
-                    warnings: observation.warnings,
-                    ..ServiceResponse::default()
-                }
-            }
-            Err(error) => {
-                let root_changed = self.validate_provider_binding(&binding).is_err();
-                let stale_session =
-                    if root_changed || rlm.as_mut().is_some_and(|session| !session.is_reusable()) {
-                        rlm.take()
-                    } else {
-                        None
-                    };
-                drop(rlm);
-                if let Some(stale_session) = stale_session {
-                    self.retire_session(stale_session);
-                }
-                ServiceResponse::error(error)
-            }
-        }
-    }
-
-    fn handle_rlm_mcp(
-        &self,
-        operation: WorkspaceRlmOperation,
-        timeout_seconds: u64,
-        timeout_nanos: u32,
-        cancellation: &CancellationToken,
-    ) -> ServiceResponse {
-        self.handle_rlm_mcp_using(
-            operation,
-            timeout_seconds,
-            timeout_nanos,
-            cancellation,
-            |lease, tracker| {
-                self.actor
-                    .runtime_projection()
-                    .0
-                    .rlm_backend
-                    .index(lease, tracker)
-            },
-        )
-    }
-}
+impl<B: BslBackend> WorkspaceServices<B> {}
 
 #[cfg(any(test, feature = "test-support"))]
-impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
+impl<B: BslBackend> WorkspaceServices<B> {
     pub fn test_set_analyzer_starter(&mut self, starter: Arc<BslSessionStarter>) {
         self.runtime_mut_for_test().analyzer_starter = starter;
-    }
-    pub fn test_set_rlm_starter(&mut self, starter: Arc<RlmSessionStarter<R>>) {
-        self.runtime_mut_for_test().rlm_starter = starter;
     }
     pub fn test_set_bsl_session_deadline_hook(&self, hook: Option<Arc<BslSessionDeadlineHook>>) {
         *self
@@ -4667,30 +4220,10 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
             .lock()
             .unwrap() = hook;
     }
-    pub fn test_handle_rlm_ready_using<I: RlmIndex>(
-        &self,
-        args: Value,
-        seconds: u64,
-        nanos: u32,
-        cancel: &CancellationToken,
-        index: impl FnOnce(ProviderSourceLease, Arc<dyn BackgroundTaskTracker>) -> I,
-    ) -> ServiceResponse {
-        self.handle_rlm_ready_using(args, seconds, nanos, cancel, index)
-    }
-    pub fn test_handle_rlm_mcp_using<I: RlmIndex>(
-        &self,
-        operation: WorkspaceRlmOperation,
-        seconds: u64,
-        nanos: u32,
-        cancel: &CancellationToken,
-        index: impl FnOnce(ProviderSourceLease, Arc<dyn BackgroundTaskTracker>) -> I,
-    ) -> ServiceResponse {
-        self.handle_rlm_mcp_using(operation, seconds, nanos, cancel, index)
-    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
+impl<B: BslBackend> WorkspaceServices<B> {
     pub fn test_workspace_identity(&self) -> &WorkspaceIdentity {
         self.workspace_identity()
     }
@@ -4712,29 +4245,11 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
     pub fn test_analyzer_starter(&self) -> &Arc<BslSessionStarter> {
         self.analyzer_starter()
     }
-    pub fn test_rlm_lane(&self) -> &AnalyzerLane {
-        self.rlm_lane()
-    }
-    pub fn test_rlm(&self) -> &Mutex<Option<<R as RlmBackend>::Session>> {
-        self.rlm()
-    }
-    pub fn test_rlm_starter(&self) -> &Arc<RlmSessionStarter<R>> {
-        self.rlm_starter()
-    }
-    pub fn test_rlm_maintenance_cancellation(&self) -> &CancellationToken {
-        self.rlm_maintenance_cancellation()
-    }
-    pub fn test_rlm_maintenance_tasks(&self) -> &Arc<SessionTeardownLifecycle> {
-        self.rlm_maintenance_tasks()
-    }
     pub fn test_session_teardowns(&self) -> &SessionTeardownLifecycle {
         self.session_teardowns()
     }
     pub fn test_analyzer_invalidated(&self) -> &AtomicBool {
         self.analyzer_invalidated()
-    }
-    pub fn test_rlm_invalidated(&self) -> &AtomicBool {
-        self.rlm_invalidated()
     }
     pub fn test_operation_ids(&self) -> Vec<String> {
         self.operations().lock().unwrap().keys().cloned().collect()
@@ -4785,7 +4300,7 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
     pub fn test_register_operation(
         self: &Arc<Self>,
         operation_id: String,
-    ) -> Result<(CancellationToken, OperationGuard<B, R>), String> {
+    ) -> Result<(CancellationToken, OperationGuard<B>), String> {
         self.register_operation(operation_id)
     }
     pub fn test_cancel_operation(&self, operation_id: &str) -> ServiceResponse {
@@ -4805,12 +4320,6 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
         cancellation: &CancellationToken,
     ) -> Result<AnalyzerLanePermit<'_>, String> {
         self.acquire_analyzer_lane(cancellation)
-    }
-    pub fn test_acquire_rlm_lane(
-        &self,
-        cancellation: &CancellationToken,
-    ) -> Result<AnalyzerLanePermit<'_>, String> {
-        self.acquire_rlm_lane(cancellation)
     }
     pub fn test_handle_bsl_mcp(
         &self,
@@ -4854,29 +4363,10 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
-    pub fn test_handle_rlm_ready(
-        &self,
-        args: Value,
-        seconds: u64,
-        nanos: u32,
-        cancel: &CancellationToken,
-    ) -> ServiceResponse {
-        self.handle_rlm_ready(args, seconds, nanos, cancel)
-    }
-    pub fn test_handle_rlm_mcp(
-        &self,
-        operation: WorkspaceRlmOperation,
-        seconds: u64,
-        nanos: u32,
-        cancel: &CancellationToken,
-    ) -> ServiceResponse {
-        self.handle_rlm_mcp(operation, seconds, nanos, cancel)
-    }
-}
+impl<B: BslBackend> WorkspaceServices<B> {}
 
 #[cfg(any(test, feature = "test-support"))]
-impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
+impl<B: BslBackend> WorkspaceServices<B> {
     pub fn test_assert_actor_owned(&self) {
         fn actor_owned<R>(_: &unica_workspace::actor::WorkspaceActor<R>) {}
         actor_owned(&self.actor);
@@ -4890,5 +4380,32 @@ impl WorkspaceServiceCallDeadline {
             budget,
             caller: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod retired_index_tests {
+    use super::remove_retired_index_state;
+
+    #[test]
+    fn only_directories_of_the_retired_index_are_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let retired = root.path().join(format!("rlm-{}", "a".repeat(64)));
+        std::fs::create_dir_all(retired.join("rlm-bsl/index-v17/builds/0")).unwrap();
+        let foreign = [
+            root.path().join("rlm-notes"),
+            root.path().join(format!("bsl-{}", "a".repeat(64))),
+        ];
+        for directory in &foreign {
+            std::fs::create_dir(directory).unwrap();
+        }
+        let file = root.path().join(format!("rlm-{}", "b".repeat(64)));
+        std::fs::write(&file, b"not a directory").unwrap();
+
+        remove_retired_index_state(&[root.path().to_path_buf(), root.path().join("absent")]);
+
+        assert!(!retired.exists());
+        assert!(foreign.iter().all(|directory| directory.exists()));
+        assert!(file.exists());
     }
 }

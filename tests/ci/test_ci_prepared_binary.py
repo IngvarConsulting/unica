@@ -175,7 +175,7 @@ class PreparedBinaryTests(unittest.TestCase):
                 files = [Path(p) for p in held["files"]]
                 self.assertEqual(
                     {p.name for p in files},
-                    {"bsl-analyzer.py", "rlm-bsl-index.py", "rlm-bsl-mcp.py", "v8-runner.py"},
+                    {"bsl-analyzer.py", "v8-runner.py"},
                 )
                 self.assertTrue(held["relative"])
                 self.assertTrue(held["executable"])
