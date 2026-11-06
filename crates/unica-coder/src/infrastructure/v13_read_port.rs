@@ -1,6 +1,5 @@
-mod job_schedule;
-mod role;
-mod xdto;
+include!(concat!(env!("OUT_DIR"), "/v13_read_port_modules.rs"));
+
 use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
 use unica_execution_contract::view_error::ViewError;
 use unica_metadata::configuration::{CfHomePageData, CfInterfaceData};
