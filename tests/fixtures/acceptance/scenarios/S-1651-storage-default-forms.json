@@ -1,0 +1,1502 @@
+{
+  "id": "S-1651-storage-default-forms",
+  "issue": 1651,
+  "area": "Хранилища настроек",
+  "task": "Обнаружить только form.set владельца; независимо назначить и заменить четыре собственные формы, прочитать XML-значения, проверить preview/token, no-op, очистку и сохранность ресурсов.",
+  "workspace": "tests/fixtures/acceptance/workspace-storage-defaults",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SettingsStorage.Store"
+        }
+      ],
+      "captures": {
+        "owner": {
+          "pointer": "/data/items/0/at"
+        },
+        "configBefore": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "formBefore": {
+          "file": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256"
+        },
+        "bodyBefore": {
+          "file": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256"
+        },
+        "moduleBefore": {
+          "file": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "form.add"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "object.create"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "object.remove"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "noneMatches": {
+            "op": "props.set"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Store.Can.form.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": []
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Store.Form"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SettingsStorage.Store.Form.A"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:SettingsStorage.Store.Form.B"
+        }
+      ],
+      "captures": {
+        "A": {
+          "pointer": "/data/items/0/at"
+        },
+        "B": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before0": {
+          "file": "src/SettingsStorages/Store.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultSaveForm": "$capture.A"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token0": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultSaveForm",
+          "eq": [
+            "SettingsStorage.Store.Form.A"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultSaveForm",
+          "eq": "SettingsStorage.Store.Form.A"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before1": {
+          "file": "src/SettingsStorages/Store.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultLoadForm": "$capture.A"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token1": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultLoadForm",
+          "eq": [
+            "SettingsStorage.Store.Form.A"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultLoadForm",
+          "eq": "SettingsStorage.Store.Form.A"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before2": {
+          "file": "src/SettingsStorages/Store.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliarySaveForm": "$capture.A"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token2": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}AuxiliarySaveForm",
+          "eq": [
+            "SettingsStorage.Store.Form.A"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliarySaveForm",
+          "eq": "SettingsStorage.Store.Form.A"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before3": {
+          "file": "src/SettingsStorages/Store.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryLoadForm": "$capture.A"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token3": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.before3"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token3"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}AuxiliaryLoadForm",
+          "eq": [
+            "SettingsStorage.Store.Form.A"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryLoadForm",
+          "eq": "SettingsStorage.Store.Form.A"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before4": {
+          "file": "src/SettingsStorages/Store.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultSaveForm": "$capture.B"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token4": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.before4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token4"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultSaveForm",
+          "eq": [
+            "SettingsStorage.Store.Form.B"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultSaveForm",
+          "eq": "SettingsStorage.Store.Form.B"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before5": {
+          "file": "src/SettingsStorages/Store.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultLoadForm": "$capture.B"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token5": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.before5"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token5"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}DefaultLoadForm",
+          "eq": [
+            "SettingsStorage.Store.Form.B"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultLoadForm",
+          "eq": "SettingsStorage.Store.Form.B"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before6": {
+          "file": "src/SettingsStorages/Store.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliarySaveForm": "$capture.B"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token6": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.before6"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token6"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}AuxiliarySaveForm",
+          "eq": [
+            "SettingsStorage.Store.Form.B"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliarySaveForm",
+          "eq": "SettingsStorage.Store.Form.B"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "before7": {
+          "file": "src/SettingsStorages/Store.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "auxiliaryLoadForm": "$capture.B"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token7": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.before7"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token7"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}AuxiliaryLoadForm",
+          "eq": [
+            "SettingsStorage.Store.Form.B"
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/AuxiliaryLoadForm",
+          "eq": "SettingsStorage.Store.Form.B"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "noopBefore": {
+          "file": "src/SettingsStorages/Store.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultSaveForm": "B"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "noopToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.noopToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.noopBefore"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultSaveForm": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "clearToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.clearToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A.xml",
+          "kind": "sha256",
+          "eq": "$capture.formBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "$capture.bodyBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/DefaultSaveForm",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/DefaultLoadForm",
+          "eq": "SettingsStorage.Store.Form.B"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [],
+      "captures": {
+        "negativeBefore": {
+          "file": "src/SettingsStorages/Store.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultSaveForm": "other:SettingsStorage.Store.Form.A"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: a storage form must belong to the same source set as its owner",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.negativeBefore"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultSaveForm": "main:CommonForm.A"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: choose an existing form of this SettingsStorage owner",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.negativeBefore"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultForm": "A"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: SettingsStorage accepts defaultSaveForm, defaultLoadForm, auxiliarySaveForm and auxiliaryLoadForm",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.negativeBefore"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "form.set",
+            "args": {
+              "values": {
+                "defaultLoadForm": "A",
+                "defaultSaveForm": "Absent"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: the selected form is not registered by this SettingsStorage",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/SettingsStorages/Store.xml",
+          "kind": "sha256",
+          "eq": "$capture.negativeBefore"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.configBefore"
+        },
+        {
+          "path": "src/SettingsStorages/Store/Forms/A/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.moduleBefore"
+        }
+      ]
+    }
+  ]
+}

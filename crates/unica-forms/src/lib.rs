@@ -319,4 +319,6 @@ pub mod facts;
 
 pub mod event_targets;
 
+pub mod storage_defaults;
+
 pub mod default_forms;

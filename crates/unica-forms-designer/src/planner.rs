@@ -843,6 +843,39 @@ pub fn parse_form_operation(
                 .get("values")
                 .and_then(Value::as_object)
                 .ok_or_else(|| bad(op_index, "values", "`values` must be an object"))?;
+            if target.owner.segments().next() == Some("SettingsStorage") {
+                let mut assignments = Vec::new();
+                for (key, value) in values {
+                    let slot=unica_forms::storage_defaults::StorageFormSlot::from_key(key).ok_or_else(||bad(op_index,&format!("values.{key}"),"SettingsStorage accepts defaultSaveForm, defaultLoadForm, auxiliarySaveForm and auxiliaryLoadForm"))?;
+                    let raw = value.as_str().ok_or_else(|| {
+                        bad(
+                            op_index,
+                            &format!("values.{key}"),
+                            "the form slot takes a form name or logical address",
+                        )
+                    })?;
+                    assignments.push(
+                        unica_forms::storage_defaults::StorageFormAssignment::parse(
+                            slot,
+                            raw,
+                            &target.owner,
+                            source_set_name,
+                        )
+                        .map_err(|message| bad(op_index, &format!("values.{key}"), message))?,
+                    );
+                }
+                if assignments.is_empty() {
+                    return Err(bad(
+                        op_index,
+                        "values",
+                        "form.set needs at least one form slot",
+                    ));
+                }
+                return Ok(FormPlan::StorageFormSet {
+                    owner: target.owner,
+                    assignments,
+                });
+            }
             let mut defaults = Vec::new();
             let owner_kind = target.owner.segments().next();
             let kind_slots = owner_kind.and_then(unica_forms::contracts::form_slots_of);
@@ -1807,6 +1840,10 @@ pub fn stage_form_edit(
 }
 #[derive(Debug, Clone)]
 pub enum FormPlan {
+    StorageFormSet {
+        owner: MetadataAddress,
+        assignments: Vec<unica_forms::storage_defaults::StorageFormAssignment>,
+    },
     /// `form.add` on the owner: managed forms from the platform shapes.
     FormAdd {
         owner: MetadataAddress,
@@ -1839,6 +1876,14 @@ pub fn stage_form_plan(
     reader: &dyn unica_source_contract::discovery::ProjectDiscoveryRead,
 ) -> Result<(), ApplyPlanError> {
     match plan {
+        FormPlan::StorageFormSet { owner, assignments } => crate::storage_defaults::stage(
+            staged,
+            authority,
+            owner,
+            assignments,
+            op_index,
+            provisional,
+        )?,
         FormPlan::FormAdd { owner, forms } => {
             stage_form_add(staged, authority, owner, forms, op_index, provisional)?;
         }

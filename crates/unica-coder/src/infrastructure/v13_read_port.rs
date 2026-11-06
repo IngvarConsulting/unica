@@ -1320,6 +1320,45 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "SettingsStorage" {
+            let name = target.segments().nth(1).unwrap_or_default();
+            match unica_forms_designer::storage_defaults::read(&descriptor, name) {
+                Ok(facts) => {
+                    let mut properties = payload["properties"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    properties.extend(
+                        facts
+                            .properties
+                            .into_iter()
+                            .map(|property| json!({"key":property.name,"value":property.value})),
+                    );
+                    payload["properties"] = json!(properties);
+                    if !facts.unreadable.is_empty() {
+                        let mut unreadable = payload["unreadable"]
+                            .as_array()
+                            .cloned()
+                            .unwrap_or_default();
+                        unreadable.extend(
+                            facts
+                                .unreadable
+                                .into_iter()
+                                .map(|(field, message)| json!({"field":field,"message":message})),
+                        );
+                        payload["unreadable"] = json!(unreadable);
+                    }
+                }
+                Err(message) => {
+                    let mut unreadable = payload["unreadable"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    unreadable.push(json!({"field":"properties","message":message}));
+                    payload["unreadable"] = json!(unreadable);
+                }
+            }
+        }
         Ok(payload)
     }
 

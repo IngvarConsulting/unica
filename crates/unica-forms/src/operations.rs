@@ -49,7 +49,7 @@ macro_rules! form_operations {
 
 form_operations!(
     Add => ("form.add", MetadataForms, Items),
-    Set => ("form.set", MetadataForms, Values),
+    Set => ("form.set", FormDefaults, Values),
     Remove => ("form.remove", Form, Target),
     ItemAdd => ("item.add", FormItemContainer, Items),
     ItemRemove => ("item.remove", FormItem, Target),
@@ -228,7 +228,7 @@ mod tests {
             (
                 FormOperation::Set,
                 "form.set",
-                OperationApplicability::MetadataForms,
+                OperationApplicability::FormDefaults,
                 OperationSkeleton::Values,
             ),
             (

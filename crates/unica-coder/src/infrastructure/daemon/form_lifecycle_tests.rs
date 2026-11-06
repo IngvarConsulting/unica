@@ -1,3 +1,6 @@
+#[path = "form_lifecycle_tests/storage_defaults.rs"]
+mod storage_defaults;
+
 #[path = "form_lifecycle_tests/common_defaults.rs"]
 mod common_defaults;
 

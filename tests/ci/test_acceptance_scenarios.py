@@ -862,7 +862,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     ]
     FORM_CONTEXT = [
         ("Add", "form.add", "MetadataForms", "Items"),
-        ("Set", "form.set", "MetadataForms", "Values"),
+        ("Set", "form.set", "FormDefaults", "Values"),
         ("Remove", "form.remove", "Form", "Target"),
         ("ItemAdd", "item.add", "FormItemContainer", "Items"),
         ("ItemRemove", "item.remove", "FormItem", "Target"),
@@ -1418,7 +1418,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("object.create", "Metadata", "Configuration", "Values"),
             ("probe.add", "Probe", "Subsystem", "Items"),
             ("form.add", "Form", "MetadataForms", "Items"),
-            ("form.set", "Form", "MetadataForms", "Values"),
+            ("form.set", "Form", "FormDefaults", "Values"),
             ("form.remove", "Form", "Form", "Target"),
             ("attribute.add", "Form", "Form", "Items"),
             ("column.add", "Form", "FormAttribute", "Items"),
