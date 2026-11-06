@@ -72,7 +72,8 @@ impl HttpDownloader {
         observer: &dyn DownloadObserver,
     ) -> Result<()> {
         if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)
+                .map_err(|error| disk_failure(parent, "create runtime asset directory", error))?;
         }
         let received = fs::metadata(destination)
             .map(|meta| meta.len())
@@ -100,10 +101,11 @@ impl HttpDownloader {
         // значит склеить мусор, поэтому продолжаем только после `206`.
         let resumed = response.status() == 206;
         let mut output = if resumed {
-            OpenOptions::new().append(true).open(destination)?
+            OpenOptions::new().append(true).open(destination)
         } else {
-            File::create(destination)?
-        };
+            File::create(destination)
+        }
+        .map_err(|error| disk_failure(destination, "open runtime asset", error))?;
         let start = if resumed { received } else { 0 };
         // Сервер обещает длину остатка; вызывающему нужен весь файл.
         let total = response
@@ -117,12 +119,9 @@ impl HttpDownloader {
         let mut moved = 0_u64;
         loop {
             let read = reader.read(&mut buffer).map_err(|error| {
-                BootstrapError::of(
-                    Failure::Network,
-                    format!(
-                        "failed to read runtime asset {url} after {} bytes: {error}",
-                        start + moved
-                    ),
+                download_failure(
+                    url,
+                    NetworkError::from_io(&error, format!("read after {} bytes", start + moved)),
                 )
             })?;
             if read == 0 {
@@ -140,15 +139,25 @@ impl HttpDownloader {
             moved += read as u64;
             observer.transferred(start + moved, total);
         }
-        output.sync_all()?;
+        output
+            .sync_all()
+            .map_err(|error| disk_failure(destination, "sync runtime asset", error))?;
         Ok(())
     }
+}
+
+fn disk_failure(path: &Path, action: &str, error: std::io::Error) -> BootstrapError {
+    BootstrapError::of(
+        Failure::Disk,
+        format!("failed to {action} {}: {error}", path.display()),
+    )
 }
 
 /// Перевести сетевой отказ в отказ загрузчика: класс задаёт код выхода,
 /// а совет сетевого отказа заменяет общий «повторите».
 fn download_failure(url: &str, error: NetworkError) -> BootstrapError {
     let failure = match error.failure() {
+        NetworkFailure::Timeout => Failure::Timeout,
         NetworkFailure::Configuration | NetworkFailure::InsecureRedirect => Failure::Configuration,
         NetworkFailure::UntrustedCertificate
         | NetworkFailure::RejectedCertificate
@@ -420,6 +429,25 @@ mod medium_tests {
             .expect("медленный канал доезжает");
 
         assert_eq!(fs::read(&destination).expect("whole file"), bytes);
+    }
+
+    #[test]
+    fn a_blocked_destination_directory_names_the_place_without_touching_it() {
+        let blocked = scratch("blocked-directory");
+        fs::write(&blocked, b"preserve this file").unwrap();
+        let destination = blocked.join("artifact.tar.gz");
+        let refusal = HttpDownloader::default()
+            .download(
+                "https://example.invalid/artifact.tar.gz",
+                &destination,
+                &SilentDownload,
+            )
+            .unwrap_err();
+        assert_eq!(refusal.failure(), Failure::Disk);
+        assert_eq!(refusal.exit_code(), 74);
+        assert!(refusal.to_string().contains(&blocked.display().to_string()));
+        assert_eq!(fs::read(&blocked).unwrap(), b"preserve this file");
+        fs::remove_dir_all(blocked.parent().unwrap()).unwrap();
     }
 
     #[test]

@@ -23,6 +23,7 @@ url.workspace = true
 windows-sys.workspace = true
 
 [dev-dependencies]
+unica-network = { path = "../unica-network", features = ["test-support"] }
 flate2.workspace = true
 sha2.workspace = true
 tar.workspace = true

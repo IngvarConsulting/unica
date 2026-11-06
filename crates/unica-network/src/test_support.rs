@@ -366,3 +366,137 @@ fn tunnel(client: TcpStream, seen: &Mutex<Vec<String>>) -> std::io::Result<()> {
     let _ = downstream.join();
     Ok(())
 }
+
+/// A bounded one-request TLS stand for consumers that must retain a release hostname.
+/// The certificate remains verified by the normal OS trust path; this only controls
+/// the peer and the bytes it sends, never the client's certificate verifier.
+pub struct TlsTransferStand {
+    address: std::net::SocketAddr,
+    requests: Arc<Mutex<Vec<String>>>,
+    active: Arc<Mutex<Option<TcpStream>>>,
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+pub enum TlsTransferReply {
+    Complete {
+        body: Vec<u8>,
+        content_type: String,
+    },
+    /// Flush a genuine response prefix, then wait for the fixture's shutdown event.
+    /// A client's network read wait must detect the missing remaining bytes.
+    StalledBody {
+        prefix: Vec<u8>,
+        total_bytes: usize,
+    },
+}
+
+impl TlsTransferStand {
+    pub fn start(root: &TestRoot, hostname: &str, reply: TlsTransferReply) -> Self {
+        let mut params = CertificateParams::new(vec![hostname.to_owned()]).expect("leaf params");
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        let key = KeyPair::generate().expect("leaf key");
+        let leaf = params
+            .signed_by(&key, &root.issuer)
+            .expect("leaf certificate");
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("protocol versions")
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![leaf.der().clone(), root.issuer.der().clone()],
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.serialize_der())),
+        )
+        .expect("server config");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind transfer stand");
+        let address = listener.local_addr().expect("transfer address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let active = Arc::new(Mutex::new(None));
+        let (stop, stopped) = std::sync::mpsc::channel();
+        let observed = Arc::clone(&requests);
+        let connected = Arc::clone(&active);
+        let worker = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept transfer");
+            *connected.lock().expect("active socket") = Some(stream.try_clone().expect("clone"));
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .expect("read wait");
+            stream
+                .set_write_timeout(Some(std::time::Duration::from_secs(10)))
+                .expect("write wait");
+            let Ok(connection) = rustls::ServerConnection::new(Arc::new(config)) else {
+                return;
+            };
+            let mut tls = rustls::StreamOwned::new(connection, stream);
+            let Ok(request) = read_head(&mut BufReader::new(&mut tls)) else {
+                return;
+            };
+            observed.lock().expect("request log").push(request);
+            let (length, prefix, complete) = match &reply {
+                TlsTransferReply::Complete { body, content_type } => {
+                    (body.len(), body.as_slice(), Some(content_type.as_str()))
+                }
+                TlsTransferReply::StalledBody {
+                    prefix,
+                    total_bytes,
+                } => {
+                    assert!(
+                        *total_bytes > prefix.len(),
+                        "a stalled body must have missing bytes"
+                    );
+                    (*total_bytes, prefix.as_slice(), None)
+                }
+            };
+            let content_type = complete.unwrap_or("application/gzip");
+            let head = format!("HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n");
+            if tls
+                .write_all(head.as_bytes())
+                .and_then(|()| tls.write_all(prefix))
+                .and_then(|()| tls.flush())
+                .is_err()
+            {
+                return;
+            }
+            if complete.is_some() {
+                tls.conn.send_close_notify();
+                let _ = tls.flush();
+            } else {
+                let _ = stopped.recv();
+            }
+        });
+        Self {
+            address,
+            requests,
+            active,
+            stop: Some(stop),
+            worker: Some(worker),
+        }
+    }
+
+    pub fn authority(&self) -> String {
+        self.address.to_string()
+    }
+
+    pub fn requests(&self) -> Vec<String> {
+        self.requests.lock().expect("request log").clone()
+    }
+}
+
+impl Drop for TlsTransferStand {
+    fn drop(&mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(stream) = self.active.lock().expect("active socket").as_ref() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+        // The consumer may have failed before connecting: release the single accept.
+        let _ = TcpStream::connect(self.address);
+        if let Some(worker) = self.worker.take() {
+            worker.join().expect("transfer stand stops");
+        }
+    }
+}

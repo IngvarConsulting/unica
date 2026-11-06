@@ -10,7 +10,7 @@ use std::fmt;
 pub enum Failure {
     /// Канал не отдал байты: соединение, имя, обрыв.
     Network,
-    /// Байты шли, но не кончились в отведённое время.
+    /// Истекло ограниченное ожидание соединения или следующей порции данных.
     Timeout,
     /// Диск: нет места, нет прав, нет каталога.
     Disk,
@@ -52,7 +52,7 @@ impl Failure {
                 "run again — what already arrived is kept and the download resumes"
             }
             Self::Timeout => {
-                "run again on a faster channel — what already arrived is kept and the download resumes"
+                "check the connection and proxy for a stalled response, then run again — what already arrived is kept and the download resumes"
             }
             Self::Disk => "free space in the runtime cache, or point UNICA_ARTIFACT_CACHE elsewhere",
             Self::Checksum => {
@@ -97,6 +97,12 @@ impl BootstrapError {
     /// Заменить общий совет класса отказа своим.
     pub fn with_cure(mut self, cure: impl Into<String>) -> Self {
         self.cure = Some(cure.into());
+        self
+    }
+
+    /// Владелец операции добавляет место, сохраняя класс и способ восстановления.
+    pub fn with_context(mut self, context: impl fmt::Display) -> Self {
+        self.message = format!("{context}: {}", self.message);
         self
     }
 
@@ -196,6 +202,22 @@ mod tests {
         let error: BootstrapError = std::io::Error::other("no space left").into();
 
         assert_eq!(error.failure(), Failure::Disk);
+    }
+
+    #[test]
+    fn adding_operation_context_preserves_the_specific_network_cure_and_class() {
+        let error = BootstrapError::of(Failure::Network, "certificate rejected")
+            .with_network(unica_network::NetworkFailure::UntrustedCertificate)
+            .with_cure("install the gateway CA")
+            .with_context("install runtime in /controlled/cache");
+        assert_eq!(error.exit_code(), 69);
+        assert_eq!(
+            error.network_failure(),
+            Some(unica_network::NetworkFailure::UntrustedCertificate)
+        );
+        assert!(error.diagnosis().contains("/controlled/cache"));
+        assert!(error.diagnosis().contains("certificate rejected"));
+        assert!(error.diagnosis().contains("cure: install the gateway CA"));
     }
 
     #[test]

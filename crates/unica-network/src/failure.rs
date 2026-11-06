@@ -21,6 +21,8 @@ pub enum NetworkFailure {
     InsecureRedirect,
     /// Сервер ответил кодом `4xx`/`5xx`.
     Status(u16),
+    /// Истекло ограниченное ожидание соединения или следующей порции данных.
+    Timeout,
     /// Всё прочее на пути: имя, соединение, обрыв, отказ прокси, редирект.
     Transport,
 }
@@ -74,6 +76,11 @@ impl NetworkError {
         }
     }
 
+    /// Ошибка чтения ответа использует ту же классификацию, что и запрос.
+    pub fn from_io(error: &std::io::Error, context: impl fmt::Display) -> Self {
+        Self::new(io_failure(error), format!("{context}: {error}"))
+    }
+
     /// Отказ из-за переменной прокси.
     pub(crate) fn proxy_setting(message: String) -> Self {
         Self::new(
@@ -117,10 +124,56 @@ impl NetworkError {
                     certificate_refusal(reason, &error.to_string(), host, route, trust)
                 }
                 _ => Self::new(
-                    NetworkFailure::Transport,
+                    io_failure(&error),
                     format!("request to {host} failed ({route}): {error}"),
                 ),
             },
+        }
+    }
+}
+
+fn io_failure(error: &(dyn StdError + 'static)) -> NetworkFailure {
+    let mut current = Some(error);
+    while let Some(item) = current {
+        if let Some(io) = item.downcast_ref::<std::io::Error>() {
+            if io.kind() == std::io::ErrorKind::TimedOut
+                || io
+                    .get_ref()
+                    .is_some_and(|inner| io_failure(inner) == NetworkFailure::Timeout)
+            {
+                return NetworkFailure::Timeout;
+            }
+        }
+        current = item.source();
+    }
+    NetworkFailure::Transport
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use std::io::{Error, ErrorKind};
+
+    #[test]
+    fn body_read_timeout_is_typed_even_under_an_io_wrapper() {
+        let timeout = Error::new(ErrorKind::TimedOut, "sentinel without a timeout phrase");
+        let wrapped = Error::other(timeout);
+        let refusal = NetworkError::from_io(&wrapped, "read response after 7 bytes");
+        assert_eq!(refusal.failure(), NetworkFailure::Timeout);
+        assert!(refusal.message().contains("after 7 bytes"));
+    }
+
+    #[test]
+    fn transport_text_and_unclassified_would_block_are_not_timeouts() {
+        for error in [
+            Error::other("timed out"),
+            Error::new(ErrorKind::WouldBlock, "would block"),
+            Error::new(ErrorKind::ConnectionReset, "timed out"),
+        ] {
+            assert_eq!(
+                NetworkError::from_io(&error, "read response").failure(),
+                NetworkFailure::Transport
+            );
         }
     }
 }

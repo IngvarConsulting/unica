@@ -2484,6 +2484,7 @@ dependencies = [
  "sha2",
  "tar",
  "unica-artifact-delivery",
+ "unica-network",
  "url",
  "uuid",
  "windows-sys 0.59.0",

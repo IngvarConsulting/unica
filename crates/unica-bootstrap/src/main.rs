@@ -90,8 +90,19 @@ fn prefetch_runtime(plugin_root: &Path) -> Result<i32> {
     }
     let host = HostTarget::current()?;
     let cache_root = runtime_cache_root()?;
-    let installer = RuntimeInstaller::new(cache_root, VERSION, Arc::new(HttpDownloader::default()));
-    let delivered = installer.prefetch(&manifest, host, &ReportProgress)?;
+    let installer = RuntimeInstaller::new(
+        cache_root.clone(),
+        VERSION,
+        Arc::new(HttpDownloader::default()),
+    );
+    let delivered = installer
+        .prefetch(&manifest, host, &ReportProgress)
+        .map_err(|error| {
+            error.with_context(format!(
+                "prefetch runtime in cache {}",
+                cache_root.display()
+            ))
+        })?;
     for item in &delivered {
         eprintln!(
             "unica-bootstrap: {} {} {} at {}",
@@ -165,8 +176,14 @@ fn install_runtime(plugin_root: &Path) -> Result<unica_artifact_delivery::Runtim
     let manifest = RuntimeManifest::load(&plugin_root.join("runtime-manifest.json"))?;
     let host = HostTarget::current()?;
     let cache_root = runtime_cache_root()?;
-    let installer = RuntimeInstaller::new(cache_root, VERSION, Arc::new(HttpDownloader::default()));
-    installer.ensure(&manifest, host)
+    let installer = RuntimeInstaller::new(
+        cache_root.clone(),
+        VERSION,
+        Arc::new(HttpDownloader::default()),
+    );
+    installer.ensure(&manifest, host).map_err(|error| {
+        error.with_context(format!("install runtime in cache {}", cache_root.display()))
+    })
 }
 
 fn install_and_verify_runtime(plugin_root: &Path, provider_state_root: &Path) -> Result<()> {
