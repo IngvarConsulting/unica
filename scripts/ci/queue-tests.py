@@ -28,6 +28,8 @@ ROOT = Path(__file__).resolve().parents[2]
 WHOLE_BUILD = re.compile(r"^(Cargo\.lock|Cargo\.toml|rust-toolchain[^/]*|\.cargo/.*)$")
 # Читаются тестами крейтов, поэтому идут по упоминанию. Манифест сценариев читает только Python.
 MENTIONED = re.compile(r"^(plugins/|tests/fixtures/(?!acceptance/scenario-manifest/)|scripts/(?!ci/))")
+# Крейт, который собирает путь к данным из частей, читает любой их каталог.
+ASSEMBLED_FIXTURES = '"tests/fixtures"'
 
 
 @dataclass(frozen=True)
@@ -79,7 +81,8 @@ def choose(paths: list[str], directories: dict[str, str], *, force_full: bool = 
         if crate:
             selected.add(crate)
         elif MENTIONED.match(path):
-            selected.update(crate for crate in (crate_of(item, directories) for item in find(needle(path))) if crate)
+            texts = [needle(path), *([ASSEMBLED_FIXTURES] if path.startswith("tests/") else [])]
+            selected.update(crate for text in texts for crate in (crate_of(item, directories) for item in find(text)) if crate)
     return Choice(False, tuple(sorted(selected)), f"medium: {sorted(selected) or 'нет'}")
 
 

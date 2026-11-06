@@ -90,7 +90,8 @@ class GuardTests(unittest.TestCase):
         return subprocess.run(["git", "grep", "-lF", text, "--", "crates/*.rs", "vendor/*.rs"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8").stdout.split()
 
     def test_rust_does_not_read_the_paths_that_run_only_small(self) -> None:
-        for text in ("scenario-manifest", "python-sizes.toml", "CODEOWNERS", "scripts/ci/", ".github/workflows", ".agents/", '"tests/ci/', '"tests/dev/', '"docs/', "../docs/"):
+        # Упоминания `scripts/ci/` в комментариях и текстах ошибок не читают файл: ищется строка пути.
+        for text in ("scenario-manifest", "python-sizes.toml", "CODEOWNERS", '"scripts/ci', ".github/workflows", ".agents/", '"tests/ci/', '"tests/dev/', '"docs/', "../docs/"):
             with self.subTest(text=text):
                 self.assertEqual(self.grep(text), [])
 
@@ -98,9 +99,17 @@ class GuardTests(unittest.TestCase):
         self.assertTrue(self.grep("plugins/unica"))
         self.assertTrue(self.grep("tests/fixtures/xdto"))
 
-    def test_rust_builds_fixture_paths_only_from_a_named_data_set(self) -> None:
-        # Склейка из одного `tests/fixtures` спрятала бы каталог от поиска.
-        self.assertEqual(self.grep('"tests/fixtures"'), [])
+    def test_a_crate_that_assembles_fixture_paths_is_selected_by_any_fixture(self) -> None:
+        # Склейка из одного `tests/fixtures` прячет каталог от поиска, поэтому её ищут отдельно.
+        self.assertTrue(self.grep(queue.ASSEMBLED_FIXTURES))
+        asked = []
+
+        def find(text):
+            asked.append(text)
+            return ["crates/coder/tests/x.rs"] if text == queue.ASSEMBLED_FIXTURES else []
+
+        self.assertEqual(queue.choose(["tests/fixtures/xdto/a.xml"], DIRS, find=find).packages, ("unica-coder",))
+        self.assertEqual(asked, ["tests/fixtures/xdto", queue.ASSEMBLED_FIXTURES])
 
 
 class WorkflowTests(unittest.TestCase):
