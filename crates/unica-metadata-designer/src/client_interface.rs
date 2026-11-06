@@ -7,6 +7,9 @@
 //! lowest stable identifiers the document does not use yet, so a repeated
 //! edit writes the same bytes.
 
+mod observation;
+pub use observation::parse_panel_layout_observation;
+
 use crate::configuration::{
     parse_cf_home_page_xml_strict, CfHomePageItem, CF_CAI_NS, CF_HP_NS, CF_XR_NS,
 };

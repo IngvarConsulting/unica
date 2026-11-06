@@ -1,0 +1,503 @@
+{
+  "id": "S-1624-configuration-panel-layout",
+  "issue": 1624,
+  "area": "Чтение конфигурации",
+  "task": "Обнаружить Configuration и прочитать полную явную панельную топологию от выданного владельца; сохранить отдельные instance/definition identity, группы/отсутствующие стороны и все16 order/13HomePage records без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-panel-layout",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/config/state",
+          "eq": "configured"
+        }
+      ],
+      "captures": {
+        "configuration": {
+          "pointer": "/next/0/args/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "$capture.configuration"
+        },
+        {
+          "pointer": "/data/props/panelLayout",
+          "eq": {
+            "state": "complete",
+            "areas": [
+              {
+                "side": "top",
+                "items": [
+                  {
+                    "kind": "group",
+                    "id": "00000000-0000-4000-8000-000000000004",
+                    "parent": null
+                  },
+                  {
+                    "kind": "group",
+                    "parent": 0
+                  },
+                  {
+                    "kind": "panel",
+                    "id": "00000000-0000-4000-8000-000000000001",
+                    "definitionId": "cbab57f2-a0f3-4f0a-89ea-4cb19570ab75",
+                    "resolved": true,
+                    "parent": 1
+                  },
+                  {
+                    "kind": "group",
+                    "parent": 0
+                  },
+                  {
+                    "kind": "panel",
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "definitionId": "13322b22-3960-4d68-93a6-fe2dd7f28ca3",
+                    "resolved": true,
+                    "parent": 3
+                  }
+                ]
+              },
+              {
+                "side": "left",
+                "items": [
+                  {
+                    "kind": "group",
+                    "id": "00000000-0000-4000-8000-000000000005",
+                    "parent": null
+                  },
+                  {
+                    "kind": "group",
+                    "parent": 0
+                  },
+                  {
+                    "kind": "panel",
+                    "id": "00000000-0000-4000-8000-000000000003",
+                    "definitionId": "c933ac92-92cd-459d-81cc-e0c8a83ced99",
+                    "resolved": true,
+                    "parent": 1
+                  }
+                ]
+              }
+            ],
+            "definitions": [
+              {
+                "id": "b553047f-c9aa-4157-978d-448ecad24248"
+              },
+              {
+                "id": "13322b22-3960-4d68-93a6-fe2dd7f28ca3"
+              },
+              {
+                "id": "c933ac92-92cd-459d-81cc-e0c8a83ced99"
+              },
+              {
+                "id": "cbab57f2-a0f3-4f0a-89ea-4cb19570ab75"
+              },
+              {
+                "id": "b2735bd3-d822-4430-ba59-c9e869693b24"
+              },
+              {
+                "id": "8e10648b-f52d-4ec2-b4dd-87de33778d95"
+              }
+            ],
+            "limits": []
+          }
+        },
+        {
+          "pointer": "/data/props/panels",
+          "eq": {
+            "top": [
+              [
+                "open",
+                "favorites"
+              ]
+            ],
+            "left": [
+              [
+                "history"
+              ]
+            ]
+          }
+        },
+        {
+          "pointer": "/data/props/interface",
+          "eq": {
+            "subsystemOrder": [
+              "main:Subsystem.Section00",
+              "main:Subsystem.Section01",
+              "main:Subsystem.Section02",
+              "main:Subsystem.Section03",
+              "main:Subsystem.Section04",
+              "main:Subsystem.Section05",
+              "main:Subsystem.Section06",
+              "main:Subsystem.Section07",
+              "main:Subsystem.Section08",
+              "main:Subsystem.Section09",
+              "main:Subsystem.Section10",
+              "main:Subsystem.Section11",
+              "main:Subsystem.Section12",
+              "main:Subsystem.Section13",
+              "main:Subsystem.Section14",
+              "main:Subsystem.Section15"
+            ]
+          }
+        },
+        {
+          "pointer": "/data/props/homePage",
+          "eq": {
+            "template": "TwoColumns",
+            "left": [
+              {
+                "form": "CommonForm.Start00",
+                "height": 10,
+                "common": true,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": true
+                  }
+                ]
+              },
+              {
+                "form": "CommonForm.Start01",
+                "height": 11,
+                "common": false,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": false
+                  }
+                ]
+              },
+              {
+                "form": "CommonForm.Start02",
+                "height": 12,
+                "common": true,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": false
+                  }
+                ]
+              },
+              {
+                "form": "CommonForm.Start03",
+                "height": 13,
+                "common": false,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": true
+                  }
+                ]
+              },
+              {
+                "form": "CommonForm.Start04",
+                "height": 14,
+                "common": true,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": false
+                  }
+                ]
+              },
+              {
+                "form": "CommonForm.Start05",
+                "height": 15,
+                "common": false,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": false
+                  }
+                ]
+              },
+              {
+                "form": "CommonForm.Start06",
+                "height": 16,
+                "common": true,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": true
+                  }
+                ]
+              }
+            ],
+            "right": [
+              {
+                "form": "CommonForm.Start07",
+                "height": 17,
+                "common": false,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": false
+                  }
+                ]
+              },
+              {
+                "form": "CommonForm.Start08",
+                "height": 18,
+                "common": true,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": false
+                  }
+                ]
+              },
+              {
+                "form": "CommonForm.Start09",
+                "height": 19,
+                "common": false,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": true
+                  }
+                ]
+              },
+              {
+                "form": "CommonForm.Start10",
+                "height": 20,
+                "common": true,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": false
+                  }
+                ]
+              },
+              {
+                "form": "CommonForm.Start11",
+                "height": 21,
+                "common": false,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": false
+                  }
+                ]
+              },
+              {
+                "form": "CommonForm.Start12",
+                "height": 22,
+                "common": true,
+                "roles": [
+                  {
+                    "role": "Role.LayoutReader",
+                    "visible": true
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "README.md",
+          "eq": "28942c9a7046b1389a4e00ca44827df75f7c609487bdc7e3c2ba68360d0bc17c"
+        },
+        {
+          "kind": "sha256",
+          "path": "expected-root-props.json",
+          "eq": "e0887ce1c9e7ac548dfae43d2dfcf2ceaf9b5f0aa33519b921e8f9add5f3abef"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start00.xml",
+          "eq": "417bbf9f474a8e5c38eaf1d6645cee14c69883d7b82bdc1547c9a083362b9b2a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start01.xml",
+          "eq": "e8af6d36f73d00dc9c7ef56c10b8cb76ca58ccbf3e27e131214ac32f43a900d4"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start02.xml",
+          "eq": "db805b79aa5511ce462bf95d1bacf09acfaf44cd5383125d23f4747f8174a76a"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start03.xml",
+          "eq": "ca38f2517018cdcf73cd90cefa70109830bcf1fca5c2d269dcfaee83db95f5a3"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start04.xml",
+          "eq": "823969da32cd961814872b6c3e6a1ca5937d69848c83adba8e84346bee08c833"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start05.xml",
+          "eq": "debcf0547e19ec6acb30eaccdf3a6a4ae8cc7af4f34b0f2639dfe857e4ee5498"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start06.xml",
+          "eq": "6505572e00b3c4197b6c45ecd3d241555aafb79fb259b09a8904ef01aebdbb1d"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start07.xml",
+          "eq": "f1813f87f8ee0f604ce09981d584bff3d1f5ecda6879b3e407c12e19d8662ca0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start08.xml",
+          "eq": "480c6436c1cfa8b18a4a159e1ccf44676dfaf6dffeeda971dd14ab46b0056a65"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start09.xml",
+          "eq": "cad0a3f115dee7c1ced1669f313cc27cb51ee91ea95c4f31a07677e014d60f27"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start10.xml",
+          "eq": "ed5050392aea58e58540a0c544b0b7fb1b7241031876062ae21853f59f6cfb16"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start11.xml",
+          "eq": "7abe8fbb2dce1fc513361bc7600a564284b6939c4c8c1c8c7105b32a542e902b"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonForms/Start12.xml",
+          "eq": "e474085a04f8bd08292447a070feb9870afcc2d2bd7cb87135477cb722adde7b"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "f196dab553011c24dd544a9df37bcaa709e14dbafccccb8c8f14146cf199a675"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "eq": "dfd3f9816cfa33feab49af66180fb70e1be671a28cbd1deff54cc33e11e2e4da"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/CommandInterface.xml",
+          "eq": "95af612d9e5765836411a04d5bceb6ad05d77016da2cfa0bea59cd60bb976e01"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/HomePageWorkArea.xml",
+          "eq": "e5ee6e24b51b29feb9b28c7aa8d040d799e51cb3d931634c33fdb6c1280d64aa"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section00.xml",
+          "eq": "f19cfbcd1bb191e9110fc0aaa8d2f3fa9a4d14f873c496db574091dfb2b03f3e"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section01.xml",
+          "eq": "360091fdc0bafc769600f88dfe9180c40560d5d3cebb5bcd526f19df106218a8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section02.xml",
+          "eq": "1eb56412baba5a1a75a44040aea770df102a3d678bff6cd969b7033f6d340536"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section03.xml",
+          "eq": "40e4b8517eb7b0bf411b6393930f7673c82a182516ab4b630dc851f66e59ba7d"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section04.xml",
+          "eq": "22a902e1a98504163f794ea53faf0c05fedb6c484fc08e6490de588773e6e462"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section05.xml",
+          "eq": "40d1f307a64a3d7c703ef10ed019a51c83bf2bcf0375fa894eefacb92f2a2ce7"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section06.xml",
+          "eq": "996080075f9bbb8f9ed92a389fb152a907313d738d13847f199c687301935050"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section07.xml",
+          "eq": "7fcc9a7fa25e7933c9e1580488227c803450baccf90c5b2abcb4c4e560ea40bf"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section08.xml",
+          "eq": "2d95c11a0f6ff6e3862b7ec74740b44091e78a3ca12ba8707b2b8042cdbd88d2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section09.xml",
+          "eq": "46203375c4c85c41a12dfd1c60181c6b2876851c98f2709523a69aa2266a35ab"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section10.xml",
+          "eq": "c4ff8468b3c94fe391e3c6665f38b0185b3f1e173c7005357efff7b0d74a3ed5"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section11.xml",
+          "eq": "5290411b07511791e830c7561c73bc571db0b990492208d897b834ebadda9dda"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section12.xml",
+          "eq": "96bca04715b3843fa8c4e28594d99d0c150165b1404d8cc23f688bf805bde70b"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section13.xml",
+          "eq": "d5c2efbdff61fb5214dca17b8753e4220337da0adaeb91ff2d3767994566dbea"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section14.xml",
+          "eq": "3f07c9018a244ba954f61528011d22c3ba77a3405df2e7e418a2d5ba12b78f9e"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Subsystems/Section15.xml",
+          "eq": "39bccf57e650c8012c0dc64e542191d16863ee3da58799446fc4171a27486957"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    }
+  ]
+}

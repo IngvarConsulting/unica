@@ -226,6 +226,7 @@ pub fn parse_cf_info_xml(
         home_page,
         interface,
         panels,
+        panel_layout: None,
     };
     Ok(ParsedCfInfo {
         data,

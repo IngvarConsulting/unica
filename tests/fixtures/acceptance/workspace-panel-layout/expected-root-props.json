@@ -1,0 +1,264 @@
+{
+  "panelLayout": {
+    "state": "complete",
+    "areas": [
+      {
+        "side": "top",
+        "items": [
+          {
+            "kind": "group",
+            "id": "00000000-0000-4000-8000-000000000004",
+            "parent": null
+          },
+          {
+            "kind": "group",
+            "parent": 0
+          },
+          {
+            "kind": "panel",
+            "id": "00000000-0000-4000-8000-000000000001",
+            "definitionId": "cbab57f2-a0f3-4f0a-89ea-4cb19570ab75",
+            "resolved": true,
+            "parent": 1
+          },
+          {
+            "kind": "group",
+            "parent": 0
+          },
+          {
+            "kind": "panel",
+            "id": "00000000-0000-4000-8000-000000000002",
+            "definitionId": "13322b22-3960-4d68-93a6-fe2dd7f28ca3",
+            "resolved": true,
+            "parent": 3
+          }
+        ]
+      },
+      {
+        "side": "left",
+        "items": [
+          {
+            "kind": "group",
+            "id": "00000000-0000-4000-8000-000000000005",
+            "parent": null
+          },
+          {
+            "kind": "group",
+            "parent": 0
+          },
+          {
+            "kind": "panel",
+            "id": "00000000-0000-4000-8000-000000000003",
+            "definitionId": "c933ac92-92cd-459d-81cc-e0c8a83ced99",
+            "resolved": true,
+            "parent": 1
+          }
+        ]
+      }
+    ],
+    "definitions": [
+      {
+        "id": "b553047f-c9aa-4157-978d-448ecad24248"
+      },
+      {
+        "id": "13322b22-3960-4d68-93a6-fe2dd7f28ca3"
+      },
+      {
+        "id": "c933ac92-92cd-459d-81cc-e0c8a83ced99"
+      },
+      {
+        "id": "cbab57f2-a0f3-4f0a-89ea-4cb19570ab75"
+      },
+      {
+        "id": "b2735bd3-d822-4430-ba59-c9e869693b24"
+      },
+      {
+        "id": "8e10648b-f52d-4ec2-b4dd-87de33778d95"
+      }
+    ],
+    "limits": []
+  },
+  "panels": {
+    "top": [
+      [
+        "open",
+        "favorites"
+      ]
+    ],
+    "left": [
+      [
+        "history"
+      ]
+    ]
+  },
+  "interface": {
+    "subsystemOrder": [
+      "main:Subsystem.Section00",
+      "main:Subsystem.Section01",
+      "main:Subsystem.Section02",
+      "main:Subsystem.Section03",
+      "main:Subsystem.Section04",
+      "main:Subsystem.Section05",
+      "main:Subsystem.Section06",
+      "main:Subsystem.Section07",
+      "main:Subsystem.Section08",
+      "main:Subsystem.Section09",
+      "main:Subsystem.Section10",
+      "main:Subsystem.Section11",
+      "main:Subsystem.Section12",
+      "main:Subsystem.Section13",
+      "main:Subsystem.Section14",
+      "main:Subsystem.Section15"
+    ]
+  },
+  "homePage": {
+    "template": "TwoColumns",
+    "left": [
+      {
+        "form": "CommonForm.Start00",
+        "height": 10,
+        "common": true,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": true
+          }
+        ]
+      },
+      {
+        "form": "CommonForm.Start01",
+        "height": 11,
+        "common": false,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": false
+          }
+        ]
+      },
+      {
+        "form": "CommonForm.Start02",
+        "height": 12,
+        "common": true,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": false
+          }
+        ]
+      },
+      {
+        "form": "CommonForm.Start03",
+        "height": 13,
+        "common": false,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": true
+          }
+        ]
+      },
+      {
+        "form": "CommonForm.Start04",
+        "height": 14,
+        "common": true,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": false
+          }
+        ]
+      },
+      {
+        "form": "CommonForm.Start05",
+        "height": 15,
+        "common": false,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": false
+          }
+        ]
+      },
+      {
+        "form": "CommonForm.Start06",
+        "height": 16,
+        "common": true,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": true
+          }
+        ]
+      }
+    ],
+    "right": [
+      {
+        "form": "CommonForm.Start07",
+        "height": 17,
+        "common": false,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": false
+          }
+        ]
+      },
+      {
+        "form": "CommonForm.Start08",
+        "height": 18,
+        "common": true,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": false
+          }
+        ]
+      },
+      {
+        "form": "CommonForm.Start09",
+        "height": 19,
+        "common": false,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": true
+          }
+        ]
+      },
+      {
+        "form": "CommonForm.Start10",
+        "height": 20,
+        "common": true,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": false
+          }
+        ]
+      },
+      {
+        "form": "CommonForm.Start11",
+        "height": 21,
+        "common": false,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": false
+          }
+        ]
+      },
+      {
+        "form": "CommonForm.Start12",
+        "height": 22,
+        "common": true,
+        "roles": [
+          {
+            "role": "Role.LayoutReader",
+            "visible": true
+          }
+        ]
+      }
+    ]
+  }
+}
