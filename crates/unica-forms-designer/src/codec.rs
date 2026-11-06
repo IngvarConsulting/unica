@@ -10347,6 +10347,22 @@ pub fn validate_form_purpose(object_type: &str, purpose: &str) -> Result<(), Str
 /// export writes after forms, else after the last entry. An owner without a
 /// known platform order keeps forms before its first template.
 pub fn register_form_in_object_text(text: &str, form_name: &str) -> String {
+    // The registration is written in the default-namespace spelling; a
+    // prefixed owner is edited in that form and gets its prefix back.
+    let Ok((normalized, form)) = unica_xml_format::prefix_form::PrefixForm::normalize(text) else {
+        return text.to_string();
+    };
+    if normalized.contains(&format!("<Form>{form_name}</Form>")) {
+        return text.to_string();
+    }
+    let updated = register_form_in_default_object_text(&normalized, form_name);
+    if updated == normalized {
+        return text.to_string();
+    }
+    form.restore(&updated).unwrap_or_else(|_| text.to_string())
+}
+
+fn register_form_in_default_object_text(text: &str, form_name: &str) -> String {
     let entry = format!("\t\t\t<Form>{form_name}</Form>\n");
     if let Some(offset) =
         unica_source_designer::registration::platform_child_object_insertion_offset(text, "Form")
