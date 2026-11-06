@@ -6,6 +6,7 @@ pub mod hooks;
 mod join_freshness;
 mod joining;
 pub mod ports;
+pub mod progress;
 pub mod response;
 mod retirement_facts;
 use crate::invocation::TASK_RECONCILIATION_BUDGET;
@@ -107,7 +108,7 @@ fn committed_decision_step_deadline(deadline: Instant) -> Instant {
         .map_or(deadline, |floor| deadline.max(floor))
 }
 
-const V5_TASK_POLL_INTERVAL_MS: u64 = 100;
+const V5_TASK_POLL_INTERVAL_MS: u64 = 1000;
 
 static NEXT_RETIREMENT_PROCESS_GENERATION: AtomicU64 = AtomicU64::new(1);
 
@@ -132,6 +133,7 @@ pub struct V5ReceiptRuntime<H: InvocationHost> {
     task_projection: V5TaskProjection,
     active_task_cancellations: Arc<V5ActiveTaskCancellations>,
     task_execution_threads: Mutex<Vec<thread::JoinHandle<()>>>,
+    live_progress: progress::LiveProgress,
     task_terminal_coordinator: Mutex<()>,
     external_store_fail_stop: AtomicBool,
     /// How many promoted attempts the owner handed to a worker are still
@@ -2715,6 +2717,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             task_projection,
             active_task_cancellations: Arc::new(V5ActiveTaskCancellations::default()),
             task_execution_threads: Mutex::new(Vec::new()),
+            live_progress: progress::LiveProgress::default(),
             task_terminal_coordinator: Mutex::new(()),
             external_store_fail_stop: AtomicBool::new(false),
             promoted_continuations: AtomicUsize::new(0),
@@ -4581,6 +4584,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                     &cancellation,
                     epoch_ms,
                     Some(reservation.key().invocation_id()),
+                    Some(task_record.task_id),
                 );
                 self.hooks
                     .event(V5ReceiptRuntimeEventKind::ResultSerialized, epoch_ms);
@@ -4883,7 +4887,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         cancellation: &CancellationToken,
         invocation_id: unica_execution_contract::invocation::InvocationId,
     ) -> ReceiptTerminalOutcome {
-        self.provider_outcome(prepared, cancellation, self.epoch_ms(), Some(invocation_id))
+        self.provider_outcome(
+            prepared,
+            cancellation,
+            self.epoch_ms(),
+            Some(invocation_id),
+            None,
+        )
     }
 
     /// The outcome of an attempt the process stopped on fail-stop.
@@ -4902,6 +4912,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         cancellation: &CancellationToken,
         epoch_ms: u64,
         invocation_id: Option<unica_execution_contract::invocation::InvocationId>,
+        task_id: Option<unica_execution_contract::invocation::TaskId>,
     ) -> ReceiptTerminalOutcome {
         if self.restart_required() {
             return Self::interrupted();
@@ -4912,7 +4923,11 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         if let Some(invocation_id) = invocation_id {
             self.hooks.callback_invocation_id(invocation_id);
         }
-        let result = prepared.execute(cancellation.clone());
+        let progress = self
+            .live_progress
+            .start(task_id, Arc::clone(&self.epoch_clock));
+        let result =
+            prepared.execute_with_progress(cancellation.clone(), progress.reporter.clone());
         let authority = cancellation.factual_outcome_authority();
         if cancellation.is_cancelled() && authority == FactualOutcomeAuthority::Cancellable {
             // A stop the process asked for on fail-stop is no cancel the
@@ -5405,8 +5420,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             // runs on this thread so the pause sees its exact outcome.
             self.hooks
                 .pause(V5PausePoint::BeforeTaskTerminalReceipt, deadline)?;
-            let outcome =
-                self.provider_outcome(prepared, &cancellation, epoch_ms, Some(invocation_id));
+            let outcome = self.provider_outcome(
+                prepared,
+                &cancellation,
+                epoch_ms,
+                Some(invocation_id),
+                Some(task_record.task_id),
+            );
             if self.hooks.crash_after_side_effect() {
                 return Err(ReceiptLedgerError::StoreUnavailable);
             }
@@ -5448,7 +5468,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         }
         // A direct attempt promoted to a Task runs to its terminal on this
         // continuation thread; the client already holds the Task reply.
-        let outcome = self.provider_outcome(prepared, &cancellation, epoch_ms, Some(invocation_id));
+        let outcome = self.provider_outcome(
+            prepared,
+            &cancellation,
+            epoch_ms,
+            Some(invocation_id),
+            Some(task_record.task_id),
+        );
         if self.hooks.crash_after_side_effect() {
             return Err(ReceiptLedgerError::StoreUnavailable);
         }
@@ -5483,8 +5509,13 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         let execution = thread::Builder::new()
             .name("unica-v5-task-execution".to_owned())
             .spawn(move || {
-                let outcome =
-                    runtime.provider_outcome(prepared, &cancellation, runtime.epoch_ms(), None);
+                let outcome = runtime.provider_outcome(
+                    prepared,
+                    &cancellation,
+                    runtime.epoch_ms(),
+                    None,
+                    Some(task_record.task_id),
+                );
                 let publication = runtime
                     .publish_task_execution_outcome(
                         &bound,
@@ -6224,7 +6255,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             let captured = self.joins.capture_reply(task_id);
             let context = captured.read();
             let leader = context.map_or(task_id, |read| read.leader);
-            let shared = match self.resolve_receipt_task(leader, deadline) {
+            let mut shared = match self.resolve_receipt_task(leader, deadline) {
                 Err(ReceiptLedgerError::ReceiptNotFound) => {
                     if let Some(read) = &context {
                         self.joins.forget_missing_context(read);
@@ -6233,6 +6264,9 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 }
                 other => other?,
             };
+            if let response::V5DaemonTaskSnapshot::Working { progress, .. } = &mut shared {
+                *progress = self.live_progress.snapshot(leader);
+            }
             if let Some(read) = &context {
                 let canonical = &read.canonical_holder;
                 if shared.task_id() != canonical.task_id
@@ -7177,6 +7211,7 @@ fn task_store_snapshot(record: &V5StoredInvocationRecord) -> response::V5DaemonT
             cancel_requested: common.8,
         },
         V5StoredTask::Working => response::V5DaemonTaskSnapshot::Working {
+            progress: None,
             task_id: common.0,
             invocation_id: common.1,
             receipt_key_digest: common.2,

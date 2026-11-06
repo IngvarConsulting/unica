@@ -414,7 +414,8 @@ pub struct RuntimeProcessTreeTestProbe {
 
 #[cfg(any(test, feature = "test-support"))]
 impl RuntimeProcessTreeTestProbe {
-    fn capture(process_id: u32) -> io::Result<Self> {
+    /// Retain the identity of a live fixture process before its owner cancels it.
+    pub fn capture(process_id: u32) -> io::Result<Self> {
         #[cfg(target_os = "macos")]
         {
             Ok(Self {

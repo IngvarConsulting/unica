@@ -113,6 +113,8 @@ pub enum V5DaemonTaskSnapshot {
         cancel_requested: bool,
     },
     Working {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        progress: Option<super::progress::TaskProgress>,
         task_id: TaskId,
         invocation_id: InvocationId,
         receipt_key_digest: ReceiptKeyDigest,
@@ -167,6 +169,13 @@ pub enum V5DaemonTaskSnapshot {
 }
 
 impl V5DaemonTaskSnapshot {
+    pub fn progress(&self) -> Option<&super::progress::TaskProgress> {
+        match self {
+            Self::Working { progress, .. } => progress.as_ref(),
+            _ => None,
+        }
+    }
+
     pub fn receipt_key_digest(&self) -> &ReceiptKeyDigest {
         match self {
             Self::Queued {

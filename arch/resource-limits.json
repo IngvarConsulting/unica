@@ -4248,16 +4248,16 @@
         "file": "crates/unica-execution/src/receipt_runtime.rs",
         "symbol": "V5_TASK_POLL_INTERVAL_MS"
       },
-      "expr": "100",
-      "value": 100,
+      "expr": "1000",
+      "value": 1000,
       "applied": [
         "crates/unica-execution/src/receipt_runtime.rs"
       ],
       "status": "unproven",
       "origin": "коммит 9ca99ba80 (feat(d0): expose begun known-long handoff)",
       "problem": null,
-      "onReach": "клиенту сообщается pollInterval 100 мс; сам предел ничего не обрывает",
-      "issue": null,
+      "onReach": "клиенту сообщается pollInterval 1000 мс; сам предел ничего не обрывает",
+      "issue": "#2327",
       "evidence": [],
       "decision": null,
       "review": null

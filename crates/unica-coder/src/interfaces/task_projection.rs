@@ -210,6 +210,21 @@ fn task_v5(snapshot: &V5DaemonTaskSnapshot) -> Result<Task, TaskProjectionError>
             "Cancellation was requested; check task status and result for the actual outcome",
         );
     }
+    if let Some(progress) = snapshot.progress() {
+        let phase = format!(
+            "{}; execution {} ms; current phase {} ms; last phase change at {} epoch ms",
+            progress.phase.description(),
+            progress.execution_elapsed_ms,
+            progress.phase_elapsed_ms,
+            progress.phase_started_at_epoch_ms
+        );
+        let message = if snapshot.cancel_requested() {
+            format!("Cancellation was requested; check task status and result for the actual outcome; {phase}")
+        } else {
+            phase
+        };
+        projected = projected.with_status_message(message);
+    }
     ensure_projection_bounded(&projected)?;
     Ok(projected)
 }
@@ -295,6 +310,7 @@ mod tests {
     fn v5_working() -> V5DaemonTaskSnapshot {
         let (task_id, invocation_id, receipt_key_digest) = v5_common();
         V5DaemonTaskSnapshot::Working {
+            progress: None,
             task_id,
             invocation_id,
             receipt_key_digest,
