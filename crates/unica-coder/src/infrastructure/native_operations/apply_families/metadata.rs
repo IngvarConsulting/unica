@@ -67,6 +67,10 @@ pub(crate) fn plan_metadata_batch_owned_for_test(
 
 #[cfg(test)]
 mod tests {
+    mod main_dcs_tests {
+        include!("metadata/main_dcs_tests.rs");
+    }
+
     mod language_code_tests {
         include!("metadata/language_code_tests.rs");
     }

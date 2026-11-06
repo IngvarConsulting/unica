@@ -1737,6 +1737,20 @@ pub fn apply_typed_properties(
                     value,
                 )
             }
+            (MetaPropertyKey::MainDataCompositionSchema, MetaPropertyValue::String(value)) => {
+                let value = value.trim();
+                if unica_xml_format::read::direct_text(property).trim() == value {
+                    continue;
+                }
+                if value.is_empty() {
+                    format!("{indent}{opening}/>")
+                } else {
+                    format!(
+                        "{indent}{opening}>{}</{qname}>",
+                        unica_xml_format::text::escape_xml(value)
+                    )
+                }
+            }
             (MetaPropertyKey::Comment, MetaPropertyValue::String(value)) if value.is_empty() => {
                 format!("{indent}{opening}/>")
             }

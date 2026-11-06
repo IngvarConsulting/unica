@@ -1173,6 +1173,9 @@
                     "LimitLevelCount": {
                       "type": "boolean"
                     },
+                    "MainDataCompositionSchema": {
+                      "type": "string"
+                    },
                     "MainFilterOnPeriod": {
                       "type": "boolean"
                     },
