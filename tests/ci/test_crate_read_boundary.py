@@ -129,7 +129,7 @@ class CrateReadBoundaryTests(unittest.TestCase):
 
     def test_a_test_module_named_fixtures_is_read_as_code(self) -> None:
         source = 'macro_rules! m { () => { concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/shared/", "a.xml") }; }\n'
-        self.assertEqual(self.targets(source, path="tests/fixtures/mod.rs"), ["tests/fixtures/shared/"])
+        self.assertEqual(self.targets(source, path="tests/fixtures/mod.rs"), ["tests/fixtures/shared"])
 
     def test_a_crate_fixture_of_the_same_name_is_its_own_file(self) -> None:
         directory = self.workspace.crate("sample", 'fn f() { let _ = root.join("tests/fixtures/own.txt"); }\n')
