@@ -311,9 +311,21 @@ impl LspDocuments {
     }
 }
 
-/// The path with symlinks resolved, or as given when it does not exist.
+/// The path with symlinks resolved. An absent file keeps its remaining plain
+/// components below its nearest existing ancestor, so it compares against a
+/// canonical source-set root in that root's own spelling. A path with no such
+/// ancestor or with a non-plain remainder stays as given and matches no root.
 fn canonical(path: &std::path::Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_owned())
+    path.ancestors()
+        .find_map(|ancestor| {
+            let resolved = ancestor.canonicalize().ok()?;
+            let remainder = path.strip_prefix(ancestor).ok()?;
+            remainder
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_)))
+                .then(|| resolved.join(remainder))
+        })
+        .unwrap_or_else(|| path.to_owned())
 }
 
 fn module_target(
