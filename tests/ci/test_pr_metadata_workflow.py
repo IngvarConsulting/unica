@@ -60,9 +60,10 @@ class WorkflowShapeTests(unittest.TestCase):
 
     def test_it_runs_on_every_metadata_change_and_in_the_queue_without_the_code_of_the_pr(self) -> None:
         on = self.metadata[True]
-        self.assertEqual(set(on), {"pull_request", "merge_group"})
+        # Файл берётся из main: PR не может поправить его и получить зелёную проверку.
+        self.assertEqual(set(on), {"pull_request_target", "merge_group"})
         self.assertEqual(
-            set(on["pull_request"]["types"]),
+            set(on["pull_request_target"]["types"]),
             {"opened", "reopened", "ready_for_review", "edited", "milestoned", "demilestoned", "assigned", "unassigned", "synchronize"},
         )
         self.assertEqual(self.metadata["permissions"], {"contents": "read", "pull-requests": "read", "issues": "read"})

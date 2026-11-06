@@ -2,11 +2,14 @@ name: PR metadata
 
 # Обязательная проверка: пропущенный условием `Unica CI` ruleset считает пройденным,
 # поэтому вливание без отметки владельца блокирует она. Правило допуска то же, что
-# у ворот `admission` в `ci.yml`: тест держит шаги равными. Код PR здесь не исполняется.
+# у ворот `admission` в `ci.yml`: тест держит шаги равными.
+# `pull_request_target` берёт этот файл из main: PR не может поправить его и получить
+# зелёную проверку. Поэтому здесь нет checkout, права только на чтение, а данные PR идут
+# через `env`. Запись очереди читает файл из своего дерева, это видно по CODEOWNERS.
 # Веха на issue значит «вычитано»: чужую снимает `issue-milestone-guard.yml`, поэтому
 # её автора не проверяем. Веху на PR без issue сторож не видит, её автор читается здесь.
 on:
-  pull_request:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] кода PR нет: ни checkout, ни запуска его файлов, права только на чтение
     types: [opened, reopened, ready_for_review, edited, milestoned, demilestoned, assigned, unassigned, synchronize]
   merge_group:
     types: [checks_requested]
