@@ -6338,7 +6338,10 @@ fn wait_task_terminal(
         ) {
             return snapshot;
         }
-        assert!(Instant::now() < until, "Task stayed open past {limit:?}");
+        assert!(
+            Instant::now() < until,
+            "Task stayed open past {limit:?}: {snapshot:?}"
+        );
     }
 }
 
