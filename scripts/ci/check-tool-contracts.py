@@ -29,15 +29,6 @@ TOOL_HELP_CHECKS = [
         ["mcp", "serve", "--help"],
         ["--profile", "--source-dir", "--mode", "stdio"],
     ),
-    ("rlm-bsl-index build", "rlm-bsl-index", ["index", "build", "--help"], ["build"]),
-    ("rlm-bsl-index update", "rlm-bsl-index", ["index", "update", "--help"], ["update"]),
-    ("rlm-bsl-index info", "rlm-bsl-index", ["index", "info", "--help"], ["info"]),
-    (
-        "rlm-bsl-mcp server",
-        "rlm-bsl-mcp",
-        ["--help"],
-        ["--transport", "stdio", "streamable-http"],
-    ),
     ("v8-runner version", "v8-runner", ["--version"], ["v8-runner"]),
     # На Windows справка называет программу `v8-runner.exe`: строка использования
     # сверяется по частям, а не целиком.
@@ -49,18 +40,10 @@ V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
 V8_RUNNER_LOCAL_CONFIG = "v8project.local.yaml"
 V8_RUNNER_BOUNDED_STDERR_MARKER = "bounded-client-stderr"
 V8_RUNNER_STUB_COMPILE_TIMEOUT_SECONDS = 60
-# Две фазы контракта rlm ограничены раздельно: одноразовый процесс индекса
-# (сборка, info) и MCP-сессия. Сужение срока одной фазы не должно отнимать
-# время у другой.
-RLM_INDEX_PROCESS_TIMEOUT_SECONDS = 120.0
-RLM_MCP_CONTRACT_TIMEOUT_SECONDS = 120.0
-RLM_PYTHON_UTF8_ENV = {
-    "PYTHONUTF8": "1",
-    "PYTHONIOENCODING": "utf-8:surrogateescape",
-}
 COMMAND_DIAGNOSTIC_LIMIT = 4_000
+MCP_READER_TIMEOUT_SECONDS = 120.0
 
-RLM_CONTRACT_CONFIGURATION_XML = """<?xml version="1.0" encoding="UTF-8"?>
+CONTRACT_CONFIGURATION_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses">
   <Configuration uuid="00000000-0000-0000-0000-000000000001">
     <Properties><Name>ContractMain</Name><NamePrefix/></Properties>
@@ -1021,7 +1004,7 @@ def check_v8_runner_windows_external_publication_contract(
         call_log = root / "platform-calls.log"
         configuration_root.mkdir(parents=True)
         (configuration_root / "Configuration.xml").write_text(
-            RLM_CONTRACT_CONFIGURATION_XML,
+            CONTRACT_CONFIGURATION_XML,
             encoding="utf-8",
         )
         source_root.mkdir(parents=True)
@@ -1701,11 +1684,9 @@ def check_tool_contracts(tools_dir: Path, target: str | None = None) -> list[str
         if not tool.exists():
             errors.append(f"{label}: binary not found: {tool}")
             continue
-        command_env = RLM_PYTHON_UTF8_ENV if tool_name.startswith("rlm-bsl-") else None
         status, output = run_command(
             [str(tool), *args],
             tools_dir,
-            env=command_env,
         )
         if status != 0:
             diagnostics = bounded_command_diagnostics(output, tools_dir)
@@ -1746,190 +1727,6 @@ def check_tool_contracts(tools_dir: Path, target: str | None = None) -> list[str
     return errors
 
 
-def prepare_rlm_contract_workspace(
-    root: Path,
-    label: str,
-) -> tuple[Path | None, list[Path], list[str]]:
-    # v1.33 extension discovery scans siblings one and two ancestors above the
-    # configuration. Keep both ancestors inside this fixture instead of exposing
-    # an arbitrarily large shared system temp directory to the contract probe.
-    workspace = root / "fixture" / "workspace"
-    modules = [
-        workspace / "src" / "CommonModules" / name / "Module.bsl"
-        for name in ("ContractOne", "ContractTwo")
-    ]
-    for number, module in enumerate(modules, start=1):
-        module.parent.mkdir(parents=True)
-        module.write_text(
-            f"Процедура ContractTest{number}() Экспорт\n"
-            "    Возврат;\n"
-            "КонецПроцедуры\n",
-            encoding="utf-8",
-        )
-    workspace.joinpath("Configuration.xml").write_text(
-        RLM_CONTRACT_CONFIGURATION_XML,
-        encoding="utf-8",
-    )
-    git_without_signing = [
-        "git",
-        "-c",
-        "commit.gpgsign=false",
-        "-c",
-        "tag.gpgSign=false",
-    ]
-    git_commands = [
-        [*git_without_signing, "init", "-q"],
-        [*git_without_signing, "config", "user.email", "unica-ci@example.invalid"],
-        [*git_without_signing, "config", "user.name", "Unica CI"],
-        [*git_without_signing, "add", "."],
-        [*git_without_signing, "commit", "-q", "-m", "fixture"],
-    ]
-    for command in git_commands:
-        status, _output = run_command(command, workspace)
-        if status != 0:
-            return None, [], [
-                f"{label}: failed to prepare clean Git fixture: {' '.join(command)}"
-            ]
-    return workspace, modules, []
-
-
-def check_rlm_mtime_recovery_contract(
-    tool: Path,
-    *,
-    run_rlm: Callable[
-        [list[str], Path, dict[str, str]], tuple[int, str]
-    ]
-    | None = None,
-) -> list[str]:
-    errors: list[str] = []
-    runner = run_rlm or run_rlm_contract_process
-    with tempfile.TemporaryDirectory(prefix="unica-rlm-mtime-") as tmp:
-        root = Path(tmp)
-        workspace, modules, fixture_errors = prepare_rlm_contract_workspace(
-            root,
-            "rlm mtime recovery",
-        )
-        if fixture_errors or workspace is None:
-            return fixture_errors
-
-        env = {
-            **RLM_PYTHON_UTF8_ENV,
-            "RLM_INDEX_DIR": str(root / "index"),
-            "RLM_INDEX_SAMPLE_SIZE": "1000",
-            "RLM_INDEX_SAMPLE_THRESHOLD": "0",
-            "RLM_INDEX_SKIP_SAMPLE_HOURS": "0",
-        }
-
-        def invoke(action: str) -> str | None:
-            command = [str(tool), "index", action, str(workspace)]
-            status, output = runner(command, workspace, env)
-            if status != 0:
-                errors.append(
-                    f"rlm mtime recovery: {action} exited with {status}: {output.strip()}"
-                )
-                return None
-            return output
-
-        if invoke("build") is None:
-            return errors
-        initial_info = invoke("info")
-        if initial_info is None:
-            return errors
-        if "fresh" not in initial_info.lower():
-            errors.append("rlm mtime recovery: initial build did not produce fresh info")
-            return errors
-
-        for module in modules:
-            original = module.stat()
-            drifted_mtime_ns = original.st_mtime_ns + 2_000_000_000
-            os.utime(module, ns=(original.st_atime_ns, drifted_mtime_ns))
-            if module.stat().st_size != original.st_size:
-                errors.append("rlm mtime recovery: mtime drift changed fixture size")
-                return errors
-        git_status, git_output = run_command(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
-            workspace,
-        )
-        if git_status != 0 or git_output.strip():
-            errors.append(
-                "rlm mtime recovery: mtime-only fixture is not Git-clean: "
-                f"{git_output.strip()}"
-            )
-            return errors
-
-        stale_info = invoke("info")
-        if stale_info is None:
-            return errors
-        if "stale (content)" not in stale_info.lower():
-            errors.append(
-                "rlm mtime recovery: mtime drift did not produce stale (content): "
-                f"{stale_info.strip()}"
-            )
-            return errors
-
-        head_status, head_before_update = run_command(
-            ["git", "rev-parse", "HEAD"],
-            workspace,
-        )
-        if head_status != 0 or not head_before_update.strip():
-            errors.append(
-                "rlm mtime recovery: failed to read Git HEAD before update: "
-                f"{head_before_update.strip()}"
-            )
-            return errors
-        update = invoke("update")
-        if update is None:
-            return errors
-        head_status, head_after_update = run_command(
-            ["git", "rev-parse", "HEAD"],
-            workspace,
-        )
-        if head_status != 0 or not head_after_update.strip():
-            errors.append(
-                "rlm mtime recovery: failed to read Git HEAD after update: "
-                f"{head_after_update.strip()}"
-            )
-            return errors
-        if head_after_update.strip() != head_before_update.strip():
-            errors.append(
-                "rlm mtime recovery: Git HEAD changed during update: "
-                f"{head_before_update.strip()} -> {head_after_update.strip()}"
-            )
-            return errors
-        if "Changed: 0" not in update or "Fast path: True" not in update:
-            errors.append(
-                "rlm mtime recovery: update did not report Changed: 0 and Fast path: True"
-            )
-            return errors
-
-        post_update_info = invoke("info")
-        if post_update_info is None:
-            return errors
-        if "stale (content)" not in post_update_info.lower():
-            errors.append(
-                "rlm mtime recovery: fast-path update did not remain stale (content)"
-            )
-            return errors
-
-        if invoke("build") is None:
-            return errors
-        final_info = invoke("info")
-        if final_info is None:
-            return errors
-        if "fresh" not in final_info.lower():
-            errors.append("rlm mtime recovery: full rebuild did not restore fresh info")
-    return errors
-
-
-def rlm_mcp_command(tool: Path) -> list[str]:
-    suffix = tool.suffix.lower()
-    if suffix == ".py":
-        return [sys.executable, str(tool)]
-    if os.name == "nt" and suffix in {".bat", ".cmd"}:
-        return [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", str(tool)]
-    return [str(tool)]
-
-
 def load_shared_mcp_smoke_module():
     script = Path(__file__).with_name("smoke-unica-mcp.py")
     spec = importlib.util.spec_from_file_location("unica_mcp_smoke_shared", script)
@@ -1944,7 +1741,7 @@ def terminate_shared_mcp_session(
     session, root: Path, reader_timeout_seconds: float | None = None
 ) -> None:
     if reader_timeout_seconds is None:
-        reader_timeout_seconds = RLM_MCP_CONTRACT_TIMEOUT_SECONDS
+        reader_timeout_seconds = MCP_READER_TIMEOUT_SECONDS
     session.terminate_tree(root)
     for reader in (session.reader, session.error_reader):
         reader.join(timeout=reader_timeout_seconds)
@@ -1960,310 +1757,6 @@ def terminate_shared_mcp_session(
                 pass
 
 
-def run_rlm_contract_process(
-    command: list[str],
-    cwd: Path,
-    env: dict[str, str],
-) -> tuple[int, str]:
-    timeout_seconds = RLM_INDEX_PROCESS_TIMEOUT_SECONDS
-    shared = load_shared_mcp_smoke_module()
-    session = shared.McpSession(
-        command,
-        {**os.environ, **env},
-        timeout_seconds,
-        cwd=cwd,
-    )
-    try:
-        if session.process.stdin is not None:
-            session.process.stdin.close()
-        try:
-            status = session.process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            return 1, f"timed out after {timeout_seconds}s"
-        for reader in (session.reader, session.error_reader):
-            reader.join(timeout=timeout_seconds)
-        if session.reader.is_alive() or session.error_reader.is_alive():
-            return 1, f"timed out after {timeout_seconds}s"
-        stdout: list[str] = []
-        while not session.lines.empty():
-            line = session.lines.get_nowait()
-            if line:
-                stdout.append(line)
-        return status, "".join(stdout) + "".join(session.diagnostics)
-    finally:
-        terminate_shared_mcp_session(session, cwd, timeout_seconds)
-
-
-def rlm_mcp_tool_text(response: dict[str, object], label: str) -> tuple[str | None, str | None]:
-    if "error" in response:
-        return None, f"rlm MCP contract: {label} returned a JSON-RPC error"
-    result = response.get("result")
-    if not isinstance(result, dict):
-        return None, f"rlm MCP contract: {label} response is missing result"
-    if result.get("isError") is True:
-        return None, f"rlm MCP contract: {label} returned a tool error"
-    content = result.get("content")
-    if not isinstance(content, list):
-        return None, f"rlm MCP contract: {label} response is missing content"
-    parts = [
-        item.get("text")
-        for item in content
-        if isinstance(item, dict) and isinstance(item.get("text"), str)
-    ]
-    if not parts:
-        return None, f"rlm MCP contract: {label} response has no text content"
-    return "\n".join(parts), None
-
-
-def rlm_mcp_metadata_errors(payload: object, label: str) -> list[str]:
-    errors: list[str] = []
-
-    def visit(value: object) -> None:
-        if isinstance(value, list):
-            for item in value:
-                visit(item)
-            return
-        if not isinstance(value, dict):
-            return
-        metadata = value.get("_meta")
-        if "_meta" in value and not isinstance(metadata, dict):
-            errors.append(f"rlm MCP contract: {label} _meta must be an object")
-        elif isinstance(metadata, dict):
-            for key in ("truncated", "total_is_lower_bound"):
-                if key in metadata and not isinstance(metadata[key], bool):
-                    errors.append(
-                        f"rlm MCP contract: {label} _meta.{key} must be boolean"
-                    )
-        for item in value.values():
-            visit(item)
-
-    visit(payload)
-    return errors
-
-
-def check_rlm_mcp_contract(mcp_tool: Path, index_tool: Path) -> list[str]:
-    if not mcp_tool.is_file():
-        return [f"rlm MCP contract: {mcp_tool.name} binary not found"]
-    if not index_tool.is_file():
-        return [f"rlm MCP contract: {index_tool.name} binary not found"]
-
-    errors: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="unica-rlm-mcp-") as tmp:
-        root = Path(tmp)
-        workspace, _modules, fixture_errors = prepare_rlm_contract_workspace(
-            root,
-            "rlm MCP contract",
-        )
-        if fixture_errors or workspace is None:
-            return fixture_errors
-        env = {
-            **RLM_PYTHON_UTF8_ENV,
-            "RLM_INDEX_DIR": str(root / "index"),
-            "RLM_INDEX_SAMPLE_SIZE": "1000",
-            "RLM_INDEX_SAMPLE_THRESHOLD": "0",
-            "RLM_INDEX_SKIP_SAMPLE_HOURS": "0",
-        }
-        index_status, index_output = run_rlm_contract_process(
-            [*rlm_mcp_command(index_tool), "index", "build", str(workspace)],
-            workspace,
-            env,
-        )
-        if index_status != 0:
-            if "timed out" in index_output:
-                return ["rlm MCP contract: index build timed out"]
-            return [f"rlm MCP contract: index build exited with {index_status}"]
-
-        session = None
-        try:
-            shared = load_shared_mcp_smoke_module()
-            session = shared.McpSession(
-                rlm_mcp_command(mcp_tool),
-                {**os.environ, **env},
-                RLM_MCP_CONTRACT_TIMEOUT_SECONDS,
-                cwd=workspace,
-            )
-        except SystemExit:
-            return [*errors, "rlm MCP contract: failed to start MCP transport"]
-        except (OSError, RuntimeError):
-            return [*errors, "rlm MCP contract: failed to start MCP transport"]
-
-        try:
-            def request(payload: dict[str, object], request_id: int) -> dict[str, object] | None:
-                try:
-                    return session.request(payload)
-                except SystemExit as error:
-                    detail = str(error).lower()
-                    if "timed out" in detail or "deadline" in detail:
-                        errors.append(
-                            f"rlm MCP contract: request {request_id} timed out"
-                        )
-                    else:
-                        errors.append(
-                            f"rlm MCP contract: request {request_id} transport failed"
-                        )
-                    return None
-
-            initialize = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": {"name": "unica-contract", "version": "1"},
-                },
-            }
-            if request(initialize, 1) is None:
-                return errors
-            try:
-                session.notify(
-                    {"jsonrpc": "2.0", "method": "notifications/initialized"}
-                )
-            except (BrokenPipeError, OSError, UnicodeError):
-                return [*errors, "rlm MCP contract: failed to write initialized notification"]
-
-            next_id = 2
-
-            def call_tool(name: str, arguments: dict[str, object]) -> object | None:
-                nonlocal next_id
-                request_id = next_id
-                next_id += 1
-                response = request(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "method": "tools/call",
-                        "params": {"name": name, "arguments": arguments},
-                    },
-                    request_id,
-                )
-                if response is None:
-                    return None
-                text, text_error = rlm_mcp_tool_text(response, name)
-                if text_error:
-                    errors.append(text_error)
-                    return None
-                try:
-                    return json.loads(text or "")
-                except json.JSONDecodeError:
-                    errors.append(f"rlm MCP contract: {name} text is not valid JSON")
-                    return None
-
-            start_payload = call_tool(
-                "rlm_start",
-                {
-                    "path": str(workspace),
-                    "query": "ContractTest1",
-                    "effort": "low",
-                    "max_output_chars": 100_000,
-                    "max_execute_calls": 10_000,
-                    "execution_timeout_seconds": 30,
-                    "include_metadata": False,
-                    "domains": [],
-                },
-            )
-            if not isinstance(start_payload, dict):
-                if not errors:
-                    errors.append("rlm MCP contract: rlm_start text is not a JSON object")
-                return errors
-            if isinstance(start_payload.get("error"), str):
-                return [*errors, "rlm MCP contract: rlm_start returned an error"]
-            session_id = start_payload.get("session_id")
-            if not isinstance(session_id, str) or not session_id:
-                return [*errors, "rlm MCP contract: rlm_start is missing session_id"]
-
-            helpers = [
-                (
-                    "search",
-                    'import json\n_result = search("ContractTest", scope="all", limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-                ),
-                (
-                    "find_definition",
-                    'import json\n_result = find_definition("ContractTest1", module_hint=None, limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-                ),
-                (
-                    "get_object_profile",
-                    'import json\n_result = get_object_profile("CommonModule.ContractOne", sections=None, include_flow=False, include_code_usages=False, limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-                ),
-            ]
-            helper_payloads: dict[str, object] = {}
-            for helper_name, code in helpers:
-                execute_payload = call_tool(
-                    "rlm_execute",
-                    {
-                        "session_id": session_id,
-                        "code": code,
-                        "detail_level": "compact",
-                    },
-                )
-                if not isinstance(execute_payload, dict):
-                    if not errors:
-                        errors.append(
-                            f"rlm MCP contract: {helper_name} execute text is not a JSON object"
-                        )
-                    continue
-                if isinstance(execute_payload.get("error"), str):
-                    errors.append(f"rlm MCP contract: {helper_name} execute returned an error")
-                    continue
-                stdout = execute_payload.get("stdout")
-                if not isinstance(stdout, str):
-                    errors.append(f"rlm MCP contract: {helper_name} execute is missing stdout")
-                    continue
-                try:
-                    helper_payload = json.loads(stdout)
-                except json.JSONDecodeError:
-                    errors.append(f"rlm MCP contract: {helper_name} stdout is not valid JSON")
-                    continue
-                if (
-                    isinstance(helper_payload, dict)
-                    and isinstance(helper_payload.get("error"), str)
-                    and helper_payload["error"]
-                ):
-                    errors.append(f"rlm MCP contract: {helper_name} returned an error")
-                    continue
-                helper_payloads[helper_name] = helper_payload
-                errors.extend(rlm_mcp_metadata_errors(helper_payload, helper_name))
-
-            definitions = helper_payloads.get("find_definition")
-            if "search" in helper_payloads and not isinstance(
-                helper_payloads["search"], list
-            ):
-                errors.append("rlm MCP contract: search must return a list")
-            if "get_object_profile" in helper_payloads and not isinstance(
-                helper_payloads["get_object_profile"], dict
-            ):
-                errors.append(
-                    "rlm MCP contract: get_object_profile must return an object"
-                )
-            if "find_definition" in helper_payloads and not isinstance(
-                definitions,
-                dict,
-            ):
-                errors.append("rlm MCP contract: find_definition must return an object")
-            elif isinstance(definitions, dict):
-                entries = definitions.get("definitions")
-                if not isinstance(entries, list) or not entries:
-                    errors.append(
-                        "rlm MCP contract: find_definition must return definitions"
-                    )
-                elif any(
-                    not isinstance(entry, dict)
-                    or not isinstance(entry.get("params"), list)
-                    for entry in entries
-                ):
-                    errors.append(
-                        "rlm MCP contract: find_definition definitions[].params must be a list"
-                    )
-
-            call_tool("rlm_end", {"session_id": session_id})
-        except (OSError, RuntimeError):
-            errors.append("rlm MCP contract: MCP transport failed")
-        finally:
-            if session is not None:
-                terminate_shared_mcp_session(session, root)
-    return errors
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--target", default=None)
@@ -2273,12 +1766,6 @@ def main() -> None:
     target = args.target or detect_target()
     tools_dir = args.tools_dir or Path("plugins/unica/bin") / target
     errors = check_tool_contracts(tools_dir, target)
-    rlm_index = tool_executable(tools_dir.resolve(), "rlm-bsl-index", target)
-    rlm_mcp = tool_executable(tools_dir.resolve(), "rlm-bsl-mcp", target)
-    if rlm_index.exists():
-        errors.extend(check_rlm_mtime_recovery_contract(rlm_index))
-    if rlm_mcp.exists() and rlm_index.exists():
-        errors.extend(check_rlm_mcp_contract(rlm_mcp, rlm_index))
 
     if errors:
         print("Tool contract check failed:")

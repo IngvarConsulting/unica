@@ -6,8 +6,7 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 /// Потолок страницы ветви графа: объявленный максимум поверхности.
 const CALL_GRAPH_PAGE_LIMIT: usize = 50;
 /// Ranked providers (`symbol`, `semantic`) accept a top-N request, but no
-/// offset, and a larger N is another answer rather than a longer one (RLM
-/// splits N into per-category quotas). Keep their
+/// offset, and a larger N is another answer rather than a longer one. Keep their
 /// public bound as the fetch window and page the returned evidence
 /// separately.
 const PROVIDER_SEARCH_FETCH_LIMIT: usize = 200;
@@ -3566,7 +3565,19 @@ fn selected_role_engine(role: ProviderRole) -> Option<&'static str> {
     match role {
         ProviderRole::Lexical => None,
         ProviderRole::Symbol => Some(BSL_ANALYZER_ENGINE),
-        ProviderRole::Semantic => Some("rlm-bsl-mcp"),
+        // Поставщика смысловой роли в поставке нет: отказ называет реестр.
+        ProviderRole::Semantic => None,
+    }
+}
+
+/// Почему роль некому обслужить. Роль остаётся в контракте `unica.search`, и её
+/// получит поставщик, вошедший в реестр.
+fn no_search_provider_message(role: ProviderRole) -> String {
+    match role {
+        ProviderRole::Semantic => "semantic search has no provider: it needs an embedding service \
+             (EMBEDDING_URL) and an adapter for it; use role `symbol` or a literal search"
+            .to_string(),
+        _ => format!("no search provider is registered for `{}`", role.as_str()),
     }
 }
 
@@ -3584,7 +3595,7 @@ fn search_selected_role(
         .search_providers()
         .find(|provider| provider.identity().role == role)
         .cloned()
-        .ok_or_else(|| format!("no search provider is registered for `{}`", role.as_str()))?;
+        .ok_or_else(|| no_search_provider_message(role))?;
     let selected = CodeIntelligenceRegistry::new(vec![provider])?;
     CodeSearchCoordinator::with_deadlines(selected, deadlines).search_observed(
         request,
@@ -6424,7 +6435,7 @@ mod medium_tests {
                 attributes: serde_json::Map::new(),
             })
             .collect();
-        let identity = ProviderIdentity::new(ProviderRole::Semantic, "rlm");
+        let identity = ProviderIdentity::new(ProviderRole::Semantic, "semantic-fixture");
         let section = if provider_limit_reached {
             ProviderSearchSection::limit_reached(
                 identity,
@@ -9267,10 +9278,7 @@ mod medium_tests {
             .join("plugins/unica/third-party/tools.lock.json");
         let lock: serde_json::Value =
             serde_json::from_slice(&std::fs::read(lock_path).unwrap()).unwrap();
-        for (role, tool, artifact) in [
-            (ProviderRole::Symbol, "bsl-analyzer", "bsl-analyzer"),
-            (ProviderRole::Semantic, "rlm-bsl-mcp", "rlm-tools-bsl"),
-        ] {
+        for (role, tool, artifact) in [(ProviderRole::Symbol, "bsl-analyzer", "bsl-analyzer")] {
             assert_eq!(super::selected_role_engine(role), Some(tool));
             let pinned = lock["tools"]
                 .as_array()
@@ -9340,7 +9348,7 @@ mod medium_tests {
         use unica_source_contract::location::SourceLocation;
 
         let section = ProviderSearchSection::partial(
-            ProviderIdentity::new(ProviderRole::Semantic, "rlm"),
+            ProviderIdentity::new(ProviderRole::Semantic, "semantic-fixture"),
             SearchRanking::Provider,
             SearchOrdering::Provider,
             vec![ProviderSearchHit {
@@ -9358,7 +9366,7 @@ mod medium_tests {
                 snippet: "Post".to_string(),
                 attributes: serde_json::Map::new(),
             }],
-            vec!["ignored malformed RLM result #1".to_string()],
+            vec!["ignored malformed provider result #1".to_string()],
         )
         .unwrap();
         let result = super::provider_search_page(
@@ -9371,7 +9379,7 @@ mod medium_tests {
                     elapsed_ms: 1,
                     sections: vec![section],
                 },
-                warnings: vec!["rlm: ignored malformed RLM result #1".to_string()],
+                warnings: vec!["semantic-fixture: ignored malformed provider result #1".to_string()],
                 errors: Vec::new(),
             },
             provider_search_test_binding(ProviderRole::Semantic, 20),

@@ -67,8 +67,6 @@ pub(crate) mod workspace;
 // Publication and Invocation routing consume the remaining actor seams in Task 7.
 #[allow(dead_code)]
 #[cfg(test)]
-pub mod workspace_index;
-#[cfg(test)]
 #[path = "../../tests/platform/workspace_services_integration.rs"]
 pub mod workspace_services;
 

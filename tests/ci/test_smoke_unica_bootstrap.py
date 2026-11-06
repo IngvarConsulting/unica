@@ -64,13 +64,13 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
                                 }
                             },
                         },
-                        "rlm-tools-bsl": {
+                        "archive-tools": {
                             "version": "1.33.0",
                             "role": "engine",
                             "targets": {
                                 "linux-x64": {
                                     "asset": {
-                                        "name": "rlm-tools-bsl-linux-x64.tar.gz",
+                                        "name": "archive-tools-linux-x64.tar.gz",
                                         "sha256": self.PUBLISHED_SHA,
                                     }
                                 }

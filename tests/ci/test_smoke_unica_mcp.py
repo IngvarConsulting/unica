@@ -2355,10 +2355,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
                             bsl_section[code_search_root_field] = "private-root"
                         payload["data"] = {
                             "sections": [
-                                {
-                                    "provider": "rlm", "status": "empty", "hits": [],
-                                    "diagnostics": [], "artifacts": [],
-                                },
                                 bsl_section,
                                 {
                                     "provider": "git-grep", "status": "empty", "hits": [],
@@ -2608,7 +2604,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         payload = {
             "data": {
                 "sections": [
-                    {"provider": "rlm", "status": "empty", "hits": []},
                     {
                         "provider": "bsl-analyzer",
                         "status": "unavailable",
@@ -2629,13 +2624,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         payload = {
             "data": {
                 "sections": [
-                    {
-                        "provider": "rlm",
-                        "status": "empty",
-                        "hits": [],
-                        "diagnostics": [],
-                        "artifacts": [],
-                    },
                     {
                         "provider": "bsl-analyzer",
                         "status": "timedOut",
@@ -2669,7 +2657,6 @@ class SmokeUnicaMcpTests(unittest.TestCase):
             "ok": False,
             "data": {
                 "sections": [
-                    {"provider": "rlm", "status": "empty", "hits": []},
                     {
                         "provider": "bsl-analyzer",
                         "status": "timedOut",

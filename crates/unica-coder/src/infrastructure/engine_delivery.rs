@@ -222,14 +222,14 @@ mod tests {
         let progress = CanonicalDeliveryProgress::default();
         progress.publish(ProgressEvent {
             meta_key: DELIVERY_PROGRESS_META_KEY,
-            payload: json!({"artifact": "rlm-tools-bsl", "receivedBytes": 4096, "totalBytes": 8192}),
+            payload: json!({"artifact": "archive-tools", "receivedBytes": 4096, "totalBytes": 8192}),
             progress: 4096.0,
             total: 8192.0,
             message: "receiving".to_string(),
         });
         let result = canonical_delivery_result(
             EngineDeliveryState::Working {
-                artifact: "rlm-tools-bsl".to_string(),
+                artifact: "archive-tools".to_string(),
                 received: 0,
                 total: None,
                 poll_interval_ms: Some(1500),
@@ -290,7 +290,7 @@ mod tests {
     fn a_failed_engine_delivery_carries_the_missing_engine_fields() {
         let plugin_root = plugin_root_with_tool("delivery-fields");
         let failed = |class| EngineDeliveryState::Failed {
-            artifact: "rlm-tools-bsl".to_string(),
+            artifact: "archive-tools".to_string(),
             failure: Arc::new(DeliveryFailure::new(class, "private cache path")),
         };
 
@@ -298,13 +298,13 @@ mod tests {
             failed(DeliveryFailureClass::Network),
             &CanonicalDeliveryProgress::default(),
             &plugin_root,
-            "rlm-bsl-index",
+            "archive-tool-index",
         )
         .expect("failed delivery has a public refusal");
         assert_eq!(result.diagnostics[0]["detailCode"], "provider_absent");
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["delivery"]["failureClass"], "network");
-        assert_eq!(data["tool"], "rlm-bsl-index");
+        assert_eq!(data["tool"], "archive-tool-index");
         assert_eq!(data["stage"], "delivery");
         assert_eq!(data["pinnedVersion"], "1.33.0");
         assert_eq!(data["retryable"], false);
@@ -317,7 +317,7 @@ mod tests {
             failed(DeliveryFailureClass::Timeout),
             &CanonicalDeliveryProgress::default(),
             &plugin_root,
-            "rlm-bsl-index",
+            "archive-tool-index",
         )
         .unwrap();
         assert_eq!(timeout.diagnostics[0]["code"], "deadline_exceeded");
@@ -386,7 +386,7 @@ mod tests {
         std::fs::create_dir_all(root.join("third-party")).expect("plugin root");
         std::fs::write(
             root.join("third-party/manifest.json"),
-            r#"{"schemaVersion":2,"tools":[{"name":"rlm-bsl-index","version":"1.33.0","artifact":"rlm-tools-bsl"}]}"#,
+            r#"{"schemaVersion":2,"tools":[{"name":"archive-tool-index","version":"1.33.0","artifact":"archive-tools"}]}"#,
         )
         .expect("tool manifest");
         root
@@ -401,7 +401,7 @@ mod tests {
 
         let order = order_for_in(
             &plugin_root,
-            "rlm-bsl-index",
+            "archive-tool-index",
             &environment(&[
                 ("UNICA_ARTIFACT_CACHE", "/cache"),
                 (
@@ -416,7 +416,7 @@ mod tests {
             order.manifest_path,
             PathBuf::from("/plugins/unica/runtime-manifest.json")
         );
-        assert_eq!(order.artifact(), "rlm-tools-bsl");
+        assert_eq!(order.artifact(), "archive-tools");
         std::fs::remove_dir_all(&plugin_root).ok();
     }
 
@@ -426,7 +426,7 @@ mod tests {
 
         let order = order_for_in(
             &plugin_root,
-            "rlm-bsl-index",
+            "archive-tool-index",
             &environment(&[("UNICA_ARTIFACT_CACHE", "/cache")]),
         )
         .expect("заказ собран");
@@ -442,7 +442,7 @@ mod tests {
     fn without_an_artifact_cache_there_is_nowhere_to_deliver() {
         let plugin_root = plugin_root_with_tool("no-cache");
 
-        assert!(order_for_in(&plugin_root, "rlm-bsl-index", &environment(&[])).is_none());
+        assert!(order_for_in(&plugin_root, "archive-tool-index", &environment(&[])).is_none());
         std::fs::remove_dir_all(&plugin_root).ok();
     }
 

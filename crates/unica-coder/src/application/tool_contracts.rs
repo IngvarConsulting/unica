@@ -492,7 +492,6 @@ const CODE_ARGS: &[&str] = &[
     "sourceDir",
 ];
 
-const CODE_DEFINITION_ARGS: &[&str] = &["limit", "moduleHint", "name", "sourceDir"];
 const CODE_OUTLINE_ARGS: &[&str] = &["includeMethods", "path", "sourceDir"];
 const DOCUMENTATION_GET_ARGS: &[&str] = &["documentId", "language", "platformVersion"];
 const CODE_SEARCH_ARGS: &[&str] = &["limit", "metadataPath", "query", "sourceDir", "sourceSet"];
@@ -2192,7 +2191,6 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
         ToolHandler::RuntimeJob { action } => runtime_job_required_args(action),
         ToolHandler::CodeIntelligence { operation } => match operation {
             CodeIntelligenceOperation::Search => vec!["query"],
-            CodeIntelligenceOperation::Definition => vec!["name"],
             CodeIntelligenceOperation::Outline => vec!["path"],
         },
         ToolHandler::Diagnostics => vec!["action", "sourceSet"],
@@ -2212,7 +2210,6 @@ fn required_args(tool: &ToolSpec) -> Vec<&'static str> {
 fn code_args_for(tool_name: &str) -> &'static [&'static str] {
     match tool_name {
         "unica.code.search" => CODE_SEARCH_ARGS,
-        "unica.code.definition" => CODE_DEFINITION_ARGS,
         "unica.code.graph" => CODE_GRAPH_ARGS,
         _ => CODE_ARGS,
     }
@@ -2221,7 +2218,6 @@ fn code_args_for(tool_name: &str) -> &'static [&'static str] {
 fn code_intelligence_args(operation: CodeIntelligenceOperation) -> &'static [&'static str] {
     match operation {
         CodeIntelligenceOperation::Search => CODE_SEARCH_ARGS,
-        CodeIntelligenceOperation::Definition => CODE_DEFINITION_ARGS,
         CodeIntelligenceOperation::Outline => CODE_OUTLINE_ARGS,
     }
 }
@@ -2715,10 +2711,6 @@ const ARG_DESCRIPTIONS: &[(&str, &str)] = &[
     (
         "module",
         "Full BSL module name such as CommonModule.МоиТесты; required for operation test with testRunner yaxunit and testScope module, and rejected for testRunner va",
-    ),
-    (
-        "moduleHint",
-        "Substring of a module path or object name that narrows unica.code.definition when the same method name exists in several modules; matched case-insensitively",
     ),
     (
         "modulePath",
@@ -3892,7 +3884,7 @@ pub(crate) mod tests {
 
     #[test]
     fn unknown_argument_error_suggests_the_argument_spelled_differently() {
-        let error = reject_argument("unica.code.definition", "SourceDir");
+        let error = reject_argument("unica.code.search", "SourceDir");
 
         assert!(
             error.contains("did you mean `sourceDir`?"),
@@ -3902,27 +3894,27 @@ pub(crate) mod tests {
 
     #[test]
     fn unknown_argument_error_suggests_the_nearest_argument() {
-        let error = reject_argument("unica.code.definition", "moduleHnit");
+        let error = reject_argument("unica.code.search", "qeury");
 
         assert!(
-            error.contains("did you mean `moduleHint`?"),
+            error.contains("did you mean `query`?"),
             "missing near-miss suggestion: {error}"
         );
     }
 
     #[test]
     fn unknown_argument_error_omits_a_suggestion_without_a_near_match() {
-        // `query` names a real argument of `unica.code.search`, so the caller is
+        // The name is near no argument of `unica.code.search`, so the caller is
         // wrong about the tool rather than about the spelling. Guessing here
         // would send them to an unrelated argument.
-        let error = reject_argument("unica.code.definition", "query");
+        let error = reject_argument("unica.code.search", "unrelatedName");
 
         assert!(
             !error.contains("did you mean"),
             "unexpected suggestion for an unrelated name: {error}"
         );
         assert!(
-            error.contains("accepted arguments: confirm, cwd, limit, moduleHint, name, sourceDir"),
+            error.contains("accepted arguments: confirm, cwd, limit, metadataPath, query, sourceDir, sourceSet"),
             "missing accepted arguments: {error}"
         );
     }
@@ -5234,22 +5226,10 @@ pub(crate) mod tests {
 
     #[test]
     fn code_navigation_contracts_expose_typed_arguments_without_raw_args() {
-        let definition = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.code.definition")
-            .expect("unica.code.definition must be registered");
         let search = tools()
             .into_iter()
             .find(|tool| tool.name == "unica.code.search")
             .expect("unica.code.search must be registered");
-
-        let definition_schema = input_schema_for_tool(&definition);
-        assert_eq!(definition_schema["additionalProperties"], false);
-        assert!(definition_schema["properties"].get("name").is_some());
-        assert!(definition_schema["properties"].get("moduleHint").is_some());
-        assert!(definition_schema["properties"].get("args").is_none());
-        assert_eq!(definition_schema["properties"]["limit"]["type"], "integer");
-        assert_eq!(definition_schema["required"], json!(["name"]));
 
         let search_schema = input_schema_for_tool(&search);
         assert_eq!(search_schema["additionalProperties"], false);
@@ -5360,22 +5340,23 @@ pub(crate) mod tests {
 
     #[test]
     fn code_navigation_contracts_reject_raw_args_and_require_real_payloads() {
-        let definition = tools()
+        let search = tools()
             .into_iter()
-            .find(|tool| tool.name == "unica.code.definition")
+            .find(|tool| tool.name == "unica.code.search")
             .unwrap();
         let mut args = Map::new();
         args.insert("args".to_string(), json!(["--unsafe"]));
 
-        let error = validate_tool_arguments(definition, &args, false).unwrap_err();
+        let error = validate_tool_arguments(search, &args, false).unwrap_err();
         assert!(error.contains("does not accept argument `args`"));
 
-        let args = Map::new();
-        let error = validate_tool_arguments(definition, &args, false).unwrap_err();
-        assert!(error.contains("requires `name`"));
-        let error = validate_tool_arguments(definition, &args, true).unwrap_err();
+        let mut args = Map::new();
+        args.insert("sourceSet".to_string(), json!("main"));
+        let error = validate_tool_arguments(search, &args, false).unwrap_err();
+        assert!(error.contains("requires `query`"));
+        let error = validate_tool_arguments(search, &args, true).unwrap_err();
         assert!(
-            error.contains("requires `name`"),
+            error.contains("requires `query`"),
             "reader validation cannot be weakened by a preview boolean: {error}"
         );
     }

@@ -156,9 +156,7 @@ SEARCH_INTEGRATION_PATHS = {
     "crates/unica-coder/src/infrastructure/operational_config.rs",
     "crates/unica-coder/src/infrastructure/platform/process.rs",
     "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
-    "crates/unica-coder/src/infrastructure/rlm_navigation.rs",
     "crates/unica-coder/src/infrastructure/source_roots.rs",
-    "crates/unica-coder/src/infrastructure/workspace_index.rs",
     "crates/unica-coder/src/infrastructure/workspace_services.rs",
     "crates/unica-coder/src/interfaces/mcp.rs",
 }

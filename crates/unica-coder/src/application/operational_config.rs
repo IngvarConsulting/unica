@@ -27,9 +27,7 @@ pub(crate) fn resolve_for_call(
 pub(crate) fn requires_snapshot(spec: ToolSpec, args: &Map<String, Value>) -> bool {
     match spec.handler {
         ToolHandler::CodeIntelligence { operation } => match operation {
-            CodeIntelligenceOperation::Search
-            | CodeIntelligenceOperation::Definition
-            | CodeIntelligenceOperation::Outline => true,
+            CodeIntelligenceOperation::Search | CodeIntelligenceOperation::Outline => true,
         },
         ToolHandler::Diagnostics => args.get("action").and_then(Value::as_str) == Some("analyze"),
         _ => false,
@@ -56,7 +54,6 @@ mod tests {
                 spec.handler,
                 ToolHandler::CodeIntelligence {
                     operation: CodeIntelligenceOperation::Search
-                        | CodeIntelligenceOperation::Definition
                         | CodeIntelligenceOperation::Outline
                 }
             );

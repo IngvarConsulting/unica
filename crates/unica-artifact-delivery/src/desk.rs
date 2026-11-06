@@ -415,7 +415,7 @@ pub mod test_support {
     }
     pub fn exact_delivery_key(sha256: char) -> DeliveryWorkKey {
         DeliveryWorkKey::new(
-            "rlm-tools-bsl",
+            "archive-tools",
             "1.33.0",
             "darwin-arm64",
             sha256.to_string().repeat(64),
@@ -506,7 +506,7 @@ mod tests {
                     .payload
                     .get("artifact")
                     .and_then(|value| value.as_str())
-                    == Some("rlm-tools-bsl")
+                    == Some("archive-tools")
         }));
     }
     /// rule: CTR.APP.EXACT-SHARED-DELIVERY

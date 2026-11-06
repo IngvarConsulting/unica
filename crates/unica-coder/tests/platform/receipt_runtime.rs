@@ -5092,7 +5092,7 @@ impl crate::infrastructure::daemon::server::CanonicalInvocationService for IdleI
         let release = Arc::clone(&self.release);
         let (_, lease) = invocation
             .join_index_work(
-                "rlm",
+                "bsl-analyzer",
                 "idle-test-profile",
                 "idle-test-generation",
                 move |_| {

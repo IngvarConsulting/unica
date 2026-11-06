@@ -888,7 +888,7 @@ mod tests {
         let (started_tx, started_rx) = mpsc::channel();
         let release = Arc::new(Barrier::new(4));
         let providers = [
-            (ProviderId::Rlm, ProviderSectionStatus::Ok),
+            (ProviderId::SemanticFixture, ProviderSectionStatus::Ok),
             (ProviderId::BslAnalyzer, ProviderSectionStatus::Empty),
             (ProviderId::GitGrep, ProviderSectionStatus::Ok),
         ]
@@ -939,7 +939,7 @@ mod tests {
                 .map(|section| section.identity.role)
                 .collect::<Vec<_>>(),
             vec![
-                ProviderId::Rlm.role(),
+                ProviderId::SemanticFixture.role(),
                 ProviderId::BslAnalyzer.role(),
                 ProviderId::GitGrep.role()
             ]
@@ -990,7 +990,7 @@ mod tests {
         let sink = RecordingProgressSink::default();
         let coordinator = CodeSearchCoordinator::new(
             CodeIntelligenceRegistry::new(vec![Arc::new(SlowProvider {
-                id: ProviderId::Rlm,
+                id: ProviderId::SemanticFixture,
                 delay: Duration::from_millis(80),
             })])
             .unwrap(),
@@ -1097,7 +1097,7 @@ mod tests {
         let partial = CodeSearchCoordinator::new(
             CodeIntelligenceRegistry::new(vec![
                 static_provider(
-                    ProviderId::Rlm,
+                    ProviderId::SemanticFixture,
                     ProviderSectionStatus::Unavailable,
                     "index building",
                 ),
@@ -1124,7 +1124,7 @@ mod tests {
         let failed = CodeSearchCoordinator::new(
             CodeIntelligenceRegistry::new(vec![
                 static_provider(
-                    ProviderId::Rlm,
+                    ProviderId::SemanticFixture,
                     ProviderSectionStatus::Unavailable,
                     "index building",
                 ),
@@ -1152,11 +1152,11 @@ mod tests {
     #[test]
     fn malformed_provider_subset_remains_useful_without_claiming_complete_coverage() {
         let section = ProviderSearchSection::partial(
-            ProviderId::Rlm.identity(),
+            ProviderId::SemanticFixture.identity(),
             SearchRanking::Provider,
             SearchOrdering::Provider,
             vec![test_hit(0)],
-            vec!["ignored malformed RLM result #1".to_string()],
+            vec!["ignored malformed provider result #1".to_string()],
         )
         .unwrap();
         let provider = Arc::new(StaticProvider { section });
@@ -1276,7 +1276,7 @@ mod tests {
     #[test]
     fn coordinator_applies_provider_budgets_and_renders_from_canonical_sections() {
         let providers = [
-            (ProviderId::Rlm, Duration::from_secs(300)),
+            (ProviderId::SemanticFixture, Duration::from_secs(300)),
             (ProviderId::BslAnalyzer, Duration::from_secs(300)),
             (ProviderId::GitGrep, Duration::from_secs(30)),
         ]
@@ -1306,7 +1306,11 @@ mod tests {
                 .iter()
                 .map(|section| (section.identity.provider.as_str(), section.hits.len()))
                 .collect::<Vec<_>>(),
-            vec![("rlm", 0), ("bsl-analyzer", 0), ("git-grep", 0)]
+            vec![
+                ("semantic-fixture", 0),
+                ("bsl-analyzer", 0),
+                ("git-grep", 0)
+            ]
         );
         assert_eq!(
             execution
@@ -1316,7 +1320,7 @@ mod tests {
                 .map(|section| section.identity.role)
                 .collect::<Vec<_>>(),
             vec![
-                ProviderId::Rlm.role(),
+                ProviderId::SemanticFixture.role(),
                 ProviderId::BslAnalyzer.role(),
                 ProviderId::GitGrep.role()
             ]
@@ -1341,7 +1345,7 @@ mod tests {
             Duration::from_secs(100)
         );
         assert_eq!(
-            coordinator.provider_budget(ProviderId::Rlm.role()),
+            coordinator.provider_budget(ProviderId::SemanticFixture.role()),
             Duration::from_secs(30)
         );
         assert_eq!(
@@ -1402,7 +1406,7 @@ mod tests {
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
-            &[ProviderCapability::Search, ProviderCapability::Definition]
+            &[ProviderCapability::Search, ProviderCapability::CallGraph]
         }
 
         fn search(
@@ -1423,7 +1427,7 @@ mod tests {
             _deadline: ProviderDeadline,
             _cancellation: &CancellationToken,
         ) -> Result<ProviderReadOutcome, String> {
-            let CodeIntelligenceReadRequest::Definition { name, .. } = request else {
+            let CodeIntelligenceReadRequest::CallGraph { id: name, .. } = request else {
                 panic!("definition fixture");
             };
             self.wait_for_release(name);
@@ -1444,7 +1448,7 @@ mod tests {
     fn exercise_calls_past_provider_quota(read: bool) {
         for id in [
             ProviderId::BslAnalyzer,
-            ProviderId::Rlm,
+            ProviderId::SemanticFixture,
             ProviderId::GitGrep,
         ] {
             let (entered_tx, entered_rx) = mpsc::channel();
@@ -1462,9 +1466,9 @@ mod tests {
                     if read {
                         super::execute_provider_read(
                             provider,
-                            CodeIntelligenceReadRequest::Definition {
-                                name: name.clone(),
-                                module_hint: String::new(),
+                            CodeIntelligenceReadRequest::CallGraph {
+                                id: name.clone(),
+                                direction: crate::model::CallGraphDirection::Callers,
                                 limit: 50,
                             },
                             context(),
@@ -1646,11 +1650,11 @@ mod tests {
 
     impl CodeIntelligenceProvider for StaticReadProvider {
         fn identity(&self) -> crate::model::ProviderIdentity {
-            ProviderId::Rlm.identity()
+            ProviderId::SemanticFixture.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
-            &[ProviderCapability::Definition, ProviderCapability::Outline]
+            &[ProviderCapability::CallGraph]
         }
 
         fn search(
@@ -1671,7 +1675,7 @@ mod tests {
             _cancellation: &CancellationToken,
         ) -> Result<ProviderReadOutcome, String> {
             Ok(ProviderReadOutcome {
-                provider: ProviderId::Rlm.identity(),
+                provider: ProviderId::SemanticFixture.identity(),
                 ok: true,
                 summary: "read".to_string(),
                 warnings: Vec::new(),
@@ -1691,7 +1695,7 @@ mod tests {
         let (entered_tx, entered_rx) = mpsc::channel();
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let provider: Arc<dyn CodeIntelligenceProvider> = Arc::new(CountQuotaProvider {
-            id: ProviderId::Rlm,
+            id: ProviderId::SemanticFixture,
             entered: entered_tx,
             release: Arc::clone(&release),
         });
@@ -1699,9 +1703,9 @@ mod tests {
         for name in ["Post", "Again"] {
             results.push(execute_provider_read_with_policy(
                 Arc::clone(&provider),
-                CodeIntelligenceReadRequest::Definition {
-                    name: name.to_string(),
-                    module_hint: String::new(),
+                CodeIntelligenceReadRequest::CallGraph {
+                    id: name.to_string(),
+                    direction: crate::model::CallGraphDirection::Callers,
                     limit: 50,
                 },
                 context(),
@@ -1734,9 +1738,9 @@ mod tests {
 
         let outcome = execute_provider_read_with_policy(
             Arc::new(StaticReadProvider),
-            CodeIntelligenceReadRequest::Definition {
-                name: "Post".to_string(),
-                module_hint: String::new(),
+            CodeIntelligenceReadRequest::CallGraph {
+                id: "Post".to_string(),
+                direction: crate::model::CallGraphDirection::Callers,
                 limit: 50,
             },
             context(),
@@ -1756,7 +1760,7 @@ mod tests {
         let worker_cancellation = cancellation.linked_child();
         cancellation.cancel();
         let result = Ok(ProviderReadOutcome {
-            provider: ProviderId::Rlm.identity(),
+            provider: ProviderId::SemanticFixture.identity(),
             ok: true,
             summary: "result published after parent cancellation".to_string(),
             warnings: Vec::new(),
@@ -1777,7 +1781,7 @@ mod tests {
 
     impl CodeIntelligenceProvider for PanickingProvider {
         fn identity(&self) -> crate::model::ProviderIdentity {
-            ProviderId::Rlm.identity()
+            ProviderId::SemanticFixture.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1829,7 +1833,7 @@ mod tests {
 
     impl CodeIntelligenceProvider for CancellingProvider {
         fn identity(&self) -> crate::model::ProviderIdentity {
-            ProviderId::Rlm.identity()
+            ProviderId::SemanticFixture.identity()
         }
 
         fn capabilities(&self) -> &[ProviderCapability] {
@@ -1845,7 +1849,7 @@ mod tests {
         ) -> ProviderSearchSection {
             cancellation.cancel();
             test_section(
-                ProviderId::Rlm,
+                ProviderId::SemanticFixture,
                 ProviderSectionStatus::Empty,
                 Vec::new(),
                 "",

@@ -34,34 +34,34 @@ def make_bundle(root: Path) -> Path:
     bin_dir.mkdir(parents=True)
     unica = bin_dir / "unica"
     analyzer = bin_dir / "bsl-analyzer"
-    rlm_mcp = bin_dir / "rlm-bsl-mcp"
-    rlm_index = bin_dir / "rlm-bsl-index"
+    archive_server = bin_dir / "archive-tool-server"
+    archive_index = bin_dir / "archive-tool-index"
     shared_library = bin_dir / "libpython3.12.so.1.0"
     unica.write_bytes(b"unica")
     analyzer.write_bytes(b"analyzer")
-    rlm_mcp.write_bytes(b"rlm-mcp")
-    rlm_index.write_bytes(b"rlm-index")
+    archive_server.write_bytes(b"archive-server")
+    archive_index.write_bytes(b"archive-index")
     shared_library.write_bytes(b"shared-library")
-    for executable in (unica, analyzer, rlm_mcp, rlm_index):
+    for executable in (unica, analyzer, archive_server, archive_index):
         executable.chmod(0o755)
     shared_library.chmod(0o644)
-    runtime_paths = [unica, analyzer, rlm_mcp, rlm_index, shared_library]
-    # rlm-bsl-mcp и rlm-bsl-index приезжают одним архивом на 69 МБ, и общая
+    runtime_paths = [unica, analyzer, archive_server, archive_index, shared_library]
+    # archive-tool-server и archive-tool-index приезжают одним архивом на 69 МБ, и общая
     # библиотека принадлежит ему же: артефакт у всех трёх один.
     artifact_of = {
         unica: "unica",
         analyzer: "bsl-analyzer",
-        rlm_mcp: "rlm-tools-bsl",
-        rlm_index: "rlm-tools-bsl",
-        shared_library: "rlm-tools-bsl",
+        archive_server: "archive-tools",
+        archive_index: "archive-tools",
+        shared_library: "archive-tools",
     }
     # Ядро мы пакуем сами и раскладку выбираем сами; чужая поставка ложится
     # так, как её издал тулчейн.
     delivered_of = {
         unica: "bin/linux-x64/unica",
         analyzer: "bsl-analyzer",
-        rlm_mcp: "payload/rlm-bsl-mcp",
-        rlm_index: "payload/rlm-bsl-index",
+        archive_server: "payload/archive-tool-server",
+        archive_index: "payload/archive-tool-index",
         shared_library: "payload/libpython3.12.so.1.0",
     }
     (bundle / "tools.json").write_text(
@@ -78,10 +78,10 @@ def make_bundle(root: Path) -> Path:
                         "mediaType": "application/octet-stream",
                         "sha256": "a" * 64,
                     },
-                    "rlm-tools-bsl": {
+                    "archive-tools": {
                         "repository": "https://github.com/IngvarConsulting/unica-toolchain",
-                        "tag": "rlm-tools-bsl-v1.33.0-build.3",
-                        "name": "rlm-tools-bsl-linux-x64.tar.gz",
+                        "tag": "archive-tools-v1.33.0-build.3",
+                        "name": "archive-tools-linux-x64.tar.gz",
                         "mediaType": "application/gzip",
                         "sha256": "b" * 64,
                     },
@@ -111,18 +111,18 @@ def make_bundle(root: Path) -> Path:
                         "sha256": sha256(analyzer),
                     },
                     {
-                        "name": "rlm-bsl-mcp",
+                        "name": "archive-tool-server",
                         "version": "1.33.0",
-                        "artifact": "rlm-tools-bsl",
-                        "binaryPath": "bin/linux-x64/rlm-bsl-mcp",
-                        "sha256": sha256(rlm_mcp),
+                        "artifact": "archive-tools",
+                        "binaryPath": "bin/linux-x64/archive-tool-server",
+                        "sha256": sha256(archive_server),
                     },
                     {
-                        "name": "rlm-bsl-index",
+                        "name": "archive-tool-index",
                         "version": "1.33.0",
-                        "artifact": "rlm-tools-bsl",
-                        "binaryPath": "bin/linux-x64/rlm-bsl-index",
-                        "sha256": sha256(rlm_index),
+                        "artifact": "archive-tools",
+                        "binaryPath": "bin/linux-x64/archive-tool-index",
+                        "sha256": sha256(archive_index),
                     },
                 ],
             }
@@ -177,7 +177,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 sorted(first),
                 [
                     "bsl-analyzer-runtime-linux-x64.json",
-                    "rlm-tools-bsl-runtime-linux-x64.json",
+                    "archive-tools-runtime-linux-x64.json",
                     "unica-runtime-linux-x64.json",
                     "unica-runtime-linux-x64.tar.gz",
                 ],
@@ -211,7 +211,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
             runtime = json.load(member)
 
         self.assertEqual(runtime["artifactAssets"], source["artifactAssets"])
-        for artifact in ("bsl-analyzer", "rlm-tools-bsl"):
+        for artifact in ("bsl-analyzer", "archive-tools"):
             published = json.loads(
                 produced[f"{artifact}-runtime-linux-x64.json"].read_text(encoding="utf-8")
             )
@@ -240,24 +240,24 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
         )
         # Движок описан, но не переиздан: адрес есть, архива нет.
         engine = json.loads(
-            (out_dir / "rlm-tools-bsl-runtime-linux-x64.json").read_text(encoding="utf-8")
+            (out_dir / "archive-tools-runtime-linux-x64.json").read_text(encoding="utf-8")
         )
         self.assertEqual(engine["role"], "engine")
-        self.assertEqual(engine["asset"]["name"], "rlm-tools-bsl-linux-x64.tar.gz")
+        self.assertEqual(engine["asset"]["name"], "archive-tools-linux-x64.tar.gz")
         self.assertEqual(engine["asset"]["sha256"], "b" * 64)
         self.assertEqual(
             engine["assetOrigin"],
             {
                 "repository": "https://github.com/IngvarConsulting/unica-toolchain",
-                "tag": "rlm-tools-bsl-v1.33.0-build.3",
+                "tag": "archive-tools-v1.33.0-build.3",
             },
         )
         self.assertEqual(
             [item["path"] for item in engine["files"]],
             [
                 "payload/libpython3.12.so.1.0",
-                "payload/rlm-bsl-index",
-                "payload/rlm-bsl-mcp",
+                "payload/archive-tool-index",
+                "payload/archive-tool-server",
             ],
         )
         self.assertNotIn("entrypoint", engine)
@@ -343,7 +343,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 if label == "missing":
                     library.unlink()
                 elif label == "extra":
-                    (library.parent / "rlm-tools-bsl").write_bytes(b"legacy")
+                    (library.parent / "archive-tools").write_bytes(b"legacy")
                 elif label == "digest":
                     library.write_bytes(b"drifted-payloa")
                 else:

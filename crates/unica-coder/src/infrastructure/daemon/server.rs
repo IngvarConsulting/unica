@@ -4561,7 +4561,7 @@ pub(crate) mod medium_actor_capacity_tests {
                 .unwrap()
                 .contains("bundled_tool_missing"));
 
-            for (role, artifact) in [("symbol", "bsl-analyzer"), ("semantic", "rlm-tools-bsl")] {
+            for (role, artifact) in [("symbol", "bsl-analyzer")] {
                 let result = submit_canonical(
                     &runtime,
                     &workspace,
@@ -4693,13 +4693,6 @@ pub(crate) mod medium_actor_capacity_tests {
                         "name": "bsl-analyzer",
                         "version": "0.2.67",
                         "binaryPath": format!("bin/{target}/bsl-analyzer{exe}"),
-                        "sha256": "0".repeat(64),
-                    },
-                    {
-                        "name": "rlm-bsl-mcp",
-                        "artifact": "rlm-tools-bsl",
-                        "version": "1.33.0",
-                        "binaryPath": format!("bin/{target}/rlm-bsl-mcp{exe}"),
                         "sha256": "0".repeat(64),
                     }
                 ],
@@ -5169,21 +5162,6 @@ fn main() {
         println!("{}", r#"{"ok":true,"command":"extensions","data":{"ok":true,"provider_dispatched":false,"provider":{"selected":"ibcmd","origin":{"kind":"default"}},"requested":{"kind":"all"},"extensions":[],"plan":"fixture"}}"#);
         return;
     }
-    if args.get(1).is_some_and(|argument| argument == "index") {
-        let db = std::path::PathBuf::from(std::env::var("RLM_INDEX_DIR").unwrap()).join("bsl_index.db");
-        if args.get(2).is_some_and(|argument| argument == "info") {
-            if db.is_file() {
-                println!("Index: {}\nStatus: fresh", db.display());
-            } else {
-                println!("Index not found");
-            }
-        } else {
-            std::fs::create_dir_all(db.parent().unwrap()).unwrap();
-            std::fs::write(db, "fixture-index").unwrap();
-            std::fs::write(marker.join("index"), "rlm-bsl-index invoked").unwrap();
-        }
-        return;
-    }
     for line in io::stdin().lock().lines() {
         let line = line.unwrap();
         if line.contains("\"method\":\"initialize\"") {
@@ -5193,16 +5171,6 @@ fn main() {
             assert!(line.contains("search_code"), "wrong analyzer action: {line}");
             std::fs::write(marker.join("search"), "bsl-analyzer invoked").unwrap();
             println!("{}", r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"No results found."}]}}"#);
-            io::stdout().flush().unwrap();
-        } else if line.contains("\"name\":\"rlm_start\"") {
-            println!("{}", r#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"{\"session_id\":\"fixture\",\"index\":{\"index_status\":\"ready\"}}"}]}}"#);
-            io::stdout().flush().unwrap();
-        } else if line.contains("\"name\":\"rlm_execute\"") {
-            std::fs::write(marker.join("semantic"), "rlm-bsl-mcp invoked").unwrap();
-            println!("{}", r#"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"stdout\":\"[]\"}"}]}}"#);
-            io::stdout().flush().unwrap();
-        } else if line.contains("\"name\":\"rlm_end\"") {
-            println!("{}", r#"{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"{}"}]}}"#);
             io::stdout().flush().unwrap();
         }
     }
@@ -5227,38 +5195,9 @@ fn main() {
             let mut core_targets = serde_json::Map::new();
             let mut runner_targets = serde_json::Map::new();
             let mut analyzer_targets = serde_json::Map::new();
-            let mut rlm_targets = serde_json::Map::new();
             for host in HostTarget::ALL {
                 let target = host.as_str();
                 let suffix = if target == "win-x64" { ".exe" } else { "" };
-                let archive_name = format!("rlm-tools-bsl-{target}.tar.gz");
-                let archive = {
-                    let encoder =
-                        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-                    let mut builder = tar::Builder::new(encoder);
-                    for name in [
-                        format!("rlm-bsl-mcp{suffix}"),
-                        format!("rlm-bsl-index{suffix}"),
-                    ] {
-                        let mut header = tar::Header::new_gnu();
-                        header.set_size(bytes.len() as u64);
-                        header.set_mode(0o755);
-                        header.set_cksum();
-                        builder
-                            .append_data(&mut header, name, bytes.as_slice())
-                            .unwrap();
-                    }
-                    builder.into_inner().unwrap().finish().unwrap()
-                };
-                let archive_digest = format!("{:x}", Sha256::digest(&archive));
-                assets.insert(archive_name.clone(), archive);
-                rlm_targets.insert(target.to_owned(), serde_json::json!({
-                    "asset": {"name": archive_name, "url": format!("https://github.com/IngvarConsulting/unica-toolchain/releases/download/rlm-tools-bsl-v1.33.0-build.3/{archive_name}"), "mediaType": "application/gzip", "sha256": archive_digest},
-                    "files": [
-                        {"path": format!("rlm-bsl-mcp{suffix}"), "sha256": digest, "executable": true},
-                        {"path": format!("rlm-bsl-index{suffix}"), "sha256": digest, "executable": true}
-                    ],
-                }));
                 let core_asset = format!("unica-runtime-{target}.tar.gz");
                 let core_path = format!("bin/{target}/unica{suffix}");
                 core_targets.insert(target.to_owned(), serde_json::json!({
@@ -5297,27 +5236,21 @@ fn main() {
                     "unica": {"version": env!("CARGO_PKG_VERSION"), "role": "core", "targets": core_targets},
                     "v8-runner": {"version": RUNNER_VERSION, "role": "engine", "targets": runner_targets},
                     "bsl-analyzer": {"version": "0.2.67", "role": "engine", "targets": analyzer_targets},
-                    "rlm-tools-bsl": {"version": "1.33.0", "role": "engine", "targets": rlm_targets},
                 }
             });
             let release_path = root.join("runtime-manifest.json");
             std::fs::write(&release_path, release.to_string()).unwrap();
             let target = crate::infrastructure::platform::current_target_id().unwrap();
             let suffix = std::env::consts::EXE_SUFFIX;
-            let rlm_archive = format!("rlm-tools-bsl-{target}.tar.gz");
-            let rlm_digest = format!("{:x}", Sha256::digest(&assets[&rlm_archive]));
             std::fs::write(plugin.join("third-party/manifest.json"), serde_json::json!({
                 "schemaVersion": 2,
                 "artifactAssets": {
                     "v8-runner": {"sha256": digest},
                     "bsl-analyzer": {"sha256": digest},
-                    "rlm-tools-bsl": {"sha256": rlm_digest},
                 },
                 "tools": [
                     {"name": "v8-runner", "version": RUNNER_VERSION, "binaryPath": format!("bin/{target}/v8-runner{suffix}"), "deliveredPath": format!("bin/{target}/v8-runner{suffix}"), "sha256": digest},
                     {"name": "bsl-analyzer", "version": "0.2.67", "binaryPath": format!("bin/{target}/bsl-analyzer{suffix}"), "deliveredPath": format!("bin/{target}/bsl-analyzer{suffix}"), "sha256": digest},
-                    {"name": "rlm-bsl-mcp", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaryPath": format!("bin/{target}/rlm-bsl-mcp{suffix}"), "deliveredPath": format!("rlm-bsl-mcp{suffix}"), "sha256": digest},
-                    {"name": "rlm-bsl-index", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaryPath": format!("bin/{target}/rlm-bsl-index{suffix}"), "deliveredPath": format!("rlm-bsl-index{suffix}"), "sha256": digest},
                 ],
             }).to_string()).unwrap();
             std::env::set_var("UNICA_PLUGIN_ROOT", &plugin);
@@ -5416,42 +5349,17 @@ fn main() {
                 search.data.as_ref().unwrap()["matches"][0]["hits"],
                 serde_json::json!([])
             );
-            let mut semantic = submit_canonical(
+            // Роль остаётся в контракте и без поставщика отвечает отказом с причиной.
+            let semantic = submit_canonical(
                 &runtime,
                 &workspace,
                 ToolIdentity::Search,
                 serde_json::json!({"query":"Needle","role":"semantic"}),
             );
-            for _ in 0..5 {
-                if semantic.ok {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(200));
-                semantic = submit_canonical(
-                    &runtime,
-                    &workspace,
-                    ToolIdentity::Search,
-                    serde_json::json!({"query":"Needle","role":"semantic"}),
-                );
-            }
-            assert!(
-                semantic.ok,
-                "{semantic:?}; index={:?}; rlm={:?}",
-                std::fs::read_to_string(root.join("index")),
-                std::fs::read_to_string(root.join("semantic"))
-            );
-            assert_eq!(
-                std::fs::read_to_string(root.join("index")).unwrap(),
-                "rlm-bsl-index invoked"
-            );
-            assert_eq!(
-                std::fs::read_to_string(root.join("semantic")).unwrap(),
-                "rlm-bsl-mcp invoked"
-            );
-            assert_eq!(
-                semantic.data.as_ref().unwrap()["matches"][0]["provider"],
-                "rlm"
-            );
+            assert!(!semantic.ok, "{semantic:?}");
+            let refusal = serde_json::to_string(&semantic).unwrap();
+            assert!(refusal.contains("provider_unavailable"), "{refusal}");
+            assert!(refusal.contains("EMBEDDING_URL"), "{refusal}");
             for (name, version) in [("v8-runner", RUNNER_VERSION), ("bsl-analyzer", "0.2.67")] {
                 assert!(cache
                     .join(name)
@@ -5459,25 +5367,7 @@ fn main() {
                     .join(target)
                     .is_dir());
             }
-            assert!(cache
-                .join("rlm-tools-bsl")
-                .join(format!("1.33.0--{rlm_digest}"))
-                .join(target)
-                .is_dir());
-            for tool in ["rlm-bsl-index", "rlm-bsl-mcp"] {
-                let resolved =
-                    crate::infrastructure::bundled_tools::resolve_bundled_tool(&plugin, tool, true)
-                        .unwrap();
-                assert_eq!(
-                    format!(
-                        "{:x}",
-                        Sha256::digest(std::fs::read(resolved.program).unwrap())
-                    ),
-                    digest,
-                    "{tool} must resolve to the checked delivery"
-                );
-            }
-            assert_eq!(downloader.1.load(std::sync::atomic::Ordering::SeqCst), 3);
+            assert_eq!(downloader.1.load(std::sync::atomic::Ordering::SeqCst), 2);
             // The real service normally lives for hours. Wait for its short
             // idle shutdown before the parent removes this isolated tempdir.
             let services = workspace.join(".build/unica/services");
@@ -12470,7 +12360,7 @@ struct ActorLogicalReadLease {"#,
             .join_index_work(
                 &binding,
                 "retention-generation",
-                "rlm",
+                "bsl-analyzer",
                 "bsl-1",
                 move |_| {
                     first_count.fetch_add(1, Ordering::SeqCst);
@@ -12513,7 +12403,7 @@ struct ActorLogicalReadLease {"#,
             .join_index_work(
                 &binding,
                 "retention-generation",
-                "rlm",
+                "bsl-analyzer",
                 "bsl-1",
                 move |_| {
                     second_count.fetch_add(1, Ordering::SeqCst);
@@ -13639,59 +13529,6 @@ struct ActorLogicalReadLease {"#,
             Arc::new(TokioClock),
         );
         let workspace_hint = std::fs::canonicalize(workspace.path()).unwrap();
-        let index_context = unica_source_contract::workspace::WorkspaceContext {
-            cwd: workspace_hint.clone(),
-            workspace_root: workspace_hint.clone(),
-            cache_root: workspace_hint.join(".build/unica"),
-            workspace_epoch: 0,
-        };
-        let index_state_root =
-            unica_adapter_rlm::index::rlm_provider_state_root(&index_context, &source).unwrap();
-        let index_status = unica_adapter_rlm::index::status_path(&index_context, &source).unwrap();
-        let index_lock = index_state_root.join("locks/rlm-bsl/index-v17/bsl_index.lock");
-        std::fs::create_dir_all(index_status.parent().unwrap()).unwrap();
-        std::fs::create_dir_all(index_lock.parent().unwrap()).unwrap();
-        std::fs::write(
-            &index_status,
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "status": "building",
-                "source_root": source.display().to_string(),
-                "db_path": null,
-                "message": "preview state trap",
-                "failure_class": null,
-                "build_id": null,
-                "next_action": null,
-                "updated_at": 0,
-                "last_run": null
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        std::fs::write(
-            &index_lock,
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "schema_version": 1,
-                "lock_id": "preview-state-trap",
-                "owner_pid": std::process::id(),
-                "action": "build",
-                "source_root": source.display().to_string(),
-                "started_at": 0,
-                "updated_at": 0,
-                "state": "active"
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        // Эта ловушка изменилась бы при любой проверке готовности индекса:
-        // устаревшая блокировка стала бы recovered, а состояние — failed.
-        let index_state_before = unica_workspace::test_support::tree_snapshot(&index_state_root);
-
-        struct IndexBuildObserverReset;
-        impl Drop for IndexBuildObserverReset {
-            fn drop(&mut self) {
-                unica_adapter_rlm::index::set_isolated_build_start_observer_for_test(None);
-            }
-        }
         let call = |arguments| {
             let request = InvocationRequest::new(
                 ToolIdentity::Apply,
@@ -13704,34 +13541,18 @@ struct ActorLogicalReadLease {"#,
         };
         let apply_pair = |operation: serde_json::Value| {
             let before = std::fs::read(&descriptor).unwrap();
-            let index_starts = std::rc::Rc::new(std::cell::Cell::new(0));
-            let observed_starts = std::rc::Rc::clone(&index_starts);
-            let (dry, repeated_dry) = {
-                // Наблюдатель стоит на первой строке start_isolated_build и
-                // видит вызов даже до раннего отказа доставки RLM или записи.
-                unica_adapter_rlm::index::set_isolated_build_start_observer_for_test(Some(
-                    Box::new(move |_| observed_starts.set(observed_starts.get() + 1)),
-                ));
-                let _reset = IndexBuildObserverReset;
-                (
-                    call(serde_json::json!({
-                        "at": "main:Document.Order",
-                        "ops": [operation.clone()],
-                    })),
-                    call(serde_json::json!({
-                        "at": "main:Document.Order",
-                        "ops": [operation.clone()],
-                    })),
-                )
-            };
+            let (dry, repeated_dry) = (
+                call(serde_json::json!({
+                    "at": "main:Document.Order",
+                    "ops": [operation.clone()],
+                })),
+                call(serde_json::json!({
+                    "at": "main:Document.Order",
+                    "ops": [operation.clone()],
+                })),
+            );
             assert!(dry.ok, "dry-run failed: {dry:?}");
             assert_eq!(std::fs::read(&descriptor).unwrap(), before);
-            assert_eq!(index_starts.get(), 0, "preview started RLM indexing");
-            assert_eq!(
-                unica_workspace::test_support::tree_snapshot(&index_state_root),
-                index_state_before,
-                "preview wrote RLM index state"
-            );
             assert_eq!(
                 dry.data.as_ref().unwrap()["planHash"],
                 repeated_dry.data.as_ref().unwrap()["planHash"],
@@ -17301,7 +17122,7 @@ struct ActorLogicalReadLease {"#,
             match &self.kind {
                 LongCapabilityKind::Index => {
                     let (key, lease) = invocation
-                        .join_index_work("rlm", "bsl-1", "test-build-1", make_work(self))
+                        .join_index_work("bsl-analyzer", "bsl-1", "test-build-1", make_work(self))
                         .map_err(|_| InvocationFailure::new("index_failed", "index unavailable"))?;
                     settle(&self.joined, JoinedCapabilityIdentity::Index(key), lease)
                 }
@@ -17353,7 +17174,7 @@ struct ActorLogicalReadLease {"#,
             let release = Arc::clone(&self.release);
             let (key, lease) = invocation
                 .join_index_work(
-                    "rlm",
+                    "bsl-analyzer",
                     "bsl-1",
                     if self.first_execution.load(Ordering::SeqCst) {
                         "test-build-2"
@@ -17666,7 +17487,7 @@ fn main() {
         let release = Arc::new((Mutex::new(false), Condvar::new()));
         let service = Arc::new(SharedDeliveryService {
             key: DeliveryWorkKey::new(
-                "rlm-tools-bsl",
+                "archive-tools",
                 "1.33.0",
                 "darwin-arm64",
                 "a".repeat(64),
