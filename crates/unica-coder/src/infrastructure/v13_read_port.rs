@@ -1,4 +1,5 @@
 mod job_schedule;
+mod role;
 mod wsreference;
 mod xdto;
 use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
@@ -42,7 +43,6 @@ use unica_metadata_designer::validation::{
     parse_child_profile_from_bytes, parse_common_template_descriptor_from_bytes,
 };
 use unica_refusal::{RefusalCode, RefusalDetail};
-use unica_roles_designer::info::parse_role_info_xml;
 use unica_source_contract::read::SourceDirectory;
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::layout::{
@@ -951,35 +951,6 @@ impl ProviderReadAuthority {
             text,
             format_guard,
         })
-    }
-
-    pub(crate) fn role_payload(
-        &self,
-        target: &MetadataAddress,
-        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
-    ) -> Result<Value, ViewError> {
-        let rights =
-            self.read_relative_whole(&self.attached_resource_relative(target, "Rights.xml")?)?;
-        let rights = std::str::from_utf8(&rights).map_err(|_| {
-            ViewError::detailed(RefusalDetail::SourceUnreadable, "Rights.xml is not UTF-8")
-        })?;
-        let descriptor = self.metadata_descriptor(target)?;
-        let descriptor = std::str::from_utf8(&descriptor).map_err(|_| {
-            ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                "role descriptor is not UTF-8",
-            )
-        })?;
-        let fallback_name = target.as_str().rsplit('.').next().unwrap_or("Role");
-        let data = parse_role_info_xml(
-            rights,
-            Some(descriptor),
-            fallback_name,
-            self.object_support(target, checkpoint)?,
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
-        serde_json::to_value(data)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
 
     /// Заимствование объекта, чей сопутствующий файл расширение не несёт;
