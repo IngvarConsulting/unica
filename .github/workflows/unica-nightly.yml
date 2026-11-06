@@ -72,6 +72,6 @@ jobs:
     permissions:
       contents: write
       actions: write
-    uses: ./.github/workflows/unica-alpha.yml
+    uses: $/.github/workflows/unica-alpha.yml
     with:
       sha: ${{ needs.lines.outputs.main_sha }}

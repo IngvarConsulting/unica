@@ -948,7 +948,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def test_a_green_night_of_main_starts_the_one_alpha_path(self) -> None:
         nightly = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-nightly.yml").read_text(encoding="utf-8"))
         alpha = nightly["jobs"]["alpha"]
-        self.assertEqual(alpha["uses"], "./.github/workflows/unica-alpha.yml")
+        self.assertEqual(alpha["uses"], "$/.github/workflows/unica-alpha.yml")
         self.assertIn("needs.lines.outputs.green", alpha["if"])
         self.assertEqual(alpha["permissions"], {"contents": "write", "actions": "write"})
         manual = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-alpha.yml").read_text(encoding="utf-8"))
