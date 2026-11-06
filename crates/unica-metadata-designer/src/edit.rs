@@ -4501,9 +4501,21 @@ mod prefixed_property_writer_tests {
 
 #[cfg(test)]
 mod search_history_prefix_tests {
+    const BEFORE: &str = r#"<md:MetaDataObject xmlns:md="http://v8.1c.ru/8.3/MDClasses" xmlns="urn:unrelated" version="2.20"><md:InformationRegister><md:Properties><md:Name>Facts</md:Name></md:Properties><md:ChildObjects><md:Dimension><md:Properties><md:Name>Field</md:Name><md:MainFilter>false</md:MainFilter><md:FullTextSearch>DontUse</md:FullTextSearch><md:DataHistory>DontUse</md:DataHistory></md:Properties></md:Dimension></md:ChildObjects></md:InformationRegister></md:MetaDataObject>"#;
     #[test]
     fn search_and_history_preserve_prefixes_when_combined_with_a_dimension_flag() {
-        let before = r#"<md:MetaDataObject xmlns:md="http://v8.1c.ru/8.3/MDClasses" xmlns="urn:unrelated" version="2.20"><md:InformationRegister><md:Properties><md:Name>Facts</md:Name></md:Properties><md:ChildObjects><md:Dimension><md:Properties><md:Name>Field</md:Name><md:MainFilter>false</md:MainFilter><md:FullTextSearch>DontUse</md:FullTextSearch><md:DataHistory>DontUse</md:DataHistory></md:Properties></md:Dimension></md:ChildObjects></md:InformationRegister></md:MetaDataObject>"#;
+        check_prefix(BEFORE, false);
+    }
+    #[test]
+    fn canonical_search_and_history_edits_preserve_either_namespace_declaration_order() {
+        check_prefix(BEFORE, true);
+        let reversed = BEFORE.replace(
+            "xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\" xmlns=\"urn:unrelated\"",
+            "xmlns=\"urn:unrelated\" xmlns:md=\"http://v8.1c.ru/8.3/MDClasses\"",
+        );
+        check_prefix(&reversed, true);
+    }
+    fn check_prefix(before: &str, canonical: bool) {
         let input = unica_metadata::request::parse_element_update(
             &serde_json::json!({"name":"Field", "mainFilter":true, "fullTextSearch":"Use", "dataHistory":"Use"}),
             "elements[0]",
@@ -4514,19 +4526,25 @@ mod search_history_prefix_tests {
             vec![input],
         )
         .unwrap();
-        let unica_metadata::MetaEditOperation::Update { elements, .. } = operation else {
-            unreachable!()
-        };
-        let update = &elements[0];
         let mut actual = before.to_string();
-        super::update_typed_element(
-            &mut actual,
-            unica_metadata::MetaCollection::Dimensions,
-            None,
-            update,
-            "ru",
-        )
-        .unwrap();
+        if canonical {
+            super::apply_typed_operations_with_uuid(&mut actual, &[operation], "ru", &mut || {
+                "unused".to_string()
+            })
+            .unwrap();
+        } else {
+            let unica_metadata::MetaEditOperation::Update { elements, .. } = operation else {
+                unreachable!()
+            };
+            super::update_typed_element(
+                &mut actual,
+                unica_metadata::MetaCollection::Dimensions,
+                None,
+                &elements[0],
+                "ru",
+            )
+            .unwrap();
+        }
         let expected = before
             .replace(
                 "<md:MainFilter>false</md:MainFilter>",

@@ -34,6 +34,11 @@
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
           "eq": "fe390b45fbbdb4829596425a1f9745eab823a572bda293f35b8add08ae50dd31"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
         }
       ]
     },
@@ -2531,6 +2536,11 @@
           "path": "src/Catalogs/Codes.xml",
           "kind": "sha256",
           "eq": "$capture.changed"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
         }
       ]
     }
