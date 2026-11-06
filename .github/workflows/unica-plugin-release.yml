@@ -180,7 +180,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           cargo fmt --all -- --check
-          python3 scripts/ci/check-discovered-modules-format.py
+          python scripts/ci/check-discovered-modules-format.py
       # Линтер workflow. Версия закреплена; находки гейт не красят — они
       # уходят в Code Scanning, где видны по правилу и строке, и разбираются
       # отдельно. Токен нужен сетевым проверкам: подменённые коммиты, известные

@@ -61,6 +61,19 @@ class DiscoveredModulesFormatTests(unittest.TestCase):
         modules = checker.discovered_modules(ROOT, checker.tracked_sources(ROOT))
         self.assertIn("crates/unica-metadata-designer/src/edit.rs", modules)
         self.assertNotIn("crates/unica-metadata-designer/src/lib.rs", modules)
+        for directory in (
+            "crates/unica-coder/src/infrastructure/daemon/metadata_can_tests/",
+            "crates/unica-metadata/src/properties/",
+        ):
+            with self.subTest(directory):
+                self.assertTrue(any(module.startswith(directory) for module in modules))
+
+    def test_both_format_gates_run_the_pass(self) -> None:
+        for workflow in ("ci.yml", "unica-plugin-release.yml"):
+            with self.subTest(workflow):
+                text = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
+                self.assertIn("cargo fmt --all -- --check", text)
+                self.assertIn("python scripts/ci/check-discovered-modules-format.py", text)
 
 
 if __name__ == "__main__":

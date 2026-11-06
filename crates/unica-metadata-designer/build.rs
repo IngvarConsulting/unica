@@ -64,10 +64,24 @@ fn main() {
 fn is_private(path: &Path) -> bool {
     let source = std::fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
-    source
+    let header = source
         .lines()
         .take_while(|line| line.trim_start().starts_with("//"))
-        .any(|line| line.trim_end() == PRIVATE_MARKER)
+        .count();
+    let mut marked = false;
+    for (index, line) in source.lines().enumerate() {
+        if line.contains("module: private") {
+            // A misspelled or misplaced marker would silently publish the module.
+            assert!(
+                index < header && line.trim_end() == PRIVATE_MARKER,
+                "{}:{}: write the marker as `{PRIVATE_MARKER}` in the leading comments",
+                path.display(),
+                index + 1,
+            );
+            marked = true;
+        }
+    }
+    marked
 }
 
 fn module_name(path: &Path) -> &str {

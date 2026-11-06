@@ -414,7 +414,9 @@ macOS с Clippy идёт ночью и на теге (все размеры), н
 в обоих наборах — `tests/ci` и `tests/dev`. Python `medium`, Rust-тесты
 и Clippy пропускаются; продукт не компилируется. В очереди средние
 Python-тесты отражаются в отчёте как `skipped` с причиной `docs_only`.
-Guards сохраняют проверку форматирования через `cargo fmt`; отдельные малые
+Guards сохраняют проверку форматирования через `cargo fmt` и
+`scripts/ci/check-discovered-modules-format.py` для модулей, которые объявляет
+`build.rs`; отдельные малые
 проверки читают описание workspace через `cargo metadata --no-deps`.
 Эти команды не собирают продукт.
 
