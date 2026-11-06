@@ -22,7 +22,6 @@ tests/fixtures/platform_8_3_27/staged_dump_roots/** -text -whitespace
 tests/fixtures/platform_8_3_27/additional_indexes/AdditionalIndexes.xml -text whitespace=cr-at-eol
 tests/fixtures/platform_8_3_27/accumulation_register_aggregates/Aggregates.xml -text whitespace=cr-at-eol
 tests/fixtures/platform_8_3_27/exchange_plan/extension-Content.xml -text -whitespace
-tests/fixtures/platform_8_3_27/support-markers/** -text -whitespace
 
 # The native form export keeps the BOM and CRLF 8.3.27 writes.
 tests/fixtures/platform_8_3_27/form-native-profile/*.xml -text -whitespace
@@ -63,8 +62,6 @@ tests/fixtures/acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/Platf
 # Keep the native-validated whole-template-removal fixture bytes on every host.
 tests/fixtures/acceptance/workspace-whole-template-removal/** -text -whitespace
 
-# Exact native BinaryData Type fragment.
-/tests/fixtures/platform_8_3_27/binary-data/native-type.xml -text whitespace=cr-at-eol
 # Native new-XML oracles retain BOM, CRLF and absence of a terminal newline.
 tests/fixtures/platform_8_3_27/new-xml/native-form-descriptor.xml -text whitespace=cr-at-eol
 tests/fixtures/platform_8_3_27/new-xml/native-form-content.xml -text whitespace=cr-at-eol
