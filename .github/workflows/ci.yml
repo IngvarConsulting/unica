@@ -2,8 +2,10 @@ name: Unica CI
 
 # Ворота pull request и очереди слияния: одна джоба Linux без маршрутов.
 # Pull request: формат, контракт версий, Clippy и быстрые проверки Python, цель до трёх
-# минут. Очередь: тесты Rust и Python профиля `queue`. Ранний сигнал по тестам — локальный
-# прогон перед снятием черновика. Windows и macOS целиком, тяжёлые тесты и упаковка
+# минут. Ранний сигнал по тестам — локальный прогон перед снятием черновика.
+# Очередь: Clippy всего workspace, тесты изменённых крейтов и их прямых зависимых при
+# правке `pub`, Python small, смоук и снимки контрактов (`scripts/ci/queue-tests.py`);
+# Python medium и остальное идут ночью. Windows и macOS целиком, тяжёлые тесты и упаковка
 # идут ночью и в выпуске, в `unica-plugin-release.yml`.
 on:
   pull_request:
@@ -79,11 +81,25 @@ jobs:
           echo "UNICA_PREPARED_BINARY_MANIFEST=$PWD/.build/ci-product/manifest.json" >> "$GITHUB_ENV"
       # Красный шаг не отменяет следующие: упавший тест не прячет остальные.
       - name: Тесты Rust
+        id: selection
         if: ${{ !cancelled() && github.event_name == 'merge_group' }}
-        run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust
+        env:
+          QUEUE_FULL_TESTS: ${{ vars.QUEUE_FULL_TESTS }}
+          BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        run: python scripts/ci/queue-tests.py --base "$BASE_SHA" --head "$HEAD_SHA"
+      # Неразрешимый выбор — полный набор и здесь. Иначе Python medium идёт ночью,
+      # кроме смоука продукта и снимков контрактов.
       - name: Тесты Python
         if: ${{ !cancelled() && github.event_name == 'merge_group' }}
-        run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python
+        env:
+          FULL: ${{ steps.selection.outputs.full }}
+        run: |
+          if [ "$FULL" = false ]; then
+            python scripts/ci/run-static-tests.py --queue
+          else
+            python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python
+          fi
       - name: Статические проверки Python
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
         run: python scripts/ci/run-static-tests.py
