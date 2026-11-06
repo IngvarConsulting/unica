@@ -1479,6 +1479,28 @@ pub fn stage_form_set(
                     )
                     .at_path(format!("ops[{op_index}].args.values")));
                 }
+                let form_relative = owner_relative
+                    .with_extension("")
+                    .join("Forms")
+                    .join(format!("{form_name}.xml"));
+                let location = format!("ops[{op_index}].args.values");
+                let raw = read_required(staged, &form_relative, "the form descriptor", &location)?;
+                let invalid = |message| {
+                    ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                        .at_path(&location)
+                };
+                let evidence = unica_source_designer::owner::prove_already_read_metadata_owner(
+                    &form_relative,
+                    &raw,
+                )
+                .map_err(|error| invalid(error.message))?;
+                if evidence.artifact_kind() != "Form"
+                    || evidence.artifact_name() != Some(form_name.as_str())
+                {
+                    return Err(invalid(
+                        "form descriptor does not match the reference".into(),
+                    ));
+                }
                 format!("{}.Form.{form_name}", owner.as_str())
             }
             FormSlotTarget::Common(at) => {

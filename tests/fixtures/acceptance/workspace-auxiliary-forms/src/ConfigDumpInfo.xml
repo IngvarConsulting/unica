@@ -1,0 +1,46 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ConfigDumpInfo xmlns="http://v8.1c.ru/8.3/xcf/dumpinfo" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" format="Hierarchical" version="2.20">
+	<ConfigVersions>
+		<Metadata name="Catalog.Support" id="cdba4b86-8537-440f-b0a1-fdb156b17502" configVersion="8abd4a5912cde04ab2628670cd63f2a200000000"/>
+		<Metadata name="Catalog.Support.Form.FolderA" id="509d2994-c28c-4804-9c48-9cac2105aa1f" configVersion="b6b970b772ef6445a1ff411899c05f9600000000"/>
+		<Metadata name="Catalog.Support.Form.FolderA.Form" id="509d2994-c28c-4804-9c48-9cac2105aa1f.0" configVersion="4d3a4f3c70800a40956845a13f47b51d00000000"/>
+		<Metadata name="Catalog.Support.Form.FolderB" id="7da0f8f0-8be3-4d99-a2a0-dc7a894105a8" configVersion="df96251eb8beae44b6569d5eeb6a264300000000"/>
+		<Metadata name="Catalog.Support.Form.FolderB.Form" id="7da0f8f0-8be3-4d99-a2a0-dc7a894105a8.0" configVersion="4b4d766c3f03d148a304ae24ca72204900000000"/>
+		<Metadata name="Catalog.Support.Form.FolderChoiceA" id="bcde259e-6716-4546-84ae-085a1fd2f98a" configVersion="e6dc8a13fd16bd4ebea176b2ee5eda0f00000000"/>
+		<Metadata name="Catalog.Support.Form.FolderChoiceA.Form" id="bcde259e-6716-4546-84ae-085a1fd2f98a.0" configVersion="d4010dccf0f3ff4f8782bae7a8cd3c9500000000"/>
+		<Metadata name="Catalog.Support.Form.FolderChoiceB" id="7cc25535-2ffc-4d8e-8592-b3bb11a09997" configVersion="3fad8acdad7a8d42b8ee4a6bb70b588700000000"/>
+		<Metadata name="Catalog.Support.Form.FolderChoiceB.Form" id="7cc25535-2ffc-4d8e-8592-b3bb11a09997.0" configVersion="0725ea2c758bef43ad72527e5281c35900000000"/>
+		<Metadata name="Configuration.CorpusConfiguration" id="829019ad-9973-4df8-bd04-63ec82ad0830" configVersion="7fe5609ee319c54ab2af4d194237be5700000000"/>
+		<Metadata name="Configuration.CorpusConfiguration.ClientApplicationInterface" id="00000000-0000-0000-0000-000000000002.b" configVersion="5495a78efb113b4c9efdeca33bc0df7e00000000"/>
+		<Metadata name="DataProcessor.Processor" id="a78560a9-411e-463b-933e-1a41e9dfc34c" configVersion="1eda27a39e2c4a4394fda64e5168ea0700000000"/>
+		<Metadata name="DataProcessor.Processor.Form.MainA" id="350cd251-f2ba-4f55-8a54-384c7aa07e2b" configVersion="10237247aeb1674b8b790d8288a8a19200000000"/>
+		<Metadata name="DataProcessor.Processor.Form.MainA.Form" id="350cd251-f2ba-4f55-8a54-384c7aa07e2b.0" configVersion="8f789ccb30ec5242977a5f8e0cbfa92f00000000"/>
+		<Metadata name="DataProcessor.Processor.Form.MainB" id="1e390472-662c-493a-ab7d-258493399457" configVersion="2de3e7be68cc9b42bfd95566c7d9561800000000"/>
+		<Metadata name="DataProcessor.Processor.Form.MainB.Form" id="1e390472-662c-493a-ab7d-258493399457.0" configVersion="5cf4f3e616fe1b478e97f2efbccd80fb00000000"/>
+		<Metadata name="Document.Support" id="782e3802-5664-4c60-80db-b5af2529b0d2" configVersion="77fd01b7f9f38e42bb0a9498e9e61b3000000000"/>
+		<Metadata name="DocumentJournal.Entries" id="0b21eb3f-35ec-436b-aaf0-08128052ad8b" configVersion="0f815e52b6ef9444afeb62a34656da1000000000"/>
+		<Metadata name="DocumentJournal.Entries.Form.ListA" id="325d522a-39d5-4141-abf4-27e2090c6bca" configVersion="66946293bffcb64fa130ab6624b21ee600000000"/>
+		<Metadata name="DocumentJournal.Entries.Form.ListA.Form" id="325d522a-39d5-4141-abf4-27e2090c6bca.0" configVersion="d04d67199d10414bbea6f224bda8d05400000000"/>
+		<Metadata name="DocumentJournal.Entries.Form.ListB" id="3b93d442-5d2a-4ed3-a76f-848e70b2ac53" configVersion="28a92944fc51d34ebfa6d2e8648e48e400000000"/>
+		<Metadata name="DocumentJournal.Entries.Form.ListB.Form" id="3b93d442-5d2a-4ed3-a76f-848e70b2ac53.0" configVersion="1eb50a52034b5c40a1fa05863704d04900000000"/>
+		<Metadata name="InformationRegister.Facts" id="1c3ee8f4-98be-418f-ae73-f34488aae3cd" configVersion="d4c207a4a3846946bab33c39934d261500000000">
+			<Metadata name="InformationRegister.Facts.Resource.Value" id="42b2df5d-6f78-4e9d-bca6-91cfc4d22814"/>
+			<Metadata name="InformationRegister.Facts.Dimension.RefDimension" id="ad3e09e6-6ed5-4b5e-8ca7-747368773676"/>
+			<Metadata name="InformationRegister.Facts.Dimension.StringDimension" id="d6f7d6f2-3e10-48a4-92ac-fd8070466710"/>
+		</Metadata>
+		<Metadata name="InformationRegister.Facts.Form.RecordA" id="96c4713c-8513-4a34-b975-046cd827de82" configVersion="c8cc999f3e8b864286998057b4ae7c1500000000"/>
+		<Metadata name="InformationRegister.Facts.Form.RecordA.Form" id="96c4713c-8513-4a34-b975-046cd827de82.0" configVersion="e11fbfc1e66f71468476b113040e145000000000"/>
+		<Metadata name="InformationRegister.Facts.Form.RecordB" id="cb499fad-68b2-4df0-b570-7e3ebd180e68" configVersion="990cd3c645133e48a4db9bdf2587e11700000000"/>
+		<Metadata name="InformationRegister.Facts.Form.RecordB.Form" id="cb499fad-68b2-4df0-b570-7e3ebd180e68.0" configVersion="cdceb4a86cea1e42a0a006ceb8732a7b00000000"/>
+		<Metadata name="Language.Русский" id="00000000-0000-0000-0000-000000000001" configVersion="477c98657033f6439d6ffd5907c80e6800000000"/>
+		<Metadata name="Report.CorpusReport" id="6336047c-6b8b-4382-bb3a-29eb9c88daa1" configVersion="3b3bee04138d1641be16cdb85a50e7d400000000"/>
+		<Metadata name="Report.CorpusReport.Form.MainA" id="5a870b16-74ce-4892-93dc-74ce0d4bf52c" configVersion="dcb577eda1092a4cb16a598c17652b8400000000"/>
+		<Metadata name="Report.CorpusReport.Form.MainA.Form" id="5a870b16-74ce-4892-93dc-74ce0d4bf52c.0" configVersion="29c13a271dcaab478613b3fed3a93aa800000000"/>
+		<Metadata name="Report.CorpusReport.Form.MainB" id="83c7e8f9-19c0-4aae-be62-82198d8d245a" configVersion="6dfa365ca926bf4da448bb5cfac801a800000000"/>
+		<Metadata name="Report.CorpusReport.Form.MainB.Form" id="83c7e8f9-19c0-4aae-be62-82198d8d245a.0" configVersion="8977f3a47ff9eb499b682c1a1c3b83c400000000"/>
+		<Metadata name="Report.CorpusReport.Form.SettingsA" id="ba035c16-256c-4ff1-8caa-ee164f7a178b" configVersion="255f996f574cfd41b9efe1a67cd917d900000000"/>
+		<Metadata name="Report.CorpusReport.Form.SettingsA.Form" id="ba035c16-256c-4ff1-8caa-ee164f7a178b.0" configVersion="725ed14369ba3d438f3502a75e62ef3500000000"/>
+		<Metadata name="Report.CorpusReport.Form.SettingsB" id="9a62313c-379f-4025-a01c-d5d74996faaf" configVersion="2ef99c56083b234d8456a01786374ab500000000"/>
+		<Metadata name="Report.CorpusReport.Form.SettingsB.Form" id="9a62313c-379f-4025-a01c-d5d74996faaf.0" configVersion="5d5c5efe9203ca41b9b4c480db345f1900000000"/>
+	</ConfigVersions>
+</ConfigDumpInfo>

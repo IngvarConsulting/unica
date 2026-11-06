@@ -1,3 +1,6 @@
+#[path = "auxiliary.rs"]
+mod auxiliary;
+
 use super::*;
 use serde_json::{json, Value};
 use unica_execution_contract::invocation::DomainResult;
