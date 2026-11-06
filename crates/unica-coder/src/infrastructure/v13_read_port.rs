@@ -1320,6 +1320,22 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if matches!(evidence.artifact_kind(), "CommonCommand" | "CommandGroup") {
+            match unica_metadata_designer::command_root_read::CommandRootFacts::read(
+                target,
+                &descriptor,
+            ) {
+                Ok(facts) => facts.publish(&mut payload),
+                Err(message) => {
+                    let mut unreadable = payload["unreadable"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    unreadable.push(json!({"field":"properties", "message":message}));
+                    payload["unreadable"] = json!(unreadable);
+                }
+            }
+        }
         Ok(payload)
     }
 

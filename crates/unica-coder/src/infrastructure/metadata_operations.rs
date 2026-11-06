@@ -50,6 +50,34 @@ impl MetadataOperations {
         })
     }
 
+    /// Checks only the closed read profile for root commands and command groups.
+    pub(crate) fn command_root_diagnostics(
+        request: &unica_metadata::request::MetaInfoRequest,
+        context: &WorkspaceContext,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<MetaDiagnostic>, unica_metadata::request::MetaFailure> {
+        let resolved = resolve_typed_metadata_object(
+            &request.source_set,
+            &request.metadata_path,
+            "check",
+            context,
+            cancellation,
+        )?;
+        let facts = unica_metadata_designer::command_root_read::CommandRootFacts::read(
+            &request.metadata_path,
+            &resolved.descriptor_preimage,
+        )
+        .map_err(|message| {
+            unica_metadata_designer::edit::typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                message,
+                Some("properties"),
+            )
+            .with_metadata_path(request.metadata_path.clone())
+        })?;
+        Ok(facts.diagnostics)
+    }
+
     /// Enrich a metadata read from the two sources that can answer.
     ///
     /// Roles, subscriptions, functional options and predefined items are read
