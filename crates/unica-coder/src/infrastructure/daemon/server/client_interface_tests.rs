@@ -1,21 +1,15 @@
 //! `panels.set` and `homePage.set` on the configuration root through the
 //! canonical runtime. The expected documents are the 8.3.27 re-export of the
-//! edited configuration (`tests/fixtures/platform_8_3_27/client_interface`).
+//! edited configuration (`tests/fixtures/client_interface`).
 use super::actor_capacity_tests::direct_v5;
 use super::*;
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_workspace::test_support::tree_snapshot;
 
 const PANELS: &str = "Ext/ClientApplicationInterface.xml";
 const HOME_PAGE: &str = "Ext/HomePageWorkArea.xml";
-
-fn repository(relative: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(relative)
-}
 
 /// A copy of the native 8.3.27 workspace with a configuration and an
 /// extension; the configuration holds a common form, a processor form and a
@@ -35,7 +29,8 @@ fn workspace() -> tempfile::TempDir {
     }
     let root = tempfile::tempdir().unwrap();
     copy(
-        &repository("tests/fixtures/acceptance/workspace-borrowed"),
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/acceptance/workspace-borrowed"),
         root.path(),
     );
     root
@@ -122,7 +117,8 @@ fn assert_platform_bytes(root: &Path, case: &str) {
         assert_eq!(
             std::fs::read(root.join("src/cf").join(relative)).unwrap(),
             std::fs::read(
-                repository("tests/fixtures/platform_8_3_27/client_interface")
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures/client_interface")
                     .join(case)
                     .join(name)
             )

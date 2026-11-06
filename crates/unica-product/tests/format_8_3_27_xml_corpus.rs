@@ -1462,8 +1462,7 @@ fn copy_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
 
 fn seed_platform_support_fixture(workspace: &Path) -> Result<(), String> {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("tests/fixtures/platform_8_3_27/support-edit-bin-only/src");
+        .join("../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src");
     let destination = workspace.join("src");
     copy_fixture_tree(&fixture, &destination)?;
     write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])?;
@@ -1741,10 +1740,9 @@ fn dcs_mutation_ops(case_id: &str) -> Vec<Value> {
     ops
 }
 
-fn repository_fixture(relative: &str) -> PathBuf {
+fn platform_fixture(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("tests/fixtures")
+        .join("../../tests/fixtures/platform_8_3_27")
         .join(relative)
 }
 
@@ -1752,7 +1750,7 @@ fn repository_fixture(relative: &str) -> PathBuf {
 /// (`platform_8_3_27/empty_configuration`, имя `CorpusConfiguration`).
 fn seed_configuration(workspace: &Path) -> Result<(), String> {
     copy_fixture_tree(
-        &repository_fixture("platform_8_3_27/empty_configuration/src"),
+        &platform_fixture("empty_configuration/src"),
         &workspace.join("src"),
     )?;
     write_designer_project(workspace, &[("main", "CONFIGURATION", "src")])
@@ -1764,7 +1762,7 @@ fn seed_configuration(workspace: &Path) -> Result<(), String> {
 /// расширения нет.
 fn seed_extension(workspace: &Path) -> Result<(), String> {
     copy_fixture_tree(
-        &repository_fixture("platform_8_3_27/empty_extension/ext"),
+        &platform_fixture("empty_extension/ext"),
         &workspace.join("ext"),
     )?;
     write_designer_project(
@@ -1978,7 +1976,8 @@ fn seed_case(case: &ExecutableCase, workspace: &Path) -> Result<(), String> {
         "support-edit-bin-only" => return seed_platform_support_fixture(workspace),
         "xdto-add-nested-property" => {
             copy_fixture_tree(
-                &repository_fixture("xdto/enterprise-data-minimal"),
+                &Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tests/fixtures/xdto/enterprise-data-minimal"),
                 &workspace.join("src"),
             )?;
             return write_designer_project(workspace, &[("main", "CONFIGURATION", "src")]);
@@ -4670,8 +4669,7 @@ fn owner_assignment_requires_same_case_source_set_path() {
 #[test]
 fn tracked_xdto_package_fixture_is_an_importable_platform_export() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join("tests/fixtures/xdto/enterprise-data-minimal");
+        .join("../../tests/fixtures/xdto/enterprise-data-minimal");
 
     let configuration = fs::read_to_string(fixture.join("Configuration.xml"))
         .expect("tracked XDTO fixture must ship Configuration.xml");

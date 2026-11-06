@@ -2131,7 +2131,7 @@ pub(crate) mod tests {
     fn tracked_platform_uuid_fixture_round_trips_through_the_typed_emitter() {
         let xml = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/",
+            "/tests/fixtures/",
             "meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
         ));
         let document = Document::parse(xml).unwrap();

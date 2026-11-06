@@ -1381,7 +1381,7 @@ fn canonical_borrowed_and_unchanged_event_sources_publish_without_a_recheck() {
     // The acceptance extension root without its own objects, over the
     // configuration whose subscription is borrowed.
     let fixture = Fixture::new("workspace-event-source-order");
-    let template = repo_root().join("tests/fixtures/acceptance/workspace-format/src-ext");
+    let template = acceptance_fixtures().join("workspace-format/src-ext");
     let extension = fixture.workspace.join("src-ext");
     copy_image(&template.join("Languages"), &extension.join("Languages"));
     let root = std::fs::read_to_string(template.join("Configuration.xml"))
@@ -1797,10 +1797,9 @@ fn canonical_check_accepts_a_binary_template_without_data() {
     );
     // Двоичный макет планировщик не создаёт: описание — из выгрузки платформы.
     let templates = fixture.source.join("Catalogs/Products/Templates");
-    let descriptor = std::fs::read_to_string(
-        repo_root()
-            .join("tests/fixtures/platform_8_3_27/template-new-xml/native-binary-descriptor.xml"),
-    )
+    let descriptor = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../tests/fixtures/platform_8_3_27/template-new-xml/native-binary-descriptor.xml",
+    ))
     .unwrap()
     .replace("CorpusTemplate", "Empty")
     .replace("Corpus template", "Empty");
@@ -1883,10 +1882,9 @@ fn canonical_check_accepts_a_binary_template_without_data() {
 fn canonical_check_accepts_a_common_binary_template_without_data() {
     let runtime = runtime();
     let fixture = catalog_and_constant(&runtime);
-    let descriptor = std::fs::read_to_string(
-        repo_root()
-            .join("tests/fixtures/platform_8_3_27/template-new-xml/native-binary-descriptor.xml"),
-    )
+    let descriptor = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(
+        "../../tests/fixtures/platform_8_3_27/template-new-xml/native-binary-descriptor.xml",
+    ))
     .unwrap()
     .replace("CorpusTemplate", "Empty")
     .replace("Corpus template", "Empty")

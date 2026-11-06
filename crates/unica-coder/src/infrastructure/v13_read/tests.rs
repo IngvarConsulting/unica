@@ -5089,9 +5089,8 @@ fn canonical_dcs_validation_keeps_captured_owner_format_warnings() {
     }
 
     let fixture = RealExternalReaderFixture::new();
-    let template_owner = fixture_text(
-        "unica_mcp_script_parity/template-remove/ParityReport/Templates/MainSchema.xml",
-    );
+    let template_owner =
+        crate_fixture_text("template-remove/ParityReport/Templates/MainSchema.xml");
     let dcs = fixture_text("unica_mcp_script_parity/dcs-validate/BadPrefix.xml").replace(
         "xmlns:bad=\"http://example.com\">bad:CatalogRef.X",
         ">xs:string",

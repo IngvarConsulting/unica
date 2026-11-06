@@ -19304,7 +19304,7 @@ fn main() {
     );
     fn template_removal_workspace_from_fixture(relative: &str) -> tempfile::TempDir {
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures")
+            .join("../../tests/fixtures/acceptance")
             .join(relative);
         let entries = own_removal_snapshot(&fixture);
         let workspace = tempfile::tempdir().unwrap();
@@ -19534,7 +19534,7 @@ fn main() {
         const FILLED_REFERENCE: &str = "<MainDataCompositionSchema>Report.F05Report.Template.F05Schema</MainDataCompositionSchema>";
 
         for top_at in [TEMPLATE_AT, OWNER_AT] {
-            let workspace = template_removal_workspace_from_fixture("acceptance/workspace-dcs");
+            let workspace = template_removal_workspace_from_fixture("workspace-dcs");
             let source = workspace.path().join("src");
             let owner_path = source.join(OWNER);
             let original_owner = std::fs::read_to_string(&owner_path).unwrap();
@@ -19807,8 +19807,8 @@ mod medium_finite_deadline_guard {
     /// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
     #[test]
     fn production_operation_paths_start_no_new_finite_deadline() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        let mut pending = std::fs::read_dir(root.join("crates"))
+        let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates");
+        let mut pending = std::fs::read_dir(&crates)
             .unwrap()
             .map(|entry| entry.unwrap().path().join("src"))
             .filter(|path| path.is_dir())
@@ -19824,9 +19824,8 @@ mod medium_finite_deadline_guard {
                 if path.extension().and_then(|extension| extension.to_str()) != Some("rs") {
                     continue;
                 }
-                let relative = path
-                    .strip_prefix(&root)
-                    .unwrap()
+                let relative = std::path::Path::new("crates")
+                    .join(path.strip_prefix(&crates).unwrap())
                     .to_string_lossy()
                     .replace('\\', "/");
                 if is_test_source(&relative) {

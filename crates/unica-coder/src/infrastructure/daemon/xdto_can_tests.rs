@@ -17,13 +17,9 @@ impl Fixture {
         let root = tempfile::tempdir().unwrap();
         let workspace =
             unica_workspace::test_support::canonical_path(root.path()).join("workspace");
-        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap();
         for (relative, bytes) in unica_workspace::test_support::tree_snapshot(
-            &repository.join("tests/fixtures/acceptance/workspace"),
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/acceptance/workspace"),
         ) {
             let path = workspace.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();

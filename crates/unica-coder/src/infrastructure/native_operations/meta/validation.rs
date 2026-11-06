@@ -2745,19 +2745,19 @@ mod tests {
     fn internal_reverse_registrar_inconsistency_is_not_lost() {
         let descriptor = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
         ));
         let registration = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Configuration.xml"
         ));
         let language = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Languages/Русский.xml"
         ));
         let registrar = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Documents/Регистратор.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Documents/Регистратор.xml"
         ))
         .replace(
             "InformationRegister.SubordinateRegister",
@@ -2803,15 +2803,15 @@ mod tests {
     fn registrar_evidence_availability_is_strict_read_only() {
         let descriptor = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
         ));
         let registration = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Configuration.xml"
         ));
         let language = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Languages/Русский.xml"
         ));
         let mut unavailable = subject(
             "InformationRegister.SubordinateRegister",
@@ -2861,19 +2861,19 @@ mod tests {
     fn complete_read_proof_accepts_consistent_forward_and_reverse_dependencies() {
         let document = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Documents/Регистратор.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Documents/Регистратор.xml"
         ));
         let register = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
         ));
         let registration = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Configuration.xml"
         ));
         let language = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Languages/Русский.xml"
         ));
         let document_subject = subject(
             "Document.Регистратор",

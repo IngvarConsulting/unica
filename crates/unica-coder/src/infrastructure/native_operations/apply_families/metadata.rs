@@ -3880,6 +3880,15 @@ mod tests {
         .unwrap()
     }
 
+    fn configuration_root_props(relative: &str) -> String {
+        std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/configuration_root_props")
+                .join(relative),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn configuration_root_properties_match_the_platform_reexport() {
         let fixture = MetadataFixture::with_files(&[
@@ -3916,7 +3925,7 @@ mod tests {
         );
         assert_eq!(
             texts[Path::new("Configuration.xml")],
-            configuration_root_fixture("configuration_root_props/main/Configuration.xml"),
+            configuration_root_props("main/Configuration.xml"),
             "the edit must be byte-equal to the platform's re-export of it"
         );
         assert_eq!(
@@ -3936,9 +3945,7 @@ mod tests {
             SourceSetKind::Extension,
             &[(
                 "Configuration.xml",
-                &configuration_root_fixture(
-                    "configuration_root_props/extension/source-Configuration.xml",
-                ),
+                &configuration_root_props("extension/source-Configuration.xml"),
             )],
         );
         let (staged, effects) = plan_all_with_effects(
@@ -3955,7 +3962,7 @@ mod tests {
         let texts = staged_texts(&staged);
         assert_eq!(
             texts[Path::new("Configuration.xml")],
-            configuration_root_fixture("configuration_root_props/extension/Configuration.xml"),
+            configuration_root_props("extension/Configuration.xml"),
             "the edit must be byte-equal to the platform's re-export of it"
         );
         assert_eq!(

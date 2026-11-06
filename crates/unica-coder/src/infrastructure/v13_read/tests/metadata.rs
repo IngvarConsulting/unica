@@ -1534,7 +1534,7 @@ fn predefined_items_other_owner_fields_survive_addressed_reads() {
             &fixture
                 .source
                 .join(format!("{directory}/{name}/Ext/Predefined.xml")),
-            &fixture_text(&format!("platform_8_3_27/predefined/{fixture_file}")),
+            &crate_fixture_text(&format!("predefined/{fixture_file}")),
         );
     }
     let service = fixture.view_service();

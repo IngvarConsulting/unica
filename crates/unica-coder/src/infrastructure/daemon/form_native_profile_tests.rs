@@ -119,7 +119,7 @@ fn canonical_form_content_is_written_as_1c_exports_it() {
     assert!(number.contains("<v8:Digits>10</v8:Digits>"), "{number}");
     let native = std::fs::read(
         Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/platform_8_3_27/form-native-profile/native-form.xml"),
+            .join("tests/fixtures/form-native-profile/native-form.xml"),
     )
     .unwrap();
     assert!(

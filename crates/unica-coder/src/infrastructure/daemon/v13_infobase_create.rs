@@ -964,7 +964,7 @@ mod tests {
 
     fn captured(name: &str) -> Value {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/v8_runner_015")
+            .join("tests/fixtures/v8_runner_015")
             .join(name);
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }

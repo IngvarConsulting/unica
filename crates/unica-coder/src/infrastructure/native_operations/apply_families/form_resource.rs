@@ -991,7 +991,7 @@ mod tests {
         let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
         let platform_export = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/text-document-field/Form.xml"
+            "/tests/fixtures/text-document-field/Form.xml"
         ));
         let platform = roxmltree::Document::parse(platform_export).unwrap();
         for name in ["Протокол1", "Протокол2"] {

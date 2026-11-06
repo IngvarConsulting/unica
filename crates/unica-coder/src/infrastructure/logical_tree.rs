@@ -384,17 +384,9 @@ mod tests {
 #[cfg(test)]
 mod skill_address_guard {
     use super::route_logical_address;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use unica_address::address::QualifiedAddress;
     use unica_bsl::profile::PlatformProfile;
-
-    fn repo_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .expect("корень репозитория")
-            .to_path_buf()
-    }
 
     /// Всякий логический адрес из примера скилла разбирается и маршрутизируется.
     ///
@@ -407,7 +399,7 @@ mod skill_address_guard {
     /// rule: INV.SURFACE.SKILL-EXAMPLE-ADDRESSES-ROUTE
     #[test]
     fn every_skill_example_address_is_routable() {
-        let skills = repo_root().join("plugins/unica/skills");
+        let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica/skills");
         let profile = PlatformProfile::v8_3_27();
         let mut checked = 0usize;
         let mut offenders = Vec::new();

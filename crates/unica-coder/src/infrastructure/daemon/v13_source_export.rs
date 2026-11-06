@@ -916,7 +916,7 @@ mod medium_tests {
 
     fn captured_014(name: &str) -> Value {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/v8_runner_014")
+            .join("tests/fixtures/v8_runner_014")
             .join(name);
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
@@ -1380,7 +1380,13 @@ mod medium_tests {
                 .unwrap();
                 let indexes = staged.join("Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml");
                 fs::create_dir_all(indexes.parent().unwrap()).unwrap();
-                fs::write(&indexes, include_bytes!("../../../../../tests/fixtures/platform_8_3_27/additional_indexes/AdditionalIndexes.xml")).unwrap();
+                fs::write(
+                    &indexes,
+                    include_bytes!(
+                        "../../../tests/fixtures/additional_indexes/AdditionalIndexes.xml"
+                    ),
+                )
+                .unwrap();
                 assert_eq!(
                     fs::read(expected_target.join("local-change.bsl")).unwrap(),
                     b"old local source"
@@ -1413,7 +1419,10 @@ mod medium_tests {
             assert_eq!(result.data.as_ref().unwrap()["extension"], json!(extension));
             assert!(!target.join("local-change.bsl").exists());
             assert!(target.join("Catalogs/CorpusCatalog.xml").is_file());
-            assert_eq!(fs::read(target.join("Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml")).unwrap(), include_bytes!("../../../../../tests/fixtures/platform_8_3_27/additional_indexes/AdditionalIndexes.xml"));
+            assert_eq!(
+                fs::read(target.join("Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml")).unwrap(),
+                include_bytes!("../../../tests/fixtures/additional_indexes/AdditionalIndexes.xml")
+            );
             assert_eq!(fs::read(root.path().join(CONFIG_NAME)).unwrap(), original);
             assert_eq!(
                 fs::read(root.path().join(LOCAL_CONFIG_NAME)).unwrap(),

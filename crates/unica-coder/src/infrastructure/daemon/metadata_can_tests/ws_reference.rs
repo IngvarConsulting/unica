@@ -341,7 +341,11 @@ fn mixed_url_comment_and_extension_contract() {
     )
     .unwrap();
     std::fs::create_dir_all(source.join("WSReferences")).unwrap();
-    std::fs::copy(repo_root().join("tests/fixtures/acceptance/workspace-wsreference-location-url/src/WSReferences/Probe.xml"), source.join("WSReferences/Probe.xml")).unwrap();
+    std::fs::copy(
+        acceptance_fixtures().join("workspace-wsreference-location-url/src/WSReferences/Probe.xml"),
+        source.join("WSReferences/Probe.xml"),
+    )
+    .unwrap();
     let at = "ext:WSReference.Probe";
     let can = contract(&runtime, &extension, at, "props.set");
     let keys = can["argsSchema"]["properties"]["values"]["properties"]

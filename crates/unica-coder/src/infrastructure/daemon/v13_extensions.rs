@@ -977,7 +977,7 @@ mod tests {
             for preview in [true, false] {
                 let phase = if preview { "preview" } else { "apply" };
                 let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../tests/fixtures/v8_runner_014")
+                    .join("tests/fixtures/v8_runner_014")
                     .join(format!("{label}-{phase}.json"));
                 let envelope: Value =
                     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
@@ -988,7 +988,7 @@ mod tests {
 
     fn captured_014(name: &str) -> Value {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/v8_runner_014")
+            .join("tests/fixtures/v8_runner_014")
             .join(name);
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }

@@ -4419,7 +4419,7 @@ pub(crate) mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         let directory =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/mutation-schemas");
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mutation-schemas");
         let recorded = |directory: &Path| -> BTreeMap<String, (PathBuf, String)> {
             let Ok(entries) = std::fs::read_dir(directory) else {
                 return BTreeMap::new();

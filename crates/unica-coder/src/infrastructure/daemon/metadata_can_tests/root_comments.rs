@@ -2,11 +2,8 @@ use super::*;
 
 fn owners() -> Vec<(String, String, String)> {
     let manifest: Value = serde_json::from_slice(
-        &std::fs::read(
-            repo_root()
-                .join("tests/fixtures/acceptance/workspace-root-comments/native-manifest.json"),
-        )
-        .unwrap(),
+        &std::fs::read(acceptance_fixtures().join("workspace-root-comments/native-manifest.json"))
+            .unwrap(),
     )
     .unwrap();
     manifest["owners"]
@@ -183,7 +180,8 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
     std::fs::write(
         form_dir.join("Form.xml"),
         std::fs::read(
-            repo_root().join("tests/fixtures/platform_8_3_27/new-xml/native-form-content.xml"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/new-xml/native-form-content.xml"),
         )
         .unwrap(),
     )
