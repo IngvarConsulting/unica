@@ -1,0 +1,191 @@
+{
+  "id": "S-2162-recursive-subsystem-content",
+  "issue": 2162,
+  "area": "Навигация по исходникам",
+  "task": "Получить объединённый состав поддерева с непосредственными источниками и удалить только одно включение по адресу источника",
+  "workspace": "tests/fixtures/acceptance/workspace-recursive-subsystems",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:CommonModule.ОбщегоНазначения",
+              "kind": "CommonModule",
+              "subsystems": [
+                "main:Subsystem.СтандартныеПодсистемы",
+                "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность",
+                "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность.Subsystem.Nested"
+              ]
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonModule.ОбновлениеИнформационнойБазыБСП",
+              "kind": "CommonModule",
+              "subsystems": [
+                "main:Subsystem.СтандартныеПодсистемы"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:CommonModule.ОбщегоНазначения",
+              "kind": "CommonModule",
+              "subsystems": [
+                "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность",
+                "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность.Subsystem.Nested"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность",
+        "ops": [
+          {
+            "op": "content.remove",
+            "args": {
+              "items": [
+                {
+                  "object": "CommonModule.ОбщегоНазначения"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:CommonModule.ОбщегоНазначения",
+              "kind": "CommonModule",
+              "subsystems": [
+                "main:Subsystem.СтандартныеПодсистемы",
+                "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность.Subsystem.Nested"
+              ]
+            },
+            {
+              "relation": "content",
+              "at": "main:CommonModule.ОбновлениеИнформационнойБазыБСП",
+              "kind": "CommonModule",
+              "subsystems": [
+                "main:Subsystem.СтандартныеПодсистемы"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:CommonModule.ОбщегоНазначения",
+              "kind": "CommonModule",
+              "subsystems": [
+                "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность.Subsystem.Nested"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность.Subsystem.Nested.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "relation": "content",
+              "at": "main:CommonModule.ОбщегоНазначения",
+              "kind": "CommonModule",
+              "subsystems": [
+                "main:Subsystem.СтандартныеПодсистемы.Subsystem.БазоваяФункциональность.Subsystem.Nested"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

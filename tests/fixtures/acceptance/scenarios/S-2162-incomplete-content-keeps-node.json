@@ -1,0 +1,64 @@
+{
+  "id": "S-2162-incomplete-content-keeps-node",
+  "issue": 2162,
+  "area": "Частичное чтение подсистем",
+  "task": "Повреждённый зарегистрированный потомок не скрывает свойства корня, неизвестный состав не получает ложный счётчик, Relation отказывает",
+  "workspace": "tests/fixtures/acceptance/workspace-subsystem-incomplete-content",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "СтандартныеПодсистемы"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "main:Subsystem.СтандартныеПодсистемы.Relation"
+        },
+        {
+          "pointer": "/data/branches",
+          "noneMatches": {
+            "at": "main:Subsystem.СтандартныеПодсистемы.Relation"
+          }
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:Subsystem.СтандартныеПодсистемы.Subsystem",
+            "count": 1
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.СтандартныеПодсистемы.Relation"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/detailCode",
+          "eq": "source_unreadable"
+        },
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

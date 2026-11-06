@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex};
 use unica_address::address::NodeKind;
 use unica_execution_contract::view_error::ViewError;
 use unica_metadata::subsystem_topology::SubsystemTopology;
-use unica_metadata_designer::subsystem_topology::read_registered_subsystem_topology;
+use unica_metadata_designer::subsystem_topology::{
+    read_registered_subsystem_content, read_registered_subsystem_topology,
+};
 use unica_metadata_designer::support::SupportState;
 use unica_refusal::RefusalDetail;
 use unica_source_contract::read::{FileStamp, ReadFile, RetainedSourceRead, SourceDirectory};
@@ -510,6 +512,40 @@ impl RegistrationCache {
         let settled = stamps.iter().all(|(_, stamp)| self.retains(stamp));
         *slot(&self.subsystems) = settled.then(|| (stamps, Arc::clone(&topology)));
         checkpoint()?;
+        Ok(topology)
+    }
+
+    /// One retained capture per new query; cursor pages reuse the view snapshot.
+    pub(crate) fn subsystem_subtree(
+        &self,
+        root: &Arc<SourceDirectory>,
+        selected: &unica_metadata::subsystem::SubsystemAddress,
+        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
+    ) -> Result<
+        Vec<unica_metadata_designer::subsystem_topology::RegisteredSubsystemContent>,
+        ViewError,
+    > {
+        let reader = StampedTopologyRead {
+            root: Arc::clone(root),
+            stamps: Arc::new(Mutex::new(Vec::new())),
+        };
+        let mut interrupted = None;
+        let mut io_checkpoint = || {
+            checkpoint().map_err(|error| {
+                let message = error.to_string();
+                interrupted = Some(error);
+                io::Error::other(message)
+            })
+        };
+        let built =
+            read_registered_subsystem_content(Box::new(reader), selected, &mut io_checkpoint);
+        if let Some(error) = interrupted {
+            return Err(error);
+        }
+        let topology = built.map_err(|error| {
+            ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
+        })?;
+        self.parsed();
         Ok(topology)
     }
 
