@@ -16,7 +16,6 @@
 use super::server::V5CanonicalInvocationRuntime;
 use super::v13_service::{preflight_apply_operations, CanonicalV13ReadService};
 use crate::domain::apply::ApplyRequest;
-use crate::domain::apply::SourceSetWriteSupport;
 
 use crate::domain::logical_route::classify_route;
 use unica_bsl::profile::PlatformProfile;
@@ -1110,7 +1109,7 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
             &unica_operations::recovery::no_member_lookup,
             &|_| None,
         );
-        if !checked.traits.writes(descriptor.family()) {
+        if !descriptor.writes_source(checked.traits) {
             // Набор без записи: словарь пуст, предварительная проверка
             // отвечает отказом набора, а не «не тот узел».
             let refused = preflight

@@ -10,9 +10,17 @@ pub enum CodeSupportLock {
 pub fn prove_staged_code_support(
     staged: &mut ApplyProposal<'_>,
     support_policy: unica_source_contract::proposal::SupportPolicyMode,
+    source_kind: unica_source_contract::SourceSetKind,
     owner_bytes: &[Vec<u8>],
     at_path: &str,
 ) -> Result<Option<CodeSupportLock>, ApplyPlanError> {
+    if matches!(
+        source_kind,
+        unica_source_contract::SourceSetKind::ExternalProcessor
+            | unica_source_contract::SourceSetKind::ExternalReport
+    ) {
+        return Ok(None);
+    }
     let marker = staged
         .read(Path::new("Ext/ParentConfigurations.bin"))
         .map_err(|error| ApplyPlanError::staging(error, at_path))?;

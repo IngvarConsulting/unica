@@ -1,0 +1,343 @@
+{
+  "id": "S-1070-external-report-code",
+  "issue": 1070,
+  "area": "Код BSL",
+  "task": "Изменить объектный модуль ERF вставкой и заменой, затем EPF общей операцией: can и preview соответствуют публикации по токену, XML владельцев и соседние артефакты сохраняются",
+  "workspace": "tests/fixtures/acceptance/workspace-external",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "erf:ExternalReport.Sales.Module.Object"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "initial": {
+          "file": "erf/Sales/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "owner": {
+          "file": "erf/Sales.xml",
+          "kind": "sha256"
+        },
+        "other": {
+          "file": "epf/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "epfInitial": {
+          "file": "epf/Import/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        },
+        "epfOwner": {
+          "file": "epf/Import.xml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/can/0/op",
+          "eq": "code.insert"
+        },
+        {
+          "pointer": "/data/can/1/op",
+          "eq": "code.replace"
+        },
+        {
+          "pointer": "/data/can/2",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "erf:ExternalReport.Sales.Module.Object",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "Процедура CorpusProbe() Экспорт\n    Сообщить(\"Unica1070inserted\");\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "erf/Sales/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        },
+        {
+          "path": "erf/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.owner"
+        },
+        {
+          "path": "epf/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.other"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "erf/Sales/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "notEq": "$capture.initial"
+        },
+        {
+          "path": "erf/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.owner"
+        },
+        {
+          "path": "epf/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.other"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "erf:ExternalReport.Sales.Module.Object.Method.CorpusProbe.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "contains": "Unica1070inserted"
+        }
+      ],
+      "captures": {
+        "inserted": {
+          "file": "erf/Sales/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "erf:ExternalReport.Sales.Module.Object.Method.CorpusProbe",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "Процедура CorpusProbe() Экспорт\n    Сообщить(\"Unica1070replaced\");\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "erf/Sales/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.inserted"
+        },
+        {
+          "path": "erf/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.owner"
+        },
+        {
+          "path": "epf/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.other"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "erf/Sales/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "notEq": "$capture.inserted"
+        },
+        {
+          "path": "erf/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.owner"
+        },
+        {
+          "path": "epf/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.other"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "erf:ExternalReport.Sales.Module.Object.Method.CorpusProbe.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "contains": "Unica1070replaced"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "erf/Sales.xml",
+          "kind": "sha256",
+          "eq": "$capture.owner"
+        },
+        {
+          "path": "epf/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.other"
+        }
+      ],
+      "captures": {
+        "reportFinal": {
+          "file": "erf/Sales/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "epf:ExternalDataProcessor.Import.Module.Object",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "Процедура CorpusProbe() Экспорт\n    Сообщить(\"Unica1070epf\");\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "epf/Import/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.epfInitial"
+        },
+        {
+          "path": "erf/Sales/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.reportFinal"
+        },
+        {
+          "path": "epf/Import.xml",
+          "kind": "sha256",
+          "eq": "$capture.epfOwner"
+        },
+        {
+          "path": "epf/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.other"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "epf/Import/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "notEq": "$capture.epfInitial"
+        },
+        {
+          "path": "erf/Sales/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.reportFinal"
+        },
+        {
+          "path": "epf/Import.xml",
+          "kind": "sha256",
+          "eq": "$capture.epfOwner"
+        },
+        {
+          "path": "epf/Other/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.other"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "epf:ExternalDataProcessor.Import.Module.Object.Method.CorpusProbe.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "contains": "Unica1070epf"
+        }
+      ]
+    }
+  ]
+}
