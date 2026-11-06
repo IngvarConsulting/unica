@@ -17,11 +17,16 @@ struct Fixture {
 
 impl Fixture {
     fn code() -> Self {
+        Self::image("workspace-code")
+    }
+
+    fn image(name: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
         let workspace =
             unica_workspace::test_support::canonical_path(root.path()).join("workspace");
         let image = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/acceptance/workspace-code");
+            .join("../../tests/fixtures/acceptance")
+            .join(name);
         for (relative, bytes) in unica_workspace::test_support::tree_snapshot(&image) {
             let path = workspace.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -209,4 +214,33 @@ fn canonical_code_execution_refuses_a_module_owner_changed_after_preview() {
         assert!(message.contains(owner), "{owner}: {message}");
         assert_eq!(std::fs::read(&module).unwrap(), original, "{owner}");
     }
+}
+
+#[test]
+fn storage_form_preview_preserves_the_tree_and_publication_changes_only_its_bsl() {
+    let fixture = Fixture::image("workspace-storage-form-module");
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace.join("src"));
+    let at = "main:SettingsStorage.Probe.Form.Save.Module.Form.Body";
+    let text = "&НаСервере\nПроцедура ПриСозданииНаСервере(Отказ, СтандартнаяОбработка)\n    Сообщить(\"storage-form-updated\");\nКонецПроцедуры\n\n&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n";
+    let planned = fixture.preview("code.replace", at, json!({"text":text}));
+    assert!(planned.ok, "{planned:?}");
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace.join("src")),
+        before,
+        "preview preserves every path and byte"
+    );
+    let token = planned.data.as_ref().unwrap()["executionToken"].clone();
+    let executed = fixture.call(ToolIdentity::Apply, json!({"executionToken":token}));
+    assert!(executed.ok, "{executed:?}");
+    let mut expected = before;
+    let target = PathBuf::from("SettingsStorages/Probe/Forms/Save/Ext/Form/Module.bsl");
+    assert_ne!(
+        expected.insert(target, text.as_bytes().to_vec()).unwrap(),
+        text.as_bytes()
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace.join("src")),
+        expected,
+        "publication changes only the intended BSL; no added or removed files"
+    );
 }

@@ -319,6 +319,7 @@ pub(crate) mod tests {
             "DocumentJournals",
             "Sequences",
             "DocumentNumerators",
+            "SettingsStorages",
         ];
         const TEMPLATE_OWNER_DIRECTORIES: &[&str] = &[
             "Catalogs",

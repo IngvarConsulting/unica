@@ -272,6 +272,6 @@ mod tests {
             );
             assert!(reached.insert(address.to_string()), "{}", case.case);
         }
-        assert_eq!(reached.len(), 25);
+        assert_eq!(reached.len(), 26);
     }
 }

@@ -5,7 +5,7 @@ use crate::layout::{
 use std::path::{Component, Path, PathBuf};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_address::module_routes::{
-    has_direct_module_route, has_nested_module_route, ModuleRole, ModuleRouteKind,
+    has_direct_module_route, has_nested_module_role, ModuleRole, ModuleRouteKind,
 };
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use unica_source_contract::SourceSetKind;
@@ -328,7 +328,12 @@ impl PlatformXmlModuleLayoutDescriptor {
             ModuleLayoutCapability::NestedFormOrCommand => captures.kind.is_some_and(|kind| {
                 NodeKind::parse(kind.tag)
                     .ok()
-                    .is_some_and(has_nested_module_route)
+                    .zip(match self.fixed_role {
+                        Some(PlatformXmlModuleRole::FormModule) => Some(ModuleRole::Form),
+                        Some(PlatformXmlModuleRole::CommandModule) => Some(ModuleRole::Command),
+                        _ => None,
+                    })
+                    .is_some_and(|(owner, role)| has_nested_module_role(owner, role))
             }),
         }
     }
@@ -895,8 +900,11 @@ fn external_module_relative(
 
 #[cfg(test)]
 mod code_layout_tests {
-    use super::platform_xml_module_identity as module_identity;
-    use std::path::Path;
+    use super::{
+        platform_xml_module_identity as module_identity, platform_xml_module_relative,
+        MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    };
+    use std::path::{Path, PathBuf};
     #[test]
     fn canonical_module_layouts_have_stable_owner_and_role() {
         let direct_cases = [
@@ -1011,6 +1019,35 @@ mod code_layout_tests {
             );
         }
     }
+    #[test]
+    fn settings_storage_nested_form_layout_does_not_admit_commands() {
+        let path = "SettingsStorages/User/Forms/Save/Ext/Form/Module.bsl";
+        let identity = module_identity(Path::new(path)).unwrap();
+        assert_eq!(identity.owner, "SettingsStorage.User");
+        assert_eq!(identity.role.as_str(), "FormModule");
+        let address = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            "SettingsStorage.User.Form.Save.FormModule",
+        )
+        .unwrap();
+        assert_eq!(
+            platform_xml_module_relative(&address).unwrap(),
+            PathBuf::from(path)
+        );
+        for path in [
+            "SettingsStorages/User/Commands/Open/Ext/CommandModule.bsl",
+            "SettingsStorages/User/Templates/Layout/Ext/Form/Module.bsl",
+            "SettingsStorages/User/Forms/Save/Ext/ObjectModule.bsl",
+        ] {
+            assert!(module_identity(Path::new(path)).is_err(), "{path}");
+        }
+        assert_module_identity(
+            "SettingsStorages/User/Ext/ManagerModule.bsl",
+            "SettingsStorage.User",
+            "ManagerModule",
+        );
+    }
+
     #[test]
     fn noncanonical_or_unsupported_module_layouts_are_rejected() {
         for path in [

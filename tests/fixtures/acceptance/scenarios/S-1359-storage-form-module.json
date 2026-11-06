@@ -1,0 +1,253 @@
+{
+  "id": "S-1359-storage-form-module",
+  "issue": 1359,
+  "area": "Код BSL",
+  "task": "Прочитать, найти и разрешить модуль формы хранилища настроек; перейти к двум обработчикам формы, проверить Manager и пустой Module, затем предпросмотреть и применить правку только BSL",
+  "workspace": "tests/fixtures/acceptance/workspace-storage-form-module",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Save.Module"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form"
+        }
+      ],
+      "captures": {
+        "module": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.module"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "storage-form-probe",
+        "scope": "main:SettingsStorage.Probe.Form.Save.Module.Form"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/matches/0/at",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form.Method.ПриСозданииНаСервере.Body#L3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/SettingsStorages/Probe/Forms/Save/Ext/Form/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Save.Event.OnCreateAtServer"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form.Method.ПриСозданииНаСервере"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Save.Event.OnOpen"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/implementationAt",
+          "eq": "main:SettingsStorage.Probe.Form.Save.Module.Form.Method.ПриОткрытии"
+        },
+        {
+          "pointer": "/data/props/state",
+          "eq": "implemented"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Empty.Module"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SettingsStorage.Probe.Form.Empty.Module.Form"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Module.Manager.Method.ManagerProbe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Save.Module.Form.Body",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "text": "&НаСервере\nПроцедура ПриСозданииНаСервере(Отказ, СтандартнаяОбработка)\n    Сообщить(\"storage-form-updated\");\nКонецПроцедуры\n\n&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Forms/Save/Ext/Form/Module.bsl",
+          "eq": "ff66580348ed97622e3d797526fc2bb778deaaac5efd98a1ee2b1637d9c9ef3b"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:SettingsStorage.Probe.Form.Save.Module.Form.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/sourceText",
+          "eq": "&НаСервере\nПроцедура ПриСозданииНаСервере(Отказ, СтандартнаяОбработка)\n    Сообщить(\"storage-form-updated\");\nКонецПроцедуры\n\n&НаКлиенте\nПроцедура ПриОткрытии(Отказ)\nКонецПроцедуры\n"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "README.md",
+          "eq": "2c5276b72aa860eb6590cb89a3381df4b1680abd7b816d52b01f691bac13e808"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "3f74578c1d179751d2ea80370666ca87cddd794d1acf8ac1fcf283d415c96306"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Ext/ManagerModule.bsl",
+          "eq": "56efa9e0cb6e0252fe5cb6503cf283dc2c32a4aade7ee39319fa5f0c89c283c2"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Forms/Empty/Ext/Form.xml",
+          "eq": "3a4d2f9f3cd3bd8483d76358bfadccbead24a7bb4fa752c32d5dfe0b047cc061"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Forms/Empty.xml",
+          "eq": "b6ce7a4fadcad8ab2190a6c87dc3963f365d6ee7f3b6f1b41f030560be781f93"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Forms/Save/Ext/Form/Module.bsl",
+          "eq": "4b2f6f133665f6ec86a4a0d81765ed5a5963da8d777bddab36f48d5cdebe485d"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Forms/Save/Ext/Form.xml",
+          "eq": "3a4d2f9f3cd3bd8483d76358bfadccbead24a7bb4fa752c32d5dfe0b047cc061"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe/Forms/Save.xml",
+          "eq": "ba6f879dfa39d6759b83afbb6b64ec2426b96cccbb124a78110abd6e0764f0ce"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/SettingsStorages/Probe.xml",
+          "eq": "4a794ee60b3d4ca113425bae72ccac8e1681b08073df47a705afba10fcfeee4f"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "2618d6ec361d75ce1efe21543871505441b29fb99cc808591470c89fbcd0529b"
+        }
+      ]
+    }
+  ]
+}
