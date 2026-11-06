@@ -327,6 +327,9 @@ pub fn typed_element(
             return None;
         }
         return Some(MetaElementData {
+            column_references: (node.tag_name().name() == "Column"
+                && target.segments().next() == Some("DocumentJournal"))
+            .then(|| crate::column_references::read(node)),
             name,
             incomplete: !simple_reference,
             synonym: None,
@@ -557,6 +560,9 @@ pub fn typed_element(
         .chain(profile_properties)
         .collect();
     Some(MetaElementData {
+        column_references: (node.tag_name().name() == "Column"
+            && target.segments().next() == Some("DocumentJournal"))
+        .then(|| crate::column_references::read(node)),
         name,
         incomplete,
         synonym,

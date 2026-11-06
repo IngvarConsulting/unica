@@ -20,6 +20,7 @@ pub mod format_contract;
 pub mod edit;
 pub mod edit_type;
 
+pub mod column_references;
 pub mod descriptor_comment;
 pub mod functional_option;
 pub mod info;
