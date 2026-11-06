@@ -26,4 +26,4 @@ serde_json.workspace = true
 unica-metadata = { path = "../unica-metadata" }
 
 [package.metadata.unica]
-read-outside-baseline = 1
+inputs = ["tests/fixtures/v013/address-profile-8.3.27.json"]

@@ -22,4 +22,4 @@ serde_json.workspace = true
 unica-xml-format = { path = "../unica-xml-format" }
 
 [package.metadata.unica]
-read-outside-baseline = 2
+inputs = ["tests/fixtures/xdto/enterprise-data-minimal"]

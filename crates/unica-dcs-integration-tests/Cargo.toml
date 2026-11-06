@@ -23,4 +23,4 @@ unica-work-control = { path = "../unica-work-control", features = ["test-support
 unica-workspace = { path = "../unica-workspace" }
 
 [package.metadata.unica]
-read-outside-baseline = 1
+inputs = ["tests/fixtures/acceptance/workspace"]
