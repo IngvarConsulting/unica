@@ -230,7 +230,7 @@ CI/toolchain или неизвестном diff только прогревае�
 [порядку ворот pull request](../../../CONTRIBUTING.md#ворота-pull-request).
 
 На PR тестов Rust нет, поэтому перед снятием черновика обязателен локальный прогон
-затронутых крейтов (при правке строк `pub` — и прямо зависимых):
+затронутых крейтов:
 `python scripts/ci/run-static-tests.py` и
 `cargo nextest run --profile queue -p <крейт>`.
 
