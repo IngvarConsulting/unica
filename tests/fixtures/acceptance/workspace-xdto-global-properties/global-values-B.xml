@@ -1,0 +1,6 @@
+﻿<Envelope xmlns="urn:unica:global-consumer" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+	<Kept>kept</Kept>
+	<LocalGlobal>local</LocalGlobal>
+	<Shared xmlns="urn:unica:global-provider">foreign</Shared>
+	<Future>future</Future>
+</Envelope>

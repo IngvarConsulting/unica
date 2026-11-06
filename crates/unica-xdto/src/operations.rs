@@ -84,6 +84,9 @@ impl XdtoSite {
         if self == Self::XdtoPackage {
             return segments.len() == 1;
         }
+        if self == Self::XdtoPropertyContainer && segments.len() == 1 {
+            return true;
+        }
         let Some(ty) = segments.get(1) else {
             return false;
         };
@@ -121,7 +124,7 @@ impl XdtoSite {
         }
         let segments = address.segments();
         let package = &segments[0];
-        if self == Self::XdtoPackage {
+        if segments.len() == 1 {
             return Ok((address, Vec::new()));
         }
         let ty = &segments[1];
@@ -266,6 +269,16 @@ pub struct XdtoAddPropertyArgs {
     pub property_path: Option<XdtoPropertyPath>,
 }
 
+/// A reference has no competing own name or type definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct XdtoAddReferencePropertyArgs {
+    pub at: QualifiedAddress,
+    pub reference: PrefixedXmlQName,
+    pub min_occurs: Option<u8>,
+    pub max_occurs: Option<i64>,
+    pub property_path: Option<XdtoPropertyPath>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct XdtoRemoveTypeArgs {
     pub at: QualifiedAddress,
@@ -298,6 +311,7 @@ pub enum XdtoPlanOperation {
     AddValueType(XdtoAddValueTypeArgs),
     AddObjectType(XdtoAddObjectTypeArgs),
     AddProperty(XdtoAddPropertyArgs),
+    AddReferenceProperty(XdtoAddReferencePropertyArgs),
     RemoveType(XdtoRemoveTypeArgs),
     RemoveProperty(XdtoRemovePropertyArgs),
     RenameProperty(XdtoRenamePropertyArgs),
@@ -359,6 +373,40 @@ fn property_definition() -> Value {
     property
 }
 
+fn creation_property_definition() -> Value {
+    let mut property = property_definition();
+    property["properties"]["ref"] = qname();
+    property["required"] = json!([]);
+    property["anyOf"] = json!([
+        {"required":["name","type"]},
+        {"required":["name","objectType"]},
+        {"required":["name","valueType"]},
+        {"required":["ref"]}
+    ]);
+    for key in ["name", "type", "objectType", "valueType"] {
+        property["not"]["anyOf"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"required":["ref",key]}));
+    }
+    property
+}
+
+fn global_property_definition() -> Value {
+    object(
+        &[
+            ("name", ncname()),
+            ("type", qname()),
+            ("lowerBound", json!({"type":"integer","enum":[0,1]})),
+            (
+                "upperBound",
+                json!({"type":"integer","anyOf":[{"enum":[-1]},{"minimum":1}]}),
+            ),
+        ],
+        &["name", "type"],
+    )
+}
+
 fn lexical_schema(pattern: String) -> Value {
     // ECMAScript's end anchor can match before a final line ending. The
     // explicit exclusion keeps the published grammar equal to the XML names.
@@ -373,6 +421,16 @@ fn qname() -> Value {
 }
 
 impl XdtoOperation {
+    pub fn contract_for_address(self, at: &QualifiedAddress) -> OperationContract {
+        let mut contract = self.contract();
+        if self == Self::AddProperty && at.segments().len() == 1 {
+            contract.schema["properties"]["values"]["properties"]["property"] =
+                global_property_definition();
+            contract.target = "The XDTO package: <source-set>:XDTOPackage.<Name>.";
+            contract.effect = "Add one own global property with a prefixed QName type. Global references and anonymous definitions are outside this profile.";
+        }
+        contract
+    }
     pub fn contract(self) -> OperationContract {
         let (payload, target, effect, example_args) = match self {
             Self::AddValueType => (
@@ -395,9 +453,9 @@ impl XdtoOperation {
                 json!({"values":{"name":"AddedObject"}}),
             ),
             Self::AddProperty => (
-                Some(object(&[("property", property_definition())], &["property"])),
+                Some(object(&[("property", creation_property_definition())], &["property"])),
                 "An object type or a property that holds one nested anonymous ObjectType: ...Type.T[.Property.P...].",
-                "Add one own property with exactly one QName type, anonymous ValueType with primitive base and optional facets, or anonymous ObjectType with ordered child properties. Omitted bounds stay absent and mean 1; explicit values stay explicit.",
+                "Add an own property (name plus exactly one type, valueType or objectType) or a global-property reference (ref, with no own name or definition). Bounds are optional. At the package root only own name+type is supported. Imported refs require a uniquely registered, available package and a matching global declaration.",
                 json!({"values":{"property":{"name":"AddedProperty", "type":"xs:string", "lowerBound":0}}}),
             ),
             Self::RemoveType => (
@@ -446,7 +504,12 @@ impl XdtoOperation {
         path: &str,
         source_set: &str,
     ) -> Result<XdtoPlanOperation, ContractError> {
-        self.decode_with_contract(&self.contract(), args, path, source_set)
+        let contract = args
+            .get("at")
+            .and_then(Value::as_str)
+            .and_then(|raw| QualifiedAddress::parse(raw).ok())
+            .map_or_else(|| self.contract(), |at| self.contract_for_address(&at));
+        self.decode_with_contract(&contract, args, path, source_set)
     }
 
     fn decode_with_contract(
@@ -489,13 +552,48 @@ impl XdtoOperation {
                 // The top property is read by its own declared shape; nested
                 // children by the recursive definition both are built from.
                 let definition = ArgumentShape::new(&contract.schema["$defs"][PROPERTY_DEFINITION]);
-                let property = values
-                    .required_object("property", |property| property_spec(property, definition))?;
-                Ok(XdtoPlanOperation::AddProperty(XdtoAddPropertyArgs {
-                    at,
-                    property,
-                    property_path: XdtoPropertyPath::from_segments(&properties),
-                }))
+                values.required_object("property", |property| {
+                    if at.segments().len() == 1 {
+                        let min_occurs = property.min_occurs("lowerBound")?;
+                        let max_occurs = property.max_occurs("upperBound")?;
+                        return Ok(XdtoPlanOperation::AddProperty(XdtoAddPropertyArgs {
+                            at,
+                            property: XdtoPropertySpec {
+                                name: property.ncname("name")?,
+                                definition: XdtoPropertyDefinition::Named(property.qname("type")?),
+                                min_occurs,
+                                max_occurs,
+                            },
+                            property_path: None,
+                        }));
+                    }
+                    if property.has("ref") {
+                        for key in ["name", "type", "objectType", "valueType"] {
+                            property.read::<()>(key, |_, _, path| {
+                                Err(invalid(
+                                    path,
+                                    "ref cannot have an own name or type definition",
+                                ))
+                            })?;
+                        }
+                        return Ok(XdtoPlanOperation::AddReferenceProperty(
+                            XdtoAddReferencePropertyArgs {
+                                at,
+                                reference: property.optional_qname("ref")?.expect("ref is present"),
+                                min_occurs: property.min_occurs("lowerBound")?,
+                                max_occurs: property.max_occurs("upperBound")?,
+                                property_path: XdtoPropertyPath::from_segments(&properties),
+                            },
+                        ));
+                    }
+                    property.optional_qname("ref")?;
+                    let property = property_spec(property, definition)?;
+                    Ok(XdtoPlanOperation::AddProperty(XdtoAddPropertyArgs {
+                        at,
+                        property,
+                        property_path: XdtoPropertyPath::from_segments(&properties),
+                    }))
+                })
             })?,
             Self::RemoveType => XdtoPlanOperation::RemoveType(XdtoRemoveTypeArgs { at }),
             Self::SetType => reader.required_object("values", |values| {
@@ -534,7 +632,16 @@ fn property_spec<'a>(
 ) -> Result<XdtoPropertySpec, ContractError> {
     let min_occurs = property.min_occurs("lowerBound")?;
     let max_occurs = property.max_occurs("upperBound")?;
-    let name = property.ncname("name")?;
+    let name = if property.shape.requires("name") {
+        property.ncname("name")?
+    } else {
+        property.optional_ncname("name")?.ok_or_else(|| {
+            invalid(
+                &format!("{}.name", property.path),
+                "own property requires name",
+            )
+        })?
+    };
     if ["type", "objectType", "valueType"]
         .iter()
         .filter(|key| property.has(key))
@@ -902,6 +1009,12 @@ impl unica_operations::FamilyOperation for XdtoOperation {
     }
     fn contract(self) -> Option<unica_operation_contract::OperationContract> {
         Some(self.contract())
+    }
+    fn contract_at(
+        self,
+        site: &unica_source_contract::context::OperationSite<'_>,
+    ) -> Option<OperationContract> {
+        Some(self.contract_for_address(site.at()))
     }
     fn content_resource(self) -> Option<&'static str> {
         Some("Package.bin")

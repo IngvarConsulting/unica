@@ -232,9 +232,11 @@ pub(crate) fn properties(reader: LogicalReader, kind: NodeKind) -> &'static [Pro
                         "type",
                     ),
                     input(
-                        observed(
+                        creation(
                             "ref",
-                            "QName of a global-property reference, outside the own-property writer",
+                            "property.add",
+                            WriteTarget::Parent,
+                            "/properties/values/properties/property/properties",
                         ),
                         "reference",
                     ),

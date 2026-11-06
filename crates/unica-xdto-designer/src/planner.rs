@@ -161,6 +161,41 @@ pub fn plan_xdto_batch(
                 })?;
             validation_ledger.rename_property(&selected, &keys.0, &keys.1);
         }
+        if let XdtoPlanOperation::AddReferenceProperty(args) = operation {
+            let identity = writer::reference_identity(
+                &writer_plan.after,
+                args.at.segments()[1].name().expect("typed reference owner"),
+                args.property_path.as_ref().map(XdtoPropertyPath::as_str),
+                args.reference.as_str(),
+            )
+            .map_err(|error| staged_writer_error(error, operation, op_index))?;
+            let property = added_reference_property(&after_model, args, identity.as_ref())
+                .ok_or_else(|| {
+                    postcondition_xdto(&at_path, "new reference is not unambiguously present")
+                })?;
+            let reference = property
+                .reference
+                .as_ref()
+                .expect("selected reference property");
+            validation_ledger
+                .resources
+                .get_mut(&selected.resource_relative)
+                .expect("retained package")
+                .references
+                .entry(property.key.clone())
+                .or_insert_with(|| XdtoReferenceRequirement {
+                    namespace: reference.namespace.clone(),
+                    local: reference.local.clone(),
+                    index: op_index,
+                });
+        }
+        let surviving = reference_nodes(&after_model);
+        validation_ledger
+            .resources
+            .get_mut(&selected.resource_relative)
+            .expect("retained package")
+            .references
+            .retain(|key, _| surviving.contains_key(key.as_str()));
         validation_ledger.record_postimage(&selected, validate(&after_model), &after, op_index);
     }
 
@@ -252,10 +287,236 @@ pub fn validate_final_xdto_resources<'a>(
             }
         }
     }
+    for resource in ledger.resources.values() {
+        let mut requirements = resource.references.iter().collect::<Vec<_>>();
+        requirements.sort_by_key(|(_, requirement)| requirement.index);
+        for (key, requirement) in requirements {
+            let index = requirement.index;
+            if first_conflict
+                .as_ref()
+                .is_some_and(|(prior, _)| *prior <= index)
+            {
+                continue;
+            }
+            let path = format!("ops[{index}].args.values.property.ref");
+            let mut check = || -> Result<(), ApplyPlanError> {
+                let bytes = staged
+                    .read(&resource.package.resource_relative)
+                    .map_err(|error| ApplyPlanError::staging(error, &path))?
+                    .ok_or_else(|| invalid_staged_xdto(&path))?;
+                let text = decode(&bytes).map_err(|_| invalid_staged_xdto(&path))?;
+                let model = PackageModel::parse(&text).map_err(|_| invalid_staged_xdto(&path))?;
+                let refs = reference_nodes(&model);
+                let actual = refs.get(key.as_str()).ok_or_else(|| {
+                    postcondition_xdto(&path, "surviving reference lost its provenance")
+                })?;
+                if actual.namespace != requirement.namespace || actual.local != requirement.local {
+                    return Err(postcondition_xdto(
+                        &path,
+                        "surviving reference changed its expanded identity",
+                    ));
+                }
+                let namespace = actual
+                    .namespace
+                    .as_deref()
+                    .ok_or_else(|| invalid_staged_xdto(&path))?;
+                if model.target_namespace() == Some(namespace) {
+                    if !has_valid_global_property(&model, &actual.local) {
+                        return Err(ApplyPlanError::new(
+                            ApplyPlanErrorKind::InvalidState,
+                            "ref requires an unambiguous valid global property, not a type",
+                        )
+                        .at_path(&path));
+                    }
+                } else {
+                    if !model.imports.iter().any(|import| {
+                        import
+                            .namespace
+                            .as_ref()
+                            .is_some_and(|value| value.value == namespace)
+                    }) {
+                        return Err(ApplyPlanError::new(
+                            ApplyPlanErrorKind::InvalidState,
+                            "ref namespace is not imported",
+                        )
+                        .at_path(&path));
+                    }
+                    prove_imported_global_property(
+                        staged,
+                        authority,
+                        namespace,
+                        &actual.local,
+                        &path,
+                    )?;
+                }
+                Ok(())
+            };
+            if let Err(error) = check() {
+                first_conflict = Some((index, error));
+            }
+        }
+    }
     match first_conflict {
         Some((_, error)) => Err(error),
         None => Ok(()),
     }
+}
+
+fn reference_nodes(model: &PackageModel) -> BTreeMap<&str, &crate::model::QNameRef> {
+    fn collect<'a>(
+        properties: &'a [crate::model::Property],
+        refs: &mut BTreeMap<&'a str, &'a crate::model::QNameRef>,
+    ) {
+        for property in properties {
+            if let Some(reference) = &property.reference {
+                refs.insert(&property.key, reference);
+            }
+            for definition in &property.type_defs {
+                collect(&definition.properties, refs);
+            }
+        }
+    }
+    let mut refs = BTreeMap::new();
+    collect(&model.global_properties, &mut refs);
+    for ty in &model.types {
+        collect(&ty.properties, &mut refs);
+    }
+    refs
+}
+
+fn added_reference_property<'a>(
+    model: &'a PackageModel,
+    args: &unica_xdto::operations::XdtoAddReferencePropertyArgs,
+    identity: Option<&(String, String)>,
+) -> Option<&'a crate::model::Property> {
+    let type_name = args.at.segments()[1].name()?;
+    let mut properties = &model
+        .types
+        .iter()
+        .find(|ty| ty.name.as_ref().is_some_and(|name| name.value == type_name))?
+        .properties;
+    for parent in args.property_path.iter().flat_map(XdtoPropertyPath::names) {
+        properties = &properties
+            .iter()
+            .find(|property| {
+                property
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.value == parent)
+            })?
+            .type_defs
+            .first()?
+            .properties;
+    }
+    let mut matches = properties.iter().filter(|property| {
+        property.reference.as_ref().is_some_and(|reference| {
+            identity.map_or_else(
+                || reference.raw == args.reference.as_str(),
+                |(namespace, local)| {
+                    reference.namespace.as_ref() == Some(namespace) && &reference.local == local
+                },
+            )
+        })
+    });
+    let property = matches.next()?;
+    matches.next().is_none().then_some(property)
+}
+
+fn has_valid_global_property(model: &PackageModel, local: &str) -> bool {
+    let declarations = model
+        .global_properties
+        .iter()
+        .filter(|property| {
+            property
+                .name
+                .as_ref()
+                .is_some_and(|name| name.value == local)
+        })
+        .collect::<Vec<_>>();
+    let [property] = declarations.as_slice() else {
+        return false;
+    };
+    if property.reference.is_some() {
+        return false;
+    }
+    !validate(model).iter().any(|finding| {
+        finding.severity == FindingSeverity::Error
+            && (finding.location.key == property.key
+                || finding
+                    .location
+                    .key
+                    .starts_with(&format!("{}/", property.key)))
+    })
+}
+
+/// Imports name namespaces, not files. Resolve only registered packages in the
+/// admitted source set; every input used to establish uniqueness is retained.
+fn prove_imported_global_property(
+    staged: &mut ApplyProposal<'_>,
+    authority: &dyn ApplySourceAuthority,
+    namespace: &str,
+    local: &str,
+    path: &str,
+) -> Result<(), ApplyPlanError> {
+    let refusal = || {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidState, "imported ref requires one available registered package and an unambiguous global property").at_path(path)
+    };
+    let root_path = Path::new("Configuration.xml");
+    let root = staged
+        .read(root_path)
+        .map_err(|error| ApplyPlanError::staging(error, path))?
+        .ok_or_else(refusal)?;
+    let evidence = prove_already_read_source_set_owner(root_path, &root, authority.source_kind())
+        .map_err(|_| refusal())?;
+    let names = evidence
+        .registrations()
+        .filter(|(kind, _)| *kind == "XDTOPackage")
+        .map(|(_, name)| name.to_owned())
+        .collect::<Vec<_>>();
+    let mut matches = Vec::new();
+    for name in names {
+        let identity = MetadataAddress::parse(
+            PLATFORM_XML_8_3_27_FORMAT_2_20,
+            &format!("XDTOPackage.{name}"),
+        )
+        .map_err(|_| refusal())?;
+        let descriptor_relative = metadata_descriptor_relative(&identity, authority.source_kind())
+            .map_err(|_| refusal())?;
+        let resource_relative =
+            attached_resource_relative(&identity, "Package.bin", authority.source_kind())
+                .map_err(|_| refusal())?;
+        let candidate = StagedXdtoPackage {
+            owner_at: format!("{}:XDTOPackage.{name}", authority.source_set_name()),
+            package_name: name,
+            descriptor_relative,
+            resource_relative,
+        };
+        let candidate_namespace = prove_staged_xdto_owner(staged, authority, &candidate, path)?;
+        if candidate_namespace == namespace {
+            matches.push(candidate);
+        }
+    }
+    let [package] = matches.as_slice() else {
+        return Err(refusal());
+    };
+    let bytes = staged
+        .read(&package.resource_relative)
+        .map_err(|error| ApplyPlanError::staging(error, path))?
+        .ok_or_else(refusal)?;
+    let text = decode(&bytes).map_err(|_| refusal())?;
+    let model = PackageModel::parse(&text).map_err(|_| refusal())?;
+    if model.target_namespace() != Some(namespace)
+        || !model.unsupported.is_empty()
+        || validate(&model)
+            .iter()
+            .any(|finding| finding.severity == FindingSeverity::Error)
+    {
+        return Err(refusal());
+    }
+    if !has_valid_global_property(&model, local) {
+        return Err(refusal());
+    }
+    Ok(())
 }
 
 fn xdto_operation_at(operation: &XdtoPlanOperation) -> &QualifiedAddress {
@@ -263,6 +524,7 @@ fn xdto_operation_at(operation: &XdtoPlanOperation) -> &QualifiedAddress {
         XdtoPlanOperation::AddValueType(args) => &args.at,
         XdtoPlanOperation::AddObjectType(args) => &args.at,
         XdtoPlanOperation::AddProperty(args) => &args.at,
+        XdtoPlanOperation::AddReferenceProperty(args) => &args.at,
         XdtoPlanOperation::RemoveType(args) => &args.at,
         XdtoPlanOperation::RemoveProperty(args) => &args.at,
         XdtoPlanOperation::RenameProperty(args) => &args.at,
@@ -286,11 +548,12 @@ fn staged_xdto_package(
     let type_target = matches!(
         operation,
         XdtoPlanOperation::AddProperty(_)
+            | XdtoPlanOperation::AddReferenceProperty(_)
             | XdtoPlanOperation::RemoveType(_)
             | XdtoPlanOperation::RemoveProperty(_)
             | XdtoPlanOperation::RenameProperty(_)
             | XdtoPlanOperation::SetType(_)
-    );
+    ) && at.segments().len() > 1;
     let package_name = match (type_target, at.segments()) {
         (false, [package]) if package.kind() == NodeKind::XdtoPackage => package.name(),
         (true, [package, type_segment])
@@ -517,6 +780,20 @@ pub fn staged_writer_operation(operation: &XdtoPlanOperation) -> writer::TypedWr
             before: args.before.as_ref().map(|before| before.as_str()),
             after: args.after.as_ref().map(|after| after.as_str()),
         },
+        XdtoPlanOperation::AddProperty(args) if args.at.segments().len() == 1 => {
+            writer::TypedWriterOperation::AddGlobalProperty {
+                property: &args.property,
+            }
+        }
+        XdtoPlanOperation::AddReferenceProperty(args) => {
+            writer::TypedWriterOperation::AddReferenceProperty {
+                type_name: args.at.segments()[1].name().expect("resolved type target"),
+                reference: args.reference.as_str(),
+                min_occurs: args.min_occurs,
+                max_occurs: args.max_occurs,
+                property_path: args.property_path.as_ref().map(XdtoPropertyPath::as_str),
+            }
+        }
         XdtoPlanOperation::AddProperty(args) => writer::TypedWriterOperation::AddPropertyTree {
             type_name: args.at.segments()[1]
                 .name()
@@ -618,6 +895,7 @@ fn xdto_operation_identity_path(operation: &XdtoPlanOperation, op_index: usize) 
             format!("{base}.values.name")
         }
         XdtoPlanOperation::AddProperty(_) => format!("{base}.values.property.name"),
+        XdtoPlanOperation::AddReferenceProperty(_) => format!("{base}.values.property.ref"),
         XdtoPlanOperation::RenameProperty(_) => format!("{base}.values.newName"),
         XdtoPlanOperation::SetType(_) => format!("{base}.values.base"),
         XdtoPlanOperation::RemoveType(_) | XdtoPlanOperation::RemoveProperty(_) => {
@@ -633,6 +911,7 @@ fn xdto_validation_error_path(operation: &XdtoPlanOperation, op_index: usize) ->
             format!("{base}.values.base")
         }
         XdtoPlanOperation::AddObjectType(_) => format!("{base}.at"),
+        XdtoPlanOperation::AddReferenceProperty(_) => format!("{base}.values.property.ref"),
         // The final package names no child, so an anonymous type answers
         // at the field that declares its children.
         XdtoPlanOperation::AddProperty(args) => match args.property.definition {
@@ -663,6 +942,7 @@ fn prove_staged_xdto_addition_repeat(
         XdtoPlanOperation::AddValueType(_)
             | XdtoPlanOperation::AddObjectType(_)
             | XdtoPlanOperation::AddProperty(_)
+            | XdtoPlanOperation::AddReferenceProperty(_)
     ) {
         return Ok(());
     }
@@ -749,6 +1029,13 @@ struct XdtoResourceValidation {
     origins: HashMap<(String, String), VecDeque<Option<usize>>>,
     postimage_digest: [u8; 32],
     last_operation_index: usize,
+    references: BTreeMap<String, XdtoReferenceRequirement>,
+}
+
+struct XdtoReferenceRequirement {
+    namespace: Option<String>,
+    local: String,
+    index: usize,
 }
 
 impl XdtoValidationLedger {
@@ -791,6 +1078,7 @@ impl XdtoValidationLedger {
                 origins,
                 postimage_digest: Sha256::digest(before).into(),
                 last_operation_index: op_index,
+                references: BTreeMap::new(),
             },
         );
         Ok(())
@@ -816,6 +1104,10 @@ impl XdtoValidationLedger {
                 finding.location.key = key;
             }
         }
+        resource.references = std::mem::take(&mut resource.references)
+            .into_iter()
+            .map(|(key, value)| (moved(&key).unwrap_or(key), value))
+            .collect();
         resource.origins = std::mem::take(&mut resource.origins).into_iter().fold(
             HashMap::new(),
             |mut origins, ((code, key), queue)| {

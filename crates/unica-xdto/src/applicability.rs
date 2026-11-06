@@ -15,7 +15,7 @@ impl OperationApplicability {
             Self::XdtoPackage => "`XDTOPackage.Name`",
             Self::XdtoType => "`XDTOPackage.Name.Type.T`",
             Self::XdtoProperty => "`XDTOPackage.Name.Type.T.Property.P[.Property.Q…]`",
-            Self::XdtoPropertyContainer => "`XDTOPackage.Name.Type.T[.Property.P…]`",
+            Self::XdtoPropertyContainer => "`XDTOPackage.Name[.Type.T[.Property.P…]]`",
         }
     }
     pub fn matches(self, site: &OperationSite<'_>) -> bool {

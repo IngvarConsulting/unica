@@ -7,6 +7,9 @@ use unica_execution::invocation_store::ToolIdentity;
 const PACKAGE: &str = "main:XDTOPackage.EnterpriseData_1_17_3";
 const OBJECT: &str = "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData";
 
+#[path = "xdto_can_tests/global_properties.rs"]
+mod global_properties;
+
 struct Fixture {
     _root: tempfile::TempDir,
     workspace: PathBuf,
@@ -135,6 +138,26 @@ fn property_add_can_is_closed_and_previews_without_writes() {
         OBJECT,
         "property.add",
         json!({"values": {"property": {"name": "XdtoContractProperty", "type": "xs:string", "lowerBound": 0}}}),
+        true,
+    );
+}
+
+#[test]
+fn global_property_add_can_is_closed_and_previews_without_writes() {
+    assert_contract_and_preview(
+        PACKAGE,
+        "property.add",
+        json!({"values":{"property":{"name":"AddedGlobal", "type":"xs:string"}}}),
+        true,
+    );
+}
+
+#[test]
+fn property_reference_add_can_is_closed_and_previews_without_writes() {
+    assert_contract_and_preview(
+        "main:XDTOPackage.EnterpriseData_1_17_3.Type.Документ_ЗаказКлиента",
+        "property.add",
+        json!({"values":{"property":{"ref":"tns:EnterpriseData"}}}),
         true,
     );
 }

@@ -1,0 +1,1070 @@
+{
+  "id": "S-1661-xdto-global-properties",
+  "issue": 1661,
+  "area": "XDTO и обмены",
+  "task": "Создать глобальное свойство; локальный и импортированный ref, итоговую forward reference, подтвердить Can/preview/token/read, XML, no-op и сохранность дескрипторов/пакета поставщика.",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-global-properties",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.Consumer"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:XDTOPackage.Provider"
+        }
+      ],
+      "captures": {
+        "stable0": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "stable1": {
+          "file": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256"
+        },
+        "stable2": {
+          "file": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256"
+        },
+        "stable3": {
+          "file": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "initial": {
+          "file": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256"
+        },
+        "consumer": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.consumer"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Consumer.Can.property.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/property/required",
+          "eq": [
+            "name",
+            "type"
+          ]
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/property/properties/ref",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Provider.Property"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.Provider.Property.Shared"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Consumer.Type"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:XDTOPackage.Consumer.Type.Envelope"
+        }
+      ],
+      "captures": {
+        "envelope": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Consumer.Type.Envelope.Can.property.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/property/properties/ref/type",
+          "eq": "string"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.consumer",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "LocalGlobal",
+                  "type": "xs:string"
+                }
+              }
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "ref": "tns:LocalGlobal"
+                }
+              }
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "ref": "ext:Shared",
+                  "lowerBound": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "writeToken": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.writeToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/xdto}property[@name='LocalGlobal']",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}property[@ref='tns:LocalGlobal']",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}property[@ref='ext:Shared']",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Consumer.Property.LocalGlobal"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type/raw",
+          "eq": "xs:string"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "main:XDTOPackage.Consumer.Property.LocalGlobal"
+        }
+      ],
+      "captures": {
+        "postA": {
+          "file": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Consumer.Type.Envelope.Property"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/1/ref/raw",
+          "eq": "tns:LocalGlobal"
+        },
+        {
+          "pointer": "/data/items/1/ref/namespace",
+          "eq": "urn:unica:global-consumer"
+        },
+        {
+          "pointer": "/data/items/2/ref/raw",
+          "eq": "ext:Shared"
+        },
+        {
+          "pointer": "/data/items/2/ref/namespace",
+          "eq": "urn:unica:global-provider"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Consumer",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "LocalGlobal",
+                  "type": "xs:string"
+                }
+              }
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "ref": "tns:LocalGlobal"
+                }
+              }
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "ref": "ext:Shared",
+                  "lowerBound": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "noop": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.postA"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.noop"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.postA"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Consumer",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "ref": "tns:Future"
+                }
+              }
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Future",
+                  "type": "xs:string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "forward": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.postA"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.forward"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/xdto}property[@name='Future']",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/xdto}property[@ref='tns:Future']",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Consumer.Property.Future"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/type/raw",
+          "eq": "xs:string"
+        }
+      ],
+      "captures": {
+        "postB": {
+          "file": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.Consumer.Type.Envelope.Property"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/3/ref/raw",
+          "eq": "tns:Future"
+        },
+        {
+          "pointer": "/data/items/3/ref/namespace",
+          "eq": "urn:unica:global-consumer"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Consumer",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "ref": "bad:Shared"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: XDTO operation conflicts with the package postimage",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.postB"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Consumer",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "ref": "tns:TypeOnly"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: XDTO operation conflicts with the package postimage",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.postB"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Consumer",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "ref": "ext:TypeOnly"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: imported ref requires one available registered package and an unambiguous global property",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.postB"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Consumer",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "ref": "ext:Missing"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: imported ref requires one available registered package and an unambiguous global property",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.postB"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Consumer",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "ref": "tns:LocalGlobal"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown XDTO operation argument",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.postB"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Consumer",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "ref": "ext:Shared",
+                  "name": "Bad"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ref cannot have an own name or type definition",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.postB"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Consumer",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "MustNotAppear",
+                  "type": "xs:string"
+                }
+              }
+            }
+          },
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "ref": "ext:Missing"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: imported ref requires one available registered package and an unambiguous global property",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.postB"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.Consumer",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "at": "main:XDTOPackage.Consumer.Type.Envelope",
+              "values": {
+                "property": {
+                  "name": "Shared",
+                  "type": "xs:string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: XDTO operation conflicts with the package postimage",
+      "assertions": [
+        {
+          "pointer": "/data",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/XDTOPackages/Consumer/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.postB"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable0"
+        },
+        {
+          "path": "src/XDTOPackages/Consumer.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable1"
+        },
+        {
+          "path": "src/XDTOPackages/Provider.xml",
+          "kind": "sha256",
+          "eq": "$capture.stable2"
+        },
+        {
+          "path": "src/XDTOPackages/Provider/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "$capture.stable3"
+        }
+      ]
+    }
+  ]
+}
