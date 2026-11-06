@@ -1,0 +1,54 @@
+name: PR metadata
+
+# Веха, ответственный и вехи связанных issue. Код PR не исполняется: checkout нет.
+# Смена вехи запускает только этот workflow, `Unica CI` остаётся на месте.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, edited, milestoned, demilestoned, assigned, unassigned, synchronize]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  metadata:
+    # Стабильное имя обязательной проверки. Условия у джобы нет: пропущенную проверку
+    # ruleset засчитал бы как пройденную. Очередь проверяет заново: веху могли снять.
+    name: PR metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check milestone and assignee
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Запись очереди называется gh-readonly-queue/<база>/pr-<номер>-<sha>.
+          number="${PR_NUMBER:-$(sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p' <<<"$GITHUB_REF")}"
+          if [ -z "$number" ]; then
+            echo "::error::Номер PR не определён по $GITHUB_REF"
+            exit 1
+          fi
+          json="$(gh api graphql -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$number" -f query='
+            query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  milestone { number }
+                  assignees { totalCount }
+                  closingIssuesReferences(first: 100) { nodes { number milestone { number } } }
+                }
+              }
+            }')"
+          problems="$(jq -r '.data.repository.pullRequest
+            | (if .milestone then empty else "Поставьте веху" end),
+              (if .assignees.totalCount > 0 then empty else "Укажите ответственного" end),
+              (.closingIssuesReferences.nodes[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается")' <<<"$json")"
+          if [ -n "$problems" ]; then
+            while read -r problem; do echo "::error::$problem"; done <<<"$problems"
+            exit 1
+          fi
+          echo "PR #$number: веха и ответственный на месте"
