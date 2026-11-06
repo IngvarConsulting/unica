@@ -1,9 +1,7 @@
 use super::{add_area, set_area_cells, CellText, MxlEditError};
 
-const EXPORT: &[u8] =
-    include_bytes!("../../../../tests/fixtures/platform_8_3_27/mxl_edit/Template.xml");
-const EMPTY: &[u8] =
-    include_bytes!("../../../../tests/fixtures/platform_8_3_27/mxl_edit/Empty.xml");
+const EXPORT: &[u8] = include_bytes!("../../tests/fixtures/mxl_edit/Template.xml");
+const EMPTY: &[u8] = include_bytes!("../../tests/fixtures/mxl_edit/Empty.xml");
 
 fn body(bytes: &[u8]) -> String {
     let body = bytes
@@ -74,33 +72,23 @@ fn edits_of_a_platform_export_are_what_the_platform_exports_again() {
     let export = body(EXPORT);
     let cases: [(&[u8], String); 6] = [
         (
-            include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/mxl_edit/expected-set-text.xml"
-            ),
+            include_bytes!("../../tests/fixtures/mxl_edit/expected-set-text.xml"),
             set(&export, "Шапка", None, &[("R1C1", "Отчёт за год")]).unwrap(),
         ),
         (
-            include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/mxl_edit/expected-set-parameter.xml"
-            ),
+            include_bytes!("../../tests/fixtures/mxl_edit/expected-set-parameter.xml"),
             set(&export, "Шапка", None, &[("R1C4", "Период: год")]).unwrap(),
         ),
         (
-            include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/mxl_edit/expected-set-adjacent.xml"
-            ),
+            include_bytes!("../../tests/fixtures/mxl_edit/expected-set-adjacent.xml"),
             set(&export, "Шапка", None, &[("R1C3", "впритык")]).unwrap(),
         ),
         (
-            include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/mxl_edit/expected-add-area.xml"
-            ),
+            include_bytes!("../../tests/fixtures/mxl_edit/expected-add-area.xml"),
             add(&export, "Итог", None, &[("R1C1", "Итого"), ("R3C2", "x")]).unwrap(),
         ),
         (
-            include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/mxl_edit/expected-empty-add-area.xml"
-            ),
+            include_bytes!("../../tests/fixtures/mxl_edit/expected-empty-add-area.xml"),
             add(
                 &body(EMPTY),
                 "Header",
@@ -110,9 +98,7 @@ fn edits_of_a_platform_export_are_what_the_platform_exports_again() {
             .unwrap(),
         ),
         (
-            include_bytes!(
-                "../../../../tests/fixtures/platform_8_3_27/mxl_edit/expected-grow-last-area.xml"
-            ),
+            include_bytes!("../../tests/fixtures/mxl_edit/expected-grow-last-area.xml"),
             set(
                 &add(&export, "Итог", None, &[("R1C1", "Итого")]).unwrap(),
                 "Итог",
