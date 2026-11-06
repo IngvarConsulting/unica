@@ -47,7 +47,7 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual(choose(["crates/a/src/lib.rs", "crates/coder/src/lib.rs"]).dependents, ("unica-b",))
 
     def test_a_crate_chosen_by_mention_does_not_pull_its_dependents(self) -> None:
-        choice = choose(["plugins/unica/x.md"], ["crates/a/src/lib.rs"])
+        choice = choose(["scripts/dev/x.py"], ["crates/a/src/lib.rs"])
         self.assertEqual(choice.packages, ("unica-a",))
         self.assertEqual(choice.dependents, ())
 
@@ -65,22 +65,34 @@ class ChoiceTests(unittest.TestCase):
                 self.assertTrue(choose([path, "crates/a/src/lib.rs"]).full)
 
     def test_paths_rust_tests_read_select_the_crates_that_mention_them(self) -> None:
-        for path in ("plugins/unica/references/x.md", "tests/fixtures/xdto/a.xml", "scripts/dev/x.py"):
+        for path in ("tests/fixtures/xdto/a.xml", "scripts/dev/x.py"):
             with self.subTest(path=path):
                 self.assertEqual(choose([path], ["crates/b/tests/t.rs"]).packages, ("unica-b",))
 
     def test_the_search_is_for_the_data_set_not_the_single_file(self) -> None:
-        self.assertEqual(queue.needle("plugins/unica/references/specs/x.md"), "plugins/unica")
         self.assertEqual(queue.needle("tests/fixtures/xdto/deep/a.xml"), "tests/fixtures/xdto")
         self.assertEqual(queue.needle("scripts/dev/x.py"), "scripts/dev/x.py")
 
     def test_everything_else_runs_only_small(self) -> None:
         for path in (".github/workflows/ci.yml", ".github/CODEOWNERS", "scripts/ci/run-tests.py", ".config/nextest.toml", ".config/python-sizes.toml",
-                     "tests/fixtures/acceptance/scenario-manifest/x.json", "tests/ci/test_x.py", "docs/a.md", "README.md", ".gitattributes"):
+                     "tests/fixtures/acceptance/scenario-manifest/x.json", "tests/ci/test_x.py", "docs/release-runbook.md", ".gitattributes",
+                     "plugins/unica/skills/x/SKILL.md"):
             with self.subTest(path=path):
                 choice = choose([path], ["crates/b/tests/t.rs"])
                 self.assertFalse(choice.full)
                 self.assertEqual(choice.packages, ())
+
+    def test_site_rules_skills_and_prose_alone_run_no_rust(self) -> None:
+        for path in ("docs/pages/a.html", "docs/visual-kit/a.css", "arch/rules/core/a.md", ".agents/skills/x/SKILL.md",
+                     "scripts/research/a.sh", "README.md", "AGENTS.md"):
+            with self.subTest(path=path):
+                choice = choose([path])
+                self.assertTrue(choice.no_rust)
+                self.assertFalse(choice.full)
+        # Рядом с другим путём запись снова идёт по таблице.
+        self.assertFalse(choose(["README.md", ".github/workflows/ci.yml"]).no_rust)
+        self.assertEqual(choose(["README.md", "crates/a/src/lib.rs"]).packages, ("unica-a",))
+        self.assertTrue(choose(["crates/a/README.md"]).packages)
 
     def test_an_empty_diff_and_the_switch_run_everything(self) -> None:
         self.assertTrue(choose([]).full)
@@ -112,13 +124,12 @@ class GuardTests(unittest.TestCase):
 
     def test_rust_does_not_read_the_paths_that_run_only_small(self) -> None:
         # Упоминания `scripts/ci/` в комментариях и текстах ошибок не читают файл: ищется строка пути.
-        for text in ("scenario-manifest", "python-sizes.toml", "CODEOWNERS", '"scripts/ci', ".github/workflows", ".agents/", '"tests/ci/', '"tests/dev/', '"docs/', "../docs/"):
+        for text in ("scenario-manifest", "python-sizes.toml", "CODEOWNERS", '"scripts/ci', ".github/workflows", ".agents/", '"tests/ci/', '"tests/dev/', '"docs/', "../docs/", "docs/pages", "visual-kit", '"arch/rules', '"scripts/research', '"AGENTS.md"'):
             with self.subTest(text=text):
                 # `bundled_tools.rs` создаёт этот путь во временном каталоге теста, а файл репозитория не читает.
                 self.assertEqual([path for path in self.grep(text) if not path.endswith("infrastructure/bundled_tools.rs")], [])
 
-    def test_plugins_and_fixtures_are_really_found_by_mention(self) -> None:
-        self.assertTrue(self.grep("plugins/unica"))
+    def test_fixtures_are_really_found_by_mention(self) -> None:
         self.assertTrue(self.grep("tests/fixtures/xdto"))
 
     def test_a_crate_that_assembles_fixture_paths_is_selected_by_any_fixture(self) -> None:

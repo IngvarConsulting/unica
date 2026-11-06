@@ -11,8 +11,9 @@
 Очередь всегда исполняет Clippy всего workspace на Linux и Windows, весь Rust `small`,
 Python small, смоук продукта и снимки контрактов (`[queue] keep-medium`). К ним `queue-tests.py`
 добавляет `medium` изменённых крейтов, включая `unica-coder`. Изменённым считается и крейт,
-в исходниках которого упомянут правленый путь из `plugins`, `tests/fixtures` или `scripts`,
-кроме `scripts/ci`. Прямые зависимые изменённого кода исполняют интеграционные цели
+в исходниках которого упомянут правленый путь из `tests/fixtures` или `scripts`, кроме
+`scripts/ci` и `scripts/research`. Запись только из `docs/pages`, `docs/visual-kit`,
+`arch/rules`, `.agents`, `scripts/research` и `.md` корня Rust не запускает. Прямые зависимые изменённого кода исполняют интеграционные цели
 (`kind(test)`), кроме `daemon_receipt_ledger`. Полный набор идёт при правке `Cargo.lock`,
 корневого `Cargo.toml`, тулчейна и при сбое чтения diff. `medium` остальных крейтов,
 транзитивные зависимые, Python medium и large идут ночью.
