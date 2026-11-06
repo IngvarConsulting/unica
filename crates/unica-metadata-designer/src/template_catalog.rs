@@ -435,6 +435,10 @@ pub fn add_document_register_record(bytes: &[u8], register: &str) -> Result<Vec<
     let source = std::str::from_utf8(bytes)
         .map_err(|_| "document is not UTF-8".to_string())?
         .trim_start_matches('\u{feff}');
+    // The record is written in the default-namespace spelling; a prefixed
+    // document gets its prefix back below.
+    let (normalized, form) = unica_xml_format::prefix_form::PrefixForm::normalize(source)?;
+    let source = normalized.as_str();
     let escaped = unica_xml_format::text::escape_xml(register);
     let item = format!("<xr:Item xsi:type=\"xr:MDObjectRef\">{escaped}</xr:Item>");
     let empty = ["<RegisterRecords/>", "<RegisterRecords />"]
@@ -484,6 +488,7 @@ pub fn add_document_register_record(bytes: &[u8], register: &str) -> Result<Vec<
     } else {
         return Err("document has no RegisterRecords property".to_string());
     };
+    let updated = form.restore(&updated)?;
     let mut output = Vec::new();
     if has_bom {
         output.extend_from_slice(b"\xef\xbb\xbf");
