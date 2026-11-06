@@ -2,7 +2,6 @@
 id: CTR.SOURCE.EMPTY-BRANCHES
 gap:
   - https://github.com/IngvarConsulting/unica/issues/2223
-  - https://github.com/IngvarConsulting/unica/issues/2224
 ---
 
 # Корень и объект перечисляют и пустые ветви

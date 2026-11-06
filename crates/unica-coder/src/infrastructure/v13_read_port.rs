@@ -2466,7 +2466,7 @@ fn identity_metadata_payload_from_evidence(
             _ => {}
         }
     }
-    Ok(json!({
+    let mut payload = json!({
         "name": expected_name,
         "kind": expected_kind,
         "support": {"state": "not_supported"},
@@ -2484,7 +2484,23 @@ fn identity_metadata_payload_from_evidence(
             "templates": templates,
             "commands": commands
         }
-    }))
+    });
+    let unreadable = evidence
+        .unreadable_registrations()
+        .filter_map(|(kind, reason)| {
+            let field = match kind {
+                "Form" => "collections.forms",
+                "Template" => "collections.templates",
+                "Command" => "collections.commands",
+                _ => return None,
+            };
+            Some(json!({"field": field, "message": reason}))
+        })
+        .collect::<Vec<_>>();
+    if !unreadable.is_empty() {
+        payload["unreadable"] = json!(unreadable);
+    }
+    Ok(payload)
 }
 
 fn path_text(path: PathBuf) -> Result<String, ViewError> {

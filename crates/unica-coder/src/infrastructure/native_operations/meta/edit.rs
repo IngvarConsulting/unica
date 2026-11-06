@@ -757,6 +757,18 @@ pub(crate) mod tests {
             &'static [&'static str],
         );
         let cases: &[Case] = &[
+            (
+                "FilterCriterion",
+                &[("Command", "C")],
+                "Form",
+                &["New", "C"],
+            ),
+            (
+                "SettingsStorage",
+                &[("Form", "F"), ("Template", "M")],
+                "Form",
+                &["F", "New", "M"],
+            ),
             // the header attribute of a catalog goes before its sections
             (
                 "Catalog",
@@ -842,21 +854,25 @@ pub(crate) mod tests {
             ),
         ];
         for (kind, existing, inserted, expected) in cases {
-            let mut xml = owner_xml(kind, existing);
-            unica_metadata_designer::edit::meta_edit_insert_top_child_object(
-                &mut xml,
-                &[
-                    format!("\t\t\t<{inserted} uuid=\"33333333-3333-4333-8333-333333333333\">"),
-                    "\t\t\t\t<Properties><Name>New</Name></Properties>".to_string(),
-                    format!("\t\t\t</{inserted}>"),
-                ],
-            )
-            .unwrap();
-            assert_eq!(
-                child_names(&xml),
-                *expected,
-                "{kind}: insert {inserted} into {existing:?}"
-            );
+            // Source image encoding preserves line endings at publication;
+            // both spellings must choose the same platform slot here.
+            for ending in ["\n", "\r\n"] {
+                let mut xml = owner_xml(kind, existing).replace('\n', ending);
+                unica_metadata_designer::edit::meta_edit_insert_top_child_object(
+                    &mut xml,
+                    &[
+                        format!("\t\t\t<{inserted} uuid=\"33333333-3333-4333-8333-333333333333\">"),
+                        "\t\t\t\t<Properties><Name>New</Name></Properties>".to_string(),
+                        format!("\t\t\t</{inserted}>"),
+                    ],
+                )
+                .unwrap();
+                assert_eq!(
+                    child_names(&xml),
+                    *expected,
+                    "{kind}: insert {inserted} into {existing:?}"
+                );
+            }
         }
     }
 
