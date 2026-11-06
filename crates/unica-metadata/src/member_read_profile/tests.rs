@@ -343,20 +343,47 @@ fn reduction_profile_requires_exact_source_owner_format_and_dimension_context() 
     assert_eq!(
         profile
             .properties(MetaMemberReadContext::InformationRegisterDimension)
-            .count(),
-        // Master, MainFilter, DenyIncompleteValues and TypeReductionMode.
-        4
+            .map(|property| property.name)
+            .collect::<Vec<_>>(),
+        vec![
+            "Master",
+            "MainFilter",
+            "DenyIncompleteValues",
+            "TypeReductionMode",
+            "FullTextSearch",
+            "DataHistory"
+        ]
     );
     assert!(profile
         .context_for_field("collections.dimensions[0]")
         .is_some());
     for field in [
         "collections.dimensions[]",
-        "collections.resources[0]",
         "collections.dimensions[0].attributes[0]",
         "collections.tabularSections[0]",
     ] {
         assert!(profile.context_for_field(field).is_none());
+    }
+    assert_eq!(
+        profile.context_for_field("collections.resources[0]"),
+        Some(MetaMemberReadContext::Resource)
+    );
+    assert_eq!(
+        profile
+            .properties(MetaMemberReadContext::Resource)
+            .map(|property| property.name)
+            .collect::<Vec<_>>(),
+        vec!["FullTextSearch", "DataHistory"]
+    );
+    for reduction in [
+        "Master",
+        "MainFilter",
+        "DenyIncompleteValues",
+        "TypeReductionMode",
+    ] {
+        assert!(
+            !profile.owns_diagnostic(&format!("collections.resources[0].properties.{reduction}"))
+        );
     }
     let valid = QualifiedAddress::parse("main:InformationRegister.Facts.Dimension.Item").unwrap();
     assert!(profile
