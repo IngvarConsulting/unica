@@ -97,6 +97,17 @@ ClassId — фиксированные идентификаторы классо
 | `VendorInformationAddress` | `LocalString` | Адрес сайта поставщика |
 | `ConfigurationInformationAddress` | `LocalString` | Адрес информации о конфигурации |
 
+Канонический `view` корня возвращает пять информационных `LocalString` в
+`props.properties` под именами `briefInformation`, `detailedInformation`,
+`copyright`, `vendorInformationAddress`, `configurationInformationAddress`.
+Каждое значение — массив `{language, content}` в порядке XML, включая пустой
+текст отдельного перевода. Пустой контейнер и отсутствие дают `null`.
+Флаги `useManagedFormInOrdinaryApplication` и
+`useOrdinaryFormInManagedApplication` читаются как boolean, включая `false`;
+отсутствие даёт `null`. Дубликат или повреждённое значение ограничивает только
+свой факт: он равен `null`, а `limits` называет свойство. Чтение не задаёт
+умолчаний и не расширяет операции записи.
+
 #### Режимы работы и совместимость
 
 | Свойство | Тип | Описание |
