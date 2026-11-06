@@ -21,7 +21,8 @@ use unica_source_contract::read::{
     SourceMapDiscovery, SourceSelectionReadPass,
 };
 use unica_source_contract::{
-    ProjectSourceMap, ProjectSourceSet, SourceFormat, SourceSetKind, SourceSetState,
+    AutodetectedMainConflict, ProjectSourceMap, ProjectSourceSet, SourceFormat, SourceSetKind,
+    SourceSetState,
 };
 use unsafe_libyaml::{
     yaml_event_delete, yaml_event_t, yaml_parser_delete, yaml_parser_initialize, yaml_parser_parse,
@@ -486,8 +487,10 @@ fn discover_project_source_map_internal(
         (Vec::new(), None)
     };
 
+    let mut autodetected_main_conflict = None;
     if source_sets.is_empty() {
-        source_sets = autodetect_source_sets(workspace_root, state, checkpoint)?;
+        (source_sets, autodetected_main_conflict) =
+            autodetect_source_sets(workspace_root, state, checkpoint)?;
     }
 
     let mut project_source_sets = Vec::with_capacity(source_sets.len());
@@ -532,6 +535,7 @@ fn discover_project_source_map_internal(
         effective_source_root,
         source_selection_error,
         configured_format_raw,
+        autodetected_main_conflict,
     })
 }
 
@@ -1089,7 +1093,7 @@ fn autodetect_source_sets(
     workspace_root: &Path,
     state: &mut SourceMapDiscoveryState,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
-) -> Result<Vec<ConfigSourceSet>, String> {
+) -> Result<(Vec<ConfigSourceSet>, Option<AutodetectedMainConflict>), String> {
     let mut source_sets = Vec::new();
     for path in BASE_CONFIGURATION_LAYOUTS {
         checkpoint()?;
@@ -1106,10 +1110,14 @@ fn autodetect_source_sets(
             break;
         }
     }
-    let mut reserved_name_taken = !source_sets.is_empty();
+    let mut reserved_main_path = source_sets
+        .first()
+        .map(|source_set| source_set.path.clone());
+    let mut conflict = None;
     let extension_sets = autodetect_extension_source_sets(
         workspace_root,
-        &mut reserved_name_taken,
+        &mut reserved_main_path,
+        &mut conflict,
         state,
         checkpoint,
     )?;
@@ -1122,7 +1130,7 @@ fn autodetect_source_sets(
         }
     }
     source_sets.extend(extension_sets);
-    Ok(source_sets)
+    Ok((source_sets, conflict))
 }
 
 /// Autodetects configuration-extension source sets from the same catalog, the same
@@ -1133,7 +1141,8 @@ fn autodetect_source_sets(
 /// rely on autodetection in the first place.
 fn autodetect_extension_source_sets(
     workspace_root: &Path,
-    reserved_name_taken: &mut bool,
+    reserved_main_path: &mut Option<String>,
+    conflict: &mut Option<AutodetectedMainConflict>,
     state: &mut SourceMapDiscoveryState,
     checkpoint: &mut dyn FnMut() -> Result<(), String>,
 ) -> Result<Vec<ConfigSourceSet>, String> {
@@ -1157,7 +1166,8 @@ fn autodetect_extension_source_sets(
                 &mut extension_sets,
                 layout_root_source_set_name(layout.directory),
                 layout.directory.to_string(),
-                reserved_name_taken,
+                reserved_main_path,
+                conflict,
             );
             continue;
         }
@@ -1171,7 +1181,13 @@ fn autodetect_extension_source_sets(
             checkpoint()?;
             if probe_source_root_markers(&directory, state, checkpoint)? {
                 let path = format!("{}/{name}", layout.directory);
-                push_autodetected_extension(&mut extension_sets, name, path, reserved_name_taken);
+                push_autodetected_extension(
+                    &mut extension_sets,
+                    name,
+                    path,
+                    reserved_main_path,
+                    conflict,
+                );
             }
         }
     }
@@ -1211,13 +1227,21 @@ fn push_autodetected_extension(
     extension_sets: &mut Vec<ConfigSourceSet>,
     name: String,
     path: String,
-    reserved_name_taken: &mut bool,
+    reserved_main_path: &mut Option<String>,
+    conflict: &mut Option<AutodetectedMainConflict>,
 ) {
     if name == BASE_CONFIGURATION_SOURCE_SET {
-        if *reserved_name_taken {
+        if let Some(selected_path) = reserved_main_path.as_ref() {
+            conflict
+                .get_or_insert_with(|| AutodetectedMainConflict {
+                    selected_path: selected_path.clone(),
+                    skipped_paths: Vec::new(),
+                })
+                .skipped_paths
+                .push(path);
             return;
         }
-        *reserved_name_taken = true;
+        *reserved_main_path = Some(path.clone());
     }
     extension_sets.push(ConfigSourceSet {
         name,

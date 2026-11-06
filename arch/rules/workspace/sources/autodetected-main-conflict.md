@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.AUTODETECTED-MAIN-CONFLICT
-gap: https://github.com/IngvarConsulting/unica/issues/938
 ---
 
 # Автообнаружение сообщает о пропущенных наборах с именем main
