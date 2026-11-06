@@ -13,7 +13,7 @@ pub(crate) const MAX_TASK_WAIT_MS: u64 = 7_000;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct InvocationRequest {
     tool: ToolIdentity,
-    arguments: Map<String, Value>,
+    arguments: unica_execution_contract::arguments::InvocationArguments,
     workspace_hint: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workspace_origin: Option<unica_bootstrap::WorkspaceOrigin>,
@@ -45,7 +45,7 @@ impl InvocationRequest {
             .ok_or_else(|| "canonical invocation arguments must be an object".to_string())?;
         let request = Self {
             tool,
-            arguments,
+            arguments: arguments.into(),
             workspace_hint: workspace_hint.into(),
             workspace_origin: None,
             response_budget_ms,
@@ -59,7 +59,7 @@ impl InvocationRequest {
     }
 
     pub(crate) fn arguments(&self) -> &Map<String, Value> {
-        &self.arguments
+        self.arguments.projection()
     }
 
     /// Removes spellings that mean an omitted argument, before validation,
@@ -78,13 +78,18 @@ impl InvocationRequest {
                 .find(|contract| contract.name == self.tool.catalog_name())
         })
         .is_some_and(|contract| contract.input_schema["properties"].get("cursor").is_some())
-            && (self.tool != ToolIdentity::Diff || self.arguments.contains_key("executionToken"));
+            && (self.tool != ToolIdentity::Diff
+                || self.arguments.projection().contains_key("executionToken"));
         let check = self.tool == ToolIdentity::Check;
-        self.arguments.retain(|name, value| match name.as_str() {
+        let mut arguments = self.arguments.projection().clone();
+        arguments.retain(|name, value| match name.as_str() {
             "cursor" if publishes_cursor && value.as_str() == Some("") => false,
             "at" | "limit" | "cursor" if check => !value.is_null(),
             _ => true,
         });
+        if arguments != *self.arguments.projection() {
+            self.arguments = arguments.into();
+        }
     }
 
     /// The host channel that chose the workspace hint, when the wire carried it.
@@ -98,6 +103,15 @@ impl InvocationRequest {
 
     pub(crate) fn workspace_origin(&self) -> Option<&unica_bootstrap::WorkspaceOrigin> {
         self.workspace_origin.as_ref()
+    }
+
+    pub(crate) fn raw_arguments(&self) -> Option<&str> {
+        self.arguments.raw()
+    }
+
+    pub(crate) fn with_raw_arguments(mut self, raw: Option<String>) -> Result<Self, String> {
+        self.arguments = self.arguments.with_raw(raw)?;
+        Ok(self)
     }
 
     pub(crate) fn workspace_hint(&self) -> &str {

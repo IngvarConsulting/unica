@@ -77,7 +77,13 @@ fn parse_xdto_plan_operation(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, "unsupported XDTO operation")
             .at_path(format!("ops[{op_index}].args"))
     })?;
-    decode_xdto_plan_operation(operation, value, op_index, binding.source_set_name())
+    decode_xdto_plan_operation(
+        operation,
+        value,
+        op_index,
+        binding.source_set_name(),
+        &std::collections::BTreeMap::new(),
+    )
 }
 
 #[cfg(test)]

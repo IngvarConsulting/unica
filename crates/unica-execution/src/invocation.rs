@@ -150,6 +150,21 @@ pub fn normalized_arguments_hash(
     NormalizedArgumentsHash::from_sha256(Sha256::digest(bytes).into())
 }
 
+/// Retain numeric spellings in receipt identity when the frontend captured them.
+/// SDK projections alone cannot distinguish nearby decimal inputs.
+pub fn arguments_hash_with_raw(
+    arguments: &serde_json::Map<String, Value>,
+    raw: Option<&str>,
+) -> NormalizedArgumentsHash {
+    match raw {
+        Some(raw) => NormalizedArgumentsHash::from_sha256(
+            Sha256::digest(unica_execution_contract::arguments::canonical_json(raw).as_bytes())
+                .into(),
+        ),
+        None => normalized_arguments_hash(arguments),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

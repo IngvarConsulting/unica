@@ -74,6 +74,7 @@ fn read_search_line_bounded(
 pub(crate) struct ActorBoundInvocation {
     tool: unica_execution::invocation_store::ToolIdentity,
     arguments: serde_json::Map<String, serde_json::Value>,
+    raw_arguments: Option<String>,
     response_deadline: InvocationResponseDeadline,
     actor: Arc<WorkspaceActor>,
     provider_root: ProviderRootBinding,
@@ -520,6 +521,10 @@ impl ActorBoundExecution {
     }
 
     #[allow(dead_code)]
+    pub(crate) fn raw_arguments(&self) -> Option<&str> {
+        self.invocation.raw_arguments.as_deref()
+    }
+
     pub(crate) fn arguments(&self) -> &serde_json::Map<String, serde_json::Value> {
         self.invocation.arguments()
     }
@@ -1522,6 +1527,7 @@ fn bind_workspace_invocation_controlled(
     Ok(ActorBoundInvocation {
         tool: request.tool(),
         arguments: request.arguments().clone(),
+        raw_arguments: request.raw_arguments().map(str::to_owned),
         response_deadline,
         actor,
         provider_root,

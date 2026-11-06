@@ -609,6 +609,9 @@ impl unica_execution::receipt_runtime::ports::InvocationHost for CanonicalInvoca
             invocation.workspace_hint().to_owned(),
             invocation.response_budget_ms(),
         )
+        .and_then(|request| {
+            request.with_raw_arguments(invocation.raw_arguments().map(str::to_owned))
+        })
         .map(|request| request.with_workspace_origin(invocation.workspace_origin().clone()))
         .map_err(|error| {
             V5CanonicalPrepareError::Rejected(Box::new(

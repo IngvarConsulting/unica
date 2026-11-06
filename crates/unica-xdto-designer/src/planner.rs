@@ -30,9 +30,15 @@ pub fn decode_xdto_plan_operation(
     value: &Value,
     op_index: usize,
     source_set_name: &str,
+    number_errors: &BTreeMap<String, String>,
 ) -> Result<XdtoPlanOperation, ApplyPlanError> {
     operation
-        .decode(value, &format!("ops[{op_index}].args"), source_set_name)
+        .decode_with_number_errors(
+            value,
+            &format!("ops[{op_index}].args"),
+            source_set_name,
+            number_errors,
+        )
         .map_err(|error| bad_xdto_argument(&error.path, error.message))
 }
 

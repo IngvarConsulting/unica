@@ -17,8 +17,8 @@ use unica_daemon::client_v5::{
 };
 use unica_daemon::protocol_v5::{V5DaemonErrorCode, V5InvocationRequest, V5ServerResponse};
 use unica_execution::invocation::{
-    handoff_budget, normalized_arguments_hash, INVOCATION_HANDOFF_WINDOW,
-    RESPONSE_SERIALIZATION_MARGIN, RESPONSE_SERIALIZATION_MARGIN_MS,
+    handoff_budget, INVOCATION_HANDOFF_WINDOW, RESPONSE_SERIALIZATION_MARGIN,
+    RESPONSE_SERIALIZATION_MARGIN_MS,
 };
 use unica_execution::receipt_ledger::{
     request_scope_hash, ReceiptKey, RequestIdentity, V5ToolIdentity,
@@ -127,6 +127,7 @@ enum RecoveryEnd {
 pub(super) type CanonicalCallHandler = dyn Fn(
         V5ToolIdentity,
         &Map<String, Value>,
+        Option<&str>,
         &unica_bootstrap::HostRequest,
         FrontendInvocationDeadline,
         CanonicalCancellation,
@@ -184,8 +185,8 @@ fn build_router(
     // serialize another call behind it.
     let client = Arc::new(client);
     let call_client = Arc::clone(&client);
-    let call: Arc<CanonicalCallHandler> =
-        Arc::new(move |tool, arguments, host, deadline, cancellation| {
+    let call: Arc<CanonicalCallHandler> = Arc::new(
+        move |tool, arguments, raw_arguments, host, deadline, cancellation| {
             // Resolve once per invocation. Never publish this choice back into
             // shared frontend state: another call may belong to another tree.
             let resolved = match workspace.resolve_request(host) {
@@ -207,12 +208,14 @@ fn build_router(
                 resolved,
                 tool,
                 arguments,
+                raw_arguments,
                 deadline,
                 observer.as_ref(),
                 cancellation,
                 host.response_budget,
             )
-        });
+        },
+    );
     let get_client = Arc::clone(&client);
     let get: Arc<CanonicalTaskHandler> = Arc::new(move |task_id, deadline| {
         let cutoff = deadline.transport_cutoff();
@@ -319,6 +322,7 @@ fn submit_and_settle(
     workspace: unica_bootstrap::ResolvedWorkspace,
     tool: V5ToolIdentity,
     arguments: &Map<String, Value>,
+    raw_arguments: Option<&str>,
     deadline: FrontendInvocationDeadline,
     observer: Option<&ReceiptObserver>,
     cancellation: CanonicalCancellation,
@@ -348,6 +352,7 @@ fn submit_and_settle(
         workspace,
         response_budget_ms,
     )
+    .and_then(|invocation| invocation.with_raw_arguments(raw_arguments.map(str::to_owned)))
     .map_err(|message| ErrorData::invalid_params(message, None))?;
     let receipt_key = receipt_key_for(&invocation, client)?;
     let endpoint = peer.control_endpoint();
@@ -505,7 +510,10 @@ fn receipt_key_for(
         RequestIdentity::new(
             client.core_identity().digest().clone(),
             invocation.tool(),
-            normalized_arguments_hash(invocation.arguments()),
+            unica_execution::invocation::arguments_hash_with_raw(
+                invocation.arguments(),
+                invocation.raw_arguments(),
+            ),
             scope,
         ),
     ))
@@ -1297,6 +1305,7 @@ mod medium_tests {
         (router.call)(
             V5ToolIdentity::View,
             &arguments(),
+            None,
             &unica_bootstrap::HostRequest::default(),
             deadline(host_remaining),
             CancellationToken::new().into(),
@@ -1414,6 +1423,7 @@ mod medium_tests {
         let mutation = (router.call)(
             V5ToolIdentity::Apply,
             &arguments(),
+            None,
             &unica_bootstrap::HostRequest::default(),
             deadline(None),
             CancellationToken::new().into(),
@@ -2203,6 +2213,7 @@ mod medium_tests {
         let foreign = (router.call)(
             V5ToolIdentity::Docs,
             &Map::new(),
+            None,
             &unica_bootstrap::HostRequest::default(),
             deadline(None),
             CancellationToken::new().into(),
@@ -2557,6 +2568,7 @@ mod medium_tests {
             (router.call)(
                 V5ToolIdentity::View,
                 arguments.as_object().expect("argument object"),
+                None,
                 &unica_bootstrap::HostRequest::default(),
                 deadline(None),
                 CancellationToken::new().into(),
@@ -2803,6 +2815,7 @@ mod medium_tests {
         (router.call)(
             tool,
             arguments,
+            None,
             &unica_bootstrap::HostRequest::default(),
             deadline(None),
             CancellationToken::new().into(),

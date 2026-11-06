@@ -2582,6 +2582,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "tokio-util",
  "toml",
  "unica-adapter-bsl-analyzer",
  "unica-adapter-lexical",

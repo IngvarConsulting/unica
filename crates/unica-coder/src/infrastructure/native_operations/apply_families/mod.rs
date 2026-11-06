@@ -748,6 +748,7 @@ fn parse_family_operation(
             ParsedApplyOperation::Code(IndexedPlanOperation::new(op_index, parsed))
         }
         OperationFamily::Xdto => {
+            let number_errors = operation.number_errors();
             let operation = descriptor
                 .operation::<unica_xdto::operations::XdtoOperation>()
                 .ok_or_else(|| hidden_apply_family_unimplemented(op_index))?;
@@ -756,6 +757,7 @@ fn parse_family_operation(
                 &args,
                 op_index,
                 binding.source_set_name(),
+                number_errors,
             )?;
             ParsedApplyOperation::Xdto(IndexedPlanOperation::new(op_index, parsed))
         }
