@@ -105,7 +105,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_clippy_of_the_whole_workspace_always_runs(self) -> None:
         self.assertIn("--workspace --all-targets", self.steps["Clippy"]["run"])
-        self.assertNotIn("if", self.steps["Clippy"])
+        self.assertEqual(self.steps["Clippy"]["if"], "env.KEPT != 'true'")
 
     def test_the_queue_selects_rust_and_keeps_the_rollback_switch(self) -> None:
         rust = self.steps["Тесты Rust"]

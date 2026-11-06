@@ -1350,6 +1350,8 @@ mod medium_tests {
     #[test]
     fn full_export_publishes_configuration_and_extension_from_a_private_stage() {
         for (set, extension) in [("main", None), ("Sales", Some("Sales"))] {
+            let validations_before =
+                unica_workspace::full_dump::test_support::semantic_validations_on_this_thread();
             let root = workspace();
             let target = root.path().join(set);
             write_valid_dump(&target, extension.is_some());
@@ -1399,6 +1401,13 @@ mod medium_tests {
                 &runner,
             );
             assert!(result.ok, "{set}: {result:?}");
+            // Содержимое разбирается один раз: дальше достаточно сверки байт со снимком.
+            assert_eq!(
+                unica_workspace::full_dump::test_support::semantic_validations_on_this_thread()
+                    - validations_before,
+                1,
+                "{set}"
+            );
             assert_eq!(result.data.as_ref().unwrap()["files"], 3);
             assert_eq!(result.data.as_ref().unwrap()["state"], "replaced");
             assert_eq!(result.data.as_ref().unwrap()["extension"], json!(extension));
