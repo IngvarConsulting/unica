@@ -1,7 +1,5 @@
 ---
 id: INV.CACHE.INDEX-PREVIEW-WRITE-FREE
-check:
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::public_metadata_apply_preview_is_index_write_free_and_matches_real_plan
 ---
 
 # Предпросмотр применения метаданных не запускает индексирование

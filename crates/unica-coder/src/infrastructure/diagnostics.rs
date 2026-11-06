@@ -1122,6 +1122,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn diagnostic_location_distinguishes_unaddressable_owner_and_unproven_owner() {
         let fixture = Fixture::platform_xml();
@@ -1186,6 +1187,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FOCUS
     #[test]
     fn diagnostic_location_preserves_exact_metadata_focus_and_weakens_unknown_elements() {
         let fixture = Fixture::platform_xml();
@@ -1307,6 +1309,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn diagnostics_windows_normalizes_separators_unicode_file_uri_and_dot_segments() {
         let fixture = Fixture::platform_xml();
@@ -1345,6 +1348,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn diagnostic_location_rejects_escape_without_leaking_the_raw_handle() {
         let fixture = Fixture::platform_xml();
@@ -1402,6 +1406,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FOCUS
     #[test]
     fn canonical_diagnostic_location_maps_root_object_module_and_nested_form_module() {
         let fixture = Fixture::platform_xml();
@@ -1487,6 +1492,7 @@ mod tests {
         );
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn canonical_diagnostic_location_distinguishes_unaddressable_owner_and_unproven_owner() {
         let fixture = Fixture::platform_xml();
@@ -1584,6 +1590,7 @@ mod tests {
         ));
     }
 
+    /// rule: INV.APP.DIAGNOSTIC-FOCUS
     #[test]
     fn canonical_diagnostic_location_preserves_exact_metadata_focus_and_weakens_unknown_elements() {
         let fixture = Fixture::platform_xml();
@@ -1685,6 +1692,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY
     #[test]
     fn canonical_diagnostic_location_reports_unsupported_source_format_without_a_physical_path() {
         let fixture = Fixture::platform_xml();

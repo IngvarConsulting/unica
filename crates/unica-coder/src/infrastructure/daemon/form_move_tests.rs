@@ -2,6 +2,7 @@ use super::actor_capacity_tests::direct_v5;
 use super::*;
 use unica_execution::invocation_store::ToolIdentity;
 
+/// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
     let workspace = tempfile::tempdir().unwrap();
@@ -327,6 +328,7 @@ fn canonical_form_move_composes_tabs_events_and_preserves_atomic_noops() {
     assert_eq!(std::fs::read(&form_path).unwrap(), invalid.as_bytes());
 }
 
+/// rule: INV.SOURCE.FORM-OPERATION-TARGETS
 #[test]
 fn column_group_and_its_columns_are_addressable_through_the_wire() {
     let workspace = tempfile::tempdir().unwrap();

@@ -1495,6 +1495,7 @@ fn project_health_git_info_exclude_is_local_only() {
     );
 }
 
+/// rule: INV.SOURCE.PORTABLE-GIT
 #[test]
 fn project_health_git_ignore_uses_staged_empty_file_not_valid_worktree_file() {
     let fixture = parent_repository_fixture();
@@ -1804,6 +1805,7 @@ fn project_health_git_ignore_file_that_git_skips_is_reported_not_trusted() {
     )));
 }
 
+/// rule: INV.SOURCE.PORTABLE-GIT
 #[test]
 fn project_health_git_untracked_gitignore_is_local_only() {
     let fixture = parent_repository_fixture();

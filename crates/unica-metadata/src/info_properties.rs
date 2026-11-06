@@ -364,6 +364,8 @@ fn mutation_value_kind(key: MetaPropertyKey) -> MetaInfoPropertyValueKind {
             | Correspondence
             | DistributedInfoBase
             | EnableTotalsSplitting
+            | UpdateDataHistoryImmediatelyAfterWrite
+            | ExecuteAfterWriteDataHistoryVersionProcessing
             | ExternalConnection
             | FoldersOnTop
             | Global
@@ -425,6 +427,11 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         | ReturnValuesReuse
         | Server
         | ServerCall => kind == CommonModule,
+        DataHistory
+        | UpdateDataHistoryImmediatelyAfterWrite
+        | ExecuteAfterWriteDataHistoryVersionProcessing => {
+            matches!(kind, Catalog | Document | InformationRegister)
+        }
         CreateTaskInPrivilegedMode => kind == BusinessProcess,
         FullTextSearch
         | SearchStringModeOnInputByString
@@ -943,6 +950,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.WIRE.COMMON-MODULE-ORDINARY-CLIENT
     #[test]
     fn ordinary_client_read_property_stays_independent_from_the_writer_registry() {
         assert!(mutation_compatible_read_key("ClientOrdinaryApplication").is_none());

@@ -332,14 +332,14 @@ fn main_dcs_namespace_cases() -> [(String, &'static str); 3] {
         prefixed.replace("xmlns:md=", "xmlns=\"urn:unrelated-default\" xmlns:md=");
     [
         (REGISTERED_REPORT.to_string(), ""),
-        (prefixed, " xmlns=\"http://v8.1c.ru/8.3/MDClasses\""),
-        (foreign_default, " xmlns=\"http://v8.1c.ru/8.3/MDClasses\""),
+        (prefixed, "md:"),
+        (foreign_default, "md:"),
     ]
 }
 
 #[test]
 fn main_dcs_assignment_writes_a_trimmed_reference_with_only_the_required_namespace() {
-    for (owner, namespace) in main_dcs_namespace_cases() {
+    for (owner, prefix) in main_dcs_namespace_cases() {
         let fixture = registered_fixture();
         std::fs::write(
             fixture.binding.source_root().join("Reports/Sales.xml"),
@@ -365,7 +365,7 @@ fn main_dcs_assignment_writes_a_trimmed_reference_with_only_the_required_namespa
             .unwrap();
         assert_eq!(
             &xml[reference.range()],
-            format!("<MainDataCompositionSchema{namespace}>Report.Sales.Template.Other</MainDataCompositionSchema>")
+            format!("<{prefix}MainDataCompositionSchema>Report.Sales.Template.Other</{prefix}MainDataCompositionSchema>")
         );
         assert_eq!(
             std::fs::read_to_string(fixture.binding.source_root().join("Reports/Sales.xml"))
@@ -378,7 +378,7 @@ fn main_dcs_assignment_writes_a_trimmed_reference_with_only_the_required_namespa
 
 #[test]
 fn main_dcs_clear_writes_a_self_closing_reference_in_its_original_namespace() {
-    for (owner, namespace) in main_dcs_namespace_cases() {
+    for (owner, prefix) in main_dcs_namespace_cases() {
         for value in ["", " \t\r\n "] {
             let fixture = registered_fixture();
             std::fs::write(
@@ -415,7 +415,7 @@ fn main_dcs_clear_writes_a_self_closing_reference_in_its_original_namespace() {
                 .unwrap();
             assert_eq!(
                 &xml[reference.range()],
-                format!("<MainDataCompositionSchema{namespace}/>")
+                format!("<{prefix}MainDataCompositionSchema/>")
             );
         }
     }

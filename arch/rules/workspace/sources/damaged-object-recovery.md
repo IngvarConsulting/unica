@@ -1,6 +1,5 @@
 ---
 id: INV.SOURCE.DAMAGED-OBJECT-RECOVERY
-check: []
 gap: https://github.com/IngvarConsulting/unica/issues/931
 ---
 
