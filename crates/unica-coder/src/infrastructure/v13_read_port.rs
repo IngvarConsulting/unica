@@ -1,4 +1,5 @@
 mod job_schedule;
+mod xdto;
 use crate::application::v13::source_text::{ModuleText, ModuleTextAccumulator};
 use unica_execution_contract::view_error::ViewError;
 use unica_metadata::configuration::{CfHomePageData, CfInterfaceData};
@@ -55,7 +56,6 @@ use unica_templates_designer::mxl_codec::parse_mxl_info_xml;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::documents::{DocumentText, SessionDocuments};
-use unica_xdto_designer::info::{parse_xdto_info_bytes, XdtoInfoError};
 
 #[cfg(test)]
 thread_local! {
@@ -1430,61 +1430,6 @@ impl ProviderReadAuthority {
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
-    }
-
-    pub(crate) fn xdto_check_outcome(
-        &self,
-        target: &MetadataAddress,
-        checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
-    ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
-        checkpoint()?;
-        let descriptor = self.metadata_descriptor(target)?;
-        let package = self.read_relative_with_checkpoint(
-            &self.attached_resource_relative(target, "Package.bin")?,
-            checkpoint,
-        )?;
-        let data = parse_xdto_info_bytes(&package, &descriptor, self.source_set(), target, None)
-            .map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })?;
-        checkpoint()?;
-        Ok(crate::infrastructure::native_operations::xdto::xdto_check_outcome(data))
-    }
-
-    pub(crate) fn xdto_payload(
-        &self,
-        target: &MetadataAddress,
-        type_name: Option<&str>,
-    ) -> Result<Value, ViewError> {
-        let descriptor = self.metadata_descriptor(target)?;
-        let package =
-            self.read_relative_whole(&self.attached_resource_relative(target, "Package.bin")?)?;
-        let data =
-            parse_xdto_info_bytes(&package, &descriptor, self.source_set(), target, type_name)
-                .map_err(|error| {
-                    let message = error.to_string();
-                    match error {
-                        XdtoInfoError::TypeNotFound(_) => {
-                            ViewError::new(RefusalCode::NotFound, message)
-                        }
-                        XdtoInfoError::Source(_) => {
-                            ViewError::detailed(RefusalDetail::SourceUnreadable, message)
-                        }
-                    }
-                })?;
-        let mut payload = serde_json::to_value(data)
-            .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
-        if type_name.is_none() {
-            match unica_metadata_designer::descriptor_comment::read_comment(
-                &descriptor,
-                "XDTOPackage",
-            ) {
-                Ok(Some(comment)) => payload["Comment"] = json!(comment),
-                Ok(None) => {}
-                Err(message) => payload["commentError"] = json!(message),
-            }
-        }
-        Ok(payload)
     }
 
     pub(crate) fn subsystem_payload(

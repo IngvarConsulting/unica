@@ -26,3 +26,17 @@ unica-source-designer = { path = "../unica-source-designer" }
 roxmltree.workspace = true
 memchr.workspace = true
 chrono.workspace = true
+
+[package.metadata.unica]
+inputs = [
+    "tests/fixtures/acceptance/workspace-information-register-dimension-flags",
+    "tests/fixtures/acceptance/workspace-metadata-edit-type",
+    "tests/fixtures/acceptance/workspace-register-dimensions",
+    "tests/fixtures/acceptance/workspace-tabular-attribute-copy",
+    "tests/fixtures/acceptance/workspace/src/Subsystems",
+    "tests/fixtures/platform_8_3_27/cfe_borrow",
+    "tests/fixtures/platform_8_3_27/empty_configuration",
+    "tests/fixtures/platform_8_3_27/exchange_plan",
+    "tests/fixtures/platform_8_3_27/meta_info",
+    "tests/fixtures/unica_mcp_script_parity/bsp/meta",
+]

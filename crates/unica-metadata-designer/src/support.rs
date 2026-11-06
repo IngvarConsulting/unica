@@ -475,18 +475,11 @@ mod support_stream_tests {
     /// Маркеры встроены в тест: кодек не читает файлы сам (граница платформы).
     fn marker(name: &str) -> Vec<u8> {
         match name {
-            "off" => {
-                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/off.bin")
-                    .as_slice()
+            "off" => include_bytes!("../tests/fixtures/support-markers/off.bin").as_slice(),
+            "editable" => {
+                include_bytes!("../tests/fixtures/support-markers/editable.bin").as_slice()
             }
-            "editable" => include_bytes!(
-                "../../../tests/fixtures/platform_8_3_27/support-markers/editable.bin"
-            )
-            .as_slice(),
-            "locked" => {
-                include_bytes!("../../../tests/fixtures/platform_8_3_27/support-markers/locked.bin")
-                    .as_slice()
-            }
+            "locked" => include_bytes!("../tests/fixtures/support-markers/locked.bin").as_slice(),
             other => panic!("no support marker fixture `{other}`"),
         }
         .to_vec()

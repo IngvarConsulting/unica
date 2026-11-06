@@ -1821,7 +1821,7 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
     use unica_metadata::{ObservedMetadataTypeVariant, StringLengthMode};
     let native = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/binary-data/native-type.xml"
+        "/tests/fixtures/binary-data/native-type.xml"
     ));
     let wrap = |fragment: &str, namespace: &str| {
         format!(

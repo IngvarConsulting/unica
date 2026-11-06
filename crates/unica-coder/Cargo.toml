@@ -138,3 +138,6 @@ proc-macro2.workspace = true
 quote.workspace = true
 syn.workspace = true
 tar.workspace = true
+
+[package.metadata.unica]
+read-outside-baseline = 186
