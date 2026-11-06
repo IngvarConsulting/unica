@@ -8,6 +8,7 @@
 # модули с такими конструкциями — объявленными.
 [medium]
 entries = [
+  "test_startup_notice_retention.StartupNoticeRetentionTests",
   # родной Job Object: запуск CLI-подобного процесса и проверка потомков
   "test_agent_cli_host.NativeAgentCliCleanupTests",
   # приёмочный корпус: собирает продукт и гоняет сценарии через MCP

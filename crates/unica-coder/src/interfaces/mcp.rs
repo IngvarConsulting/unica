@@ -16,6 +16,7 @@ use super::daemon_router::{
 use crate::interfaces::daemon_router::daemon_wait_cutoff;
 mod manual_calls;
 mod receive_pump;
+mod startup_notice;
 #[cfg(test)]
 use super::daemon_router::{CanonicalCallHandler, CanonicalTaskHandler, CanonicalTaskWaitHandler};
 use crate::application::tool_contracts::{SurfaceRelease, V13TaskProfile};
@@ -112,6 +113,7 @@ pub fn run_stdio() {
     };
     let workspace = unica_bootstrap::capture_host_workspace_context();
     let notice = startup_notice_from(std::env::var(STARTUP_NOTICE_ENV).ok());
+    let acknowledgement = startup_notice::StartupNoticeAck::from_environment();
     let server = UnicaServer::canonical_v13_daemon(client, workspace, notice);
     let in_flight = server.in_flight();
     let manual_calls = server.manual_calls.clone();
@@ -130,8 +132,10 @@ pub fn run_stdio() {
         let (stdin, stdout) = rmcp::transport::stdio();
         let transport = rmcp::transport::async_rw::AsyncRwTransport::new_server(stdin, stdout);
         let transport = DiscoveryProbeTransport::new(transport, &server);
+        let startup_delivery = transport.startup_delivery.clone();
         match ObservedServer(server).serve(transport).await {
             Ok(running) => {
+                startup_delivery.initialized(acknowledgement);
                 let _ = running.waiting().await;
             }
             // A host that closes stdin before the handshake is a clean shutdown,
@@ -165,6 +169,7 @@ struct DiscoveryProbeTransport<T: Transport<RoleServer>> {
     discovery: DiscoverResult,
     awaiting_opener: bool,
     manual_calls: Option<Arc<ManualCalls>>,
+    startup_delivery: startup_notice::StartupNoticeDelivery,
 }
 
 impl<T: Transport<RoleServer> + 'static> DiscoveryProbeTransport<T> {
@@ -180,6 +185,9 @@ impl<T: Transport<RoleServer> + 'static> DiscoveryProbeTransport<T> {
                 server.get_info(),
             ),
             awaiting_opener: true,
+            startup_delivery: startup_notice::StartupNoticeDelivery::new(
+                server.startup_notice.clone(),
+            ),
             manual_calls: matches!(server.router, SurfaceToolRouter::CanonicalV13(_))
                 .then(|| server.manual_calls.clone()),
         }
@@ -210,6 +218,8 @@ impl<T: Transport<RoleServer> + 'static> Transport<RoleServer> for DiscoveryProb
         let suppressed = tracked
             .as_ref()
             .is_some_and(|(_, _, call)| call.cancellation.requested());
+        let startup_response = self.startup_delivery.response(&item);
+        let startup_delivery = self.startup_delivery.clone();
         let sending = (!suppressed).then(|| self.inner.send(item));
         async move {
             let result = match sending {
@@ -217,6 +227,9 @@ impl<T: Transport<RoleServer> + 'static> Transport<RoleServer> for DiscoveryProb
                 None => Ok(()),
             };
             if result.is_ok() {
+                if !suppressed {
+                    startup_delivery.sent(startup_response);
+                }
                 if let Some((calls, id, call)) = tracked {
                     calls.delivery_done(&id, &call);
                 }
@@ -245,14 +258,16 @@ impl<T: Transport<RoleServer> + 'static> Transport<RoleServer> for DiscoveryProb
                                 ServerResult::DiscoverResult(self.discovery.clone()),
                                 request.id.clone(),
                             );
+                            let startup_response = self.startup_delivery.response(&response);
                             if let Err(error) = self.inner.send(response).await {
                                 eprintln!("unica mcp discovery probe response failed: {error}");
                                 return None;
                             }
+                            self.startup_delivery.sent(startup_response);
                             continue;
                         }
                         ClientRequest::PingRequest(_) => return Some(message),
-                        _ => {}
+                        _ => self.startup_delivery.opener(request.id.clone()),
                     }
                 }
                 self.awaiting_opener = false;
