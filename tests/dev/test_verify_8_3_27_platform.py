@@ -1014,7 +1014,7 @@ class CorpusAdapterTests(unittest.TestCase):
         side, so bind the two inventories to each other instead."""
         verifier = load_verifier()
         source = (
-            ROOT / "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs"
+            ROOT / "crates/unica-product/tests/format_8_3_27_xml_corpus.rs"
         ).read_text(encoding="utf-8")
         generated = set(
             re.findall(r"ExecutableCase\s*\{\s*id:\s*\"([^\"]+)\"", source)
@@ -1028,7 +1028,7 @@ class CorpusAdapterTests(unittest.TestCase):
         corpus declare a family the gate reads as `None`."""
         verifier = load_verifier()
         source = (
-            ROOT / "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs"
+            ROOT / "crates/unica-product/tests/format_8_3_27_xml_corpus.rs"
         ).read_text(encoding="utf-8")
         body = source.split("fn family_for_root", 1)[1].split("=> {\n            return", 1)[0]
         generated = {
