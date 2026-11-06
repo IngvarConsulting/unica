@@ -114,6 +114,10 @@ impl ArtifactSha256 {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReceiptLedgerError {
+    IsolatedTaskRecord {
+        task_id: TaskId,
+        reason: crate::invocation_store_v5::IsolatedTaskRecordReason,
+    },
     AlreadyOwned,
     DeadlineExceeded,
     InvocationIdentityMismatch,
@@ -169,6 +173,7 @@ impl ReceiptLedgerError {
 impl fmt::Display for ReceiptLedgerError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::IsolatedTaskRecord { task_id, reason } => write!(formatter, "isolated v5 Task record {task_id}: {reason}"),
             Self::AlreadyOwned => formatter.write_str("receipt ledger is already owned"),
             Self::DeadlineExceeded => formatter.write_str("receipt ledger deadline expired"),
             Self::InvocationIdentityMismatch => {

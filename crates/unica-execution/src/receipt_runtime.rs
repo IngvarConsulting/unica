@@ -890,6 +890,20 @@ impl V5TaskProjection {
                 TaskLifecycleLinkRecord::TaskTerminalBound(expected) => expected.key_digest(),
                 TaskLifecycleLinkRecord::TaskRetirementPending(expected) => expected.key_digest(),
             };
+            match self
+                .task_store
+                .check_isolated_record(task_id, provider_deadline)
+            {
+                Err(V5TaskStoreError::IsolatedRecord { .. }) => continue,
+                Err(error) => {
+                    return Err(V5TaskProjectionFailure::from_task_store(
+                        error,
+                        receipt_key_digest.clone(),
+                        true,
+                    ))
+                }
+                Ok(()) => {}
+            }
             let record = match recovered_records.remove(&task_id) {
                 Some(record) => record,
                 None => match self.task_store.get(task_id, provider_deadline) {
@@ -1084,6 +1098,15 @@ impl V5TaskProjection {
         hooks: &dyn V5RuntimeHooks<H>,
     ) -> Result<(), V5TaskProjectionFailure> {
         let task_id = candidate.task_id();
+        let key_digest = match &candidate {
+            RetirementCandidate::Expired(terminal) => terminal.key_digest(),
+            RetirementCandidate::Pending(pending) => pending.key_digest(),
+        };
+        self.task_store
+            .check_isolated_record(task_id, provider_deadline)
+            .map_err(|error| {
+                V5TaskProjectionFailure::from_task_store(error, key_digest.clone(), true)
+            })?;
         let injected = |step| {
             if hooks.retirement_step_fault(step, task_id) {
                 Err(V5TaskProjectionFailure::fail_stop(
@@ -1173,6 +1196,8 @@ impl V5TaskProjection {
         catalog: &[TaskLifecycleLinkCatalogEntry],
         deadline: Instant,
     ) -> Result<Option<StagedHandoffStartupPlan>, V5TaskProjectionFailure> {
+        let provider_deadline =
+            unica_work_control::provider_deadline::ProviderDeadline::new(deadline);
         let HandoffTerminalStage::Staged {
             terminal,
             terminal_epoch_ms,
@@ -1199,13 +1224,41 @@ impl V5TaskProjection {
             .filter(|entry| lifecycle_entry_task_id(entry) == staged.task().task_id())
             .collect::<Vec<_>>();
         let entry = match matching.as_slice() {
-            [] => return Ok(None),
+            [] => {
+                match self
+                    .task_store
+                    .check_isolated_record(staged.task().task_id(), provider_deadline)
+                {
+                    Err(V5TaskStoreError::IsolatedRecord { .. }) => {
+                        return Err(Self::startup_fail_stop(
+                            "isolated staged Task has no prior lifecycle owner",
+                        ))
+                    }
+                    Err(error) => {
+                        return Err(V5TaskProjectionFailure::from_task_store(
+                            error,
+                            staged.key_digest().clone(),
+                            true,
+                        ))
+                    }
+                    Ok(()) => return Ok(None),
+                }
+            }
             [TaskLifecycleLinkCatalogEntry::Reservation(reservation)] => {
                 if reservation.key() != staged.key() || reservation.link() != staged.link() {
                     return Err(Self::startup_fail_stop(
                         "staged startup reservation differs from its receipt",
                     ));
                 }
+                self.task_store
+                    .check_isolated_record(staged.task().task_id(), provider_deadline)
+                    .map_err(|error| {
+                        V5TaskProjectionFailure::from_task_store(
+                            error,
+                            staged.key_digest().clone(),
+                            true,
+                        )
+                    })?;
                 return Ok(None);
             }
             [TaskLifecycleLinkCatalogEntry::Record(record)] => record,
@@ -1225,15 +1278,17 @@ impl V5TaskProjection {
                 "staged startup lifecycle link differs from its receipt",
             ));
         }
-        let observed = self
-            .task_store
-            .get(
-                staged.task().task_id(),
-                unica_work_control::provider_deadline::ProviderDeadline::new(deadline),
-            )
-            .map_err(|error| {
-                V5TaskProjectionFailure::from_task_store(error, staged.key_digest().clone(), true)
-            })?;
+        let read_observed = || {
+            self.task_store
+                .get(staged.task().task_id(), provider_deadline)
+                .map_err(|error| {
+                    V5TaskProjectionFailure::from_task_store(
+                        error,
+                        staged.key_digest().clone(),
+                        true,
+                    )
+                })
+        };
         let (publication, status) = Self::terminal_publication(terminal, *terminal_epoch_ms);
         match entry {
             TaskLifecycleLinkRecord::TaskBound(bound) => {
@@ -1261,6 +1316,7 @@ impl V5TaskProjection {
                 })?;
                 successor.updated_at_epoch_ms = *terminal_epoch_ms;
                 successor.task = publication.into_stored_task();
+                let observed = read_observed()?;
                 if observed != provisional && observed != successor {
                     return Err(Self::startup_fail_stop(
                         "staged startup Task differs from its full durable successor",
@@ -1283,11 +1339,16 @@ impl V5TaskProjection {
                     || terminal_link.terminal_digest() != terminal.digest()
                     || terminal_link.terminal_epoch_ms() != *terminal_epoch_ms
                     || expected.updated_at_epoch_ms != *terminal_epoch_ms
-                    || expected != observed
                     || !task_terminal_bound_matches_record(terminal_link, &expected)?
                 {
                     return Err(Self::startup_fail_stop(
                         "staged startup terminal link differs from its full saved winner",
+                    ));
+                }
+                let observed = read_observed()?;
+                if expected != observed {
+                    return Err(Self::startup_fail_stop(
+                        "staged startup terminal Task differs from its full saved winner",
                     ));
                 }
                 Ok(Some(StagedHandoffStartupPlan::TaskTerminalBound {
@@ -2258,6 +2319,34 @@ fn expected_handoff_record(handoff: &TaskHandoffActorBoundReceipt) -> NewV5Invoc
 /// handoff it did not complete.
 type BoundStartupHandoff = (V5StoredInvocationRecord, TaskBoundReceipt);
 
+/// A rejected payload cannot waive its handoff's independent lifecycle proof.
+fn validate_isolated_handoff_authority(
+    handoff: &TaskHandoffActorBoundReceipt,
+    entries: &[TaskLifecycleLinkCatalogEntry],
+) -> Result<(), &'static str> {
+    if let Some(bound) = exact_handoff_task_bound(handoff, entries)? {
+        if bound.task().created_at_epoch_ms() != handoff.task().created_at_epoch_ms()
+            || bound.task().ttl_ms() != handoff.task().ttl_ms()
+            || bound.task().poll_interval_ms() != handoff.task().poll_interval_ms()
+        {
+            return Err("isolated handoff Task projection differs from its receipt");
+        }
+        return Ok(());
+    }
+    let matching = entries
+        .iter()
+        .filter(|entry| lifecycle_entry_task_id(entry) == handoff.task().task_id())
+        .collect::<Vec<_>>();
+    match matching.as_slice() {
+        [TaskLifecycleLinkCatalogEntry::Reservation(reservation)]
+            if reservation.key() == handoff.key() && reservation.link() == handoff.link() =>
+        {
+            Ok(())
+        }
+        _ => Err("isolated handoff Task has no exact prior lifecycle owner"),
+    }
+}
+
 /// The TaskBound link of an unstaged handoff whose receipt was not completed
 /// yet. `None` when the link is still only reserved or absent; an error when
 /// the Task's lifecycle entry belongs to another owner.
@@ -2605,6 +2694,7 @@ impl V5TaskProjectionFailure {
         observation::failure(
             "projection.from_task_store",
             match &error {
+                V5TaskStoreError::IsolatedRecord { .. } => "IsolatedRecord",
                 V5TaskStoreError::DeadlineExceeded => "DeadlineExceeded",
                 V5TaskStoreError::Capacity { .. } => "Capacity",
                 V5TaskStoreError::RecordTooLarge { .. } => "RecordTooLarge",
@@ -2618,6 +2708,10 @@ impl V5TaskProjectionFailure {
             None,
         );
         match error {
+            V5TaskStoreError::IsolatedRecord { task_id, reason } => Self {
+                error: ReceiptLedgerError::IsolatedTaskRecord { task_id, reason },
+                fail_stop: false,
+            },
             V5TaskStoreError::DeadlineExceeded => Self {
                 error: ReceiptLedgerError::DeadlineExceeded,
                 fail_stop: false,
@@ -2725,9 +2819,19 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             live_attempts: V5LiveAttempts::default(),
         };
         if config.reconcile_startup {
-            let bound_handoffs =
-                runtime.preflight_existing_handoff_tasks(&recovery_keys, startup_deadline)?;
-            runtime.reconcile_pre_task_startup(recovery_keys, bound_handoffs, startup_deadline)?;
+            let provider_deadline =
+                unica_work_control::provider_deadline::ProviderDeadline::new(startup_deadline);
+            let bound_handoffs = runtime.preflight_existing_handoff_tasks(
+                &recovery_keys,
+                startup_deadline,
+                provider_deadline,
+            )?;
+            runtime.reconcile_pre_task_startup(
+                recovery_keys,
+                bound_handoffs,
+                startup_deadline,
+                provider_deadline,
+            )?;
             runtime
                 .task_projection
                 .reconcile_materialized_startup(startup_deadline)
@@ -2747,11 +2851,10 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
         &self,
         recovery_keys: &[ReceiptKey],
         deadline: Instant,
+        provider_deadline: unica_work_control::provider_deadline::ProviderDeadline,
     ) -> Result<HashMap<unica_execution_contract::invocation::TaskId, BoundStartupHandoff>, String>
     {
         let mut bound_handoffs = HashMap::new();
-        let provider_deadline =
-            unica_work_control::provider_deadline::ProviderDeadline::new(deadline);
         let lifecycle = self
             .task_projection
             .lifecycle_links
@@ -2771,13 +2874,28 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                 handoff.terminal_stage(),
                 HandoffTerminalStage::Staged { .. }
             ) {
-                if let Some(plan) = self
-                    .task_projection
-                    .staged_handoff_startup_plan(&handoff, lifecycle.entries(), deadline)
-                    .map_err(|failure| {
-                        format!("inspect staged startup handoff proof: {}", failure.error)
-                    })?
-                {
+                let plan = match self.task_projection.staged_handoff_startup_plan(
+                    &handoff,
+                    lifecycle.entries(),
+                    deadline,
+                ) {
+                    Ok(plan) => plan,
+                    Err(failure)
+                        if matches!(
+                            failure.error,
+                            ReceiptLedgerError::IsolatedTaskRecord { .. }
+                        ) =>
+                    {
+                        continue
+                    }
+                    Err(failure) => {
+                        return Err(format!(
+                            "inspect staged startup handoff proof: {}",
+                            failure.error
+                        ))
+                    }
+                };
+                if let Some(plan) = plan {
                     let observed = plan.observed();
                     let Some(recovery) = self
                         .task_projection
@@ -2800,6 +2918,21 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                     }
                     continue;
                 }
+            }
+            match self
+                .task_projection
+                .task_store
+                .check_isolated_record(handoff.task().task_id(), provider_deadline)
+            {
+                Err(V5TaskStoreError::IsolatedRecord { .. }) => {
+                    validate_isolated_handoff_authority(&handoff, lifecycle.entries())
+                        .map_err(str::to_owned)?;
+                    continue;
+                }
+                Err(error) => {
+                    return Err(format!("inspect isolated startup handoff Task: {error}"))
+                }
+                Ok(()) => {}
             }
             let Some(recovery) = self
                 .task_projection
@@ -2906,6 +3039,7 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
             BoundStartupHandoff,
         >,
         deadline: Instant,
+        provider_deadline: unica_work_control::provider_deadline::ProviderDeadline,
     ) -> Result<(), String> {
         let terminal_epoch_ms = self.epoch_ms();
         for key in recovery_keys {
@@ -3060,13 +3194,32 @@ impl<H: InvocationHost> V5ReceiptRuntime<H> {
                         handoff.terminal_stage(),
                         HandoffTerminalStage::Staged { .. }
                     ) {
-                        self.reconcile_staged_handoff_startup(handoff.clone(), deadline)
-                        .map_err(|error| {
-                            format!(
-                                "reconcile protocol-v5 staged handoff terminal before listener: {error}"
-                            )
-                        })?;
-                        continue;
+                        match self.reconcile_staged_handoff_startup(handoff.clone(), deadline) {
+                            Ok(_) | Err(ReceiptLedgerError::IsolatedTaskRecord { .. }) => continue,
+                            Err(error) => return Err(format!("reconcile protocol-v5 staged handoff terminal before listener: {error}")),
+                        }
+                    }
+                    match self
+                        .task_projection
+                        .task_store
+                        .check_isolated_record(handoff.task().task_id(), provider_deadline)
+                    {
+                        Err(V5TaskStoreError::IsolatedRecord { .. }) => {
+                            let lifecycle = self
+                                .task_projection
+                                .lifecycle_links
+                                .catalog_snapshot(provider_deadline)
+                                .map_err(|error| {
+                                    format!("inspect isolated startup handoff authority: {error}")
+                                })?;
+                            validate_isolated_handoff_authority(&handoff, lifecycle.entries())
+                                .map_err(str::to_owned)?;
+                            continue;
+                        }
+                        Err(error) => {
+                            return Err(format!("inspect isolated startup handoff Task: {error}"))
+                        }
+                        Ok(()) => {}
                     }
                     let receipt_version = handoff.record_version();
                     let phase = handoff.phase();

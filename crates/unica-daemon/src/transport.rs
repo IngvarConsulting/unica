@@ -1348,7 +1348,8 @@ fn daemon_error_code(error: &ReceiptLedgerError) -> V5DaemonErrorCode {
         ReceiptLedgerError::EmptyBatch
         | ReceiptLedgerError::TerminalMismatch
         | ReceiptLedgerError::ReceiptRowPresentUnsupported => V5DaemonErrorCode::InvalidRequest,
-        ReceiptLedgerError::RecordTooLarge
+        ReceiptLedgerError::IsolatedTaskRecord { .. }
+        | ReceiptLedgerError::RecordTooLarge
         | ReceiptLedgerError::TimestampOverflow
         | ReceiptLedgerError::ReceiptVersionMismatch { .. }
         | ReceiptLedgerError::ReceiptMutationSequenceMismatch { .. }

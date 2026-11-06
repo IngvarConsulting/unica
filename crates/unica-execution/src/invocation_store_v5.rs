@@ -487,8 +487,30 @@ pub enum V5TaskMismatch {
     State,
 }
 
+/// A payload rejected after its canonical file and owner authority were verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsolatedTaskRecordReason {
+    Corrupt,
+    RecordTooLarge { max_bytes: usize },
+}
+
+impl fmt::Display for IsolatedTaskRecordReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Corrupt => formatter.write_str("invalid protocol-v5 Task payload"),
+            Self::RecordTooLarge { max_bytes } => {
+                write!(formatter, "Task payload exceeds the {max_bytes}-byte limit")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum V5TaskStoreError {
+    IsolatedRecord {
+        task_id: TaskId,
+        reason: IsolatedTaskRecordReason,
+    },
     NotFound {
         task_id: TaskId,
     },
@@ -518,6 +540,9 @@ pub enum V5TaskStoreError {
 impl fmt::Display for V5TaskStoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::IsolatedRecord { task_id, reason } => {
+                write!(formatter, "isolated v5 Task record {task_id}: {reason}")
+            }
             Self::NotFound { task_id } => write!(formatter, "v5 task record not found: {task_id}"),
             Self::Capacity { max_records } => {
                 write!(formatter, "v5 task store capacity reached ({max_records})")

@@ -10406,3 +10406,6 @@ fn the_deadline_fixed_at_frame_receipt_governs_the_whole_call() {
         .expect("daemon thread did not panic")
         .expect("daemon exits cleanly");
 }
+
+#[path = "receipt_runtime/isolated_record_tests.rs"]
+mod isolated_record_tests;
