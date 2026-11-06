@@ -16,6 +16,8 @@ const LOCAL_CONFIG_FILENAME: &str = "unica.local.toml";
 const OPERATIONAL_SECTIONS: &[&str] = &["code_intelligence", "code_diagnostics"];
 const CODE_INTELLIGENCE_FIELDS: &[&str] = &[
     "search_total_timeout_seconds",
+    "search_semantic_timeout_seconds",
+    // Прежнее имя того же срока: файлы проектов продолжают читаться.
     "search_rlm_timeout_seconds",
     "search_git_grep_timeout_seconds",
     "provider_read_timeout_seconds",
@@ -99,7 +101,14 @@ fn parse_layer(
         parse_timeout(
             code_intelligence,
             "search_rlm_timeout_seconds",
-            OperationalConfigField::SearchRlm,
+            OperationalConfigField::SearchSemantic,
+            source,
+            &mut layer,
+        )?;
+        parse_timeout(
+            code_intelligence,
+            "search_semantic_timeout_seconds",
+            OperationalConfigField::SearchSemantic,
             source,
             &mut layer,
         )?;
@@ -250,7 +259,7 @@ pub(crate) mod tests {
         let code = config.code_intelligence();
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(300));
-        assert_eq!(code.search_rlm_timeout(), Duration::from_secs(300));
+        assert_eq!(code.search_semantic_timeout(), Duration::from_secs(300));
         assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(30));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(45));
         assert_eq!(
@@ -339,7 +348,7 @@ pub(crate) mod tests {
             SHARED_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 100
-search_rlm_timeout_seconds = 40
+search_semantic_timeout_seconds = 40
 search_git_grep_timeout_seconds = 45
 provider_read_timeout_seconds = 35
 
@@ -352,7 +361,7 @@ analyze_timeout_seconds = 900
         let code = config.code_intelligence();
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(100));
-        assert_eq!(code.search_rlm_timeout(), Duration::from_secs(40));
+        assert_eq!(code.search_semantic_timeout(), Duration::from_secs(40));
         assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(45));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(35));
         assert_eq!(
@@ -370,7 +379,7 @@ analyze_timeout_seconds = 900
             SHARED_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 100
-search_rlm_timeout_seconds = 40
+search_semantic_timeout_seconds = 40
 provider_read_timeout_seconds = 30
 [operational.code_diagnostics]
 analyze_timeout_seconds = 600
@@ -380,7 +389,7 @@ analyze_timeout_seconds = 600
             &workspace,
             LOCAL_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
-search_rlm_timeout_seconds = 35
+search_semantic_timeout_seconds = 35
 [operational.code_diagnostics]
 analyze_timeout_seconds = 700
 "#,
@@ -390,7 +399,7 @@ analyze_timeout_seconds = 700
         let code = config.code_intelligence();
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(100));
-        assert_eq!(code.search_rlm_timeout(), Duration::from_secs(35));
+        assert_eq!(code.search_semantic_timeout(), Duration::from_secs(35));
         assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(30));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(30));
         assert_eq!(
@@ -418,7 +427,7 @@ search_total_timeout_seconds = 90
             Duration::from_secs(90)
         );
         assert_eq!(
-            config.code_intelligence().search_rlm_timeout(),
+            config.code_intelligence().search_semantic_timeout(),
             Duration::from_secs(90)
         );
     }
@@ -432,7 +441,7 @@ search_total_timeout_seconds = 90
             SHARED_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 120
-search_rlm_timeout_seconds = 45
+search_semantic_timeout_seconds = 45
 search_git_grep_timeout_seconds = 120
 provider_read_timeout_seconds = 45
 [operational.code_diagnostics]
@@ -446,7 +455,7 @@ analyze_timeout_seconds = 3600
             Duration::from_secs(120)
         );
         assert_eq!(
-            maximum.code_intelligence().search_rlm_timeout(),
+            maximum.code_intelligence().search_semantic_timeout(),
             Duration::from_secs(45)
         );
         assert_eq!(
@@ -467,7 +476,7 @@ analyze_timeout_seconds = 3600
             SHARED_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 1
-search_rlm_timeout_seconds = 1
+search_semantic_timeout_seconds = 1
 search_git_grep_timeout_seconds = 1
 provider_read_timeout_seconds = 1
 [operational.code_diagnostics]
@@ -489,7 +498,7 @@ analyze_timeout_seconds = 30
             SHARED_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 7200
-search_rlm_timeout_seconds = 3600
+search_semantic_timeout_seconds = 3600
 search_git_grep_timeout_seconds = 1800
 provider_read_timeout_seconds = 7200
 [operational.code_diagnostics]
@@ -504,7 +513,7 @@ analyze_timeout_seconds = 7200
             Duration::from_secs(7_200)
         );
         assert_eq!(
-            code_intelligence.search_rlm_timeout(),
+            code_intelligence.search_semantic_timeout(),
             Duration::from_secs(3_600)
         );
         assert_eq!(
@@ -640,9 +649,9 @@ analyze_timeout_seconds = 7200
                 "code_intelligence",
             ),
             (
-                "search_rlm_timeout_seconds",
+                "search_semantic_timeout_seconds",
                 "0",
-                "operational.code_intelligence.search_rlm_timeout_seconds",
+                "operational.code_intelligence.search_semantic_timeout_seconds",
                 "code_intelligence",
             ),
             (
@@ -774,11 +783,11 @@ analyze_timeout_seconds = 7200
     fn final_snapshot_enforces_provider_deadlines_not_exceeding_total() {
         let cases = [
             (
-                "search_rlm_timeout_seconds = 30",
-                "operational.code_intelligence.search_rlm_timeout_seconds",
+                "search_semantic_timeout_seconds = 30",
+                "operational.code_intelligence.search_semantic_timeout_seconds",
             ),
             (
-                "search_rlm_timeout_seconds = 20\nsearch_git_grep_timeout_seconds = 30",
+                "search_semantic_timeout_seconds = 20\nsearch_git_grep_timeout_seconds = 30",
                 "operational.code_intelligence.search_git_grep_timeout_seconds",
             ),
         ];
@@ -810,7 +819,7 @@ analyze_timeout_seconds = 7200
         write_config(
             &workspace,
             SHARED_CONFIG_FILENAME,
-            "[operational.code_intelligence]\nsearch_rlm_timeout_seconds = 30\n",
+            "[operational.code_intelligence]\nsearch_semantic_timeout_seconds = 30\n",
         );
         write_config(
             &workspace,

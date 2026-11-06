@@ -385,7 +385,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         """Одна версия исполнителя для CI и локального прогона."""
         import yaml
 
-        release = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "unica-plugin-release.yml").read_text(encoding="utf-8"))
+        release = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8"))
         tools = next(
             step["with"]["tool"]
             for job in ("unica-ci", "rust-os")

@@ -183,6 +183,17 @@ class RemovedTestsTests(unittest.TestCase):
             ("crates/demo/src/a/plain/mod.rs", "demo", "a::plain", True),
         ])
 
+    def test_resolves_the_modules_build_rs_declares_for_a_crate_root(self):
+        # crates/unica-metadata-designer/build.rs lists `src/*.rs`; each module
+        # keeps `<stem>/` for its own children, and the root is not its own child.
+        source = 'include!(concat!(env!("OUT_DIR"), "/a_modules.rs"));\ndeclare_modules!();\n'
+        files = ["crates/demo/src/lib.rs", "crates/demo/src/one.rs", "crates/demo/src/one/child.rs"]
+        children = list(removed_tests.Packages.children("crates/demo/src/lib.rs", source, "demo", "", True, files))
+        self.assertEqual(children, [("crates/demo/src/one.rs", "demo", "one", False)])
+        nested = list(removed_tests.Packages.children(
+            "crates/demo/src/one.rs", "mod child;\n", "demo", "one", False, files))
+        self.assertEqual(nested[0][:3], ("crates/demo/src/one/child.rs", "demo", "one::child"))
+
     def test_resolves_the_modules_build_rs_declares_from_the_module_directory(self):
         # crates/unica-coder/build.rs declares `mod <stem>;` for each `*.rs` of
         # the module's own directory; the include must reach exactly those files.
@@ -231,17 +242,30 @@ class RemovedTestsTests(unittest.TestCase):
         self.assertNotIn("Traceback", stderr)
         self.assertIn("git merge-base no-such-revision HEAD failed", stderr)
 
-    def test_pull_request_runs_check_removed_tests_against_their_base(self):
-        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/unica-plugin-release.yml").read_text(encoding="utf-8"))
+    def test_full_runs_check_removed_tests_against_the_inventory_baseline(self) -> None:
+        workflow = yaml.safe_load((REPO_ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8"))
         steps = workflow["jobs"]["unica-ci"]["steps"]
         names = [step.get("run", "") for step in steps]
         index = next(i for i, run in enumerate(names) if "removed_tests.py" in run)
         step = steps[index]
-        self.assertEqual(step["if"], "${{ !cancelled() && github.event_name == 'pull_request' && steps.classify.outputs.rust_required == 'true' }}")
-        self.assertIn("--base HEAD^1", step["run"])
+        self.assertEqual(step["if"], "${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}")
+        self.assertIn("--baseline .build/ci-baseline/baseline.json", step["run"])
         # After verify: its own failure never hides or confuses the inventory verdict.
         self.assertLess(next(i for i, run in enumerate(names) if "--phase verify" in run), index)
         self.assertIn("pull-requests", workflow["jobs"]["unica-ci"]["permissions"])
+
+    def test_the_baseline_gives_the_base_and_the_declarations_merged_since(self) -> None:
+        document = {
+            "source": {"headSha": "a" * 40},
+            "explanations": {"removedTests": ["pkg::bin::gone"], "removedTargets": ["pkg::old"], "reset": False},
+        }
+        base, description = removed_tests.baseline_scope(document)
+        self.assertEqual(base, "a" * 40)
+        self.assertEqual(description, "Removes-test: pkg::bin::gone\nRemoves-test-target: pkg::old")
+
+    def test_no_baseline_and_a_declared_reset_have_nothing_to_compare(self) -> None:
+        self.assertIsNone(removed_tests.baseline_scope({"source": None, "explanations": {}}))
+        self.assertIsNone(removed_tests.baseline_scope({"source": {"headSha": "a" * 40}, "explanations": {"reset": True}}))
 
 
 if __name__ == "__main__":

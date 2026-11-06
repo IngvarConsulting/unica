@@ -291,7 +291,7 @@ def check_utf8(host: Host) -> Check:
 
 
 def nextest_pin(host: Host, repo: Path) -> Optional[str]:
-    workflow = host.read_text(repo / ".github" / "workflows" / "unica-plugin-release.yml") or ""
+    workflow = host.read_text(repo / ".github" / "workflows" / "release.yml") or ""
     match = re.search(r"cargo-nextest@([0-9][0-9.]*)", workflow)
     return match.group(1) if match else None
 

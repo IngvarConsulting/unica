@@ -1843,8 +1843,6 @@ def prepare_reader_standins(temp_root: Path) -> tuple[Path, dict[str, str], Path
     binary_dir.mkdir(parents=True)
     binaries = {
         f"bsl-analyzer{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
-        f"rlm-bsl-mcp{suffix}": READER_STANDINS_ROOT / "bsl_mcp.py",
-        f"rlm-bsl-index{suffix}": READER_STANDINS_ROOT / "rlm_index.py",
         # Mutation examples are previews, but a preview may only promise a
         # runnable command when the declared runner actually exists. The
         # stand-in is never executed in dry-run mode; its bytes make the
@@ -2475,28 +2473,6 @@ class ReaderStandinFixtureTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(AssertionError, "do not support"):
                 current_reader_standin_target()
-
-    def test_rlm_index_standin_reports_missing_index_root(self) -> None:
-        env = os.environ.copy()
-        env.pop("RLM_INDEX_DIR", None)
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(READER_STANDINS_ROOT / "rlm_index.py"),
-                "index",
-                "info",
-            ],
-            cwd=REPO_ROOT,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-
-        self.assertEqual(result.returncode, 2, result)
-        self.assertIn("RLM_INDEX_DIR must be set", result.stderr)
-        self.assertNotIn("Traceback", result.stderr)
-
 
 class WindowsParityNormalizationTests(unittest.TestCase):
     def test_cfe_borrow_execution_separates_case_colliding_extension_root(

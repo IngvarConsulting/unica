@@ -2362,27 +2362,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "unica-adapter-rlm"
-version = "0.15.0-rc.1"
-dependencies = [
- "fs2",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "unica-analysis-services",
- "unica-artifact-delivery",
- "unica-code-intelligence",
- "unica-execution-contract",
- "unica-process",
- "unica-redaction",
- "unica-source-contract",
- "unica-work-control",
- "unica-workspace",
- "uuid",
-]
-
-[[package]]
 name = "unica-adapter-v8-runner"
 version = "0.15.0-rc.1"
 dependencies = [
@@ -2585,7 +2564,6 @@ dependencies = [
  "toml",
  "unica-adapter-bsl-analyzer",
  "unica-adapter-lexical",
- "unica-adapter-rlm",
  "unica-adapter-v8-runner",
  "unica-address",
  "unica-analysis-services",

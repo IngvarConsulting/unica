@@ -15,7 +15,7 @@
 | Обнаружение и выбор набора исходников | `crates/unica-source-contract/src/discovery.rs`, `crates/unica-source-integration-tests/tests/` | Грамматика — `crates/unica-source-designer/src/project_sources.rs`, физические наблюдения — `crates/unica-workspace/src/discovery.rs`, сохранённые свидетельства — `crates/unica-workspace/src/selection_evidence.rs` |
 | Подготовка, защита и публикация изменения исходников | `crates/unica-source-contract/src/proposal.rs`, правила `arch/rules/workspace/` | Владение и допуск — `crates/unica-workspace/src/actor.rs`, staging — `apply.rs`, транзакция — `compile_transaction.rs`; семейные предложения создаёт кодек, связывает продуктовая композиция |
 | Кеш и события рабочего пространства | `crates/unica-source-contract/src/events.rs`, ближайшие тесты владельца | `crates/unica-workspace/src/cache.rs`, `state.rs`, `actor.rs`; семантику событий задаёт их фактический производитель |
-| Поиск кода, навигация и диагностика | `crates/unica-code-intelligence/`, `crates/unica-navigation/`, `crates/unica-diagnostics/` | Координатор своей возможности; реализации — `crates/unica-adapter-rlm/`, `unica-adapter-bsl-analyzer/`, `unica-adapter-lexical/`; связывание — `crates/unica-coder/src/infrastructure/analysis_composition.rs` |
+| Поиск кода, навигация и диагностика | `crates/unica-code-intelligence/`, `crates/unica-navigation/`, `crates/unica-diagnostics/` | Координатор своей возможности; реализации — `unica-adapter-bsl-analyzer/`, `unica-adapter-lexical/`; связывание — `crates/unica-coder/src/infrastructure/analysis_composition.rs` |
 | Синтаксис BSL и версии parser/analyzer | `plugins/unica/third-party/tools.lock.json`, корневые `Cargo.toml` и `Cargo.lock` | `crates/unica-bsl-parser/` скрывает апстрим-типы; `crates/unica-bsl/` использует нормализованные факты |
 | Связи методов, событий и деклараций | `crates/unica-bindings/src/projection.rs`, правила `arch/rules/workspace/sources/module-*.md` | Проекция сопоставляет факты BSL, Forms и Metadata; форматные фикстуры проверяет `crates/unica-bindings-integration-tests/tests/projection.rs` |
 | Скрытый сервис анализа | `crates/unica-analysis-services/src/backend.rs`, `protocol.rs`, тесты изоляции | `crates/unica-analysis-services/` владеет общим жизненным циклом, конкретный адаптер — своим протоколом и сессией движка |
@@ -23,10 +23,15 @@
 | Документация и её поставщики | `crates/unica-documentation/`, правила `arch/rules/analysis/documentation/` | `crates/unica-documentation-sources/`; продукт связывает выбранных поставщиков с координатором |
 | Доставка артефакта или сетевой выход | Правила `arch/rules/distribution/` и тесты своего владельца | `crates/unica-artifact-delivery/`, `crates/unica-network/`; выбор установленного движка остаётся продуктовой композицией |
 | Процессы, отмена и общая работа | Порты и тесты фактического владельца | `crates/unica-process/` — процессы и потоки; `crates/unica-work-control/` — сроки, отмена и механизм single-flight; точные ключи и политика — у потребителя |
-| Упаковка или релиз | Контрактные метаданные пакета, `docs/release-runbook.md` | `scripts/ci/package-unica-plugin.py`, `crates/unica-bootstrap/`, `.github/workflows/unica-plugin-release.yml` |
+| Упаковка или релиз | Контрактные метаданные пакета, `docs/release-runbook.md` | `scripts/ci/package-unica-plugin.py`, `crates/unica-bootstrap/`, `.github/workflows/release.yml` |
 | Поведение, зависящее от ОС | `scripts/ci/check-rust-platform-boundary.py`, `tests/ci/test_rust_platform_boundary.py` | Приватный `src/platform/` фактического владельца: `unica-bootstrap`, `unica-process`, `unica-workspace`, `unica-artifact-delivery`; вход продукта — `crates/unica-coder/src/infrastructure/platform/`, native-тесты — `crates/*/tests/platform/` |
 | Сборка, отбор и исполнение тестов | [unica-testing](../../unica-testing/SKILL.md), `CONTRIBUTING.md` | `scripts/ci/run-tests.py`, `ci_rust_lanes.py`, `prepared_binary.py`, `ci_shadow_selector.py`; размер — `.config/nextest.toml` (`medium` — по имени теста) |
 | Архитектурная граница | [unica-rules](../../unica-rules/SKILL.md), применимая запись и тела тестов с её пометкой `rule:` | `scripts/ci/check-component-boundaries.py` проверяет направления зависимостей, код и тест меняются у фактического владельца |
+
+Каталоги, из которых `build.rs` сам собирает объявления, общего списка не имеют:
+новое свойство метаданных — файл `crates/unica-metadata/src/properties/<ключ>.rs`
+с `SPEC`, новый набор проверок канона метаданных — файл в
+`crates/unica-coder/src/infrastructure/daemon/metadata_can_tests/`.
 
 Читайте объединение подходящих строк: задача может затрагивать несколько
 областей.
