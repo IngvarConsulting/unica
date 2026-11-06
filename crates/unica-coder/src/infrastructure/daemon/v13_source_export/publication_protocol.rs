@@ -541,17 +541,14 @@ fn oversized_frame_refusal(published: bool) -> DomainResult {
     };
     reject(RefusalCode::InvalidResult, message)
 }
-/// На Windows раннер называет каталог в расширенной форме `\\?\E:\…`:
-/// это тот же путь, что и `E:\…`.
+/// Раннер называет каталог своим написанием: на Windows это расширенная форма
+/// `\\?\E:\…`. Сравнивается то, что путь значит, а не его запись.
 fn same_path(reported: &std::path::Path, expected: &std::path::Path) -> bool {
-    fn plain(path: &std::path::Path) -> std::borrow::Cow<'_, str> {
-        let text = path.to_string_lossy();
-        match text.strip_prefix(r"\\?\") {
-            Some(rest) if !rest.starts_with("UNC\\") => std::borrow::Cow::Owned(rest.to_owned()),
-            _ => text,
-        }
-    }
-    plain(reported) == plain(expected)
+    use unica_workspace::paths::normalize_path_identity;
+    matches!(
+        (normalize_path_identity(reported), normalize_path_identity(expected)),
+        (Ok(reported), Ok(expected)) if reported == expected
+    )
 }
 
 fn invalid(message: &str) -> DomainResult {
@@ -763,26 +760,29 @@ fn preview_result(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use unica_source_contract::read::full_dump::{DumpValidationFailure, DumpValidationReason};
+
+    #[cfg(windows)]
     #[test]
     fn extended_windows_form_names_the_same_directory() {
-        let plain = std::path::Path::new(r"E:\work\.unica-dump-guard\execution\staged-source");
-        let extended =
-            std::path::Path::new(r"\\?\E:\work\.unica-dump-guard\execution\staged-source");
-        assert!(super::same_path(extended, plain));
-        assert!(super::same_path(plain, plain));
+        let root = tempfile::tempdir().unwrap();
+        let plain = root.path().join("staged-source");
+        std::fs::create_dir(&plain).unwrap();
+        let extended = plain.canonicalize().unwrap();
+        assert!(extended.to_string_lossy().starts_with(r"\\?\"));
+        assert!(super::same_path(&extended, &plain));
     }
 
     #[test]
     fn another_directory_stays_different() {
-        let expected = std::path::Path::new(r"E:\work\src");
-        assert!(!super::same_path(
-            std::path::Path::new(r"\\?\E:\other\src"),
-            expected
-        ));
+        let root = tempfile::tempdir().unwrap();
+        let stage = root.path().join("staged-source");
+        let other = root.path().join("other");
+        std::fs::create_dir(&stage).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        assert!(!super::same_path(&other.canonicalize().unwrap(), &stage));
     }
-
-    use super::*;
-    use unica_source_contract::read::full_dump::{DumpValidationFailure, DumpValidationReason};
 
     #[test]
     fn workspace_relative_paths_are_published_with_forward_slashes_on_every_os() {
