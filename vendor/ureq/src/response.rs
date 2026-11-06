@@ -108,7 +108,7 @@ impl fmt::Debug for Response {
             "Response[status: {}, status_text: {}, url: {}]",
             self.status(),
             self.status_text(),
-            self.url,
+            crate::diagnostics::url(self.url.as_str()),
         )
     }
 }
@@ -378,31 +378,29 @@ impl Response {
             // Responses with a content-length header means we should limit the reading
             // of the body to the number of bytes in the header. Once done, we can
             // return the underlying stream to the connection pool.
-            BodyType::LengthDelimited(len) => {
-                match NonZeroUsize::new(len) {
-                    None => {
-                        debug!("zero-length body returning stream directly to pool");
-                        let stream: Stream = stream.into();
-                        recycle_completed_response(stream);
-                        Box::new(std::io::empty())
-                    }
-                    Some(len) => {
-                        let mut limited_read = LimitedRead::new(stream, len);
+            BodyType::LengthDelimited(len) => match NonZeroUsize::new(len) {
+                None => {
+                    debug!("zero-length body returning stream directly to pool");
+                    let stream: Stream = stream.into();
+                    recycle_completed_response(stream);
+                    Box::new(std::io::empty())
+                }
+                Some(len) => {
+                    let mut limited_read = LimitedRead::new(stream, len);
 
-                        if len.get() <= buffer_len {
-                            debug!("Body entirely buffered (length: {})", len);
-                            let mut buf = vec![0; len.get()];
-                            limited_read
-                                .read_exact(&mut buf)
-                                .expect("failed to read exact buffer length from stream");
-                            Box::new(Cursor::new(buf))
-                        } else {
-                            debug!("Streaming body until content-length: {}", len);
-                            Box::new(limited_read)
-                        }
+                    if len.get() <= buffer_len {
+                        debug!("Body entirely buffered (length: {})", len);
+                        let mut buf = vec![0; len.get()];
+                        limited_read
+                            .read_exact(&mut buf)
+                            .expect("failed to read exact buffer length from stream");
+                        Box::new(Cursor::new(buf))
+                    } else {
+                        debug!("Streaming body until content-length: {}", len);
+                        Box::new(limited_read)
                     }
                 }
-            }
+            },
             BodyType::CloseDelimited => {
                 debug!("Body of unknown size - read until socket close");
                 Box::new(stream)

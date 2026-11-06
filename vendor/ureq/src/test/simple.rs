@@ -132,7 +132,7 @@ fn request_debug() {
 
     assert_eq!(
         s,
-        "Request(GET http://localhost/my/page, [Authorization: abcdef, \
+        "Request(GET http://localhost/my/page, [Authorization: ***, \
          Content-Length: 1234, Content-Type: application/json])"
     );
 
@@ -144,7 +144,7 @@ fn request_debug() {
 
     assert_eq!(
         s,
-        "Request(GET http://localhost/my/page?q=z&foo=bar+baz, [Authorization: abcdef])"
+        "Request(GET http://localhost/my/page?q=z&foo=bar+baz, [Authorization: ***])"
     );
 }
 

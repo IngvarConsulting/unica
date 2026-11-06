@@ -1,6 +1,6 @@
-# Dependency-local regression gate; only Unica's fault tests are selected.
+# Dependency-local regression gate; only Unica's HTTP regression tests are selected.
 [profile.ureq-recycling]
-default-filter = 'test(/^completed_response_recycling::/)'
+default-filter = 'test(/^completed_response_recycling::/) | binary(=diagnostic_redaction)'
 retries = 0
 fail-fast = false
 slow-timeout = { period = "10s", terminate-after = 2 }
