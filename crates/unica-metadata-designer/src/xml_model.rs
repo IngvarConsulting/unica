@@ -1522,7 +1522,7 @@ mod tests {
         emit_meta_typed_value_type(&mut lines, "\t\t\t\t\t", &metadata_type);
         let native = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/binary-data/native-type.xml"
+            "/tests/fixtures/binary-data/native-type.xml"
         ));
         assert_eq!(lines.join("\n"), native.replace("\r\n", "\n"));
     }
