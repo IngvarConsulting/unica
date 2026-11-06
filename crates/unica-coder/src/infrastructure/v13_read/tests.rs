@@ -4220,11 +4220,22 @@ fn review_role_rejects_non_platform_metadata_node_kinds() {
 
 #[test]
 fn review_production_read_port_has_no_nocancel_inventory_entrypoint() {
-    let source = include_str!("../v13_read_port.rs");
-    assert!(
-        !source.contains("configuration_payload_with_checkpoint(&mut || Ok(()))"),
-        "production-compiled read port retains a no-op cancellation bypass"
+    let infrastructure = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/infrastructure");
+    let mut sources = vec![infrastructure.join("v13_read_port.rs")];
+    sources.extend(
+        fs::read_dir(infrastructure.join("v13_read_port"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path()),
     );
+    assert!(sources.len() > 1, "read port kind files are not visible");
+    for path in sources {
+        let source = fs::read_to_string(&path).unwrap();
+        assert!(
+            !source.contains("configuration_payload_with_checkpoint(&mut || Ok(()))"),
+            "production-compiled read port retains a no-op cancellation bypass: {}",
+            path.display()
+        );
+    }
 }
 
 #[test]
