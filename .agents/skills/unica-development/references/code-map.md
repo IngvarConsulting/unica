@@ -28,6 +28,11 @@
 | Сборка, отбор и исполнение тестов | [unica-testing](../../unica-testing/SKILL.md), `CONTRIBUTING.md` | `scripts/ci/run-tests.py`, `ci_rust_lanes.py`, `prepared_binary.py`, `ci_shadow_selector.py`; размер — `.config/nextest.toml` (`medium` — по имени теста) |
 | Архитектурная граница | [unica-rules](../../unica-rules/SKILL.md), применимая запись и тела тестов с её пометкой `rule:` | `scripts/ci/check-component-boundaries.py` проверяет направления зависимостей, код и тест меняются у фактического владельца |
 
+Каталоги, из которых `build.rs` сам собирает объявления, общего списка не имеют:
+новое свойство метаданных — файл `crates/unica-metadata/src/properties/<ключ>.rs`
+с `SPEC`, новый набор проверок канона метаданных — файл в
+`crates/unica-coder/src/infrastructure/daemon/metadata_can_tests/`.
+
 Читайте объединение подходящих строк: задача может затрагивать несколько
 областей.
 
