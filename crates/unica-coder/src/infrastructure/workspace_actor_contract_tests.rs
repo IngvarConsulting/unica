@@ -861,3 +861,9 @@ fn native_path_identities_do_not_share_actor_state() {
         unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
     }
 }
+
+/// rule: INV.CACHE.RETAINED-APPLY-REVISION-ROLLBACK
+#[test]
+fn retained_rollback_cleans_new_directories_without_deleting_foreign_children() {
+    unica_workspace::compile_transaction::nested_rollback_contract_tests::retained_rollback_cleans_new_directories_without_deleting_foreign_children(policies());
+}
