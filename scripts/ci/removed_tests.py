@@ -25,7 +25,7 @@ counts by the queue gate's own rule: the exact ID or a literal prefix ending
 in `*` of the same binary, or `Removes-test-target:` for a binary that is
 gone. Packages under `crates/` and `vendor/ureq` are checked. `cfg` is not
 evaluated; tests a macro generates and files reached only through a computed
-`include!` are not seen, except the modules `crates/unica-coder/build.rs`
+`include!` are not seen, except the modules a build script of `crates/`
 declares for each `*.rs` of a module's own directory. The queue still checks what this misses.
 """
 from __future__ import annotations
@@ -247,6 +247,14 @@ class Packages:
                 depth -= 1
             elif item["include"] is not None and DISCOVERED_MODULES.match(source, item.start("include")):
                 names = [name for _, name in inline]
+                if PurePosixPath(path).name == "lib.rs":
+                    # A crate root lists its own directory through a macro, so
+                    # each module keeps the `<stem>/` directory for its children.
+                    for file in sorted(files):
+                        candidate = PurePosixPath(file)
+                        if candidate.parent == here and candidate.suffix == ".rs" and file != path:
+                            yield file, binary, joined(candidate.stem), False
+                    continue
                 # build.rs reads the directory named after the including file, also
                 # when that file is itself reached through `#[path]`.
                 directory = PurePosixPath(path).with_suffix("").joinpath(*names)

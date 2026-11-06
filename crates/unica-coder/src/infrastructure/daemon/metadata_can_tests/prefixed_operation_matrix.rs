@@ -33,10 +33,11 @@ fn prefixed(source: &str) -> String {
 }
 
 fn unprefixed(source: &str) -> String {
-    source
-        .replace("<md:", "<")
-        .replace("</md:", "</")
-        .replacen(&format!("xmlns:md=\"{MD}\""), &format!("xmlns=\"{MD}\""), 1)
+    source.replace("<md:", "<").replace("</md:", "</").replacen(
+        &format!("xmlns:md=\"{MD}\""),
+        &format!("xmlns=\"{MD}\""),
+        1,
+    )
 }
 
 /// New elements get fresh UUIDs in each run; UUIDs of the original tree are
@@ -49,10 +50,13 @@ fn masked_uuids(source: &str, known: &BTreeSet<String>) -> String {
     while at < source.len() {
         let candidate = &bytes[at..(at + 36).min(bytes.len())];
         let uuid = candidate.len() == 36
-            && candidate.iter().enumerate().all(|(index, byte)| match index {
-                8 | 13 | 18 | 23 => *byte == b'-',
-                _ => is_hex(byte),
-            });
+            && candidate
+                .iter()
+                .enumerate()
+                .all(|(index, byte)| match index {
+                    8 | 13 | 18 | 23 => *byte == b'-',
+                    _ => is_hex(byte),
+                });
         if uuid && !known.contains(&source[at..at + 36]) {
             text.push_str("UUID");
             at += 36;
@@ -84,7 +88,10 @@ const NOT_IN_MATRIX: &[(&str, &str)] = &[
         "object.borrow",
         "borrows into an extension, which needs its own source set",
     ),
-    ("help.create", "writes the help facet, not a descriptor element"),
+    (
+        "help.create",
+        "writes the help facet, not a descriptor element",
+    ),
 ];
 
 /// Each metadata write operation, on a prefixed descriptor tree, writes the
@@ -337,7 +344,9 @@ fn every_metadata_write_keeps_the_owner_prefix() {
         .flat_map(|text| {
             text.char_indices()
                 .filter_map(|(at, _)| text.get(at..at + 36))
-                .filter(|candidate| uuid::Uuid::parse_str(candidate).is_ok() && candidate.len() == 36)
+                .filter(|candidate| {
+                    uuid::Uuid::parse_str(candidate).is_ok() && candidate.len() == 36
+                })
                 .map(str::to_string)
                 .collect::<Vec<_>>()
         })
@@ -357,12 +366,19 @@ fn every_metadata_write_keeps_the_owner_prefix() {
             let planned = call(&runtime, &fixture, ToolIdentity::Apply, edit.clone());
             let applied = planned.ok.then(|| {
                 let token = planned.data.as_ref().unwrap()["executionToken"].clone();
-                call(&runtime, &fixture, ToolIdentity::Apply, json!({"executionToken": token}))
+                call(
+                    &runtime,
+                    &fixture,
+                    ToolIdentity::Apply,
+                    json!({"executionToken": token}),
+                )
             });
             if !applied.as_ref().is_some_and(|result| result.ok) {
                 failures.push(format!(
                     "{operation} (prefixed: {prefix}): {}",
-                    applied.as_ref().map_or(&planned.summary, |result| &result.summary)
+                    applied
+                        .as_ref()
+                        .map_or(&planned.summary, |result| &result.summary)
                 ));
             }
         }

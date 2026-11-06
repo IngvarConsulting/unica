@@ -205,7 +205,10 @@ fn choice_mode_preserves_prefixed_namespaces_on_the_new_owners() {
                 expected,
                 "{file}"
             );
-            assert_eq!(view(&runtime, &fixture, &at)["props"]["ChoiceMode"], "QuickChoice");
+            assert_eq!(
+                view(&runtime, &fixture, &at)["props"]["ChoiceMode"],
+                "QuickChoice"
+            );
         }
     }
 }
