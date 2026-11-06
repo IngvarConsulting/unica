@@ -126,8 +126,12 @@ fn main() -> io::Result<()> {
         "ready",
         &format!(",\"stage\":{encoded_stage}"),
     )?;
+    // Настоящий раннер называет каталог канонически: на Windows `\\\\?\\E:\\…`.
+    let reported_stage = json_string(fs::canonicalize(stage)?.to_str().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 fixture stage")
+    })?);
     frame(&format!(
-        "{{{identity},\"phase\":\"ready\",\"command\":\"pull\",\"requested_mode\":\"FULL\",\"mode\":\"FULL\",\"mode_reason\":null,\"extension\":null,\"provider_dispatched\":true,\"source_set\":\"main\",\"target_path\":{},\"stage_path\":{encoded_stage},\"snapshot\":\"prepared\",\"snapshot_warning\":null}}",
+        "{{{identity},\"phase\":\"ready\",\"command\":\"pull\",\"requested_mode\":\"FULL\",\"mode\":\"FULL\",\"mode_reason\":null,\"extension\":null,\"provider_dispatched\":true,\"source_set\":\"main\",\"target_path\":{},\"stage_path\":{reported_stage},\"snapshot\":\"prepared\",\"snapshot_warning\":null}}",
         fields[2]
     ))?;
     let published_ack = ack(&nonce, "ready", "published")?;

@@ -273,7 +273,7 @@ pub(super) fn execute(
                 if phase == Phase::Ready => {
                 if command != RUNNER_COMMAND || requested_mode != "FULL" || mode != "FULL"
                     || extension != expected_extension || !provider_dispatched
-                    || reported_set != source_set || target_path != target || stage_path != stage {
+                    || reported_set != source_set || !same_path(&target_path, &target) || !same_path(&stage_path, &stage) {
                     problem = Some(invalid("v8-runner prepared a different operation, mode, extension, source set or target"));
                     phase = Phase::Terminal;
                     return reply(nonce.as_deref().unwrap(), "ready", "rejected");
@@ -541,6 +541,16 @@ fn oversized_frame_refusal(published: bool) -> DomainResult {
     };
     reject(RefusalCode::InvalidResult, message)
 }
+/// Раннер называет каталог своим написанием: на Windows это расширенная форма
+/// `\\?\E:\…`. Сравнивается то, что путь значит, а не его запись.
+fn same_path(reported: &std::path::Path, expected: &std::path::Path) -> bool {
+    use unica_workspace::paths::normalize_path_identity;
+    matches!(
+        (normalize_path_identity(reported), normalize_path_identity(expected)),
+        (Ok(reported), Ok(expected)) if reported == expected
+    )
+}
+
 fn invalid(message: &str) -> DomainResult {
     reject(RefusalCode::InvalidResult, message)
 }
@@ -752,6 +762,26 @@ fn preview_result(
 mod tests {
     use super::*;
     use unica_source_contract::read::full_dump::{DumpValidationFailure, DumpValidationReason};
+
+    #[test]
+    fn canonical_form_of_a_directory_names_the_same_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let plain = root.path().join("staged-source");
+        std::fs::create_dir(&plain).unwrap();
+        // На Windows каноническая форма — расширенная: `\\\\?\\E:\\…`.
+        let canonical = plain.canonicalize().unwrap();
+        assert!(super::same_path(&canonical, &plain));
+    }
+
+    #[test]
+    fn another_directory_stays_different() {
+        let root = tempfile::tempdir().unwrap();
+        let stage = root.path().join("staged-source");
+        let other = root.path().join("other");
+        std::fs::create_dir(&stage).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        assert!(!super::same_path(&other.canonicalize().unwrap(), &stage));
+    }
 
     #[test]
     fn workspace_relative_paths_are_published_with_forward_slashes_on_every_os() {

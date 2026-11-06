@@ -7,7 +7,9 @@
 Workflow три, и ни один не запускает другой через завершение прогона.
 
 - `ci.yml` — ворота pull request и очереди: одна Linux-джоба `Unica CI`, в очереди
-  ещё `Clippy (windows-latest)`.
+  ещё `Clippy (windows-latest)`. На pull request она исполняет `cargo fmt`, контракт
+  версий, Clippy и `run-static-tests.py`: модули Python без `medium` и без `[pr] skip`
+  из `.config/python-sizes.toml`, параллельно. Цель до трёх минут. Тесты идут в очереди.
 - `release.yml` — сборка, проверка и публикация. Запуски: тег `v*` (профиль
   `release`), кнопка на ветке (`main` или `large`) и вызов ночи.
 - `nightly.yml` — расписание и кнопка на `main`. Если вершина сдвинулась, вызывает

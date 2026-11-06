@@ -5831,24 +5831,58 @@ pub fn is_foreign_absolute_path(path: &str) -> bool {
 }
 
 #[cfg(windows)]
-pub fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
-    let path = strip_windows_extended_length_prefix(path);
-    let root = strip_windows_extended_length_prefix(root);
-    let path_components = path.components().collect::<Vec<_>>();
-    let root_components = root.components().collect::<Vec<_>>();
-    path_components.len() >= root_components.len()
-        && path_components
-            .iter()
-            .zip(root_components.iter())
-            .all(|(left, right)| {
-                left.as_os_str().to_string_lossy().to_lowercase()
-                    == right.as_os_str().to_string_lossy().to_lowercase()
-            })
+fn host_path_components_match(
+    left: std::path::Component<'_>,
+    right: std::path::Component<'_>,
+) -> bool {
+    left.as_os_str().to_string_lossy().to_lowercase()
+        == right.as_os_str().to_string_lossy().to_lowercase()
 }
 
 #[cfg(not(windows))]
+fn host_path_components_match(
+    left: std::path::Component<'_>,
+    right: std::path::Component<'_>,
+) -> bool {
+    left == right
+}
+
+/// The part of `path` below `root` under the host's own path rules: on Windows
+/// the `\\?\` spelling of either side and the letter case of a component do not
+/// change which file is named. `None` when `path` is not at or below `root`, or
+/// when the remainder climbs with `..`. An empty result means the same path.
+/// Both sides must be host paths: a logical address has rules of its own.
+pub fn host_path_relative_to(path: &Path, root: &Path) -> Option<PathBuf> {
+    let path = strip_windows_extended_length_prefix(path);
+    let root = strip_windows_extended_length_prefix(root);
+    let mut below = path.components();
+    for expected in root.components() {
+        if !host_path_components_match(below.next()?, expected) {
+            return None;
+        }
+    }
+    let relative = below.as_path();
+    (!relative
+        .components()
+        .any(|component| component == std::path::Component::ParentDir))
+    .then(|| relative.to_path_buf())
+}
+
+/// Whether two host paths name the same file under the rules of
+/// [`host_path_relative_to`].
+pub fn same_host_path(left: &Path, right: &Path) -> bool {
+    host_path_relative_to(left, right).is_some_and(|relative| relative.as_os_str().is_empty())
+}
+
 pub fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
-    path.starts_with(root)
+    let path = strip_windows_extended_length_prefix(path);
+    let root = strip_windows_extended_length_prefix(root);
+    let mut below = path.components();
+    root.components().all(|expected| {
+        below
+            .next()
+            .is_some_and(|component| host_path_components_match(component, expected))
+    })
 }
 
 #[cfg(all(any(test, feature = "test-support"), unix))]
@@ -9464,5 +9498,113 @@ mod medium_tests {
         );
         unknown.unlock().unwrap();
         owner.unlock().unwrap();
+    }
+}
+
+/// The same path as the host may hand it back from `canonicalize`: `\\?\` on
+/// Windows, unchanged elsewhere.
+#[cfg(any(test, feature = "test-support"))]
+pub fn extended_length_spelling_for_test(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let plain = strip_windows_extended_length_prefix(path);
+        PathBuf::from(format!(r"\\?\{}", plain.display()))
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+/// The same path in other letter case on a host whose path rules ignore it,
+/// unchanged elsewhere.
+#[cfg(any(test, feature = "test-support"))]
+pub fn other_letter_case_for_test(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(path.display().to_string().to_uppercase())
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+#[cfg(test)]
+mod host_path_comparison_tests {
+    use super::{host_path_relative_to, same_host_path};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_path_is_measured_from_a_root_by_whole_components() {
+        let root = std::env::temp_dir().join("root");
+        assert_eq!(
+            host_path_relative_to(&root.join("a").join("b.bsl"), &root),
+            Some(Path::new("a").join("b.bsl"))
+        );
+        assert_eq!(host_path_relative_to(&root, &root), Some(PathBuf::new()));
+        assert_eq!(
+            host_path_relative_to(&std::env::temp_dir().join("root-other"), &root),
+            None
+        );
+        assert!(same_host_path(&root, &root));
+        assert!(!same_host_path(&root.join("a"), &root));
+        assert!(!same_host_path(&root, &root.join("a")));
+    }
+
+    #[test]
+    fn a_remainder_that_climbs_is_not_below_the_root() {
+        let root = std::env::temp_dir().join("root");
+        assert_eq!(
+            host_path_relative_to(&root.join("..").join("other"), &root),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_spelling_of_a_path_does_not_change_the_file_it_names() {
+        assert_eq!(
+            host_path_relative_to(
+                Path::new(r"\\?\E:\Work\SRC\Absent\Module.bsl"),
+                Path::new(r"e:\work\src")
+            ),
+            Some(PathBuf::from(r"Absent\Module.bsl"))
+        );
+        assert_eq!(
+            host_path_relative_to(
+                Path::new(r"E:\Work\src\Module.bsl"),
+                Path::new(r"\\?\E:\Work\SRC")
+            ),
+            Some(PathBuf::from("Module.bsl"))
+        );
+        assert_eq!(
+            host_path_relative_to(
+                Path::new(r"\\?\UNC\server\share\src\Module.bsl"),
+                Path::new(r"\\server\share\SRC")
+            ),
+            Some(PathBuf::from("Module.bsl"))
+        );
+        assert!(same_host_path(
+            Path::new(r"\\?\E:\Work\Foo"),
+            Path::new(r"e:\work\foo\")
+        ));
+        assert!(!same_host_path(
+            Path::new(r"E:\Work\Foo"),
+            Path::new(r"F:\Work\Foo")
+        ));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn letter_case_separates_paths_where_the_host_compares_it() {
+        assert_eq!(
+            host_path_relative_to(Path::new("/work/Foo/a"), Path::new("/work/foo")),
+            None
+        );
+        assert!(!same_host_path(
+            Path::new("/work/Foo"),
+            Path::new("/work/foo")
+        ));
     }
 }
