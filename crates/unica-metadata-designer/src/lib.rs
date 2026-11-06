@@ -83,6 +83,8 @@ pub mod borrowed_enum_value;
 pub mod borrowed_form;
 pub mod borrowed_object;
 
+pub mod functional_option_read;
+
 mod dimension_reduction;
 pub mod language_code;
 pub mod style_color;

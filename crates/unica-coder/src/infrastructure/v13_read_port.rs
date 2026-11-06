@@ -1320,6 +1320,32 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if matches!(
+            evidence.artifact_kind(),
+            "FunctionalOption" | "FunctionalOptionsParameter"
+        ) {
+            match unica_metadata_designer::functional_option_read::FunctionalOptionFacts::read(
+                target,
+                &descriptor,
+            ) {
+                Ok(facts) => facts.publish(&mut payload),
+                Err(message) => {
+                    let field = if evidence.artifact_kind() == "FunctionalOption" {
+                        "functionalOptionContent"
+                    } else {
+                        "functionalParameterUse"
+                    };
+                    payload["relations"][field] = Value::Null;
+                    let mut unreadable = payload["unreadable"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    unreadable
+                        .push(json!({"field":format!("relations.{field}"), "message":message}));
+                    payload["unreadable"] = json!(unreadable);
+                }
+            }
+        }
         Ok(payload)
     }
 
