@@ -7,6 +7,13 @@ including the separate chunk decoder notices, are retained.
 
 `middleware.rs` removes redundant type parentheses reported by Clippy.
 
+`header.rs` rejects a missing colon or empty field name before constructing a
+parsed header. The response reader keeps ignoring malformed header lines;
+valid empty values remain accepted. This prevents malformed `Location` or
+other token-only response lines from panicking in header accessors. The
+existing header parser unit test and the Unica network integration target
+`malformed_response_headers` cover this boundary with raw loopback responses.
+
 `response.rs` preserves a fully received Content-Length response when preparing
 its connection for reuse fails. The consumed stream is dropped before pool
 insertion. Read, framing and deadline errors before completion keep their prior
