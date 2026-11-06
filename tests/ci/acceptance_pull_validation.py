@@ -35,7 +35,7 @@ def stage_producer(plugin):
         raise ValueError("the controlled Python executable driver currently requires POSIX")
     lock = json.loads((REPO / "plugins/unica/third-party/tools.lock.json").read_text())
     target = host_target(lock, platform.system(), platform.machine())
-    source = REPO / "tests/fixtures/runtime/pull-validation/producer.py"
+    source = REPO / "tests/ci/fixtures/pull-validation/producer.py"
     binary = plugin / "bin" / target / "v8-runner"
     binary.parent.mkdir(parents=True)
     binary.write_text(f"#!{sys.executable}\n" + source.read_text())

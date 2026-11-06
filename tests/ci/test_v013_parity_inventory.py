@@ -21,13 +21,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Test expectations are intentionally literal rather than imported from the
 # validator. A wrong validator catalog must not rewrite the test oracle.
 EXPECTED_SHARDS = (
-    "tests/fixtures/v013/domain-parity/view-find.json",
-    "tests/fixtures/v013/domain-parity/apply-metadata.json",
-    "tests/fixtures/v013/domain-parity/apply-form-resource.json",
-    "tests/fixtures/v013/domain-parity/apply-dcs-mxl.json",
-    "tests/fixtures/v013/domain-parity/check-diff.json",
-    "tests/fixtures/v013/domain-parity/search-docs.json",
-    "tests/fixtures/v013/domain-parity/run.json",
+    "tests/ci/fixtures/domain-parity/view-find.json",
+    "tests/ci/fixtures/domain-parity/apply-metadata.json",
+    "tests/ci/fixtures/domain-parity/apply-form-resource.json",
+    "tests/ci/fixtures/domain-parity/apply-dcs-mxl.json",
+    "tests/ci/fixtures/domain-parity/check-diff.json",
+    "tests/ci/fixtures/domain-parity/search-docs.json",
+    "tests/ci/fixtures/domain-parity/run.json",
 )
 
 IMMUTABLE_BASELINE_NAMES = (
@@ -122,13 +122,13 @@ class InventoryError(ValueError):
 
 
 PARITY_SHARDS = (
-    "tests/fixtures/v013/domain-parity/view-find.json",
-    "tests/fixtures/v013/domain-parity/apply-metadata.json",
-    "tests/fixtures/v013/domain-parity/apply-form-resource.json",
-    "tests/fixtures/v013/domain-parity/apply-dcs-mxl.json",
-    "tests/fixtures/v013/domain-parity/check-diff.json",
-    "tests/fixtures/v013/domain-parity/search-docs.json",
-    "tests/fixtures/v013/domain-parity/run.json",
+    "tests/ci/fixtures/domain-parity/view-find.json",
+    "tests/ci/fixtures/domain-parity/apply-metadata.json",
+    "tests/ci/fixtures/domain-parity/apply-form-resource.json",
+    "tests/ci/fixtures/domain-parity/apply-dcs-mxl.json",
+    "tests/ci/fixtures/domain-parity/check-diff.json",
+    "tests/ci/fixtures/domain-parity/search-docs.json",
+    "tests/ci/fixtures/domain-parity/run.json",
 )
 
 TOP_LEVEL_KEYS = {
@@ -889,7 +889,7 @@ class V013ParityInventoryTest(unittest.TestCase):
     def test_acceptance_evidence_cannot_cite_a_successful_setup_instead_of_its_operation(self) -> None:
         documents, baseline_names, tracked_paths = load_repository_inputs(REPO_ROOT)
         documents = copy.deepcopy(documents)
-        cases = documents["tests/fixtures/v013/domain-parity/apply-metadata.json"]["cases"]
+        cases = documents["tests/ci/fixtures/domain-parity/apply-metadata.json"]["cases"]
         case = next(case for case in cases if case["caseId"] == "batch2-object-remove-unreferenced")
         case["expected"]["wireStep"] = 1
         with patch(
@@ -1199,7 +1199,7 @@ class V013ParityInventoryTest(unittest.TestCase):
             self._validate(documents)
 
         documents = copy.deepcopy(self.documents)
-        documents["tests/fixtures/v013/domain-parity/extra.json"] = copy.deepcopy(
+        documents["tests/ci/fixtures/domain-parity/extra.json"] = copy.deepcopy(
             documents[EXPECTED_SHARDS[0]]
         )
         with self.assertRaisesRegex(InventoryError, "exact parity shard set"):

@@ -89,7 +89,7 @@ BSP_MXL_POWER_OF_ATTORNEY_FIXTURE = (
     "bsp/mxl/Catalogs__МашиночитаемыеДоверенности__"
     "ПФ_MXL_Доверенность/Template.xml"
 )
-READER_STANDINS_ROOT = FIXTURES_ROOT / "reader-standins"
+READER_STANDINS_ROOT = REPO_ROOT / "tests" / "ci" / "fixtures" / "reader-standins"
 DOCUMENTED_READER_TOOL_NAMES = {
     "unica.cfe.diff",
     "unica.code.definition",
