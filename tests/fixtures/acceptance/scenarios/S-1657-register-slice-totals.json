@@ -1,0 +1,1586 @@
+{
+  "id": "S-1657-register-slice-totals",
+  "issue": 1657,
+  "area": "Метаданные",
+  "task": "Изменить два независимых флага итогов срезов, сохранить периодичность и состав регистра; проверить no-op и конфликт сохранённого плана.",
+  "workspace": "tests/fixtures/acceptance/workspace-register-slice-totals",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/EnableTotalsSliceFirst/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/EnableTotalsSliceLast/type",
+          "eq": "boolean"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "3e188e0b758ed15885f2b34a1fd43e7762b07de0a1403fade21be93db20d9604"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_0": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/IndDay.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.IndDay",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceFirst": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_1": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/IndDay.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.IndDay",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceFirst": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "3e188e0b758ed15885f2b34a1fd43e7762b07de0a1403fade21be93db20d9604"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_2": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/IndDay.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.IndDay",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceLast": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_3": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/IndDay.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.IndDay",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceLast": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "3e188e0b758ed15885f2b34a1fd43e7762b07de0a1403fade21be93db20d9604"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_4": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/IndDay.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.IndDay",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceFirst": true,
+                "EnableTotalsSliceLast": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_5": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/IndDay.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.IndDay",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceFirst": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_6": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/IndDay.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.IndDay",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceLast": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "3e188e0b758ed15885f2b34a1fd43e7762b07de0a1403fade21be93db20d9604"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0_7": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/IndDay.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.IndDay",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceFirst": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0_7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.IndDay"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "3e188e0b758ed15885f2b34a1fd43e7762b07de0a1403fade21be93db20d9604"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/EnableTotalsSliceFirst/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/EnableTotalsSliceLast/type",
+          "eq": "boolean"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "b8ee7a833571c56338979b3280e49e4bd9ff8b8be26808246fa7af2c825b9feb"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_0": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/SubRecorderPosition.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceFirst": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_1": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/SubRecorderPosition.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceFirst": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "b8ee7a833571c56338979b3280e49e4bd9ff8b8be26808246fa7af2c825b9feb"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_2": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/SubRecorderPosition.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceLast": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_3": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/SubRecorderPosition.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceLast": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_3"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "b8ee7a833571c56338979b3280e49e4bd9ff8b8be26808246fa7af2c825b9feb"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_4": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/SubRecorderPosition.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceFirst": true,
+                "EnableTotalsSliceLast": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_4"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_5": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/SubRecorderPosition.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceFirst": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_5"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "true"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_6": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/SubRecorderPosition.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceLast": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_6"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "b8ee7a833571c56338979b3280e49e4bd9ff8b8be26808246fa7af2c825b9feb"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1_7": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/SubRecorderPosition.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceFirst": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1_7"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceFirst",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "xml",
+          "select": "./{*}InformationRegister/{*}Properties/{*}EnableTotalsSliceLast",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:InformationRegister.SubRecorderPosition"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/EnableTotalsSliceFirst",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/EnableTotalsSliceLast",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/SubRecorderPosition.xml",
+          "kind": "sha256",
+          "eq": "b8ee7a833571c56338979b3280e49e4bd9ff8b8be26808246fa7af2c825b9feb"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.IndDay",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "EnableTotalsSliceFirst": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.IndDay",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Periodicity": "Month"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "changed": {
+          "kind": "sha256",
+          "file": "src/InformationRegisters/IndDay.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: InformationRegisters/IndDay.xml; input `InformationRegisters/IndDay.xml`: source write target; the plan retains its original st",
+      "fileAssertions": [
+        {
+          "path": "src/InformationRegisters/IndDay.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        }
+      ]
+    }
+  ]
+}

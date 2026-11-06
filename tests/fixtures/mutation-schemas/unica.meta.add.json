@@ -1143,6 +1143,12 @@
                       ],
                       "type": "string"
                     },
+                    "EnableTotalsSliceFirst": {
+                      "type": "boolean"
+                    },
+                    "EnableTotalsSliceLast": {
+                      "type": "boolean"
+                    },
                     "EnableTotalsSplitting": {
                       "type": "boolean"
                     },

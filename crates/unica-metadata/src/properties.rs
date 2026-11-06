@@ -617,6 +617,16 @@ mod tests {
                 &[ExchangePlan],
             ),
             (
+                "EnableTotalsSliceFirst",
+                MetaPropertyValue::Boolean(true),
+                &[InformationRegister],
+            ),
+            (
+                "EnableTotalsSliceLast",
+                MetaPropertyValue::Boolean(true),
+                &[InformationRegister],
+            ),
+            (
                 "EnableTotalsSplitting",
                 MetaPropertyValue::Boolean(false),
                 &[AccumulationRegister],
