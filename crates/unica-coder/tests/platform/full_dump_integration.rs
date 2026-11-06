@@ -2447,6 +2447,46 @@ mod tests {
 
     /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
     #[test]
+    fn stage_bytes_changed_after_validation_are_never_published() {
+        // Содержимое разбирается один раз, поэтому подмену после проверки ловит только
+        // сверка со снимком: размер, имя и файл те же, отличается один байт.
+        let (root, context, _) = workspace("stage-bytes-after-validation");
+        let target = context.cwd.join("src");
+        seed_valid_target(&target);
+        let platform = fixed_platform(&root);
+        let runner = DumpRunner::valid();
+        let hook_workspace = context.cwd.clone();
+
+        let result = with_publication_hook(
+            PublicationCheckpoint::AfterStagedValidation,
+            move || {
+                let private = std::fs::read_dir(&hook_workspace)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| {
+                        path.file_name()
+                            .unwrap()
+                            .to_string_lossy()
+                            .starts_with(".unica-dump-guard-")
+                    })
+                    .unwrap();
+                let file = private.join("execution/staged-source/Configuration.xml");
+                let mut bytes = std::fs::read(&file).unwrap();
+                let last = bytes.last_mut().unwrap();
+                *last = if *last == b' ' { b'\n' } else { b' ' };
+                std::fs::write(&file, bytes).unwrap();
+            },
+            || invoke(&runner, &platform, FullDumpInvocation::BuildDump, &context),
+        );
+
+        assert!(!result.ok, "{result:?}");
+        assert!(result.changes.is_empty(), "{result:?}");
+        assert_eq!(std::fs::read(target.join("before.txt")).unwrap(), b"before");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// rule: INV.RUNTIME.FULL-EXPORT-PUBLICATION
+    #[test]
     fn installed_tree_interior_mutation_is_quarantined_and_rolled_back() {
         for checkpoint in [
             PublicationCheckpoint::BeforeInstalledSnapshot,

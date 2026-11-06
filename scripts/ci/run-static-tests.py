@@ -32,24 +32,31 @@ def skipped_modules(manifest: Path = MANIFEST) -> set[str]:
     return set(tomllib.loads(manifest.read_text(encoding="utf-8"))["pr"]["skip"])
 
 
+def kept_medium(manifest: Path = MANIFEST) -> list[str]:
+    """`medium`, которые очередь оставляет себе: смоук продукта и снимки контрактов."""
+    return tomllib.loads(manifest.read_text(encoding="utf-8"))["queue"]["keep-medium"]
+
+
 def modules(root: Path = ROOT, skip: set[str] | None = None) -> list[str]:
     skip = skipped_modules() if skip is None else skip
     found = (f"{suite.replace('/', '.')}.{path.stem}" for suite in SUITES for path in sorted((root / suite).glob("test_*.py")))
     return [name for name in found if name not in skip]
 
 
-def small_tests(suite: unittest.TestSuite, sizes) -> unittest.TestSuite:
+def small_tests(suite: unittest.TestSuite, sizes, keep: tuple[str, ...] = ()) -> unittest.TestSuite:
     """Тесты модуля без `medium`: манифест называет их без префикса набора."""
     kept = unittest.TestSuite()
     for item in suite:
         if isinstance(item, unittest.TestSuite):
-            kept.addTest(small_tests(item, sizes))
-        elif sizes.size_of(item.id().split(".", 2)[-1]) == "small":
-            kept.addTest(item)
+            kept.addTest(small_tests(item, sizes, keep))
+        else:
+            name = item.id().split(".", 2)[-1]
+            if sizes.size_of(name) == "small" or name.startswith(keep):
+                kept.addTest(item)
     return kept
 
 
-def run_module(name: str) -> int:
+def run_module(name: str, keep: tuple[str, ...] = ()) -> int:
     """Рабочий процесс: один модуль, итог последней строкой в JSON."""
     spec = importlib.util.spec_from_file_location("run_unittest", ROOT / "scripts" / "ci" / "run-unittest.py")
     runner = importlib.util.module_from_spec(spec)
@@ -57,15 +64,15 @@ def run_module(name: str) -> int:
     spec.loader.exec_module(runner)
     # Как `discover`: каталог набора в пути, его помощники импортируются по имени.
     sys.path[:0] = [str(ROOT), str(ROOT / name.rsplit(".", 1)[0].replace(".", "/"))]
-    suite = small_tests(unittest.defaultTestLoader.loadTestsFromName(name), runner.Sizes.load(MANIFEST))
+    suite = small_tests(unittest.defaultTestLoader.loadTestsFromName(name), runner.Sizes.load(MANIFEST), keep)
     result = unittest.TextTestRunner(stream=sys.stdout, verbosity=0).run(suite)
     print(json.dumps({"tests": result.testsRun}))
     return 0 if result.wasSuccessful() else 1
 
 
-def worker(name: str) -> tuple[str, int, float, str]:
+def worker(name: str, queue: bool = False) -> tuple[str, int, float, str]:
     started = time.monotonic()
-    completed = subprocess.run([sys.executable, __file__, "--module", name], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    completed = subprocess.run([sys.executable, __file__, "--module", name, *(["--queue"] if queue else [])], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                text=True, encoding="utf-8", errors="replace", env={**os.environ, "PYTHONUTF8": "1"})
     return name, completed.returncode, time.monotonic() - started, completed.stdout
 
@@ -74,12 +81,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--module", help="рабочий режим: один модуль")
     parser.add_argument("--workers", type=int, default=WORKERS)
+    parser.add_argument("--queue", action="store_true", help="уровень очереди: все модули, смоук и снимки контрактов")
     args = parser.parse_args(argv)
     if args.module:
-        return run_module(args.module)
+        return run_module(args.module, tuple(kept_medium()) if args.queue else ())
     started = time.monotonic()
     with ThreadPoolExecutor(args.workers) as pool:
-        results = list(pool.map(worker, modules()))
+        results = list(pool.map(lambda name: worker(name, args.queue), modules(skip=set()) if args.queue else modules()))
     tests = 0
     failed = []
     for name, code, seconds, output in results:
@@ -89,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         if code != 0:
             failed.append(name)
             print(f"::group::{name}\n{output}\n::endgroup::")
-        if seconds > MODULE_BUDGET:
+        if seconds > MODULE_BUDGET and not args.queue:
             print(f"::warning::{name}: {seconds:.0f} с, бюджет {MODULE_BUDGET:.0f} с; такому модулю место в [pr] skip")
     for name, _, seconds, _ in sorted(results, key=lambda item: -item[2])[:5]:
         print(f"{seconds:6.1f} с {name}")

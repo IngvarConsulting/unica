@@ -67,14 +67,14 @@ class PullRequestLevelTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn("github.event_name == 'merge_group'", self.step(name)["if"])
         nextest = next(step for step in self.steps if "cargo-nextest" in str(step.get("with", {}).get("tool")))
-        self.assertEqual(nextest["if"], "github.event_name == 'merge_group'")
+        self.assertIn("github.event_name == 'merge_group'", nextest["if"])
 
     def test_the_pull_request_keeps_format_contract_clippy_and_static_tests(self) -> None:
         for name in ("Формат", "Контракт версий", "Clippy"):
             with self.subTest(name=name):
-                self.assertNotIn("if", self.step(name))
+                self.assertEqual(self.step(name).get("if"), "env.KEPT != 'true'")
         checks = self.step("Статические проверки Python")
-        self.assertEqual(checks["if"], "${{ !cancelled() && github.event_name == 'pull_request' }}")
+        self.assertEqual(checks["if"], "${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}")
         self.assertEqual(checks["run"], "python scripts/ci/run-static-tests.py")
 
 
