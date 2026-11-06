@@ -1,3 +1,4 @@
+mod accounting_flags;
 mod catalog_attribute_properties;
 mod catalog_attribute_tooltip;
 mod catalog_tabular_properties;

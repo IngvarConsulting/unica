@@ -202,6 +202,17 @@ fn project_metadata(
                     return None;
                 }
                 let value = metadata_collection(payload, *kind);
+                if matches!(
+                    kind,
+                    NodeKind::AccountingFlag | NodeKind::ExtDimensionAccountingFlag
+                ) && value.is_some_and(Value::is_null)
+                {
+                    limits.push(format!(
+                        "{} collection is unreadable; its completeness is unknown",
+                        kind.as_str()
+                    ));
+                    return None;
+                }
                 let count = match (kind, predefined_total) {
                     (NodeKind::PredefinedItem, Some(total)) => {
                         usize::try_from(total).unwrap_or(usize::MAX)
@@ -609,8 +620,19 @@ fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
             "standardTabularSections",
             Some("properties.StandardTabularSections"),
         ),
+        NodeKind::AccountingFlag => ("collections.accountingFlags", None),
+        NodeKind::ExtDimensionAccountingFlag => ("collections.extDimensionAccountingFlags", None),
         _ => return None,
     };
+    if matches!(
+        kind,
+        NodeKind::AccountingFlag | NodeKind::ExtDimensionAccountingFlag
+    ) && metadata_collection(payload, kind).is_some_and(Value::is_null)
+    {
+        return Some(
+            "the collection is present but its complete membership could not be read".into(),
+        );
+    }
     // У применимой декларации есть ключ, даже если её состав не прочитан.
     // Чужое одноимённое свойство не делает декларацию применимой к объекту.
     if property.is_some() && metadata_collection(payload, kind).is_none() {
@@ -681,6 +703,8 @@ fn metadata_branch_kinds() -> &'static [NodeKind] {
         NodeKind::TabularSection,
         NodeKind::StandardTabularSection,
         NodeKind::EnumValue,
+        NodeKind::AccountingFlag,
+        NodeKind::ExtDimensionAccountingFlag,
         NodeKind::Column,
         NodeKind::Recalculation,
         NodeKind::Operation,
@@ -714,6 +738,8 @@ fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
         NodeKind::Resource => collections.get("resources"),
         NodeKind::Recalculation => collections.get("recalculations"),
         NodeKind::EnumValue => collections.get("enumValues"),
+        NodeKind::AccountingFlag => collections.get("accountingFlags"),
+        NodeKind::ExtDimensionAccountingFlag => collections.get("extDimensionAccountingFlags"),
         NodeKind::Column => collections.get("columns"),
         NodeKind::Form => collections.get("forms"),
         NodeKind::Template => collections.get("templates"),
