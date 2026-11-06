@@ -1,0 +1,327 @@
+{
+  "id": "S-1939-child-resource-limits",
+  "issue": 1939,
+  "area": "Метаданные",
+  "task": "Прочитать Catalog с недоступными зарегистрированными Form/Template/Command: сохранить имя, синоним и ветви, показать три логических ограничения и сверить check; здоровый Catalog и байты исходников сохраняются.",
+  "workspace": "tests/fixtures/acceptance/workspace-child-resource-limits",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:Catalog.Healthy",
+              "kind": "Catalog",
+              "title": "Healthy"
+            },
+            {
+              "at": "main:Catalog.Products",
+              "kind": "Catalog",
+              "title": "Products"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Products"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Products"
+        },
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "Products"
+        },
+        {
+          "pointer": "/data/branches",
+          "eq": [
+            {
+              "at": "main:Catalog.Products.Attribute",
+              "count": 0
+            },
+            {
+              "at": "main:Catalog.Products.StandardAttribute",
+              "count": 9
+            },
+            {
+              "at": "main:Catalog.Products.TabularSection",
+              "count": 0
+            },
+            {
+              "at": "main:Catalog.Products.Form",
+              "count": 1
+            },
+            {
+              "at": "main:Catalog.Products.Command",
+              "count": 1
+            },
+            {
+              "at": "main:Catalog.Products.Template",
+              "count": 1
+            },
+            {
+              "at": "main:Catalog.Products.Relation",
+              "count": 2
+            },
+            {
+              "at": "main:Catalog.Products.Module",
+              "count": 2
+            }
+          ]
+        },
+        {
+          "pointer": "/data/limits",
+          "eq": [
+            "resources.child.payload не прочитано: provider_unavailable: main:Catalog.Products.Form.Main: child payload does not contain its exact required resource set: Catalog.Products.Form.Main",
+            "resources.child.payload не прочитано: provider_unavailable: main:Catalog.Products.Template.Sheet: child payload does not contain its exact required resource set: Catalog.Products.Template.Sheet",
+            "resources.child.payload не прочитано: provider_unavailable: main:Catalog.Products.Command.Run: child payload does not contain its exact required resource set: Catalog.Products.Command.Run"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Products.Form"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:Catalog.Products.Form.Main",
+              "kind": "Form",
+              "title": "Main"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Products.Template"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:Catalog.Products.Template.Sheet",
+              "kind": "Template",
+              "title": "Sheet"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Products.Command"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "at": "main:Catalog.Products.Command.Run",
+              "kind": "Command",
+              "title": "Run",
+              "props": {
+                "synonym": "Run",
+                "comment": ""
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Products"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "failed"
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 3
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "eq": [
+            {
+              "code": "provider_unavailable",
+              "severity": "error",
+              "message": "final child is not backed by exactly one matching footprint evidence: Catalog.Products.Form.Main",
+              "metadataPath": "Catalog.Products.Form.Main",
+              "field": "resources",
+              "validator": "meta"
+            },
+            {
+              "code": "provider_unavailable",
+              "severity": "error",
+              "message": "final child is not backed by exactly one matching footprint evidence: Catalog.Products.Template.Sheet",
+              "metadataPath": "Catalog.Products.Template.Sheet",
+              "field": "resources",
+              "validator": "meta"
+            },
+            {
+              "code": "provider_unavailable",
+              "severity": "error",
+              "message": "final child is not backed by exactly one matching footprint evidence: Catalog.Products.Command.Run",
+              "metadataPath": "Catalog.Products.Command.Run",
+              "field": "resources",
+              "validator": "meta"
+            }
+          ]
+        }
+      ],
+      "status": "failed",
+      "validators": [
+        "meta"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Healthy"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/title",
+          "eq": "Healthy"
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Healthy/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Catalogs/Healthy.xml",
+          "kind": "sha256",
+          "eq": "d43fb0725406ed40f1987fac2e7ab90c0365cb74ef66e9bf6748474167fc69c1"
+        },
+        {
+          "path": "src/Catalogs/Products/Commands/Run/unexpected.bin",
+          "kind": "sha256",
+          "eq": "bb2bb03e2119d769a9059baa40246ae04fd876e69db8899f5a7dcd8541d368d0"
+        },
+        {
+          "path": "src/Catalogs/Products/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Catalogs/Products/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "a484a6eb7807068684a82463043cad6a07666e4903c44c509f7bfd16cbee9805"
+        },
+        {
+          "path": "src/Catalogs/Products/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "d6c97a3cdbd265356864fe5a6498249c17a29e0cb10b54497f68c9cafc6ffa10"
+        },
+        {
+          "path": "src/Catalogs/Products/Forms/Main/unexpected.bin",
+          "kind": "sha256",
+          "eq": "bb2bb03e2119d769a9059baa40246ae04fd876e69db8899f5a7dcd8541d368d0"
+        },
+        {
+          "path": "src/Catalogs/Products/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "7e1e722eb09180ceb7c981317b9c4bcd5637fc231a636be53946d1b9bdcd361a"
+        },
+        {
+          "path": "src/Catalogs/Products/Templates/Sheet/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "197eee7ae5f2912997f63cd9a1a4475085d139b7db68587c21c77a56e682d0df"
+        },
+        {
+          "path": "src/Catalogs/Products/Templates/Sheet/unexpected.bin",
+          "kind": "sha256",
+          "eq": "bb2bb03e2119d769a9059baa40246ae04fd876e69db8899f5a7dcd8541d368d0"
+        },
+        {
+          "path": "src/Catalogs/Products/Templates/Sheet.xml",
+          "kind": "sha256",
+          "eq": "83bbe52f266637ab8385f48a37b6fc6e2d3f8bd7b26ceda5bcc13e9f4982a3c4"
+        },
+        {
+          "path": "src/Catalogs/Products.xml",
+          "kind": "sha256",
+          "eq": "6c53e5553fe4f34f28a8a6e6c975abf7d3041bcc4695e1f667b5d71755203d45"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "8e5a86ef7622abf221b81bfc6878c7a42f3e3a01157570f2ecf6ee274525883f"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    }
+  ]
+}

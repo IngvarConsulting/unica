@@ -1501,6 +1501,13 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .diagnostics
             .iter()
             .filter_map(|diagnostic| {
+                if diagnostic.code == MetaDiagnosticCode::ProviderUnavailable {
+                    let child = diagnostic.metadata_path.as_ref().unwrap_or(target);
+                    return Some(json!({
+                        "field": diagnostic.field.as_deref().unwrap_or("resources"),
+                        "message": format!("provider_unavailable: {}:{}: {}", self.read.source_set(), child.as_str(), diagnostic.message),
+                    }));
+                }
                 let field = diagnostic.field.as_deref()?;
                 if diagnostic.severity == MetaDiagnosticSeverity::Warning {
                     return (diagnostic.code == MetaDiagnosticCode::ValidationWarning

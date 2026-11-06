@@ -3,14 +3,14 @@ use crate::edit::*;
 use crate::resource_plan::{TypedChildFileMutation, TypedChildObservation, TypedChildResourcePlan};
 use roxmltree::Document;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use unica_metadata::{
     MetaCollection, MetaDiagnosticCode, MetaEditOperation, MetaPublicationAction,
     MetaPublicationPlanEntry, MetaPublicationResource,
 };
-use unica_source_contract::discovery::ProjectDiscoveryRead;
+use unica_source_contract::discovery::DiscoveryEntries;
+use unica_source_contract::discovery::{FollowMode, ProjectDiscoveryRead};
 use unica_source_contract::proposal::{DirectoryMembershipSelector, DirectoryMembershipSnapshot};
 /// Actual IO topology observation, issued by composition at the original callpoint.
 pub type DirectoryMembershipObserver =
@@ -29,6 +29,36 @@ pub struct ChildResourceBindings {
     pub observe_membership: DirectoryMembershipObserver,
     pub templates: TemplateSeedEmitters,
     pub form_seed: fn(&str, &str) -> String,
+}
+
+/// Reads needed by the shared child observer. The caller issues their scope;
+/// observing a child's footprint needs no project discovery or path reopening.
+pub trait TypedChildResourceRead {
+    fn read_bytes(&self, path: &Path) -> std::io::Result<Vec<u8>>;
+    fn read_entries(&self, path: &Path) -> std::io::Result<DiscoveryEntries>;
+    fn path_exists(&self, path: &Path) -> std::io::Result<bool>;
+}
+
+struct ProjectChildResourceRead<'a>(&'a dyn ProjectDiscoveryRead);
+
+impl TypedChildResourceRead for ProjectChildResourceRead<'_> {
+    fn read_bytes(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        unica_source_designer::read::read_bytes(self.0, path)
+    }
+    fn read_entries(&self, path: &Path) -> std::io::Result<DiscoveryEntries> {
+        self.0.read_entries(path)
+    }
+    fn path_exists(&self, path: &Path) -> std::io::Result<bool> {
+        match self.0.inspect_input(path, FollowMode::NoFollow) {
+            Ok(metadata) if metadata.is_link_or_reparse() => Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "child resource links are not followed",
+            )),
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 pub fn plan_typed_child_resources<G>(
@@ -587,6 +617,24 @@ pub fn observe_typed_child_resources(
     object_name: &str,
     owner_xml: &str,
 ) -> Result<TypedChildObservation, unica_metadata::request::MetaFailure> {
+    observe_typed_child_resources_with(
+        &ProjectChildResourceRead(reader),
+        descriptor_path,
+        owner,
+        object_kind,
+        object_name,
+        owner_xml,
+    )
+}
+
+pub fn observe_typed_child_resources_with(
+    reader: &dyn TypedChildResourceRead,
+    descriptor_path: &Path,
+    owner: &MetadataAddress,
+    object_kind: &str,
+    object_name: &str,
+    owner_xml: &str,
+) -> Result<TypedChildObservation, unica_metadata::request::MetaFailure> {
     let document = Document::parse(owner_xml.trim_start_matches('\u{feff}')).map_err(|_| {
         unica_metadata::request::MetaFailure::from(
             crate::edit::typed_diagnostic(
@@ -641,7 +689,7 @@ pub fn observe_typed_child_resources(
             let descriptor = match profile.descriptor {
                 crate::edit::TypedChildDescriptorStorage::Standalone => {
                     let path = collection_dir.join(format!("{name}.xml"));
-                    match unica_source_designer::read::read_bytes(reader, &path) {
+                    match reader.read_bytes(&path) {
                         Ok(bytes) => bytes,
                         Err(_) => {
                             observation.diagnostics.push(
@@ -685,28 +733,41 @@ pub fn observe_typed_child_resources(
             };
 
             let payload_root = collection_dir.join(&name);
-            let (payload, directories) =
-                if unica_source_designer::read::path_exists(reader, &payload_root) {
-                    match read_typed_child_tree(reader, &payload_root) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            observation.diagnostics.push(
-                                crate::edit::typed_diagnostic(
-                                    MetaDiagnosticCode::ProviderUnavailable,
-                                    format!(
-                                        "typed child resource topology is unavailable: {child}: {}",
-                                        error.public_message()
-                                    ),
-                                    Some("resources.child.topology"),
-                                )
-                                .with_metadata_path(child.clone()),
-                            );
-                            continue;
-                        }
+            let present = match reader.path_exists(&payload_root) {
+                Ok(present) => present,
+                Err(_) => {
+                    observation.diagnostics.push(
+                        crate::edit::typed_diagnostic(
+                            MetaDiagnosticCode::ProviderUnavailable,
+                            format!("typed child resource presence is unavailable: {child}"),
+                            Some("resources.child.topology"),
+                        )
+                        .with_metadata_path(child.clone()),
+                    );
+                    continue;
+                }
+            };
+            let (payload, directories) = if present {
+                match read_typed_child_tree_with(reader, &payload_root) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        observation.diagnostics.push(
+                            crate::edit::typed_diagnostic(
+                                MetaDiagnosticCode::ProviderUnavailable,
+                                format!(
+                                    "typed child resource topology is unavailable: {child}: {}",
+                                    error.public_message()
+                                ),
+                                Some("resources.child.topology"),
+                            )
+                            .with_metadata_path(child.clone()),
+                        );
+                        continue;
                     }
-                } else {
-                    (Vec::new(), Vec::new())
-                };
+                }
+            } else {
+                (Vec::new(), Vec::new())
+            };
             // Заимствованного ребёнка платформа выгружает без своего
             // содержимого (`Form.xml`, `Template.xml`), если расширение его не
             // меняет. Наблюдение не требует у него файлов; доказать
@@ -1101,8 +1162,15 @@ pub fn read_typed_child_tree(
     reader: &dyn ProjectDiscoveryRead,
     root: &Path,
 ) -> Result<TypedChildTree, TypedChildTreeError> {
+    read_typed_child_tree_with(&ProjectChildResourceRead(reader), root)
+}
+
+fn read_typed_child_tree_with(
+    reader: &dyn TypedChildResourceRead,
+    root: &Path,
+) -> Result<TypedChildTree, TypedChildTreeError> {
     fn visit(
-        reader: &dyn ProjectDiscoveryRead,
+        reader: &dyn TypedChildResourceRead,
         root: &Path,
         current: &Path,
         depth: usize,
@@ -1128,11 +1196,8 @@ pub fn read_typed_child_tree(
                 visit(reader, root, &entry.path(), depth + 1, files, directories)?;
             } else if file_type.is_file() {
                 let path = entry.path();
-                let mut bytes = Vec::new();
-                reader
-                    .open_input(&path)
-                    .map_err(|_| TypedChildTreeError::Unavailable)?
-                    .read_to_end(&mut bytes)
+                let bytes = reader
+                    .read_bytes(&path)
                     .map_err(|_| TypedChildTreeError::Unavailable)?;
                 files.push((path.strip_prefix(root).unwrap().to_path_buf(), bytes));
             } else {

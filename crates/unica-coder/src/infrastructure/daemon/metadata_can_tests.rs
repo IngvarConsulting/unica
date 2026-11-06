@@ -1067,8 +1067,8 @@ fn canonical_uuid_attribute_round_trips_as_an_editable_observed_type() {
 }
 
 /// INV.APP.META-OBSERVATION: посторонний файл в каталоге формы не скрывает
-/// справочник и его форму в `view`, а `check` того же узла называет форму
-/// ошибкой `provider_unavailable` логическим адресом.
+/// справочник и его форму в `view`. И `view`, и `check` того же узла называют
+/// непроверяемую форму кодом `provider_unavailable` и логическим адресом.
 /// rule: INV.APP.META-OBSERVATION
 #[test]
 fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unavailable() {
@@ -1087,6 +1087,11 @@ fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unav
     let at = json!({"at":"main:Catalog.Products"});
     let clean = call(&runtime, &fixture, ToolIdentity::Check, at.clone());
     assert_eq!(check_status(&clean), "passed", "{clean:?}");
+    let clean_view = call(&runtime, &fixture, ToolIdentity::View, at.clone());
+    assert!(clean_view.ok, "{clean_view:?}");
+    assert!(clean_view.data.as_ref().unwrap()["limits"]
+        .as_array()
+        .is_none_or(Vec::is_empty));
 
     std::fs::write(
         fixture
@@ -1101,6 +1106,22 @@ fn canonical_foreign_form_file_keeps_catalog_structure_and_reports_provider_unav
     let data = viewed.data.as_ref().unwrap();
     assert_eq!(data["title"], "Products");
     assert_eq!(data["props"]["Synonym"], "Products");
+    assert!(
+        data["limits"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|limit| {
+                limit.as_str().is_some_and(|message| {
+                    message.contains("provider_unavailable")
+                        && message.contains("main:Catalog.Products.Form.Main")
+                })
+            }),
+        "view must preserve structure and report the unverifiable child: {data}"
+    );
+    assert!(!serde_json::to_string(&viewed)
+        .unwrap()
+        .contains(&fixture.workspace.display().to_string()));
     assert!(
         data["branches"]
             .as_array()
