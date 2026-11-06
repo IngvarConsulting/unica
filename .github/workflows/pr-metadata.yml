@@ -3,6 +3,8 @@ name: PR metadata
 # Обязательная проверка: пропущенный условием `Unica CI` ruleset считает пройденным,
 # поэтому вливание без отметки владельца блокирует она. Правило допуска то же, что
 # у ворот `admission` в `ci.yml`: тест держит шаги равными. Код PR здесь не исполняется.
+# Веха на issue значит «вычитано»: чужую снимает `issue-milestone-guard.yml`, поэтому
+# её автора не проверяем. Веху на PR без issue сторож не видит, её автор читается здесь.
 on:
   pull_request:
     types: [opened, reopened, ready_for_review, edited, milestoned, demilestoned, assigned, unassigned, synchronize]
@@ -44,26 +46,18 @@ jobs:
                   milestone { number }
                   assignees { totalCount }
                   timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
-                  closingIssuesReferences(first: 100) {
-                    nodes {
-                      number
-                      milestone { number }
-                      timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
-                    }
-                  }
+                  closingIssuesReferences(first: 100) { nodes { number milestone { number } } }
                 }
               }
             }')"
           problems="$(jq -r --arg owner "$MILESTONE_OWNER" '
-            def actor: .timelineItems.nodes[-1].actor.login // "неизвестно";
             .data.repository.pullRequest as $pr | $pr.closingIssuesReferences.nodes as $issues
+            | ($pr.timelineItems.nodes[-1].actor.login // "неизвестно") as $actor
             | (if $pr.milestone == null then
                  (if ($issues | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
-               elif ($issues | length) == 0 and ($pr | actor) != $owner then "Веху на PR поставил \($pr | actor), нужна от \($owner)"
+               elif ($issues | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
                else empty end),
-              ($issues[] | if .milestone == null then "Issue #\(.number) без вехи, PR не рассматривается"
-                           elif actor != $owner then "Issue #\(.number): веху поставил \(actor), нужна от \($owner)"
-                           else empty end)' <<<"$json")"
+              ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается")' <<<"$json")"
           assignees="$(jq -r '.data.repository.pullRequest.assignees.totalCount' <<<"$json")"
           if [ -n "$problems" ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
           level="$( [ "$STRICT" = true ] && echo error || echo notice )"

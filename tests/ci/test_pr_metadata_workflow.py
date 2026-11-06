@@ -15,6 +15,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 METADATA = ROOT / ".github/workflows/pr-metadata.yml"
+GUARD = ROOT / ".github/workflows/issue-milestone-guard.yml"
 CI = ROOT / ".github/workflows/ci.yml"
 FAKE_GH = """#!/usr/bin/env bash
 echo "$*" > "$FAKE_ARGS"
@@ -27,8 +28,8 @@ def events(actor):
     return {"nodes": [{"actor": {"login": actor}}] if actor else []}
 
 
-def issue(number, actor=OWNER):
-    return {"number": number, "milestone": {"number": 1} if actor else None, "timelineItems": events(actor)}
+def issue(number, milestone=True):
+    return {"number": number, "milestone": {"number": 1} if milestone else None}
 
 
 def response(actor=OWNER, assignees=1, issues=()) -> dict:
@@ -93,6 +94,36 @@ class WorkflowShapeTests(unittest.TestCase):
                 self.assertIn("env.KEPT != 'true'", step["if"])
 
 
+class GuardTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = load(GUARD)
+        self.job = self.workflow["jobs"]["guard"]
+
+    def test_it_acts_only_on_a_foreign_milestone_with_the_least_rights_and_no_code(self) -> None:
+        self.assertEqual(self.workflow[True], {"issues": {"types": ["milestoned"]}})
+        self.assertEqual(self.workflow["permissions"], {"issues": "write"})
+        self.assertEqual(self.job["if"], "${{ github.event.sender.login != 'zeegin' }}")
+        self.assertFalse(any("uses" in step for step in self.job["steps"]))
+
+    def test_the_tests_do_not_listen_to_issue_events(self) -> None:
+        self.assertNotIn("issues", load(CI)[True])
+        self.assertNotIn("issues", load(METADATA)[True])
+
+    def test_it_removes_the_milestone_and_explains(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gh = root / "gh"
+            gh.write_text('#!/usr/bin/env bash\necho "$*" >> calls.txt\n', encoding="utf-8", newline="\n")
+            gh.chmod(gh.stat().st_mode | stat.S_IEXEC)
+            variables = {**os.environ, "PATH": f"{root}{os.pathsep}{os.environ['PATH']}", "GITHUB_REPOSITORY": "o/r", "ISSUE_NUMBER": "5"}
+            completed = subprocess.run(["bash", "-c", self.job["steps"][0]["run"].replace("\r\n", "\n")], cwd=root, env=variables,
+                                       capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            calls = (root / "calls.txt").read_text(encoding="utf-8").splitlines()
+        self.assertEqual(calls, ["issue edit 5 --repo o/r --remove-milestone",
+                                 "issue comment 5 --repo o/r --body Веху ставит владелец после чтения issue"])
+
+
 @unittest.skipUnless(shutil.which("jq"), "шаг читает ответ через jq; на раннере он есть")
 class CheckStepTests(unittest.TestCase):
     def run_step(self, answer: dict, *, strict=True, **env: str) -> tuple[subprocess.CompletedProcess, str, str]:
@@ -126,11 +157,11 @@ class CheckStepTests(unittest.TestCase):
         self.assert_verdict(response(actor="agent"), False, "Веху на PR поставил agent, нужна от zeegin")
         self.assert_verdict(response(actor=None), False, "Поставьте веху: на PR без issue её ставит zeegin")
 
-    def test_a_linked_issue_needs_the_owners_milestone_and_the_pull_request_any(self) -> None:
+    def test_a_linked_issue_needs_any_milestone_the_guard_removes_foreign_ones(self) -> None:
         self.assert_verdict(response(actor="agent", issues=[issue(5)]), True)
         self.assert_verdict(response(actor=None, issues=[issue(5)]), False, "Поставьте веху: скопируйте её с issue")
-        self.assert_verdict(response(actor="agent", issues=[issue(5), issue(6, "agent"), issue(8, None)]), False,
-                            "Issue #6: веху поставил agent, нужна от zeegin", "Issue #8 без вехи, PR не рассматривается")
+        self.assert_verdict(response(actor="agent", issues=[issue(5), issue(8, False)]), False,
+                            "Issue #8 без вехи, PR не рассматривается")
 
     def test_a_missing_assignee_reddens_the_check_but_does_not_stop_the_tests(self) -> None:
         self.assert_verdict(response(assignees=0), True, "Укажите ответственного", passes=False)
