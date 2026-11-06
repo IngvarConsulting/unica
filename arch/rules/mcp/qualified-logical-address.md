@@ -29,7 +29,7 @@ id: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 так же.
 
 Вид в конце без имени обозначает ветвь, например
-`main:Catalog.Валюты.Attribute`. У `Configuration`, `Interface`, `Metadata` и `Schedule` имени
+`main:Catalog.Валюты.Attribute`. У `Configuration`, `Interface`, `Metadata`, `Schedule` и `Import` имени
 не бывает: следующий сегмент разбирается как вид. Выдуманное имя
 отклоняется с объяснением этой причины. `Configuration` разрешён только
 как самостоятельный корень `main:Configuration` и перед вопросом к его

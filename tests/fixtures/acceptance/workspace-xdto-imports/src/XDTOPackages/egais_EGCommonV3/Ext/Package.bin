@@ -1,0 +1,1 @@
+<package xmlns="http://v8.1c.ru/8.1/xdto" targetNamespace="urn:imports:egais_EGCommonV3"><import namespace="http://fsrar.ru/WEGAIS/Common"/><objectType name="Probe" xmlns:external="http://fsrar.ru/WEGAIS/Common" base="external:Base"/></package>

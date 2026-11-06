@@ -21,6 +21,7 @@ mod structured_property_names;
 mod support;
 mod task_addressing;
 mod wsreference_definition;
+mod xdto_imports;
 mod xdto_missing_target;
 
 use support::*;

@@ -113,6 +113,7 @@ pub fn build_xdto_info(
                 location: internal_location(identity, &import.key, &import.span),
             })
             .collect(),
+        import_read_limits: import_read_limits(model),
         counts,
         global_properties: model
             .global_properties
@@ -131,6 +132,59 @@ pub fn build_xdto_info(
         next_cursor,
     })
 }
+/// Import completeness is local to package/import syntax, not to type validation.
+fn import_read_limits(model: &PackageModel) -> Vec<String> {
+    let mut limits = model
+        .imports
+        .iter()
+        .enumerate()
+        .filter(|(_, import)| {
+            import
+                .namespace
+                .as_ref()
+                .is_none_or(|namespace| namespace.value.is_empty())
+        })
+        .map(|(index, _)| {
+            format!(
+                "import declaration {} has no non-empty namespace URI",
+                index + 1
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut independent_members = model
+        .top_level
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.kind,
+                model::TopLevelKind::Property
+                    | model::TopLevelKind::ValueType
+                    | model::TopLevelKind::ObjectType
+            )
+        })
+        .map(|node| &node.span)
+        .collect::<Vec<_>>();
+    independent_members.sort_unstable_by_key(|span| span.start);
+    limits.extend(
+        model
+            .unsupported
+            .iter()
+            .filter(|unsupported| {
+                let next = independent_members
+                    .partition_point(|span| span.start <= unsupported.span.start);
+                next.checked_sub(1)
+                    .is_none_or(|index| unsupported.span.end > independent_members[index].end)
+            })
+            .map(|unsupported| {
+                format!(
+                    "import list completeness is unknown: {}",
+                    unsupported.description
+                )
+            }),
+    );
+    limits
+}
+
 pub fn validate_xdto_type_name(requested: Option<&str>) -> Result<(), String> {
     if requested.is_some_and(|name| !validation::is_ncname(name)) {
         return Err("xdto info `typeName` must be an XML NCName".to_string());

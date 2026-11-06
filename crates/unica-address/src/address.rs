@@ -102,6 +102,7 @@ pub enum NodeKind {
     Operation,
     Channel,
     Namespace,
+    Import,
     Type,
     Property,
     /// Ссылка объекта метаданных наружу: владелец, движение, основание,
@@ -231,6 +232,7 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Operation, &["Операция"]),
     spelling(NodeKind::Channel, &["Канал"]),
     spelling(NodeKind::Namespace, &["ПространствоИмен"]),
+    spelling(NodeKind::Import, &["Импорт"]),
     spelling(NodeKind::Type, &["Тип"]),
     spelling(NodeKind::Property, &["Свойство"]),
     spelling(NodeKind::Definition, &["Определение"]),
@@ -284,6 +286,7 @@ impl NodeKind {
                 | Self::Metadata
                 | Self::Schedule
                 | Self::Definition
+                | Self::Import
         )
     }
 
@@ -442,6 +445,7 @@ impl NodeKind {
             Self::Operation => "Operation",
             Self::Channel => "Channel",
             Self::Namespace => "Namespace",
+            Self::Import => "Import",
             Self::Type => "Type",
             Self::Property => "Property",
             Self::Relation => "Relation",
@@ -1686,5 +1690,21 @@ mod body_line_addresses {
             assert_eq!(at.to_string(), raw);
             assert_eq!(at.segments().last().unwrap().kind(), NodeKind::Item);
         }
+    }
+}
+
+#[cfg(test)]
+mod import_collection_tests {
+    use super::*;
+
+    /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
+    #[test]
+    fn import_is_nameless_and_preserves_named_package_identity() {
+        let address = QualifiedAddress::parse("main:XDTOPackage.Import.Импорт").unwrap();
+        assert_eq!(address.to_string(), "main:XDTOPackage.Import.Import");
+        assert_eq!(address.segments()[0].name(), Some("Import"));
+        assert_eq!(address.segments()[1].kind(), NodeKind::Import);
+        assert!(address.segments()[1].name().is_none());
+        assert!(QualifiedAddress::parse("main:XDTOPackage.P.Import.I1").is_err());
     }
 }
