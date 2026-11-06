@@ -141,7 +141,7 @@ Rust-тест объявляет размер сам, без регистрац�
 в `queue` и `main` и проверки стража. Профиль `queue` исключает тесты
 каталога и при точном `-E`, поэтому изменённый тест каталога перед push
 запускай его профилем, например
-`cargo nextest run -p unica-coder --test platform_project_health --profile nightly-only -E 'test(=project_health_full_portable_repository_is_ready)'`.
+`cargo nextest run -p unica-product --test platform_project_health --profile nightly-only -E 'test(=project_health_full_portable_repository_is_ready)'`.
 
 При изменении хранилища квитанций сохраняй нагрузочный критерий
 [#975](https://github.com/IngvarConsulting/unica/issues/975): за 60 секунд
@@ -290,7 +290,7 @@ python3.12 -m unittest tests.ci.test_rust_platform_boundary.RustPlatformBoundary
 `required-features` в Cargo.toml. Штатный runner отдельно запускает
 `daemon_receipt_ledger` с `receipt-ledger-test-support`, когда профиль допускает
 `medium` или `large`. При точечном запуске этой цели нужны
-`-p unica-coder --features receipt-ledger-test-support --test daemon_receipt_ledger`;
+`-p unica-product --features receipt-ledger-test-support --test daemon_receipt_ledger`;
 не включай эту feature всему workspace: она меняет путь fail-stop.
 Ignored-тест запускай осознанно через `--run-ignored only` с точным фильтром
 и выполненными предусловиями из причины пропуска.

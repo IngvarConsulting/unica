@@ -434,7 +434,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
         )["unica.meta.info"]
         manifest = json.loads(META_INFO_FIXTURE_MANIFEST.read_text(encoding="utf-8"))
         platform_corpus = (
-            REPO_ROOT / "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs"
+            REPO_ROOT / "crates/unica-product/tests/format_8_3_27_xml_corpus.rs"
         ).read_text(encoding="utf-8")
 
         self.assertEqual(len(manifest["kinds"]), len(DONOR_METADATA_KINDS))

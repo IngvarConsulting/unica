@@ -5,10 +5,6 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "unica"
-path = "src/main.rs"
-
 [lib]
 name = "unica_coder"
 path = "src/lib.rs"
@@ -16,19 +12,6 @@ path = "src/lib.rs"
 [features]
 default = []
 receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "unica-daemon/receipt-ledger-test-support"]
-# Исследования — не тесты: их цели собираются только с этой фичей, и в плане
-# конвейера их нет. Запуск — scripts/research/.
-research = []
-
-[[test]]
-name = "daemon_receipt_ledger"
-path = "tests/daemon_receipt_ledger.rs"
-required-features = ["receipt-ledger-test-support"]
-
-[[test]]
-name = "research_xml_corpus"
-path = "tests/research/xml_corpus.rs"
-required-features = ["research"]
 
 [dependencies]
 unica-daemon = { path = "../unica-daemon" }
@@ -157,4 +140,4 @@ syn.workspace = true
 tar.workspace = true
 
 [package.metadata.unica]
-read-outside-baseline = 186
+read-outside-baseline = 170

@@ -2929,6 +2929,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "unica-product"
+version = "0.15.0-rc.1"
+dependencies = [
+ "chrono",
+ "flate2",
+ "libc",
+ "proc-macro2",
+ "quote",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "sha2",
+ "syn 2.0.118",
+ "tempfile",
+ "unica-analysis-services",
+ "unica-artifact-delivery",
+ "unica-bootstrap",
+ "unica-coder",
+ "unica-daemon",
+ "unica-execution",
+ "unica-metadata-designer",
+ "unica-process",
+ "unica-source-designer",
+ "unica-workspace",
+ "unica-xml-format",
+ "url",
+ "uuid",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "unica-project-health"
 version = "0.15.0-rc.1"
 dependencies = [

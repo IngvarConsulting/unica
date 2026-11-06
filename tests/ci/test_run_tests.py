@@ -74,7 +74,7 @@ class RunTestsSeamTests(unittest.TestCase):
             [
                 ["cargo", "nextest", "run", "--workspace", "--profile", "default"],
                 [
-                    "cargo", "nextest", "run", "-p", "unica-coder",
+                    "cargo", "nextest", "run", "-p", "unica-product",
                     "--features", "receipt-ledger-test-support",
                     "--test", "daemon_receipt_ledger", "-E",
                     "binary(daemon_receipt_ledger)",
@@ -218,7 +218,7 @@ class RunTestsSeamTests(unittest.TestCase):
             captured.getvalue().strip().splitlines(),
             [
                 "cargo nextest run --workspace --profile default",
-                "cargo nextest run -p unica-coder --features receipt-ledger-test-support"
+                "cargo nextest run -p unica-product --features receipt-ledger-test-support"
                 " --test daemon_receipt_ledger"
                 " -E binary(daemon_receipt_ledger)"
                 " --profile default",
@@ -237,7 +237,7 @@ class GateProfileTests(unittest.TestCase):
         module = load_module()
 
         ledger = [
-            "-p", "unica-coder", "--features", "receipt-ledger-test-support",
+            "-p", "unica-product", "--features", "receipt-ledger-test-support",
             "--test", "daemon_receipt_ledger", "-E",
             "binary(daemon_receipt_ledger)",
         ]

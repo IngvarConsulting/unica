@@ -36,8 +36,10 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
         reasons.append("the MCP SDK belongs to the product composition")
     if dependency in {"bsl-parser", "bsl-syntax", "parser", "syntax"} and owner != "unica-bsl-parser":
         reasons.append("upstream parser types belong to the parser boundary")
-    if dependency == "unica-coder" and owner != "unica-coder":
+    if dependency == "unica-coder" and owner not in {"unica-coder", "unica-product"}:
         reasons.append("a component or its unit target must not depend on the product composition")
+    if dependency == "unica-product":
+        reasons.append("nothing depends on the package that declares the product binary")
     if name in FAMILIES and dependency.startswith("unica-"):
         allowed = ABSTRACTIONS | frozenset({"operations"}) | SEMANTIC_DEPENDENCIES[name]
         if name == "bsl":

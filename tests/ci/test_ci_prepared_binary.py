@@ -68,7 +68,7 @@ class PreparedBinaryTests(unittest.TestCase):
             self.assertEqual(product.ensure_binary(self.root), binary.resolve())
             self.assertEqual(product.ensure_binary(self.root), binary.resolve())
         build.assert_called_once_with(product.LOCAL_BUILD, cwd=self.root, check=True)
-        self.assertEqual(product.LOCAL_BUILD, ["cargo", "build", "--quiet", "--locked", "-p", "unica-coder", "--bin", "unica"])
+        self.assertEqual(product.LOCAL_BUILD, ["cargo", "build", "--quiet", "--locked", "-p", "unica-product", "--bin", "unica"])
         self.assertIn(" ".join(product.LOCAL_BUILD), stderr.getvalue())
         self.assertIn(f"{product.MANIFEST_ENV}=DIR/manifest.json", stderr.getvalue())
 

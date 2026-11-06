@@ -801,7 +801,7 @@
           "contractPaths": [
             "crates/unica-coder/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
-            "crates/unica-coder/tests/format_8_3_27_xml_corpus.rs",
+            "crates/unica-product/tests/format_8_3_27_xml_corpus.rs",
             "tests/ci/test_reference_format_profile.py",
             "tests/ci/test_skill_provenance.py",
             "tests/ci/test_unica_skills.py"

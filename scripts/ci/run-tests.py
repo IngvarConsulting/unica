@@ -67,7 +67,7 @@ def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Pat
 # `--lib` — тестовая сборка всего `unica-coder` ради них. Библиотека
 # собирается один раз, обычной, для контракта и бинаря `unica`.
 LEDGER_FEATURE_SELECTION = (
-    "-p", "unica-coder", "--features", "receipt-ledger-test-support",
+    "-p", "unica-product", "--features", "receipt-ledger-test-support",
     "--test", "daemon_receipt_ledger",
     "-E", "binary(daemon_receipt_ledger)",
 )
