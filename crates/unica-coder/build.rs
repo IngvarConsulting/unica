@@ -4,7 +4,8 @@
 //! of the test module named after it, in file-name order. A new test file
 //! therefore does not edit a shared registration list, and two changes that add
 //! different files do not conflict.
-//! `scripts/ci/size-filters.py` resolves the same directory for test sizes.
+//! `scripts/ci/removed_tests.py` and `scripts/ci/check-discovered-modules-format.py`
+//! resolve the same directories.
 use std::path::{Path, PathBuf};
 
 /// The directory of a test module and the file its declarations are written to.
