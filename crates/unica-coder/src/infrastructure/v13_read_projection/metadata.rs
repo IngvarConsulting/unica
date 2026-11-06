@@ -783,6 +783,31 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
             items.push(item);
         }
     }
+    // Handler хранится ссылкой платформы без сегмента Method. Это переход,
+    // а не проверка привязки: отсутствующая цель откажет при чтении адреса.
+    if address.segments().first().map(AddressSegment::kind) == Some(NodeKind::EventSubscription) {
+        let handler = payload
+            .get("properties")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|property| property.get("key").and_then(Value::as_str) == Some("Handler"))
+            .and_then(|property| property.get("value"))
+            .and_then(super::observed_value);
+        if let Some(handler) = handler.as_ref().and_then(Value::as_str) {
+            let parts = handler.split('.').collect::<Vec<_>>();
+            if let ["CommonModule", module, method] = parts.as_slice() {
+                if unica_metadata::identifier::is_1c_identifier(module)
+                    && unica_metadata::identifier::is_1c_identifier(method)
+                {
+                    items.extend(addressed(
+                        "handler",
+                        &format!("CommonModule.{module}.Method.{method}"),
+                    ));
+                }
+            }
+        }
+    }
     // Пакеты XDTO названы платформой по-своему, но показывают ровно наружу
     // и ложатся сюда же. Пространство имён пакета сюда не попадает: ветвь
     // адресует объекты, а не строки.
