@@ -202,7 +202,28 @@ fn catalog_attribute_native_profile_reads_each_closed_enum_value() {
             let xml = replace_column_property(name, &format!("<{name}>{value}</{name}>"));
             let info = read_catalog(&xml);
             let attribute = column(&info);
-            assert_eq!(attribute.properties.len(), ENUMS.len() + 1);
+            assert_eq!(
+                attribute
+                    .properties
+                    .iter()
+                    .map(|property| property.name.as_str())
+                    .collect::<std::collections::BTreeSet<_>>(),
+                [
+                    "Indexing",
+                    "FullTextSearch",
+                    "DataHistory",
+                    "ToolTip",
+                    "PasswordMode",
+                    "MultiLine",
+                    "ExtendedEdit",
+                    "Mask",
+                    "MarkNegatives",
+                    "Format",
+                    "EditFormat"
+                ]
+                .into_iter()
+                .collect()
+            );
             assert_eq!(
                 observed(attribute, name),
                 Some(json!({"kind": "text", "value": value}))

@@ -1,3 +1,5 @@
+mod input_settings;
+pub use input_settings::*;
 mod diagnostics;
 mod event_subscription;
 mod info;

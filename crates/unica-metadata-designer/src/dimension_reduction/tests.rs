@@ -8,6 +8,7 @@ fn operation(name: &str, value: &str) -> MetaEditOperation {
         collection: MetaCollection::Dimensions,
         scope: None,
         elements: vec![MetaElementUpdate {
+            input_settings: Default::default(),
             name: name.into(),
             new_name: None,
             synonym: None,

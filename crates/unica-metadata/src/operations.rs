@@ -594,6 +594,7 @@ pub struct MetaElementUpdateInput {
     pub indexing: Option<String>,
     /// `DenyIncompleteValues` of a register dimension.
     pub deny_incomplete_values: Option<bool>,
+    pub input_settings: crate::MetadataInputSettings,
     pub master: Option<bool>,
     pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
@@ -611,6 +612,7 @@ pub struct MetaElementUpdate {
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
     pub deny_incomplete_values: Option<bool>,
+    pub input_settings: crate::MetadataInputSettings,
     pub master: Option<bool>,
     pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
@@ -963,6 +965,7 @@ impl MetaElementUpdate {
             && input.master.is_none()
             && input.main_filter.is_none()
             && input.deny_incomplete_values.is_none()
+            && input.input_settings.0.is_empty()
             && input.type_reduction_mode.is_none()
         {
             return Err(invalid_operation(
@@ -1012,6 +1015,7 @@ impl MetaElementUpdate {
             master: input.master,
             main_filter: input.main_filter,
             deny_incomplete_values: input.deny_incomplete_values,
+            input_settings: input.input_settings,
             type_reduction_mode: input.type_reduction_mode,
         })
     }
@@ -1827,6 +1831,15 @@ pub fn validate_metadata_operation_capabilities(
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
             for (index, element) in elements.iter().enumerate() {
+                if !(element.input_settings.0.is_empty()
+                    || owner_kind == MetadataKind::Catalog
+                        && *collection == MetaCollection::Attributes)
+                {
+                    return Err(invalid_operation(
+                        format!("elements[{index}].inputSettings"),
+                        "input settings are available for Catalog header and tabular attributes",
+                    ));
+                }
                 validate_dimension_flag_owner(
                     owner_kind,
                     *collection,

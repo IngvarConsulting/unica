@@ -33,10 +33,19 @@ fn verify_owners(owners: &[(&str, &str, &str)]) {
         let original = unica_workspace::test_support::tree_snapshot(&fixture.source);
         let initial = String::from_utf8(original[&owner].clone()).unwrap();
         let can = contract(&runtime, &fixture, &at, "props.set");
-        assert_eq!(
-            can["argsSchema"]["properties"]["values"]["properties"]["DataLockControlMode"]["enum"],
-            json!(["Automatic", "Managed"])
-        );
+        // A constant publishes one branch per value-type profile; every branch
+        // keeps the same closed mode set.
+        let values = &can["argsSchema"]["properties"]["values"];
+        let branches = values["anyOf"]
+            .as_array()
+            .map_or_else(|| vec![values], |branches| branches.iter().collect());
+        for branch in branches {
+            assert_eq!(
+                branch["properties"]["DataLockControlMode"]["enum"],
+                json!(["Automatic", "Managed"]),
+                "{at}"
+            );
+        }
         assert_parity(
             &can["argsSchema"],
             &fixture.binding(false),

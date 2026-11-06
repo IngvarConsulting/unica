@@ -683,14 +683,16 @@ const TYPED_COMMAND_STORAGE_PROFILE: TypedChildStorageProfile = TypedChildStorag
 /// template always carries a synonym.
 pub fn typed_operations_write_multilingual_text(operations: &[MetaEditOperation]) -> bool {
     operations.iter().any(|operation| match operation {
-        MetaEditOperation::SetProperties { values } => values
-            .entries()
-            .iter()
-            .any(|(key, _)| *key == MetaPropertyKey::Synonym),
+        MetaEditOperation::SetProperties { values } => values.entries().iter().any(|(key, _)| {
+            matches!(
+                key,
+                MetaPropertyKey::Synonym | MetaPropertyKey::Format | MetaPropertyKey::EditFormat
+            )
+        }),
         MetaEditOperation::Add { .. } => true,
-        MetaEditOperation::Update { elements, .. } => {
-            elements.iter().any(|element| element.synonym.is_some())
-        }
+        MetaEditOperation::Update { elements, .. } => elements.iter().any(|element| {
+            element.synonym.is_some() || element.input_settings.writes_localized_text()
+        }),
         // A copy carries the source's own translations, never new text.
         MetaEditOperation::Remove { .. }
         | MetaEditOperation::Copy { .. }
@@ -1484,22 +1486,36 @@ pub fn apply_typed_properties(
             None,
         )
     })?;
-    let previous_type = if changes
-        .entries()
-        .iter()
-        .any(|(key, _)| *key == MetaPropertyKey::Type)
-    {
+    let previous_type = if changes.entries().iter().any(|(key, _)| {
+        matches!(
+            key,
+            MetaPropertyKey::Type
+                | MetaPropertyKey::PasswordMode
+                | MetaPropertyKey::MultiLine
+                | MetaPropertyKey::ExtendedEdit
+                | MetaPropertyKey::Mask
+                | MetaPropertyKey::MarkNegatives
+                | MetaPropertyKey::Format
+                | MetaPropertyKey::EditFormat
+        )
+    }) {
         let observed = super::info_projection::parse_observed_metadata_type_node(properties)?;
         // Recognition of object/record-set types must not introduce a new write
         // capability. Legacy Characteristic/TypeId can still be explicitly
         // replaced by a complete supported type without narrowing the old one.
-        if observed.variants.iter().any(|variant| {
-            matches!(
-                variant,
-                ObservedMetadataTypeVariant::Object { .. }
-                    | ObservedMetadataTypeVariant::RecordSet { .. }
-            )
-        }) {
+        let replaces_type = changes
+            .entries()
+            .iter()
+            .any(|(key, _)| *key == MetaPropertyKey::Type);
+        if replaces_type
+            && observed.variants.iter().any(|variant| {
+                matches!(
+                    variant,
+                    ObservedMetadataTypeVariant::Object { .. }
+                        | ObservedMetadataTypeVariant::RecordSet { .. }
+                )
+            })
+        {
             return Err(typed_diagnostic(
                 MetaDiagnosticCode::InvalidArguments,
                 "existing metadata type is outside the public mutation algebra",
@@ -1563,6 +1579,43 @@ pub fn apply_typed_properties(
                 Some("values"),
             )
         })?;
+        if let Some(setting) = MetadataInputSetting::from_xml_name(tag) {
+            let final_type = changes
+                .entries()
+                .iter()
+                .find_map(|(key, value)| match (key, value) {
+                    (MetaPropertyKey::Type, MetaPropertyValue::Type(ty)) => Some(ty.clone()),
+                    _ => None,
+                })
+                .map(Ok)
+                .unwrap_or_else(|| {
+                    MetadataType::try_from(previous_type.clone().expect("input settings read Type"))
+                })?;
+            let setting_value = match value {
+                MetaPropertyValue::Boolean(value) => MetadataInputValue::Boolean(*value),
+                MetaPropertyValue::String(value) => MetadataInputValue::Text(value.clone()),
+                _ => {
+                    return Err(typed_diagnostic(
+                        MetaDiagnosticCode::InvalidArguments,
+                        "input setting has the wrong value type",
+                        Some(tag),
+                    ))
+                }
+            };
+            for (replacement_range, replacement) in crate::input_settings::replacements(
+                parsed_body,
+                properties,
+                &final_type,
+                &[(setting, setting_value)],
+                lang,
+            )? {
+                replacements.push((
+                    replacement_range.start - range.start..replacement_range.end - range.start,
+                    replacement,
+                ));
+            }
+            continue;
+        }
         if *key == MetaPropertyKey::DataHistory {
             let same_name_count = properties
                 .children()
@@ -2480,6 +2533,55 @@ pub fn update_typed_element(
             )
         })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    if !update.input_settings.0.is_empty() {
+        let current_type;
+        let final_type = match update.r#type.as_ref() {
+            Some(requested) => requested,
+            None => {
+                current_type = parse_typed_metadata_type_at_element(xml_text, range.clone())?;
+                &current_type
+            }
+        };
+        let doc = Document::parse(xml_text).map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "metadata XML is damaged",
+                None,
+            )
+        })?;
+        let node = doc
+            .descendants()
+            .find(|node| node.is_element() && node.range() == range)
+            .expect("resolved element");
+        let containers: Vec<_> = node
+            .children()
+            .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
+            .collect();
+        let [properties] = containers.as_slice() else {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "field Properties is missing or duplicated",
+                None,
+            ));
+        };
+        if properties.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+            || properties.attributes().len() != 0
+        {
+            return Err(typed_diagnostic(
+                MetaDiagnosticCode::InvalidArguments,
+                "field Properties is damaged",
+                None,
+            ));
+        }
+        // Absolute ranges, applied together with the flag edits below.
+        flag_edits.extend(crate::input_settings::replacements(
+            xml_text,
+            *properties,
+            final_type,
+            &update.input_settings.0,
+            lang,
+        )?);
+    }
     if let Some(value) = &update.type_reduction_mode {
         if let Some(edit) = crate::dimension_reduction::edit(xml_text, range.clone(), value)? {
             flag_edits.push(edit);
@@ -4384,6 +4486,37 @@ mod prefixed_property_writer_tests {
         );
     }
 
+    /// The owner's template, and for a constant also its numeric form: number
+    /// formats and negative marks apply only to a numeric value.
+    fn owner_templates(kind: MetadataKind) -> Vec<String> {
+        let Ok((plain, _)) = crate::template_catalog::minimal_metadata_xml_for_tests(kind, "Probe")
+        else {
+            return Vec::new();
+        };
+        let mut templates = vec![plain.clone()];
+        if kind == MetadataKind::Constant {
+            let number = MetaPropertyChanges::convert(
+                kind,
+                vec![MetaPropertyInput::new(
+                    "Type",
+                    MetaPropertyValue::Type(
+                        MetadataType::new(vec![MetadataTypeVariant::Number {
+                            digits: 10,
+                            fraction: 2,
+                            sign: unica_metadata::NumberSign::Any,
+                        }])
+                        .unwrap(),
+                    ),
+                )],
+            )
+            .unwrap();
+            let mut numeric = plain;
+            apply_typed_properties(&mut numeric, &number, "ru").unwrap();
+            templates.push(numeric);
+        }
+        templates
+    }
+
     /// Every typed property writes the same change into a prefixed descriptor
     /// as into its default-namespace form: the element keeps the owner's
     /// prefix and stays in MDClasses, and a repeat is a no-op.
@@ -4393,12 +4526,11 @@ mod prefixed_property_writer_tests {
         let mut failures = Vec::new();
         for spec in METADATA_PROPERTY_SPECS {
             let mut covered = false;
-            for kind in spec.allowed_kinds {
-                let Ok((plain, _)) =
-                    crate::template_catalog::minimal_metadata_xml_for_tests(*kind, "Probe")
-                else {
-                    continue;
-                };
+            'owner: for (kind, plain) in spec.allowed_kinds.iter().flat_map(|kind| {
+                owner_templates(*kind)
+                    .into_iter()
+                    .map(move |template| (kind, template))
+            }) {
                 let Some(current) = current_text(&plain, spec.xml_name) else {
                     continue;
                 };
@@ -4420,7 +4552,7 @@ mod prefixed_property_writer_tests {
                         spec.public_name,
                         kind.as_str()
                     ));
-                    break;
+                    break 'owner;
                 }
                 let label = format!("{} of {}", spec.public_name, kind.as_str());
                 if unprefixed(&after) != plain_after {
@@ -4436,7 +4568,7 @@ mod prefixed_property_writer_tests {
                         failures.push(format!("{label}: repeat changed the prefixed descriptor"));
                     }
                 }
-                break;
+                break 'owner;
             }
             if !covered {
                 missing.push(spec.public_name);
@@ -4447,5 +4579,55 @@ mod prefixed_property_writer_tests {
             missing.is_empty(),
             "no owner template exercises {missing:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod input_settings_type_replacement_tests {
+    #[test]
+    fn explicit_type_and_input_settings_replace_legacy_type_without_parsing_it() {
+        for legacy in [
+            "<v8:TypeSet>cfg:Characteristic.Properties</v8:TypeSet>",
+            "<v8:TypeId>cc442f88-d708-4a83-af58-60c85a5d28a8</v8:TypeId>",
+        ] {
+            let before = format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" version="2.20"><Catalog><Properties><Name>Codes</Name></Properties><ChildObjects><Attribute><Properties><Name>Key</Name><Type>{legacy}</Type><Mask>before</Mask></Properties></Attribute></ChildObjects></Catalog></MetaDataObject>"#
+            );
+            let input = unica_metadata::request::parse_element_update(
+                &serde_json::json!({"name":"Key", "type":{"variants":[{"kind":"string","length":20,"allowedLength":"variable"}]}, "mask":"99"}),
+                "elements[0]",
+            ).unwrap();
+            let operation = unica_metadata::MetaEditOperation::update(
+                unica_metadata::MetaCollection::Attributes,
+                None,
+                vec![input],
+            )
+            .unwrap();
+            let unica_metadata::MetaEditOperation::Update { elements, .. } = operation else {
+                unreachable!()
+            };
+            let mut actual = before.clone();
+            super::update_typed_element(
+                &mut actual,
+                unica_metadata::MetaCollection::Attributes,
+                None,
+                &elements[0],
+                "ru",
+            )
+            .unwrap();
+            assert!(actual.contains("<Mask>99</Mask>"), "{actual}");
+            assert!(!actual.contains(legacy), "{actual}");
+            assert!(actual.contains("<v8:Type>xs:string</v8:Type>"), "{actual}");
+            let mut repeated = actual.clone();
+            super::update_typed_element(
+                &mut repeated,
+                unica_metadata::MetaCollection::Attributes,
+                None,
+                &elements[0],
+                "ru",
+            )
+            .unwrap();
+            assert_eq!(repeated, actual);
+        }
     }
 }

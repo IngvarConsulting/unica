@@ -5,6 +5,7 @@ use unica_address::address::{NodeKind, QualifiedAddress};
 fn member_profile_context_requires_the_complete_named_catalog_path() {
     let profile = MetaMemberReadProfile::CatalogTabularSection220;
     for (at, kind) in [
+        ("main:Catalog.Items.Attribute.Header", NodeKind::Attribute),
         (
             "main:Catalog.Items.TabularSection.Lines",
             NodeKind::TabularSection,
@@ -22,7 +23,6 @@ fn member_profile_context_requires_the_complete_named_catalog_path() {
     }
     for (at, kind) in [
         ("main:Catalog.Items", NodeKind::Catalog),
-        ("main:Catalog.Items.Attribute.Header", NodeKind::Attribute),
         (
             "main:Catalog.Items.TabularSection",
             NodeKind::TabularSection,

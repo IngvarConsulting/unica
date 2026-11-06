@@ -1107,6 +1107,9 @@
                     "DistributedInfoBase": {
                       "type": "boolean"
                     },
+                    "EditFormat": {
+                      "type": "string"
+                    },
                     "EditType": {
                       "enum": [
                         "InDialog",
@@ -1125,11 +1128,17 @@
                     "ExecuteAfterWriteDataHistoryVersionProcessing": {
                       "type": "boolean"
                     },
+                    "ExtendedEdit": {
+                      "type": "boolean"
+                    },
                     "ExternalConnection": {
                       "type": "boolean"
                     },
                     "FoldersOnTop": {
                       "type": "boolean"
+                    },
+                    "Format": {
+                      "type": "string"
                     },
                     "FullTextSearch": {
                       "enum": [
@@ -1176,10 +1185,19 @@
                     "MainFilterOnPeriod": {
                       "type": "boolean"
                     },
+                    "MarkNegatives": {
+                      "type": "boolean"
+                    },
+                    "Mask": {
+                      "type": "string"
+                    },
                     "MaxExtDimensionCount": {
                       "maximum": 4294967295,
                       "minimum": 0,
                       "type": "integer"
+                    },
+                    "MultiLine": {
+                      "type": "boolean"
                     },
                     "Namespace": {
                       "type": "string"
@@ -1217,6 +1235,9 @@
                       "maximum": 4294967295,
                       "minimum": 0,
                       "type": "integer"
+                    },
+                    "PasswordMode": {
+                      "type": "boolean"
                     },
                     "PeriodAdjustmentLength": {
                       "maximum": 4294967295,

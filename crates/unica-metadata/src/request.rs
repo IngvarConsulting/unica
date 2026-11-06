@@ -838,6 +838,25 @@ pub fn parse_element_update(
         master: reader.read("master", optional_bool_at)?,
         main_filter: reader.read("mainFilter", optional_bool_at)?,
         deny_incomplete_values: reader.read("denyIncompleteValues", optional_bool_at)?,
+        input_settings: {
+            let mut settings = Vec::new();
+            for setting in crate::MetadataInputSetting::ALL {
+                let key = setting.names().1;
+                let value = if setting.boolean() {
+                    reader
+                        .read(key, optional_bool_at)?
+                        .map(crate::MetadataInputValue::Boolean)
+                } else {
+                    reader
+                        .read(key, optional_string_at)?
+                        .map(crate::MetadataInputValue::Text)
+                };
+                if let Some(value) = value {
+                    settings.push((*setting, value));
+                }
+            }
+            crate::MetadataInputSettings(settings)
+        },
         type_reduction_mode: reader.read("typeReductionMode", optional_string_at)?,
         name: reader.read("name", required_string_at)?,
         new_name: reader.read("newName", optional_string_at)?,
