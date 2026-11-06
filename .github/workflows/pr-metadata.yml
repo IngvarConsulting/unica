@@ -1,7 +1,8 @@
 name: PR metadata
 
-# Веха, ответственный и вехи связанных issue. Код PR не исполняется: checkout нет.
-# Смена вехи запускает только этот workflow, `Unica CI` остаётся на месте.
+# Обязательная проверка: пропущенный условием `Unica CI` ruleset считает пройденным,
+# поэтому вливание без отметки владельца блокирует она. Правило допуска то же, что
+# у ворот `admission` в `ci.yml`: тест держит шаги равными. Код PR здесь не исполняется.
 on:
   pull_request:
     types: [opened, reopened, ready_for_review, edited, milestoned, demilestoned, assigned, unassigned, synchronize]
@@ -15,16 +16,19 @@ permissions:
 
 jobs:
   metadata:
-    # Стабильное имя обязательной проверки. Условия у джобы нет: пропущенную проверку
-    # ruleset засчитал бы как пройденную. Очередь проверяет заново: веху могли снять.
+    # Стабильное имя обязательной проверки. Условия нет: пропущенную проверку ruleset
+    # засчитал бы как пройденную. Очередь проверяет заново: веху могли снять.
     name: PR metadata
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check milestone and assignee
+      - name: Веха и ответственный
+        id: admission
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          MILESTONE_OWNER: zeegin
+          STRICT: "true"
         run: |
           set -euo pipefail
           # Запись очереди называется gh-readonly-queue/<база>/pr-<номер>-<sha>.
@@ -39,16 +43,36 @@ jobs:
                 pullRequest(number: $number) {
                   milestone { number }
                   assignees { totalCount }
-                  closingIssuesReferences(first: 100) { nodes { number milestone { number } } }
+                  timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
+                  closingIssuesReferences(first: 100) {
+                    nodes {
+                      number
+                      milestone { number }
+                      timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
+                    }
+                  }
                 }
               }
             }')"
-          problems="$(jq -r '.data.repository.pullRequest
-            | (if .milestone then empty else "Поставьте веху" end),
-              (if .assignees.totalCount > 0 then empty else "Укажите ответственного" end),
-              (.closingIssuesReferences.nodes[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается")' <<<"$json")"
+          problems="$(jq -r --arg owner "$MILESTONE_OWNER" '
+            def actor: .timelineItems.nodes[-1].actor.login // "неизвестно";
+            .data.repository.pullRequest as $pr | $pr.closingIssuesReferences.nodes as $issues
+            | (if $pr.milestone == null then
+                 (if ($issues | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
+               elif ($issues | length) == 0 and ($pr | actor) != $owner then "Веху на PR поставил \($pr | actor), нужна от \($owner)"
+               else empty end),
+              ($issues[] | if .milestone == null then "Issue #\(.number) без вехи, PR не рассматривается"
+                           elif actor != $owner then "Issue #\(.number): веху поставил \(actor), нужна от \($owner)"
+                           else empty end)' <<<"$json")"
+          assignees="$(jq -r '.data.repository.pullRequest.assignees.totalCount' <<<"$json")"
+          if [ -n "$problems" ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
+          level="$( [ "$STRICT" = true ] && echo error || echo notice )"
           if [ -n "$problems" ]; then
-            while read -r problem; do echo "::error::$problem"; done <<<"$problems"
-            exit 1
+            while read -r problem; do echo "::$level::$problem"; done <<<"$problems"
           fi
-          echo "PR #$number: веха и ответственный на месте"
+          # Ответственный на запуск тестов не влияет: его требует только `PR metadata`.
+          if [ "$STRICT" = true ]; then
+            if [ "$assignees" = 0 ]; then echo "::error::Укажите ответственного"; fi
+            if [ -n "$problems" ] || [ "$assignees" = 0 ]; then exit 1; fi
+          fi
+          echo "PR #$number: проверка окончена"

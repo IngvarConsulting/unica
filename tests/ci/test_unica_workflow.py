@@ -283,17 +283,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         # Изменение метки не должно создавать новый suite этого workflow:
         # ruleset смотрит на последний suite головы PR и перестаёт видеть
         # обязательный `Unica CI`, если тот suite состоит из skipped-джоб.
-        self.assertEqual(on["pull_request"]["types"], ["opened", "synchronize", "reopened", "ready_for_review"])
+        self.assertEqual(on["pull_request"]["types"], ["opened", "synchronize", "reopened", "ready_for_review", "milestoned"])
         self.assertNotIn("paths", on["pull_request"])
         self.assertNotIn("label ignored", "\n".join(strings(self.release)))
         self.assertEqual(ci_gate["name"], "Unica CI")
-        # Пропущенную обязательную проверку ruleset засчитал бы как пройденную:
-        # условие пропускает только черновик, который влить нельзя, а `needs` нет.
-        self.assertEqual(
-            normalized(ci_gate["if"]),
-            "${{ github.event_name != 'pull_request' || !github.event.pull_request.draft }}",
-        )
-        self.assertEqual(needs(ci_gate), [])
+        # Пропуск тестов без допуска ruleset считает пройденным; вливание блокирует
+        # отдельная обязательная `PR metadata`, см. test_pr_metadata_workflow.
+        self.assertEqual(normalized(ci_gate["if"]), "${{ needs.admission.outputs.admitted == 'true' }}")
+        self.assertEqual(needs(ci_gate), ["admission"])
         self.assertEqual(gate["name"], "Unica CI")
         self.assertNotIn("if", gate)
         self.assertEqual(needs(gate), [])
