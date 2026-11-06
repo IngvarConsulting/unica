@@ -735,7 +735,16 @@ pub fn apply_typed_operations_with_uuid<F>(
 where
     F: FnMut() -> String,
 {
-    let mut working = xml_text.clone();
+    // Writers spell MDClasses elements in the default namespace; a prefixed
+    // descriptor is written in that form and gets its prefix back below.
+    let (mut working, form) = unica_xml_format::prefix_form::PrefixForm::normalize(xml_text)
+        .map_err(|message| {
+            unica_metadata::request::MetaFailure::from(typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                message,
+                None,
+            ))
+        })?;
     let mut counts = MetaEditCounts::default();
     for (operation_index, operation) in operations.iter().enumerate() {
         if matches!(
@@ -825,7 +834,13 @@ where
         });
     }
     validate_typed_event_source_final_state(&working, operations)?;
-    *xml_text = working;
+    *xml_text = form.restore(&working).map_err(|message| {
+        unica_metadata::request::MetaFailure::from(typed_diagnostic(
+            MetaDiagnosticCode::ValidationFailed,
+            message,
+            None,
+        ))
+    })?;
     Ok(counts)
 }
 pub fn validate_typed_event_source_final_state(
