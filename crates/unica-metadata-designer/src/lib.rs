@@ -83,6 +83,8 @@ pub mod borrowed_enum_value;
 pub mod borrowed_form;
 pub mod borrowed_object;
 
+mod scheduled_job_key;
+
 mod dimension_reduction;
 pub mod language_code;
 pub mod style_color;

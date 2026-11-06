@@ -410,7 +410,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
 
     match key {
         // Constant Type is observed through MetaInfoDetails, not scalar properties.
-        Type | ClientOrdinaryApplication => false,
+        Type | ClientOrdinaryApplication | Key => false,
         Synonym | Comment => true,
         EditType => matches!(kind, Catalog | InformationRegister),
         ActionPeriod | BasePeriod => kind == CalculationRegister,
