@@ -1,0 +1,406 @@
+{
+  "id": "S-1464-support-restore",
+  "name": "checked-byte-exact-support-restoration",
+  "issue": 1464,
+  "area": "Поддержка поставщика",
+  "task": "Прочитать правило и контракт, побайтно сверить все файлы объекта со своей поставкой, отдельно восстановить запрет редактирования и проверить чтение, повтор токена и отказ обычной правки. Извлечение CF подменяет закрытый управляемый producer; публикацию выполняет Unica.",
+  "workspace": "tests/fixtures/acceptance/workspace-support-restore",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.ТестHTML"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/support",
+          "eq": "supported"
+        }
+      ],
+      "captures": {
+        "beforeSupport": {
+          "file": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256"
+        },
+        "beforeObject": {
+          "file": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256"
+        },
+        "beforeModule": {
+          "file": "src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form/Module.bsl",
+          "kind": "sha256"
+        },
+        "beforeTemplate": {
+          "file": "src/DataProcessors/ТестHTML/Templates/МакетСобранныйHTML/Ext/Template.bin",
+          "kind": "sha256"
+        },
+        "beforeSupplier": {
+          "file": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.ТестHTML.Can.supportRule.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/rule/enum/0",
+          "eq": "locked"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.ТестHTML.Can.supportRule.restore"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/additionalProperties",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DataProcessor.ТестHTML",
+        "ops": [
+          {
+            "op": "supportRule.restore",
+            "args": {
+              "values": {
+                "rule": "locked"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown argument",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupport"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeObject"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.beforeModule"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Templates/МакетСобранныйHTML/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeTemplate"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupplier"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DataProcessor.ТестHTML",
+        "ops": [
+          {
+            "op": "supportRule.restore"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/supportRestoration/0/at",
+          "eq": "main:DataProcessor.ТестHTML"
+        },
+        {
+          "pointer": "/data/supportRestoration/0/filesCompared",
+          "eq": 6
+        },
+        {
+          "pointer": "/data/supportRestoration/0/suppliers/0/name",
+          "eq": "РеактивныйHTML"
+        },
+        {
+          "pointer": "/data/supportRestoration/0/suppliers/0/vendor",
+          "eq": "Codex Support Experiment"
+        },
+        {
+          "pointer": "/data/supportRestoration/0/suppliers/0/version",
+          "eq": "1.0.0.1"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupport"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeObject"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.beforeModule"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Templates/МакетСобранныйHTML/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeTemplate"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupplier"
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupport"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeObject"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.beforeModule"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Templates/МакетСобранныйHTML/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeTemplate"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupplier"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/supportRestoration/0/filesCompared",
+          "eq": 6
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "89e0efb4a929906a88418916f0c706367af076308689e98941d91ba83e7e63b2"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeObject"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.beforeModule"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Templates/МакетСобранныйHTML/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeTemplate"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupplier"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "89e0efb4a929906a88418916f0c706367af076308689e98941d91ba83e7e63b2"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeObject"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.beforeModule"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Templates/МакетСобранныйHTML/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeTemplate"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupplier"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:DataProcessor.ТестHTML"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/support",
+          "eq": "locked"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:DataProcessor.ТестHTML"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DataProcessor.ТестHTML",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "must refuse"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:DataProcessor.ТестHTML` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edits",
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "invalid_state"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Ext/ParentConfigurations.bin",
+          "kind": "sha256",
+          "eq": "89e0efb4a929906a88418916f0c706367af076308689e98941d91ba83e7e63b2"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML.xml",
+          "kind": "sha256",
+          "eq": "$capture.beforeObject"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Forms/Форма/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "$capture.beforeModule"
+        },
+        {
+          "path": "src/DataProcessors/ТестHTML/Templates/МакетСобранныйHTML/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "$capture.beforeTemplate"
+        },
+        {
+          "path": "src/Ext/ParentConfigurations/РеактивныйHTML.cf",
+          "kind": "sha256",
+          "eq": "$capture.beforeSupplier"
+        }
+      ]
+    }
+  ]
+}

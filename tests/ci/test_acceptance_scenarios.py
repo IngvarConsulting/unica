@@ -1013,7 +1013,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             if filename not in sources:
                 sources[filename] = self.family_source(family.title())
         if complete_support:
-            table += "\n(SupportOperation::CapabilitySet), (SupportOperation::RuleSet),"
+            table += "\n(SupportOperation::CapabilitySet), (SupportOperation::RuleSet), (SupportOperation::RuleRestore),"
         if complete_context:
             table += "\n" + self.CONTEXT_REGISTRATIONS
         if complete_mxl_event:
@@ -1091,8 +1091,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             with self.subTest(family=family):
                 self.assertEqual([row for row in registry if row[1] == family], rows)
         self.assertEqual(registry[113:118], expected["Subsystem"])
-        self.assertEqual(registry[120:127], expected["Interface"])
-        self.assertEqual(registry[127:129], expected["Code"])
+        self.assertEqual(registry[121:128], expected["Interface"])
+        self.assertEqual(registry[128:130], expected["Code"])
 
     def test_every_registered_apply_operation_has_a_published_integration_case(self) -> None:
         # The inventory is the closed `apply` registry of all typed families
@@ -1222,8 +1222,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                 [row for row in registry if row[1] == "Metadata"],
                 [row for row in self.CONTEXT_ROWS if row[1] == "Metadata"],
             )
-            self.assertEqual(len(registry), 130)
-            self.assertEqual(len({row[0] for row in registry}), 126)
+            self.assertEqual(len(registry), 131)
+            self.assertEqual(len({row[0] for row in registry}), 127)
             registration = f"({operation}::ObjectBorrow),"
             self.assertEqual(original.count(registration), 1)
             replacements = {
@@ -1371,6 +1371,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             [
                 ("supportCapability.set", "Support", "Configuration", "Values"),
                 ("supportRule.set", "Support", "SupportRule", "Values"),
+                ("supportRule.restore", "Support", "SupportRestore", "Target"),
             ],
         )
         rendered = module.render_document()
@@ -1434,6 +1435,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("props.set", "Form", "FormProperties", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
+            ("supportRule.restore", "Support", "SupportRestore", "Target"),
         ] + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_fully_typed_metadata_and_form_keep_registry_rows(self) -> None:
@@ -1451,8 +1453,8 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             self.assertLessEqual(migrated_names, implemented)
         self.assertIn(("content.set", "Metadata", "ExchangePlan", "Items"), registry)
         self.assertIn("content.set", implemented)
-        self.assertEqual(len(registry), 130)
-        self.assertEqual(len({entry[0] for entry in registry}), 126)
+        self.assertEqual(len(registry), 131)
+        self.assertEqual(len({entry[0] for entry in registry}), 127)
 
     def test_dcs_rows_keep_all_53_metadata_and_original_registry_positions(self) -> None:
         module = self.renderer()
@@ -1541,6 +1543,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("dataSource.add", "Dcs", "DcsSchema", "Items"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
+            ("supportRule.restore", "Support", "SupportRestore", "Target"),
         ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_dcs_metadata_and_registrations_are_complete_and_fail_closed(self) -> None:
@@ -1708,10 +1711,10 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
                         self.registration_fixture(source, role_source, {filename: changed_metadata}, complete_mxl_event=False)
         registry, _ = self.renderer().load_apply_registry()
         self.assertEqual(registry[104:106], self.MXL_EVENT_ROWS[:2])
-        self.assertEqual(registry[129], self.MXL_EVENT_ROWS[2])
+        self.assertEqual(registry[130], self.MXL_EVENT_ROWS[2])
         self.assertEqual(registry[103][0], "dataSetLink.remove")
         self.assertEqual(registry[106][0], "valueType.add")
-        self.assertEqual(registry[128][0], "code.replace")
+        self.assertEqual(registry[129][0], "code.replace")
 
     def test_typed_role_rows_stay_between_their_raw_registry_neighbors(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
@@ -1732,6 +1735,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("probe.replace", "Probe", "Code", "Text"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
+            ("supportRule.restore", "Support", "SupportRestore", "Target"),
         ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_role_metadata_survives_split_impls_and_unrelated_helpers(self) -> None:
@@ -1756,6 +1760,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
             ("right.set", "Role", "RoleRight", "Values"),
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
+            ("supportRule.restore", "Support", "SupportRestore", "Target"),
         ] + self.CONTEXT_ROWS + self.MXL_EVENT_ROWS + self.DCS_FIXTURE_ROWS + self.PROPERTIES_ROWS + self.XDTO_ROWS + self.SOURCE_ROWS)
 
     def test_unknown_or_incomplete_typed_metadata_cannot_silently_drop_a_role(self) -> None:
@@ -1791,7 +1796,7 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
         support_metadata = (REPO_ROOT / "crates/unica-metadata/src/support.rs").read_text(encoding="utf-8")
         roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),\n"
-        table = roles + "(SupportOperation::CapabilitySet), (SupportOperation::RuleSet),"
+        table = roles + "(SupportOperation::CapabilitySet), (SupportOperation::RuleSet), (SupportOperation::RuleRestore),"
         last_row = '    RuleSet => ("supportRule.set", SupportRule, Values),\n'
         self.assertIn(last_row, support_metadata)
         cases = {
@@ -1838,12 +1843,13 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         self.assertEqual([entry for entry in registry if entry[1] == "Support"], [
             ("supportCapability.set", "Support", "Configuration", "Values"),
             ("supportRule.set", "Support", "SupportRule", "Values"),
+            ("supportRule.restore", "Support", "SupportRestore", "Target"),
         ])
 
     def test_raw_typed_family_rows_cannot_bypass_complete_typed_registrations(self) -> None:
         metadata = (REPO_ROOT / "crates/unica-roles/src/operations.rs").read_text(encoding="utf-8")
         roles = "(RoleOperation::Create), (RoleOperation::RightAdd), (RoleOperation::RightSet),"
-        support = "(SupportOperation::CapabilitySet), (SupportOperation::RuleSet),"
+        support = "(SupportOperation::CapabilitySet), (SupportOperation::RuleSet), (SupportOperation::RuleRestore),"
         raw_roles = (
             '("role.create", Role, Configuration, Values),'
             '("right.add", Role, Role, Items),'
@@ -2288,6 +2294,9 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
         state = home / "state"
         state.mkdir()
         environment = isolated_environment(plugin, state) if plugin else None
+        if workspace_relative == "tests/fixtures/acceptance/workspace-support-restore":
+            from tests.ci.support_restore_fixture import prepare_workspace
+            environment = prepare_workspace(workspace, state)
         if workspace_relative == HOST_CONTEXT_MISSING_WORKSPACE:
             environment = missing_host_context_environment(environment)
         server_type = DeliveredAcceptanceServer if plugin else AcceptanceServer
@@ -2332,7 +2341,7 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                             )
                         response = call_step(
                             server, step, arguments, label,
-                            delivery=bool(plugin) or wanted == "tests/fixtures/acceptance/workspace-search-wide",
+                            delivery=bool(plugin) or wanted in {"tests/fixtures/acceptance/workspace-search-wide", "tests/fixtures/acceptance/workspace-support-restore"},
                         )
                     except (TimeoutError, OSError, ValueError) as error:
                         # The session is gone: record the step with the

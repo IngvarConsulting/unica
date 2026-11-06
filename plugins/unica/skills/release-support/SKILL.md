@@ -21,6 +21,26 @@ description: "Поддержка поставки и обновлений 1С. �
 
 Support-state checks come from `unica.view` on the configuration root (`support`) and on the object node, which read `Ext/ParentConfigurations.bin` through Unica. Treat `Поддержка: на замке` or read-only as a release decision: prefer CFE or an explicit support-state change plan before direct mutation.
 
+## Восстановление запрета после сверки с поставкой
+
+После удаления прикладных изменений прочитай объект через `unica.view`
+и его контракт `…Can.supportRule.restore`. Эта операция не принимает `values`:
+она проверяет равенство и восстанавливает правило `locked`.
+Обычную настройку правил выполняет `supportRule.set`.
+
+Подготовь отдельный `unica.apply` с адресом объекта и одной операцией
+`supportRule.restore`. Предпросмотр сравнивает дескриптор и все файлы объекта
+с его собственными поставками. Должны совпасть состав файлов и каждый байт,
+включая модули, формы, макеты, неизвестные файлы и форматирование XML.
+Нужны соответствующие CF поставщиков и платформа для их чтения.
+Несовпадение или неподтверждённая принадлежность поставки останавливает
+восстановление до записи.
+
+Успешный план показывает поставщиков и число сравниваемых файлов
+в `data.supportRestoration`. Проверь результат и исполни только выданный
+`executionToken`. Если входные файлы изменились, подготовь новый план.
+После применения прочитай объект: его поддержка должна быть `locked`.
+
 ## References
 
 - Read `../../references/platform/compatibility-modes.md` when an upgrade, migration,
