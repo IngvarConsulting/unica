@@ -2158,6 +2158,10 @@
                     "UseStandardCommands": {
                       "type": "boolean"
                     },
+                    "VariantsStorage": {
+                      "pattern": "^SettingsStorage\\.[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$",
+                      "type": "string"
+                    },
                     "WriteMode": {
                       "enum": [
                         "Independent",

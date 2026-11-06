@@ -679,6 +679,7 @@ mod tests {
                     }
                     MetaPropertyValueKind::String => {
                         let text = spec.enum_values.first().copied().unwrap_or(match spec.key {
+                            MetaPropertyKey::VariantsStorage => "SettingsStorage.Probe",
                             MetaPropertyKey::Event => "OnWrite",
                             MetaPropertyKey::Handler => "CommonModule.Events.OnWrite",
                             _ => "property text",

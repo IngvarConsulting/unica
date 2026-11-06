@@ -412,6 +412,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
         // Constant Type is observed through MetaInfoDetails, not scalar properties.
         Type | ClientOrdinaryApplication => false,
         Synonym | Comment => true,
+        VariantsStorage => kind == Report,
         EditType => matches!(kind, Catalog | InformationRegister),
         ActionPeriod | BasePeriod => kind == CalculationRegister,
         ActionPeriodUse | DependenceOnCalculationTypes => kind == ChartOfCalculationTypes,

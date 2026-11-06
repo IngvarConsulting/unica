@@ -6,6 +6,7 @@ use std::collections::HashSet;
 // modules, the `MetaPropertyKey` enum and `METADATA_PROPERTY_SPECS` sorted by
 // public name, so a new property does not edit a shared list here.
 include!(concat!(env!("OUT_DIR"), "/properties_modules.rs"));
+pub use variants_storage::report_variants_storage_target;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaPropertyValueKind {
@@ -277,6 +278,10 @@ impl MetaPropertyChanges {
                             "Event must be a non-empty canonical platform event candidate",
                         )
                         .with_field(&field));
+                    }
+                    MetaPropertyKey::VariantsStorage => {
+                        report_variants_storage_target(value)
+                            .map_err(|diagnostic| diagnostic.with_field(&field))?;
                     }
                     MetaPropertyKey::Handler => {
                         let parts = value.split('.').collect::<Vec<_>>();

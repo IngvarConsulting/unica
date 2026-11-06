@@ -1,0 +1,1285 @@
+{
+  "id": "S-1697-report-variants-storage",
+  "issue": 1697,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-report-variants-storage",
+  "task": "По discovery/Can назначить Report.VariantsStorage на существующее StorageA и заменить StorageB через preview/token; повтор B→B не меняет байты. Повторное чтение/Relation/XML различают VariantsStorage и отдельное Report.SettingsStorage=StorageB; хеши хранилищ/форм/СКД/модулей/команд/регистрации сохраняются. Нативная синтетическая fixture 8.3.27.2214.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "config": {
+          "pointer": "/next/0/args/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.config"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/35/at",
+          "eq": "main:Report"
+        },
+        {
+          "pointer": "/data/branches/13/at",
+          "eq": "main:SettingsStorage"
+        }
+      ],
+      "captures": {
+        "reports": {
+          "pointer": "/data/branches/35/at"
+        },
+        "storages": {
+          "pointer": "/data/branches/13/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.storages"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:SettingsStorage.StorageA"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:SettingsStorage.StorageB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.reports"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Report.SyntheticReport"
+        }
+      ],
+      "captures": {
+        "report": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.report"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/VariantsStorage",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/SettingsStorage",
+          "eq": "SettingsStorage.StorageB"
+        },
+        {
+          "pointer": "/data/props/MainDataCompositionSchema",
+          "eq": "Report.SyntheticReport.Template.MainSchema"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.SyntheticReport.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/VariantsStorage",
+          "eq": {
+            "type": "string",
+            "pattern": "^SettingsStorage\\.[_A-Za-zА-Яа-яЁё][_A-Za-zА-Яа-яЁё0-9]*$"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "VariantsStorage": "SettingsStorage.StorageA"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token0": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "fbe05008f4f0e7a8f8eb09afab9bee6ce96cc8049ffaa8442524d64857c20ad4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "cc765dbe3fd7c7cdb0f73c8790d606372cb4909a4aceae045985d43bde855074"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "62125960e9343418373dc6a733129f8c570870b0ea557cab99dab2f4a3cf8f3c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6c0a3d3e46ba276379fef09421edc30c2362074eaa15ea259eb5a5abc0be0bc0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "48485144dfc09e21dec4abb2456932453b13b2f8dd8b59ad2fb39a8c356aca3f"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "73e647add8c0bfdcb81df6605aca1fb476ff89d089cf84de8f5136ae5b4b2b19"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "3519f91de4ee61d13e0723ff054395854bc4e82808edb43e29094bac7fe438b7"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "f0373960d1e25d886c1d7f5613b4bdf16f392a2de61f6871d8b0fd3899fdf0ca"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "e05f1dd90d85252e1d01aed276db4872056f9096aa67a058a6051f5aaa67ccb0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings.xml",
+          "kind": "sha256",
+          "eq": "ae21b0918c52190fa4e6f0ad2f230b20eb1a0c61e5b6b8a59b33484a344def13"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "67d3fe4dbe49c790401324b396692844dec4a16870090353e1a4faa6ad1bfb74"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant.xml",
+          "kind": "sha256",
+          "eq": "46864933a5e9c99d2c722d5f85421fd188cd0ed8c7a8ef15fb2b41237fdd202c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob.xml",
+          "kind": "sha256",
+          "eq": "6ac7d1a2a0c82058b8d5642cfd380429a147066d5b961a93fc01f696be77a706"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout.xml",
+          "kind": "sha256",
+          "eq": "a052347411d8885f3ea17622a979089ea8265d4da51dcdf1a73b45c7aead320a"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2aceff815bfdaef15913411792951bde1117c246ff4e4f25f7177aef0694ba98"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema.xml",
+          "kind": "sha256",
+          "eq": "c375bcb8cbf876c8398ac369fb44d6407a39fcea89dd7e6c12006f542bbb715e"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes/Ext/Template.txt",
+          "kind": "sha256",
+          "eq": "f7267f02d0fdf4df38088bd1281e1d1ec3cd769407a10d11267dedc7d6192590"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes.xml",
+          "kind": "sha256",
+          "eq": "55368a0c87492fd0c6996f059d277eb3aa91616f4b4609ec51960697d7787bc3"
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "sha256",
+          "eq": "f3b00ee035453177e3fc41866fedbad564eea11cfa937cffbfa7b1a06974fe59"
+        },
+        {
+          "path": "src/SettingsStorages/StorageA.xml",
+          "kind": "sha256",
+          "eq": "25e6ddaf7de602a206e9d7394804f5171677ed2dea381c7307bacd7869e493ea"
+        },
+        {
+          "path": "src/SettingsStorages/StorageB.xml",
+          "kind": "sha256",
+          "eq": "4f0ca982016e992ea3db4a5a1ab71ecc847552c237a8ff71fd81d583761fc1aa"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "fbe05008f4f0e7a8f8eb09afab9bee6ce96cc8049ffaa8442524d64857c20ad4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "cc765dbe3fd7c7cdb0f73c8790d606372cb4909a4aceae045985d43bde855074"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "62125960e9343418373dc6a733129f8c570870b0ea557cab99dab2f4a3cf8f3c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6c0a3d3e46ba276379fef09421edc30c2362074eaa15ea259eb5a5abc0be0bc0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "48485144dfc09e21dec4abb2456932453b13b2f8dd8b59ad2fb39a8c356aca3f"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "73e647add8c0bfdcb81df6605aca1fb476ff89d089cf84de8f5136ae5b4b2b19"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "3519f91de4ee61d13e0723ff054395854bc4e82808edb43e29094bac7fe438b7"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "f0373960d1e25d886c1d7f5613b4bdf16f392a2de61f6871d8b0fd3899fdf0ca"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "e05f1dd90d85252e1d01aed276db4872056f9096aa67a058a6051f5aaa67ccb0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings.xml",
+          "kind": "sha256",
+          "eq": "ae21b0918c52190fa4e6f0ad2f230b20eb1a0c61e5b6b8a59b33484a344def13"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "67d3fe4dbe49c790401324b396692844dec4a16870090353e1a4faa6ad1bfb74"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant.xml",
+          "kind": "sha256",
+          "eq": "46864933a5e9c99d2c722d5f85421fd188cd0ed8c7a8ef15fb2b41237fdd202c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob.xml",
+          "kind": "sha256",
+          "eq": "6ac7d1a2a0c82058b8d5642cfd380429a147066d5b961a93fc01f696be77a706"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout.xml",
+          "kind": "sha256",
+          "eq": "a052347411d8885f3ea17622a979089ea8265d4da51dcdf1a73b45c7aead320a"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2aceff815bfdaef15913411792951bde1117c246ff4e4f25f7177aef0694ba98"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema.xml",
+          "kind": "sha256",
+          "eq": "c375bcb8cbf876c8398ac369fb44d6407a39fcea89dd7e6c12006f542bbb715e"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes/Ext/Template.txt",
+          "kind": "sha256",
+          "eq": "f7267f02d0fdf4df38088bd1281e1d1ec3cd769407a10d11267dedc7d6192590"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes.xml",
+          "kind": "sha256",
+          "eq": "55368a0c87492fd0c6996f059d277eb3aa91616f4b4609ec51960697d7787bc3"
+        },
+        {
+          "path": "src/SettingsStorages/StorageA.xml",
+          "kind": "sha256",
+          "eq": "25e6ddaf7de602a206e9d7394804f5171677ed2dea381c7307bacd7869e493ea"
+        },
+        {
+          "path": "src/SettingsStorages/StorageB.xml",
+          "kind": "sha256",
+          "eq": "4f0ca982016e992ea3db4a5a1ab71ecc847552c237a8ff71fd81d583761fc1aa"
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}VariantsStorage",
+          "eq": [
+            "SettingsStorage.StorageA"
+          ]
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}SettingsStorage",
+          "eq": [
+            "SettingsStorage.StorageB"
+          ]
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MainDataCompositionSchema",
+          "eq": [
+            "Report.SyntheticReport.Template.MainSchema"
+          ]
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DefaultForm",
+          "eq": [
+            "Report.SyntheticReport.Form.Main"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.report"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/VariantsStorage",
+          "eq": "SettingsStorage.StorageA"
+        },
+        {
+          "pointer": "/data/props/SettingsStorage",
+          "eq": "SettingsStorage.StorageB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.SyntheticReport.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "contains": {
+            "relation": "variantsStorage",
+            "at": "main:SettingsStorage.StorageA",
+            "kind": "SettingsStorage"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "VariantsStorage": "SettingsStorage.StorageB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "token1": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "fbe05008f4f0e7a8f8eb09afab9bee6ce96cc8049ffaa8442524d64857c20ad4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "cc765dbe3fd7c7cdb0f73c8790d606372cb4909a4aceae045985d43bde855074"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "62125960e9343418373dc6a733129f8c570870b0ea557cab99dab2f4a3cf8f3c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6c0a3d3e46ba276379fef09421edc30c2362074eaa15ea259eb5a5abc0be0bc0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "48485144dfc09e21dec4abb2456932453b13b2f8dd8b59ad2fb39a8c356aca3f"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "73e647add8c0bfdcb81df6605aca1fb476ff89d089cf84de8f5136ae5b4b2b19"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "3519f91de4ee61d13e0723ff054395854bc4e82808edb43e29094bac7fe438b7"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "f0373960d1e25d886c1d7f5613b4bdf16f392a2de61f6871d8b0fd3899fdf0ca"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "e05f1dd90d85252e1d01aed276db4872056f9096aa67a058a6051f5aaa67ccb0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings.xml",
+          "kind": "sha256",
+          "eq": "ae21b0918c52190fa4e6f0ad2f230b20eb1a0c61e5b6b8a59b33484a344def13"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "67d3fe4dbe49c790401324b396692844dec4a16870090353e1a4faa6ad1bfb74"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant.xml",
+          "kind": "sha256",
+          "eq": "46864933a5e9c99d2c722d5f85421fd188cd0ed8c7a8ef15fb2b41237fdd202c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob.xml",
+          "kind": "sha256",
+          "eq": "6ac7d1a2a0c82058b8d5642cfd380429a147066d5b961a93fc01f696be77a706"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout.xml",
+          "kind": "sha256",
+          "eq": "a052347411d8885f3ea17622a979089ea8265d4da51dcdf1a73b45c7aead320a"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2aceff815bfdaef15913411792951bde1117c246ff4e4f25f7177aef0694ba98"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema.xml",
+          "kind": "sha256",
+          "eq": "c375bcb8cbf876c8398ac369fb44d6407a39fcea89dd7e6c12006f542bbb715e"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes/Ext/Template.txt",
+          "kind": "sha256",
+          "eq": "f7267f02d0fdf4df38088bd1281e1d1ec3cd769407a10d11267dedc7d6192590"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes.xml",
+          "kind": "sha256",
+          "eq": "55368a0c87492fd0c6996f059d277eb3aa91616f4b4609ec51960697d7787bc3"
+        },
+        {
+          "path": "src/SettingsStorages/StorageA.xml",
+          "kind": "sha256",
+          "eq": "25e6ddaf7de602a206e9d7394804f5171677ed2dea381c7307bacd7869e493ea"
+        },
+        {
+          "path": "src/SettingsStorages/StorageB.xml",
+          "kind": "sha256",
+          "eq": "4f0ca982016e992ea3db4a5a1ab71ecc847552c237a8ff71fd81d583761fc1aa"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "fbe05008f4f0e7a8f8eb09afab9bee6ce96cc8049ffaa8442524d64857c20ad4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "cc765dbe3fd7c7cdb0f73c8790d606372cb4909a4aceae045985d43bde855074"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "62125960e9343418373dc6a733129f8c570870b0ea557cab99dab2f4a3cf8f3c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6c0a3d3e46ba276379fef09421edc30c2362074eaa15ea259eb5a5abc0be0bc0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "48485144dfc09e21dec4abb2456932453b13b2f8dd8b59ad2fb39a8c356aca3f"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "73e647add8c0bfdcb81df6605aca1fb476ff89d089cf84de8f5136ae5b4b2b19"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "3519f91de4ee61d13e0723ff054395854bc4e82808edb43e29094bac7fe438b7"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "f0373960d1e25d886c1d7f5613b4bdf16f392a2de61f6871d8b0fd3899fdf0ca"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "e05f1dd90d85252e1d01aed276db4872056f9096aa67a058a6051f5aaa67ccb0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings.xml",
+          "kind": "sha256",
+          "eq": "ae21b0918c52190fa4e6f0ad2f230b20eb1a0c61e5b6b8a59b33484a344def13"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "67d3fe4dbe49c790401324b396692844dec4a16870090353e1a4faa6ad1bfb74"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant.xml",
+          "kind": "sha256",
+          "eq": "46864933a5e9c99d2c722d5f85421fd188cd0ed8c7a8ef15fb2b41237fdd202c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob.xml",
+          "kind": "sha256",
+          "eq": "6ac7d1a2a0c82058b8d5642cfd380429a147066d5b961a93fc01f696be77a706"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout.xml",
+          "kind": "sha256",
+          "eq": "a052347411d8885f3ea17622a979089ea8265d4da51dcdf1a73b45c7aead320a"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2aceff815bfdaef15913411792951bde1117c246ff4e4f25f7177aef0694ba98"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema.xml",
+          "kind": "sha256",
+          "eq": "c375bcb8cbf876c8398ac369fb44d6407a39fcea89dd7e6c12006f542bbb715e"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes/Ext/Template.txt",
+          "kind": "sha256",
+          "eq": "f7267f02d0fdf4df38088bd1281e1d1ec3cd769407a10d11267dedc7d6192590"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes.xml",
+          "kind": "sha256",
+          "eq": "55368a0c87492fd0c6996f059d277eb3aa91616f4b4609ec51960697d7787bc3"
+        },
+        {
+          "path": "src/SettingsStorages/StorageA.xml",
+          "kind": "sha256",
+          "eq": "25e6ddaf7de602a206e9d7394804f5171677ed2dea381c7307bacd7869e493ea"
+        },
+        {
+          "path": "src/SettingsStorages/StorageB.xml",
+          "kind": "sha256",
+          "eq": "4f0ca982016e992ea3db4a5a1ab71ecc847552c237a8ff71fd81d583761fc1aa"
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}VariantsStorage",
+          "eq": [
+            "SettingsStorage.StorageB"
+          ]
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}SettingsStorage",
+          "eq": [
+            "SettingsStorage.StorageB"
+          ]
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MainDataCompositionSchema",
+          "eq": [
+            "Report.SyntheticReport.Template.MainSchema"
+          ]
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DefaultForm",
+          "eq": [
+            "Report.SyntheticReport.Form.Main"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.report"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/VariantsStorage",
+          "eq": "SettingsStorage.StorageB"
+        },
+        {
+          "pointer": "/data/props/SettingsStorage",
+          "eq": "SettingsStorage.StorageB"
+        }
+      ],
+      "captures": {
+        "reportBHash": {
+          "kind": "sha256",
+          "file": "src/Reports/SyntheticReport.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.SyntheticReport.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "contains": {
+            "relation": "variantsStorage",
+            "at": "main:SettingsStorage.StorageB",
+            "kind": "SettingsStorage"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.report",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "VariantsStorage": "SettingsStorage.StorageB"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "captures": {
+        "token2": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "fbe05008f4f0e7a8f8eb09afab9bee6ce96cc8049ffaa8442524d64857c20ad4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "cc765dbe3fd7c7cdb0f73c8790d606372cb4909a4aceae045985d43bde855074"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "62125960e9343418373dc6a733129f8c570870b0ea557cab99dab2f4a3cf8f3c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6c0a3d3e46ba276379fef09421edc30c2362074eaa15ea259eb5a5abc0be0bc0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "48485144dfc09e21dec4abb2456932453b13b2f8dd8b59ad2fb39a8c356aca3f"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "73e647add8c0bfdcb81df6605aca1fb476ff89d089cf84de8f5136ae5b4b2b19"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "3519f91de4ee61d13e0723ff054395854bc4e82808edb43e29094bac7fe438b7"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "f0373960d1e25d886c1d7f5613b4bdf16f392a2de61f6871d8b0fd3899fdf0ca"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "e05f1dd90d85252e1d01aed276db4872056f9096aa67a058a6051f5aaa67ccb0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings.xml",
+          "kind": "sha256",
+          "eq": "ae21b0918c52190fa4e6f0ad2f230b20eb1a0c61e5b6b8a59b33484a344def13"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "67d3fe4dbe49c790401324b396692844dec4a16870090353e1a4faa6ad1bfb74"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant.xml",
+          "kind": "sha256",
+          "eq": "46864933a5e9c99d2c722d5f85421fd188cd0ed8c7a8ef15fb2b41237fdd202c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob.xml",
+          "kind": "sha256",
+          "eq": "6ac7d1a2a0c82058b8d5642cfd380429a147066d5b961a93fc01f696be77a706"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout.xml",
+          "kind": "sha256",
+          "eq": "a052347411d8885f3ea17622a979089ea8265d4da51dcdf1a73b45c7aead320a"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2aceff815bfdaef15913411792951bde1117c246ff4e4f25f7177aef0694ba98"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema.xml",
+          "kind": "sha256",
+          "eq": "c375bcb8cbf876c8398ac369fb44d6407a39fcea89dd7e6c12006f542bbb715e"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes/Ext/Template.txt",
+          "kind": "sha256",
+          "eq": "f7267f02d0fdf4df38088bd1281e1d1ec3cd769407a10d11267dedc7d6192590"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes.xml",
+          "kind": "sha256",
+          "eq": "55368a0c87492fd0c6996f059d277eb3aa91616f4b4609ec51960697d7787bc3"
+        },
+        {
+          "path": "src/SettingsStorages/StorageA.xml",
+          "kind": "sha256",
+          "eq": "25e6ddaf7de602a206e9d7394804f5171677ed2dea381c7307bacd7869e493ea"
+        },
+        {
+          "path": "src/SettingsStorages/StorageB.xml",
+          "kind": "sha256",
+          "eq": "4f0ca982016e992ea3db4a5a1ab71ecc847552c237a8ff71fd81d583761fc1aa"
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.reportBHash"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.token2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "fbe05008f4f0e7a8f8eb09afab9bee6ce96cc8049ffaa8442524d64857c20ad4"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "cc765dbe3fd7c7cdb0f73c8790d606372cb4909a4aceae045985d43bde855074"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "62125960e9343418373dc6a733129f8c570870b0ea557cab99dab2f4a3cf8f3c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "6c0a3d3e46ba276379fef09421edc30c2362074eaa15ea259eb5a5abc0be0bc0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Auxiliary.xml",
+          "kind": "sha256",
+          "eq": "48485144dfc09e21dec4abb2456932453b13b2f8dd8b59ad2fb39a8c356aca3f"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form/Module.bsl",
+          "kind": "sha256",
+          "eq": "73e647add8c0bfdcb81df6605aca1fb476ff89d089cf84de8f5136ae5b4b2b19"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "3519f91de4ee61d13e0723ff054395854bc4e82808edb43e29094bac7fe438b7"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Main.xml",
+          "kind": "sha256",
+          "eq": "f0373960d1e25d886c1d7f5613b4bdf16f392a2de61f6871d8b0fd3899fdf0ca"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "e05f1dd90d85252e1d01aed276db4872056f9096aa67a058a6051f5aaa67ccb0"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Settings.xml",
+          "kind": "sha256",
+          "eq": "ae21b0918c52190fa4e6f0ad2f230b20eb1a0c61e5b6b8a59b33484a344def13"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant/Ext/Form.xml",
+          "kind": "sha256",
+          "eq": "67d3fe4dbe49c790401324b396692844dec4a16870090353e1a4faa6ad1bfb74"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Forms/Variant.xml",
+          "kind": "sha256",
+          "eq": "46864933a5e9c99d2c722d5f85421fd188cd0ed8c7a8ef15fb2b41237fdd202c"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob/Ext/Template.bin",
+          "kind": "sha256",
+          "eq": "be45cb2605bf36bebde684841a28f0fd43c69850a3dce5fedba69928ee3a8991"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Blob.xml",
+          "kind": "sha256",
+          "eq": "6ac7d1a2a0c82058b8d5642cfd380429a147066d5b961a93fc01f696be77a706"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Layout.xml",
+          "kind": "sha256",
+          "eq": "a052347411d8885f3ea17622a979089ea8265d4da51dcdf1a73b45c7aead320a"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "2aceff815bfdaef15913411792951bde1117c246ff4e4f25f7177aef0694ba98"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/MainSchema.xml",
+          "kind": "sha256",
+          "eq": "c375bcb8cbf876c8398ac369fb44d6407a39fcea89dd7e6c12006f542bbb715e"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes/Ext/Template.txt",
+          "kind": "sha256",
+          "eq": "f7267f02d0fdf4df38088bd1281e1d1ec3cd769407a10d11267dedc7d6192590"
+        },
+        {
+          "path": "src/Reports/SyntheticReport/Templates/Notes.xml",
+          "kind": "sha256",
+          "eq": "55368a0c87492fd0c6996f059d277eb3aa91616f4b4609ec51960697d7787bc3"
+        },
+        {
+          "path": "src/SettingsStorages/StorageA.xml",
+          "kind": "sha256",
+          "eq": "25e6ddaf7de602a206e9d7394804f5171677ed2dea381c7307bacd7869e493ea"
+        },
+        {
+          "path": "src/SettingsStorages/StorageB.xml",
+          "kind": "sha256",
+          "eq": "4f0ca982016e992ea3db4a5a1ab71ecc847552c237a8ff71fd81d583761fc1aa"
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}VariantsStorage",
+          "eq": [
+            "SettingsStorage.StorageB"
+          ]
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}SettingsStorage",
+          "eq": [
+            "SettingsStorage.StorageB"
+          ]
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}MainDataCompositionSchema",
+          "eq": [
+            "Report.SyntheticReport.Template.MainSchema"
+          ]
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/MDClasses}Report/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}DefaultForm",
+          "eq": [
+            "Report.SyntheticReport.Form.Main"
+          ]
+        },
+        {
+          "path": "src/Reports/SyntheticReport.xml",
+          "kind": "sha256",
+          "eq": "$capture.reportBHash"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.report"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/VariantsStorage",
+          "eq": "SettingsStorage.StorageB"
+        },
+        {
+          "pointer": "/data/props/SettingsStorage",
+          "eq": "SettingsStorage.StorageB"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.SyntheticReport.Relation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "contains": {
+            "relation": "variantsStorage",
+            "at": "main:SettingsStorage.StorageB",
+            "kind": "SettingsStorage"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "$capture.report"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/status",
+          "eq": "passed"
+        },
+        {
+          "pointer": "/data/validators",
+          "eq": [
+            "meta"
+          ]
+        },
+        {
+          "pointer": "/data/diagnosticCount",
+          "eq": 0
+        }
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    }
+  ]
+}

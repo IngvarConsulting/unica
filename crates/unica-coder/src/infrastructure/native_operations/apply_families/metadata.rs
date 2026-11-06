@@ -67,6 +67,9 @@ pub(crate) fn plan_metadata_batch_owned_for_test(
 
 #[cfg(test)]
 mod tests {
+    mod report_variants_storage_tests {
+        include!("metadata/report_variants_storage_tests.rs");
+    }
     mod language_code_tests {
         include!("metadata/language_code_tests.rs");
     }

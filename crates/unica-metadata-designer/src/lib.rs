@@ -25,6 +25,7 @@ pub mod functional_option;
 pub mod info;
 pub mod numerator_read;
 mod numerator_write;
+pub mod report_variants_storage;
 pub mod session_parameter_comment;
 pub mod ws_reference;
 pub mod wsdl_read;

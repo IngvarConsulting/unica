@@ -450,6 +450,14 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
             )
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
+        crate::report_variants_storage::guard_assignment(
+            staged,
+            authority.source_kind(),
+            target,
+            &preimage,
+            edit,
+            op_index,
+        )?;
         crate::edit_type::guard(
             staged,
             authority.source_kind(),

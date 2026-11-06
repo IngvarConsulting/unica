@@ -227,7 +227,46 @@ pub fn typed_relations(
         }
         Err(_) => Default::default(),
     };
+    let variants_storage = if owner_kind == MetadataKind::Report {
+        let observed = properties
+            .ok_or_else(|| "Report has no Properties container".to_string())
+            .and_then(|properties| {
+                let local = crate::info_projection::direct_meta_info_property(
+                    properties,
+                    "Report",
+                    "VariantsStorage",
+                )
+                .map_err(|error| error.message)?;
+                // This projection records local references, not inherited values.
+                match local {
+                    None => Ok(None),
+                    Some(_) => crate::report_variants_storage::observe(properties),
+                }
+            });
+        Some(match observed {
+            Ok(value) => Some(
+                value
+                    .into_iter()
+                    .map(|target| MetaRelationTargetData {
+                        kind: "SettingsStorage".into(),
+                        value: target.as_str().into(),
+                    })
+                    .collect(),
+            ),
+            Err(message) => {
+                diagnostics.push(
+                    MetaDiagnostic::error(MetaDiagnosticCode::ValidationFailed, message)
+                        .with_metadata_path(target.clone())
+                        .with_field("relations.variantsStorage"),
+                );
+                None
+            }
+        })
+    } else {
+        None
+    };
     MetaRelationsData {
+        variants_storage,
         content: (owner_kind == MetadataKind::ExchangePlan).then_some(None),
         owners,
         register_records,

@@ -297,9 +297,11 @@ impl PropertiesSite {
             }
             Self::Metadata { kind, source_kind } => {
                 properties = metadata_property_schemas(Some(kind));
-                // EditType is written only in a configuration's own objects.
+                // EditType and VariantsStorage are written only in a
+                // configuration's own objects.
                 if source_kind != SourceSetKind::Configuration {
                     properties.remove("EditType");
+                    properties.remove("VariantsStorage");
                 }
             }
             Self::StyleItem
@@ -501,6 +503,34 @@ mod tests {
             assert!(oracle.is_valid(&json!({"values":{"Comment":"independent"}})));
             assert_eq!(
                 oracle.is_valid(&json!({"values":{"EditType":"InList"}})),
+                source_kind == SourceSetKind::Configuration
+            );
+        }
+    }
+
+    #[test]
+    fn report_variants_storage_profile_uses_the_actual_source_kind() {
+        for source_kind in [
+            SourceSetKind::Configuration,
+            SourceSetKind::Extension,
+            SourceSetKind::ExternalReport,
+            SourceSetKind::ExternalProcessor,
+        ] {
+            let site = PropertiesSite::from_address(
+                &QualifiedAddress::parse("main:Report.Probe").unwrap(),
+                source_kind,
+            )
+            .unwrap();
+            let contract = PropertiesOperation::Set.contract(site);
+            let fields = &contract.schema["properties"]["values"]["properties"];
+            assert_eq!(
+                fields.get("VariantsStorage").is_some(),
+                source_kind == SourceSetKind::Configuration
+            );
+            let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+            assert!(oracle.is_valid(&json!({"values":{"Comment":"independent"}})));
+            assert_eq!(
+                oracle.is_valid(&json!({"values":{"VariantsStorage":"SettingsStorage.StorageA"}})),
                 source_kind == SourceSetKind::Configuration
             );
         }
