@@ -273,7 +273,7 @@ pub(super) fn execute(
                 if phase == Phase::Ready => {
                 if command != RUNNER_COMMAND || requested_mode != "FULL" || mode != "FULL"
                     || extension != expected_extension || !provider_dispatched
-                    || reported_set != source_set || target_path != target || stage_path != stage {
+                    || reported_set != source_set || !same_path(&target_path, &target) || !same_path(&stage_path, &stage) {
                     problem = Some(invalid("v8-runner prepared a different operation, mode, extension, source set or target"));
                     phase = Phase::Terminal;
                     return reply(nonce.as_deref().unwrap(), "ready", "rejected");
@@ -541,6 +541,19 @@ fn oversized_frame_refusal(published: bool) -> DomainResult {
     };
     reject(RefusalCode::InvalidResult, message)
 }
+/// На Windows раннер называет каталог в расширенной форме `\\?\E:\…`:
+/// это тот же путь, что и `E:\…`.
+fn same_path(reported: &std::path::Path, expected: &std::path::Path) -> bool {
+    fn plain(path: &std::path::Path) -> std::borrow::Cow<'_, str> {
+        let text = path.to_string_lossy();
+        match text.strip_prefix(r"\\?\") {
+            Some(rest) if !rest.starts_with("UNC\\") => std::borrow::Cow::Owned(rest.to_owned()),
+            _ => text,
+        }
+    }
+    plain(reported) == plain(expected)
+}
+
 fn invalid(message: &str) -> DomainResult {
     reject(RefusalCode::InvalidResult, message)
 }
@@ -750,6 +763,24 @@ fn preview_result(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn extended_windows_form_names_the_same_directory() {
+        let plain = std::path::Path::new(r"E:\work\.unica-dump-guard\execution\staged-source");
+        let extended =
+            std::path::Path::new(r"\\?\E:\work\.unica-dump-guard\execution\staged-source");
+        assert!(super::same_path(extended, plain));
+        assert!(super::same_path(plain, plain));
+    }
+
+    #[test]
+    fn another_directory_stays_different() {
+        let expected = std::path::Path::new(r"E:\work\src");
+        assert!(!super::same_path(
+            std::path::Path::new(r"\\?\E:\other\src"),
+            expected
+        ));
+    }
+
     use super::*;
     use unica_source_contract::read::full_dump::{DumpValidationFailure, DumpValidationReason};
 
