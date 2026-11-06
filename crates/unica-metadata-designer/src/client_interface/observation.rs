@@ -218,6 +218,7 @@ mod tests {
         format!("<panel id=\"{id}\"><uuid>{definition}</uuid></panel>")
     }
 
+    /// rule: INV.SOURCE.EXPLICIT-PANEL-TOPOLOGY
     #[test]
     fn definitions_resolve_by_identity_and_repeated_placements_keep_distinct_instances() {
         let second = "CF162400-0000-4000-8000-000000000002";

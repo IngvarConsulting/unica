@@ -42,6 +42,7 @@ fn install_layout_fixture(fixture: &RealReaderFixture) {
     }
 }
 
+/// rule: INV.SOURCE.EXPLICIT-PANEL-TOPOLOGY
 #[test]
 fn panel_topology_preserves_all_root_order_and_home_page_facts_in_both_readers() {
     let expected: serde_json::Value = serde_json::from_str(&fixture_text(
@@ -80,6 +81,7 @@ fn panel_topology_preserves_all_root_order_and_home_page_facts_in_both_readers()
     }
 }
 
+/// rule: INV.SOURCE.EXPLICIT-PANEL-TOPOLOGY
 #[test]
 fn panel_observation_distinguishes_missing_empty_unreadable_and_unsupported_documents() {
     let fixture = RealReaderFixture::new();
@@ -131,6 +133,7 @@ fn panel_observation_distinguishes_missing_empty_unreadable_and_unsupported_docu
     }
 }
 
+/// rule: INV.SOURCE.EXPLICIT-PANEL-TOPOLOGY
 #[test]
 fn deeply_nested_panel_groups_reach_public_view_without_a_depth_quota() {
     let fixture = RealReaderFixture::new();

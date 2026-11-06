@@ -1,10 +1,5 @@
 ---
 id: INV.SOURCE.EXPLICIT-PANEL-TOPOLOGY
-check:
-  - crates/unica-coder/src/infrastructure/v13_read/tests/panel_layout.rs::panel_topology_preserves_all_root_order_and_home_page_facts_in_both_readers
-  - crates/unica-coder/src/infrastructure/v13_read/tests/panel_layout.rs::panel_observation_distinguishes_missing_empty_unreadable_and_unsupported_documents
-  - crates/unica-coder/src/infrastructure/v13_read/tests/panel_layout.rs::deeply_nested_panel_groups_reach_public_view_without_a_depth_quota
-  - crates/unica-metadata-designer/src/client_interface/observation.rs::definitions_resolve_by_identity_and_repeated_placements_keep_distinct_instances
 ---
 
 # Карточка конфигурации сохраняет явную топологию панелей
