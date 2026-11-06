@@ -18,6 +18,9 @@ const UTF8_BOM: &[u8] = b"\xef\xbb\xbf";
 #[derive(Debug, Clone)]
 pub enum FormEditStep {
     Definition(Value),
+    RemoveAttribute {
+        name: String,
+    },
     AddColumns {
         attribute: String,
         columns: Vec<crate::column_add::ColumnAddition>,
@@ -604,12 +607,20 @@ pub fn parse_form_operation(
             "a data column requires an owner with managed forms",
         ));
     }
+    let attribute = (operation == FormOperation::AttributeRemove)
+        .then(|| target.attribute.clone())
+        .flatten();
     // Узел, на котором исполняется операция, — ровно её `at`: элемент и
     // событие задаются адресом, а операция другого узла отказывает, а не
     // пишет молча в форму, элемент или владельца (#1351, #1355).
-    let placed = (target.attribute.is_none() || operation == FormOperation::ColumnAdd)
+    let placed = (target.attribute.is_none()
+        || matches!(
+            operation,
+            FormOperation::ColumnAdd | FormOperation::AttributeRemove
+        ))
         && (target.column.is_none() || operation == FormOperation::PropsSet)
         && match operation {
+            FormOperation::AttributeRemove => attribute.is_some(),
             FormOperation::ColumnAdd => target.attribute.is_some(),
             FormOperation::Add | FormOperation::Set => target.form.is_none(),
             FormOperation::ItemAdd => target.form.is_some() && target.event.is_none(),
@@ -634,6 +645,7 @@ pub fn parse_form_operation(
             FormOperation::ItemRemove | FormOperation::ItemMove => {
                 "the existing item `Owner.Name.Form.F.Item.A[.Item.B…]`"
             }
+            FormOperation::AttributeRemove => "the existing attribute `Owner.Name.Form.F.Attribute.A`",
             FormOperation::EventBind => "the event `Owner.Name.Form.F[.Item.A…].Event.E`",
             FormOperation::Remove
             | FormOperation::AttributeAdd
@@ -981,6 +993,14 @@ pub fn parse_form_operation(
                 }],
             })
         }
+        FormOperation::AttributeRemove => Ok(FormPlan::FormEdit {
+            owner: target.owner,
+            form: target.form.expect("attribute.remove has a form"),
+            subject: FormEditSubject::Node(Vec::new()),
+            definitions: vec![FormEditStep::RemoveAttribute {
+                name: attribute.expect("attribute.remove has an attribute"),
+            }],
+        }),
         FormOperation::ItemRemove => {
             let form = form_of(&target)?;
             // Элемент назван адресом: список в аргументах называл бы другие
@@ -1686,6 +1706,13 @@ pub fn stage_form_edit(
     for step in definitions {
         let definition = match step {
             FormEditStep::Definition(definition) => definition,
+            FormEditStep::RemoveAttribute { name } => {
+                xml_text =
+                    crate::codec::attribute_remove::remove(&xml_text, name).map_err(|error| {
+                        ApplyPlanError::new(error.kind, error.message).at_path(at_path.clone())
+                    })?;
+                continue;
+            }
             FormEditStep::ColumnType {
                 attribute,
                 column,
@@ -1768,7 +1795,9 @@ pub fn stage_form_edit(
         || definitions.iter().any(|step| {
             matches!(
                 step,
-                FormEditStep::ColumnType { .. } | FormEditStep::AddColumns { .. }
+                FormEditStep::ColumnType { .. }
+                    | FormEditStep::AddColumns { .. }
+                    | FormEditStep::RemoveAttribute { .. }
             )
         });
     let postimage = if preserves_bytes && !preimage.starts_with(UTF8_BOM) {
@@ -1776,7 +1805,13 @@ pub fn stage_form_edit(
     } else {
         with_bom(&xml_text)
     };
-    if !is_move && postimage == preimage {
+    if !definitions.iter().any(|step| {
+        matches!(
+            step,
+            FormEditStep::Move { .. } | FormEditStep::RemoveAttribute { .. }
+        )
+    }) && postimage == preimage
+    {
         return Ok(());
     }
     let validation = crate::codec::validate_form_image(
