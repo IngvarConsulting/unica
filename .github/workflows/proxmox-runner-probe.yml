@@ -1,0 +1,40 @@
+name: Proxmox runner verification
+on:
+  push:
+    branches: [codex/unica-proxmox-runners]
+    paths: [.github/workflows/proxmox-runner-probe.yml]
+permissions:
+  contents: read
+jobs:
+  probe:
+    name: Runner probe ${{ matrix.slot }}
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2, 3]
+    runs-on: [self-hosted, Linux, X64, unica-pve]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.12"
+      - name: Runner identity and tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "runner=$RUNNER_NAME host=$(hostname)"
+          test "$(id -un)" = runner
+          test "$(nproc)" = 4
+          rustc --version
+          cargo --version
+          python --version
+          printf 'fn main() { println!("runner toolchain works"); }\n' > "$RUNNER_TEMP/probe.rs"
+          rustc "$RUNNER_TEMP/probe.rs" -o "$RUNNER_TEMP/probe"
+          "$RUNNER_TEMP/probe"
+      - name: Workflow regression checks
+        run: |
+          python -m pip install PyYAML
+          python -m unittest discover -s tests/ci -p test_unica_workflow.py
