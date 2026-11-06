@@ -358,7 +358,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assert_classification([path])
 
-    def test_search_and_rlm_mechanism_changes_route_the_long_integration_test(self) -> None:
+    def test_search_mechanism_changes_route_the_long_integration_test(self) -> None:
         for path in (
             "crates/unica-coder/src/application/code_intelligence.rs",
             "crates/unica-coder/src/application/mod.rs",
@@ -375,9 +375,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/src/infrastructure/operational_config.rs",
             "crates/unica-coder/src/infrastructure/platform/process.rs",
             "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
-            "crates/unica-coder/src/infrastructure/rlm_navigation.rs",
             "crates/unica-coder/src/infrastructure/source_roots.rs",
-            "crates/unica-coder/src/infrastructure/workspace_index.rs",
             "crates/unica-coder/src/infrastructure/workspace_services.rs",
             "crates/unica-coder/src/interfaces/mcp.rs",
         ):
@@ -444,7 +442,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
 
     def test_classifier_workflow_and_platform_guard_changes_fail_closed(self) -> None:
         cases = {
-            ".github/workflows/unica-plugin-release.yml": {
+            ".github/workflows/release.yml": {
                 "ci_changed": True,
                 "assessment_required": True,
             },
@@ -472,26 +470,6 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         for path, expected in cases.items():
             with self.subTest(path=path):
                 self.assert_classification([path], **expected)
-
-    def test_release_matrix_reports_standalone_runtime_size_evidence(self) -> None:
-        workflow = (
-            Path(__file__).resolve().parents[2]
-            / ".github"
-            / "workflows"
-            / "unica-plugin-release.yml"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("Report standalone runtime size evidence", workflow)
-        for label in (
-            "RLM source archive bytes",
-            "RLM extracted payload bytes",
-            "Final runtime archive bytes",
-            "Runtime file count",
-        ):
-            with self.subTest(label=label):
-                self.assertIn(label, workflow)
-        self.assertIn('manifest["runtimeFiles"]', workflow)
-        self.assertIn('archive.extractfile("manifest.json")', workflow)
 
     def test_local_installer_change_requires_ci_contour(self) -> None:
         self.assert_classification(
@@ -530,9 +508,9 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "scripts/ci/collect-results.py",
             "tests/ci/test_run_tests.py",
             "tests/ci/test_gate_profiles.py",
-            "scripts/ci/nightly-lines.py",
+            "scripts/ci/nightly-decide.py",
             "scripts/ci/resolve-line.py",
-            "tests/ci/test_nightly_lines.py",
+            "tests/ci/test_nightly_decide.py",
             "tests/ci/test_resolve_line.py",
             "tests/ci/test_python_sizes.py",
             "tests/ci/test_research_policy.py",

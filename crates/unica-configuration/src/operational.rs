@@ -56,10 +56,10 @@ impl OperationalConfig {
             local.and_then(|layer| layer.search_total_timeout),
             defaults.code_intelligence.search_total_timeout(),
         );
-        let mut rlm = resolve_deadline(
-            shared.and_then(|layer| layer.search_rlm_timeout),
-            local.and_then(|layer| layer.search_rlm_timeout),
-            defaults.code_intelligence.search_rlm_timeout(),
+        let mut semantic = resolve_deadline(
+            shared.and_then(|layer| layer.search_semantic_timeout),
+            local.and_then(|layer| layer.search_semantic_timeout),
+            defaults.code_intelligence.search_semantic_timeout(),
         );
         let mut git_grep = resolve_deadline(
             shared.and_then(|layer| layer.search_git_grep_timeout),
@@ -81,8 +81,8 @@ impl OperationalConfig {
         // their compiled defaults. Only an explicit provider/global conflict
         // is rejected; otherwise changing the parent budget would make an
         // otherwise valid configuration unusable after a default bump.
-        if rlm.source == OperationalConfigDiagnosticSource::CompiledDefault {
-            rlm.value = rlm.value.min(total.value);
+        if semantic.source == OperationalConfigDiagnosticSource::CompiledDefault {
+            semantic.value = semantic.value.min(total.value);
         }
         if git_grep.source == OperationalConfigDiagnosticSource::CompiledDefault {
             git_grep.value = git_grep.value.min(total.value);
@@ -90,9 +90,9 @@ impl OperationalConfig {
 
         validate_relationship(
             total,
-            rlm,
+            semantic,
             OperationalConfigField::SearchTotal,
-            OperationalConfigField::SearchRlm,
+            OperationalConfigField::SearchSemantic,
         )?;
         validate_relationship(
             total,
@@ -104,7 +104,7 @@ impl OperationalConfig {
         Ok(Self {
             code_intelligence: CodeIntelligenceDeadlines::from_timeouts(
                 total.value,
-                rlm.value,
+                semantic.value,
                 git_grep.value,
                 provider_read.value,
             ),
@@ -234,7 +234,7 @@ impl std::error::Error for OperationalConfigDiagnostic {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationalConfigField {
     SearchTotal,
-    SearchRlm,
+    SearchSemantic,
     SearchGitGrep,
     ProviderRead,
     DiagnosticsAnalyze,
@@ -244,7 +244,7 @@ impl OperationalConfigField {
     pub const fn path(self) -> &'static str {
         match self {
             Self::SearchTotal => "operational.code_intelligence.search_total_timeout_seconds",
-            Self::SearchRlm => "operational.code_intelligence.search_rlm_timeout_seconds",
+            Self::SearchSemantic => "operational.code_intelligence.search_semantic_timeout_seconds",
             Self::SearchGitGrep => "operational.code_intelligence.search_git_grep_timeout_seconds",
             Self::ProviderRead => "operational.code_intelligence.provider_read_timeout_seconds",
             Self::DiagnosticsAnalyze => "operational.code_diagnostics.analyze_timeout_seconds",
@@ -259,7 +259,7 @@ impl OperationalConfigField {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OperationalConfigLayer {
     search_total_timeout: Option<Duration>,
-    search_rlm_timeout: Option<Duration>,
+    search_semantic_timeout: Option<Duration>,
     search_git_grep_timeout: Option<Duration>,
     provider_read_timeout: Option<Duration>,
     diagnostics_analyze_timeout: Option<Duration>,
@@ -290,7 +290,7 @@ impl OperationalConfigLayer {
         let timeout = Duration::from_secs(seconds);
         match field {
             OperationalConfigField::SearchTotal => self.search_total_timeout = Some(timeout),
-            OperationalConfigField::SearchRlm => self.search_rlm_timeout = Some(timeout),
+            OperationalConfigField::SearchSemantic => self.search_semantic_timeout = Some(timeout),
             OperationalConfigField::SearchGitGrep => self.search_git_grep_timeout = Some(timeout),
             OperationalConfigField::ProviderRead => self.provider_read_timeout = Some(timeout),
             OperationalConfigField::DiagnosticsAnalyze => {
@@ -362,7 +362,7 @@ mod tests {
         let code = config.code_intelligence();
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(300));
-        assert_eq!(code.search_rlm_timeout(), Duration::from_secs(300));
+        assert_eq!(code.search_semantic_timeout(), Duration::from_secs(300));
         assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(30));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(45));
         assert_eq!(
@@ -377,7 +377,7 @@ mod tests {
         let mut shared = OperationalConfigLayer::default();
         for (field, seconds) in [
             (OperationalConfigField::SearchTotal, 7_200),
-            (OperationalConfigField::SearchRlm, 3_600),
+            (OperationalConfigField::SearchSemantic, 3_600),
             (OperationalConfigField::SearchGitGrep, 1_800),
             (OperationalConfigField::ProviderRead, 7_200),
             (OperationalConfigField::DiagnosticsAnalyze, 7_200),
@@ -409,7 +409,7 @@ mod tests {
             .unwrap();
         shared
             .set_timeout_seconds(
-                OperationalConfigField::SearchRlm,
+                OperationalConfigField::SearchSemantic,
                 20,
                 OperationalConfigDiagnosticSource::Shared,
             )
@@ -424,7 +424,7 @@ mod tests {
         );
         assert_eq!(
             diagnostic.field_path(),
-            "operational.code_intelligence.search_rlm_timeout_seconds"
+            "operational.code_intelligence.search_semantic_timeout_seconds"
         );
     }
 
@@ -463,11 +463,11 @@ mod tests {
         let mut shared = OperationalConfigLayer::default();
         shared
             .set_timeout_seconds(
-                OperationalConfigField::SearchRlm,
+                OperationalConfigField::SearchSemantic,
                 30,
                 OperationalConfigDiagnosticSource::Shared,
             )
-            .expect("shared RLM timeout is individually valid");
+            .expect("shared semantic timeout is individually valid");
         let mut local = OperationalConfigLayer::default();
         local
             .set_timeout_seconds(
@@ -478,7 +478,7 @@ mod tests {
             .expect("local total timeout is individually valid");
 
         let diagnostic = OperationalConfig::from_layers(Some(&shared), Some(&local))
-            .expect_err("effective RLM deadline exceeds effective total deadline");
+            .expect_err("effective semantic deadline exceeds effective total deadline");
         assert_eq!(
             diagnostic.source(),
             OperationalConfigDiagnosticSource::Local
@@ -515,7 +515,7 @@ mod tests {
             CodeIntelligenceDeadlines::from_timeouts(timeout, timeout, timeout, timeout);
 
         assert_eq!(deadlines.search_total_timeout(), timeout);
-        assert_eq!(deadlines.search_rlm_timeout(), timeout);
+        assert_eq!(deadlines.search_semantic_timeout(), timeout);
         assert_eq!(deadlines.search_git_grep_timeout(), timeout);
         assert_eq!(deadlines.provider_read_timeout(), timeout);
     }

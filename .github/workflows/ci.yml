@@ -3,10 +3,10 @@ name: Unica CI
 # Ворота pull request и очереди слияния: одна джоба Linux без маршрутов.
 # Pull request: формат, контракт версий, Clippy и быстрые проверки Python, цель до трёх
 # минут. Ранний сигнал по тестам — локальный прогон перед снятием черновика.
-# Очередь: Clippy всего workspace, тесты изменённых крейтов и их прямых зависимых при
-# правке `pub`, Python small, смоук и снимки контрактов (`scripts/ci/queue-tests.py`);
-# Python medium и остальное идут ночью. Windows и macOS целиком, тяжёлые тесты и упаковка
-# идут ночью и в выпуске, в `unica-plugin-release.yml`.
+# Очередь: Clippy всего workspace, весь Rust `small`, `medium` изменённых крейтов, Python
+# small, смоук и снимки контрактов (`scripts/ci/queue-tests.py`); medium остальных крейтов,
+# Python medium и large идут ночью. Windows и macOS целиком, тяжёлые тесты и упаковка
+# идут ночью и в выпуске, в `release.yml`.
 on:
   pull_request:
     # Черновик не занимает раннер. Перевод в готовые запускает прогон:
@@ -153,7 +153,9 @@ jobs:
           save-if: false
       - name: Формат
         if: env.KEPT != 'true'
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all -- --check
+          python scripts/ci/check-discovered-modules-format.py
       - name: Контракт версий
         if: env.KEPT != 'true'
         run: python scripts/ci/check-version-contract.py

@@ -35,7 +35,6 @@ unica-daemon = { path = "../unica-daemon" }
 unica-bindings = { path = "../unica-bindings" }
 unica-adapter-lexical = { path = "../unica-adapter-lexical" }
 unica-adapter-bsl-analyzer = { path = "../unica-adapter-bsl-analyzer" }
-unica-adapter-rlm = { path = "../unica-adapter-rlm" }
 unica-analysis-services = { path = "../unica-analysis-services" }
 unica-dcs-designer = { path = "../unica-dcs-designer" }
 unica-roles-designer = { path = "../unica-roles-designer" }
@@ -132,7 +131,6 @@ unica-forms-designer = { path = "../unica-forms-designer", features = ["test-sup
 unica-metadata-designer = { path = "../unica-metadata-designer", features = ["test-support"] }
 unica-adapter-lexical = { path = "../unica-adapter-lexical", features = ["test-support"] }
 unica-adapter-bsl-analyzer = { path = "../unica-adapter-bsl-analyzer", features = ["test-support"] }
-unica-adapter-rlm = { path = "../unica-adapter-rlm", features = ["test-support"] }
 unica-analysis-services = { path = "../unica-analysis-services", features = ["test-support"] }
 unica-artifact-delivery = { path = "../unica-artifact-delivery", features = ["test-support"] }
 unica-adapter-v8-runner = { path = "../unica-adapter-v8-runner", features = ["test-support"] }

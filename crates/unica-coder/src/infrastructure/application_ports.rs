@@ -326,7 +326,6 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
             return CodeIntelligenceRegistry::new(providers);
         }
         let providers: Vec<Arc<dyn CodeIntelligenceProvider>> = vec![
-            Arc::new(analysis_composition::rlm_provider()),
             Arc::new(analysis_composition::bsl_provider()),
             Arc::new(analysis_composition::lexical_provider()),
         ];
@@ -709,9 +708,12 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
         mode: InvocationMode,
         cache_access: CacheAccess,
     ) -> Result<CacheReport, String> {
-        WorkspaceStateRepository::new(context)
-            .with_index_readiness(analysis_composition::index_is_ready)
-            .report(context, events, mode.is_preview(), cache_access)
+        WorkspaceStateRepository::new(context).report(
+            context,
+            events,
+            mode.is_preview(),
+            cache_access,
+        )
     }
 
     fn notify_invalidation(&self, context: &WorkspaceContext, events: &[DomainEvent]) {
@@ -739,19 +741,11 @@ fn normalize_code_intelligence_read_request(
     context: &CodeIntelligenceContext,
 ) -> Result<CodeIntelligenceReadRequest, String> {
     match &mut request {
-        CodeIntelligenceReadRequest::Definition { module_hint, .. }
-            if Path::new(module_hint).is_absolute()
-                || module_hint.contains('/')
-                || module_hint.contains('\\') =>
-        {
-            *module_hint = normalize_code_intelligence_path(module_hint, context)?;
-        }
         CodeIntelligenceReadRequest::Outline { path, .. } => {
             *path = normalize_code_intelligence_path(path, context)?;
         }
         // Личность узла графа путём не является и нормализации не требует.
-        CodeIntelligenceReadRequest::Definition { .. }
-        | CodeIntelligenceReadRequest::CallGraph { .. } => {}
+        CodeIntelligenceReadRequest::CallGraph { .. } => {}
     }
     Ok(request)
 }
@@ -2437,23 +2431,6 @@ mod medium_tests {
                 "{raw}: {error}"
             );
         }
-        let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn code_intelligence_definition_module_hint_uses_the_same_path_identity() {
-        let (root, context) = code_intelligence_context_for_paths();
-        let error = normalize_code_intelligence_read_request(
-            CodeIntelligenceReadRequest::Definition {
-                name: "ОбщегоНазначения".to_string(),
-                module_hint: r"..\..\other\Module.bsl".to_string(),
-                limit: 50,
-            },
-            &context,
-        )
-        .unwrap_err();
-
-        assert!(error.contains("outside resolved source root"), "{error}");
         let _ = std::fs::remove_dir_all(root);
     }
 

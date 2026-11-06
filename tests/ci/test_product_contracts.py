@@ -24,12 +24,6 @@ import tree_sitter_rust
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RMCP_OWNER = "crates/unica-coder/src/interfaces/mcp.rs"
-# Зависший фейк rlm (стенд-ин индекса и MCP) спит столько секунд. Граница
-# «срок фазы сработал» выражена через неё, а не через скорость машины.
-RLM_FAKE_HANG_SECONDS = 30
-# Предохранитель ожидания старта фейка и выхода его дерева, не проверяемый
-# срок; он короче зависания, чтобы не спутать «убит» с «сам доспал».
-RLM_FAKE_EVENT_FUSE_SECONDS = RLM_FAKE_HANG_SECONDS / 2
 RELATIVE_TOOL_CONTRACT_TIMEOUT_SECONDS = 15
 RMCP_INTERFACE_ROOT = "crates/unica-coder/src/interfaces/"
 RMCP_CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1971,22 +1965,23 @@ class ProductContractTests(unittest.TestCase):
         must exist before them, and staging must never touch the catalog.
         """
         repo_root = Path(__file__).resolve().parents[2]
-        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+        publish = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 
         self.assertIn("needs: [gate, stage, anchor, verify-fresh-install, verify-upgrade]", publish)
         self.assertIn("needs: [gate, stage, anchor]", publish)
         # A published tag never moves; a rerun proves sameness instead.
-        self.assertNotIn("git tag -f", publish)
-        self.assertNotIn("--force", publish)
+        marketplace = publish[publish.index("  gate:" + chr(10)):]
+        self.assertNotIn("git tag -f", marketplace)
+        self.assertNotIn("--force", marketplace)
         # No scheduled babysitter exists anymore; the pipeline is one pass.
         self.assertFalse((repo_root / ".github/workflows/release-warden.yml").exists())
         self.assertFalse((repo_root / "scripts/ci/release-warden.py").exists())
 
     def test_release_tag_is_not_hardcoded_in_the_build_workflow(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+        release = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
         # A hardcoded release version is a location no contract check covers, and
@@ -2118,7 +2113,7 @@ class ProductContractTests(unittest.TestCase):
 
     def test_the_candidate_anchor_names_the_staging_commit(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+        publish = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 
@@ -2158,10 +2153,10 @@ class ProductContractTests(unittest.TestCase):
 
     def test_publish_workflow_promotes_both_host_catalogs(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+        publish = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
-        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+        release = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 
@@ -2250,12 +2245,6 @@ fn test_only() { std::process::Command::new("git"); }
     def write_executable(self, tools_dir: Path, name: str, body: str) -> None:
         commands = {
             "bsl-analyzer": [("analyze", "--help"), ("mcp", "serve", "--help")],
-            "rlm-bsl-index": [
-                ("index", "build", "--help"),
-                ("index", "update", "--help"),
-                ("index", "info", "--help"),
-            ],
-            "rlm-bsl-mcp": [("--help",)],
             "v8-runner": [("--version",), ("push", "--help")],
         }[name]
         routed_outputs = {
@@ -2281,55 +2270,6 @@ fn test_only() { std::process::Command::new("git"); }
             encoding="utf-8",
         )
         path.chmod(path.stat().st_mode | 0o755)
-
-    def write_rlm_contract_standins(
-        self,
-        root: Path,
-        *,
-        mode: str = "ok",
-        index_mode: str = "ok",
-    ) -> tuple[Path, Path, Path, Path, Path]:
-        request_log = root / "requests.jsonl"
-        index_log = root / "index.json"
-        pid_log = root / "pids.txt"
-        index_tool = root / "rlm-bsl-index.py"
-        index_tool.write_text(
-            "import json, os, subprocess, sys, time\n"
-            "from pathlib import Path\n"
-            f"INDEX_MODE = {index_mode!r}\n"
-            "workspace = Path(sys.argv[3]).resolve()\n"
-            "if INDEX_MODE == 'reject_outer_scan' and "
-            "(workspace.parents[1] / 'poison-outer-sibling').exists():\n"
-            "    raise SystemExit(19)\n"
-            "if INDEX_MODE == 'hang':\n"
-            "    child = subprocess.Popen([sys.executable, '-c', "
-            f"'import time; time.sleep({RLM_FAKE_HANG_SECONDS})'])\n"
-            f"    Path({str(pid_log)!r}).write_text("
-            "f'{os.getpid()}\\n{child.pid}\\n', encoding='utf-8')\n"
-            f"    time.sleep({RLM_FAKE_HANG_SECONDS})\n"
-            f"Path({str(index_log)!r}).write_text("
-            "json.dumps({'argv': sys.argv[1:], "
-            "'index_dir': os.environ.get('RLM_INDEX_DIR')}), encoding='utf-8')\n"
-            "Path(os.environ['RLM_INDEX_DIR']).mkdir(parents=True, exist_ok=True)\n",
-            encoding="utf-8",
-        )
-        index_tool.chmod(index_tool.stat().st_mode | 0o755)
-
-        mcp_tool = root / "rlm-bsl-mcp.py"
-        shared_standin = (
-            REPO_ROOT
-            / "tests/fixtures/unica_mcp_script_parity/reader-standins/bsl_mcp.py"
-        )
-        mcp_tool.write_text(
-            "import os, runpy\n"
-            f"os.environ['UNICA_RLM_CONTRACT_STANDIN_MODE'] = {mode!r}\n"
-            f"os.environ['UNICA_RLM_CONTRACT_RPC_LOG'] = {str(request_log)!r}\n"
-            f"os.environ['UNICA_RLM_CONTRACT_PID_LOG'] = {str(pid_log)!r}\n"
-            f"runpy.run_path({str(shared_standin)!r}, run_name='__main__')\n",
-            encoding="utf-8",
-        )
-        mcp_tool.chmod(mcp_tool.stat().st_mode | 0o755)
-        return mcp_tool, index_tool, request_log, index_log, pid_log
 
     def process_is_alive(self, pid: int) -> bool:
         if os.name == "nt":
@@ -2384,12 +2324,6 @@ fn test_only() { std::process::Command::new("git"); }
         if parent_pid or child_pid:
             self.kill_process_tree_best_effort(parent_pid, child_pid)
 
-    def test_rlm_hang_fixture_cleanup_uses_either_known_pid(self) -> None:
-        with patch.object(self, "kill_process_tree_best_effort") as kill_tree:
-            self.cleanup_process_tree_best_effort(0, 27182)
-
-        kill_tree.assert_called_once_with(0, 27182)
-
     def test_windows_best_effort_cleanup_targets_surviving_child_independently(
         self,
     ) -> None:
@@ -2419,16 +2353,6 @@ fn test_only() { std::process::Command::new("git"); }
             )
             self.write_executable(
                 tools_dir,
-                "rlm-bsl-index",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n",
-            )
-            self.write_executable(
-                tools_dir,
-                "rlm-bsl-mcp",
-                "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
-            )
-            self.write_executable(
-                tools_dir,
                 "v8-runner",
                 "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push'\n",
             )
@@ -2437,43 +2361,12 @@ fn test_only() { std::process::Command::new("git"); }
 
         self.assertEqual(errors, [])
 
-    def test_rlm_help_forces_utf8_when_stdout_is_captured(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            tools_dir = Path(tmp)
-            tool = tools_dir / "rlm-bsl-index.py"
-            tool.write_text(
-                'print("build: Строить неполный индекс")\n',
-                encoding="utf-8",
-            )
-            with (
-                patch.object(
-                    module,
-                    "TOOL_HELP_CHECKS",
-                    [("rlm-bsl-index build", "rlm-bsl-index", [], ["build"])],
-                ),
-                patch.dict(
-                    os.environ,
-                    {
-                        "LC_ALL": "C",
-                        "LANG": "C",
-                        "PYTHONCOERCECLOCALE": "0",
-                        "PYTHONUTF8": "0",
-                        "PYTHONIOENCODING": "ascii",
-                    },
-                ),
-            ):
-                errors = module.check_tool_contracts(tools_dir)
-
-        self.assertEqual(errors, [])
-
     def test_tool_help_failure_includes_bounded_sanitized_diagnostics(self) -> None:
         module = load_contract_module()
 
         with tempfile.TemporaryDirectory() as tmp:
             tools_dir = Path(tmp)
-            tool = tools_dir / "rlm-bsl-index.py"
+            tool = tools_dir / "helper-tool.py"
             tool.write_text(
                 "from pathlib import Path\n"
                 "import sys\n"
@@ -2485,40 +2378,18 @@ fn test_only() { std::process::Command::new("git"); }
             with patch.object(
                 module,
                 "TOOL_HELP_CHECKS",
-                [("rlm-bsl-index build", "rlm-bsl-index", ["index", "build"], ["build"])],
+                [("helper-tool build", "helper-tool", ["index", "build"], ["build"])],
             ):
                 errors = module.check_tool_contracts(tools_dir)
 
         self.assertEqual(len(errors), 1)
         error = errors[0]
         self.assertIn("command exited with 7", error)
-        self.assertIn("rlm-bsl-index.py index build", error)
+        self.assertIn("helper-tool.py index build", error)
         self.assertIn("OUT-ДИАГНОСТИКА", error)
         self.assertIn("ERR-ДИАГНОСТИКА", error)
         self.assertNotIn(str(tools_dir), error)
         self.assertLess(len(error), 5_000)
-
-    def test_tool_help_contracts_do_not_fall_back_to_legacy_rlm_server_name(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            tools_dir = Path(tmp)
-            legacy = tools_dir / "rlm-tools-bsl.py"
-            legacy.write_text(
-                "print('--transport stdio streamable-http')\n",
-                encoding="utf-8",
-            )
-            legacy.chmod(legacy.stat().st_mode | 0o755)
-
-            errors = module.check_tool_contracts(tools_dir)
-
-        self.assertTrue(
-            any(
-                error.startswith("rlm-bsl-mcp server: binary not found:")
-                for error in errors
-            ),
-            errors,
-        )
 
     @contextmanager
     def relative_tool_contract_fixture(self):
@@ -2530,16 +2401,6 @@ fn test_only() { std::process::Command::new("git"); }
                 tools_dir,
                 "bsl-analyzer",
                 self.BSL_ANALYZER_HELP,
-            )
-            self.write_executable(
-                tools_dir,
-                "rlm-bsl-index",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n",
-            )
-            self.write_executable(
-                tools_dir,
-                "rlm-bsl-mcp",
-                "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
             )
             self.write_executable(
                 tools_dir,
@@ -2619,12 +2480,6 @@ fn test_only() { std::process::Command::new("git"); }
         with tempfile.TemporaryDirectory() as tmp:
             tools_dir = Path(tmp)
             self.write_executable(tools_dir, "bsl-analyzer", "#!/usr/bin/env sh\nprintf '%s\\n' 'analyze'\n")
-            self.write_executable(tools_dir, "rlm-bsl-index", "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n")
-            self.write_executable(
-                tools_dir,
-                "rlm-bsl-mcp",
-                "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
-            )
             self.write_executable(tools_dir, "v8-runner", "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version Usage: v8-runner push'\n")
 
             errors = module.check_tool_contracts(tools_dir)
@@ -2648,16 +2503,6 @@ fn test_only() { std::process::Command::new("git"); }
             )
             self.write_executable(
                 tools_dir,
-                "rlm-bsl-index",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n",
-            )
-            self.write_executable(
-                tools_dir,
-                "rlm-bsl-mcp",
-                "#!/usr/bin/env sh\nprintf '%s\\n' '--transport stdio streamable-http service'\n",
-            )
-            self.write_executable(
-                tools_dir,
                 "v8-runner",
                 "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version Usage: v8-runner push'\n",
             )
@@ -2670,462 +2515,6 @@ fn test_only() { std::process::Command::new("git"); }
         )
 
 
-    def test_tool_help_contracts_report_missing_rlm_server_transport_surface(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            tools_dir = Path(tmp)
-            self.write_executable(
-                tools_dir,
-                "bsl-analyzer",
-                self.BSL_ANALYZER_HELP,
-            )
-            self.write_executable(tools_dir, "rlm-bsl-index", "#!/usr/bin/env sh\nprintf '%s\\n' 'index build update info'\n")
-            self.write_executable(tools_dir, "rlm-bsl-mcp", "#!/usr/bin/env sh\nprintf '%s\\n' 'service'\n")
-            self.write_executable(tools_dir, "v8-runner", "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner version Usage: v8-runner push'\n")
-
-            errors = module.check_tool_contracts(tools_dir)
-
-        self.assertTrue(any("rlm-bsl-mcp server" in error and "--transport" in error for error in errors), errors)
-
-    def test_tool_contract_checker_does_not_depend_on_rlm_sqlite_schema(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        checker = (repo_root / "scripts" / "ci" / "check-tool-contracts.py").read_text(
-            encoding="utf-8"
-        )
-        for removed in ("sqlite3", "RLM_SCHEMA_COLUMNS", "check_rlm_schema", "--rlm-db"):
-            self.assertNotIn(removed, checker)
-
-        lock = tomllib.loads((repo_root / "Cargo.lock").read_text(encoding="utf-8"))
-        dependency_names = {package["name"] for package in lock["package"]}
-        self.assertEqual(
-            sorted(name for name in dependency_names if "sqlite" in name.lower()),
-            [],
-        )
-
-        rust_roots = [
-            repo_root / "crates" / "unica-coder" / "src",
-            repo_root / "crates" / "unica-bootstrap" / "src",
-        ]
-        production = "\n".join(
-            path.read_text(encoding="utf-8")
-            for rust_root in rust_roots
-            for path in sorted(rust_root.rglob("*.rs"))
-        )
-        for removed in (
-            "rusqlite",
-            "libsqlite3",
-            "sqlite3",
-            "Connection::open",
-            "methods_fts",
-        ):
-            self.assertNotIn(removed, production)
-
-    def test_rlm_mcp_contract_exercises_runtime_helpers_over_json_rpc(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            mcp_tool, index_tool, request_log, index_log, _pid_log = (
-                self.write_rlm_contract_standins(root)
-            )
-
-            errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-            requests = [
-                json.loads(line)
-                for line in request_log.read_text(encoding="utf-8").splitlines()
-            ]
-            index_call = json.loads(index_log.read_text(encoding="utf-8"))
-
-        self.assertEqual(errors, [])
-        self.assertEqual(
-            requests[0],
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": {"name": "unica-contract", "version": "1"},
-                },
-            },
-        )
-        self.assertEqual(
-            requests[1],
-            {"jsonrpc": "2.0", "method": "notifications/initialized"},
-        )
-        tool_calls = [
-            request["params"]
-            for request in requests
-            if request.get("method") == "tools/call"
-        ]
-        self.assertEqual(
-            [call["name"] for call in tool_calls],
-            ["rlm_start", "rlm_execute", "rlm_execute", "rlm_execute", "rlm_end"],
-        )
-        start = tool_calls[0]["arguments"]
-        self.assertEqual(
-            {key: value for key, value in start.items() if key != "path"},
-            {
-                "query": "ContractTest1",
-                "effort": "low",
-                "max_output_chars": 100_000,
-                "max_execute_calls": 10_000,
-                "execution_timeout_seconds": 30,
-                "include_metadata": False,
-                "domains": [],
-            },
-        )
-        self.assertEqual(
-            [call["arguments"]["code"] for call in tool_calls[1:4]],
-            [
-                'import json\n_result = search("ContractTest", scope="all", limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-                'import json\n_result = find_definition("ContractTest1", module_hint=None, limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-                'import json\n_result = get_object_profile("CommonModule.ContractOne", sections=None, include_flow=False, include_code_usages=False, limit=20)\nprint(json.dumps(_result, ensure_ascii=False))',
-            ],
-        )
-        self.assertNotIn("parse_form", "\n".join(call["arguments"]["code"] for call in tool_calls[1:4]))
-        self.assertEqual(index_call["argv"][:2], ["index", "build"])
-        self.assertEqual(index_call["argv"][2], start["path"])
-        self.assertEqual(
-            index_call["index_dir"],
-            str(Path(start["path"]).parents[1] / "index"),
-        )
-
-    def test_rlm_mcp_contract_confines_upstream_two_ancestor_extension_scan(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            outer = Path(tmp)
-            contract_root = outer / "contract"
-            contract_root.mkdir()
-            outer.joinpath("poison-outer-sibling").touch()
-            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(
-                outer,
-                index_mode="reject_outer_scan",
-            )
-
-            with patch.object(
-                module.tempfile,
-                "TemporaryDirectory",
-                return_value=nullcontext(str(contract_root)),
-            ):
-                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-
-        self.assertEqual(errors, [])
-
-    def test_rlm_mcp_contract_reports_session_constructor_system_exit(self) -> None:
-        module = load_contract_module()
-
-        class Shared:
-            class McpSession:
-                def __init__(self, *_args, **_kwargs):
-                    raise SystemExit("transport constructor failed")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(root)
-            with (
-                patch.object(module, "run_rlm_contract_process", return_value=(0, "")),
-                patch.object(module, "load_shared_mcp_smoke_module", return_value=Shared),
-            ):
-                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-
-        self.assertTrue(any("failed to start MCP transport" in error for error in errors), errors)
-
-    def test_rlm_mcp_contract_does_not_label_post_start_failure_as_startup(self) -> None:
-        module = load_contract_module()
-
-        class Reader:
-            def join(self, timeout):
-                pass
-
-            def is_alive(self):
-                return False
-
-        class Stream:
-            def close(self):
-                pass
-
-        class Session:
-            def __init__(self, *_args, **_kwargs):
-                self.process = type(
-                    "Process",
-                    (),
-                    {"stdin": Stream(), "stdout": Stream(), "stderr": Stream()},
-                )()
-                self.reader = Reader()
-                self.error_reader = Reader()
-                self.calls = 0
-
-            def request(self, _payload):
-                self.calls += 1
-                if self.calls == 1:
-                    return {"jsonrpc": "2.0", "id": 1, "result": {}}
-                raise RuntimeError("post-start transport failure")
-
-            def notify(self, _payload):
-                pass
-
-            def terminate_tree(self, _root):
-                pass
-
-        shared = type("Shared", (), {"McpSession": Session})
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(root)
-            with (
-                patch.object(module, "run_rlm_contract_process", return_value=(0, "")),
-                patch.object(module, "load_shared_mcp_smoke_module", return_value=shared),
-            ):
-                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-
-        self.assertTrue(any("MCP transport failed" in error for error in errors), errors)
-        self.assertFalse(any("failed to start" in error for error in errors), errors)
-
-    def test_rlm_mcp_contract_rejects_malformed_helper_payloads(self) -> None:
-        module = load_contract_module()
-        cases = [
-            ("definition_list", "find_definition must return an object"),
-            ("string_params", "definitions[].params must be a list"),
-            ("string_boolean", "_meta.truncated must be boolean"),
-            ("search_object", "search must return a list"),
-            ("profile_list", "get_object_profile must return an object"),
-            ("profile_error", "get_object_profile returned an error"),
-            ("scalar_metadata", "_meta must be an object"),
-        ]
-
-        for mode, expected in cases:
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as tmp:
-                root = Path(tmp)
-                mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(
-                    root,
-                    mode=mode,
-                )
-                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-
-                self.assertTrue(any(expected in error for error in errors), errors)
-                self.assertFalse(any(str(root) in error for error in errors), errors)
-
-    def rlm_session_ready_after_fake_start(self, module, tool: Path, pid_log: Path):
-        """Start the narrowed phase only after the hanging fake recorded its tree.
-
-        The timeout under test bounds the hang, not interpreter start-up:
-        a session for `tool` returns from its constructor once the fake wrote
-        `pid_log`, so a slow start cannot expire the narrowed budget first.
-        """
-        shared = module.load_shared_mcp_smoke_module()
-
-        class ReadySession(shared.McpSession):
-            def __init__(self, command, *args, **kwargs):
-                super().__init__(command, *args, **kwargs)
-                if str(tool) in command:
-                    deadline = time.monotonic() + RLM_FAKE_EVENT_FUSE_SECONDS
-                    while not pid_log.exists() and time.monotonic() < deadline:
-                        time.sleep(0.01)
-
-        return type("Shared", (), {"McpSession": ReadySession})
-
-    def assert_rlm_hang_is_bounded(self, *, mode: str, index_mode: str, phase: str) -> None:
-        module = load_contract_module()
-        parent_pid = child_pid = 0
-        timeout_name = {
-            "mcp": "RLM_MCP_CONTRACT_TIMEOUT_SECONDS",
-            "index": "RLM_INDEX_PROCESS_TIMEOUT_SECONDS",
-        }[phase]
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            mcp_tool, index_tool, _request_log, _index_log, pid_log = (
-                self.write_rlm_contract_standins(root, mode=mode, index_mode=index_mode)
-            )
-            hanging_tool = mcp_tool if phase == "mcp" else index_tool
-            shared = self.rlm_session_ready_after_fake_start(module, hanging_tool, pid_log)
-            try:
-                # Сужается только проверяемая фаза; другая сохраняет обычный
-                # срок и не зависит от скорости старта своего фейка.
-                with patch.object(module, timeout_name, 0.2), patch.object(
-                    module, "load_shared_mcp_smoke_module", return_value=shared
-                ):
-                    started_at = time.monotonic()
-                    errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-                    elapsed = time.monotonic() - started_at
-                self.assertTrue(
-                    pid_log.is_file(),
-                    "the hanging rlm fake did not record its process tree",
-                )
-                parent_pid, child_pid = [
-                    int(line)
-                    for line in pid_log.read_text(encoding="utf-8").splitlines()
-                ]
-                deadline = time.monotonic() + RLM_FAKE_EVENT_FUSE_SECONDS
-                while time.monotonic() < deadline and (
-                    self.process_is_alive(parent_pid) or self.process_is_alive(child_pid)
-                ):
-                    time.sleep(0.025)
-
-                # Без срока фазы проверка ждала бы, пока фейк доспит.
-                self.assertLess(elapsed, RLM_FAKE_HANG_SECONDS)
-                self.assertTrue(any("timed out" in error for error in errors), errors)
-                self.assertFalse(self.process_is_alive(parent_pid))
-                self.assertFalse(self.process_is_alive(child_pid))
-            finally:
-                self.cleanup_process_tree_best_effort(parent_pid, child_pid)
-
-    def test_rlm_mcp_contract_bounds_reads_and_terminates_the_process_tree(self) -> None:
-        self.assert_rlm_hang_is_bounded(mode="hang", index_mode="ok", phase="mcp")
-
-    def test_rlm_mcp_contract_bounds_index_build_and_terminates_its_process_tree(self) -> None:
-        self.assert_rlm_hang_is_bounded(mode="ok", index_mode="hang", phase="index")
-
-    def test_rlm_mcp_contract_closes_transport_pipes(self) -> None:
-        module = load_contract_module()
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            mcp_tool, index_tool, *_ = self.write_rlm_contract_standins(root)
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always", ResourceWarning)
-                errors = module.check_rlm_mcp_contract(mcp_tool, index_tool)
-                gc.collect()
-
-        self.assertEqual(errors, [])
-        self.assertEqual(
-            [warning for warning in caught if warning.category is ResourceWarning],
-            [],
-        )
-
-    def test_rlm_mtime_recovery_contract_checks_scripted_orchestration(self) -> None:
-        module = load_contract_module()
-        outputs = iter(
-            [
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Changed: 0\nFast path: True\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-            ]
-        )
-        actions = []
-
-        def run_rlm(command, cwd, env):
-            action = command[2]
-            self.assertEqual(
-                command,
-                ["rlm-bsl-index", "index", action, str(cwd)],
-            )
-            actions.append(command[2])
-            self.assertEqual(cwd, Path(command[3]))
-            self.assertEqual(env["RLM_INDEX_DIR"], str(cwd.parents[1] / "index"))
-            self.assertEqual(env["RLM_INDEX_SAMPLE_SIZE"], "1000")
-            self.assertEqual(env["RLM_INDEX_SAMPLE_THRESHOLD"], "0")
-            self.assertEqual(env["RLM_INDEX_SKIP_SAMPLE_HOURS"], "0")
-            self.assertEqual(env["PYTHONUTF8"], "1")
-            self.assertEqual(env["PYTHONIOENCODING"], "utf-8:surrogateescape")
-            return next(outputs)
-
-        with patch.object(
-            module,
-            "run_rlm_contract_process",
-            side_effect=run_rlm,
-        ):
-            errors = module.check_rlm_mtime_recovery_contract(
-                Path("rlm-bsl-index"),
-            )
-
-        self.assertEqual(errors, [])
-        self.assertEqual(
-            actions,
-            ["build", "info", "info", "update", "info", "build", "info"],
-        )
-
-    def test_rlm_mtime_recovery_fixture_disables_git_signing(self) -> None:
-        module = load_contract_module()
-        outputs = iter(
-            [
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Changed: 0\nFast path: True\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-            ]
-        )
-        git_commands = []
-
-        def run_git(command, cwd):
-            git_commands.append(command)
-            if command == ["git", "rev-parse", "HEAD"]:
-                return 0, "fixture-head\n"
-            return 0, ""
-
-        with patch.object(module, "run_command", side_effect=run_git):
-            errors = module.check_rlm_mtime_recovery_contract(
-                Path("rlm-bsl-index"),
-                run_rlm=lambda command, cwd, env: next(outputs),
-            )
-
-        self.assertEqual(errors, [])
-        signing_disabled = [
-            "git",
-            "-c",
-            "commit.gpgsign=false",
-            "-c",
-            "tag.gpgSign=false",
-        ]
-        self.assertEqual(
-            git_commands,
-            [
-                [*signing_disabled, "init", "-q"],
-                [
-                    *signing_disabled,
-                    "config",
-                    "user.email",
-                    "unica-ci@example.invalid",
-                ],
-                [*signing_disabled, "config", "user.name", "Unica CI"],
-                [*signing_disabled, "add", "."],
-                [*signing_disabled, "commit", "-q", "-m", "fixture"],
-                ["git", "status", "--porcelain", "--untracked-files=no"],
-                ["git", "rev-parse", "HEAD"],
-                ["git", "rev-parse", "HEAD"],
-            ],
-        )
-
-    def test_rlm_mtime_recovery_contract_rejects_changed_git_head(self) -> None:
-        module = load_contract_module()
-        outputs = iter(
-            [
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Changed: 0\nFast path: True\n"),
-                (0, "Status: stale (content)\n"),
-                (0, "Index built\n"),
-                (0, "Status: fresh\n"),
-            ]
-        )
-        heads = iter(["initial-head\n", "changed-head\n"])
-
-        def run_git(command, cwd):
-            if command == ["git", "rev-parse", "HEAD"]:
-                return 0, next(heads)
-            return 0, ""
-
-        with patch.object(module, "run_command", side_effect=run_git):
-            errors = module.check_rlm_mtime_recovery_contract(
-                Path("rlm-bsl-index"),
-                run_rlm=lambda command, cwd, env: next(outputs),
-            )
-
-        self.assertTrue(
-            any("Git HEAD changed during update" in error for error in errors),
-            errors,
-        )
     def test_the_release_checks_every_address_it_publishes(self) -> None:
         """Ядро выпуск сверяет побайтно, поставки — только по адресу.
 
@@ -3134,7 +2523,7 @@ fn test_only() { std::process::Command::new("git"); }
         пользователя. Шаг легко выпасть незамеченным, поэтому он закреплён.
         """
         repo_root = Path(__file__).resolve().parents[2]
-        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+        release = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 

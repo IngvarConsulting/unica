@@ -1574,17 +1574,6 @@ class UnicaSkillRoutingTests(unittest.TestCase):
         self.assertNotIn("development-standard", unsafe_routes[0])
 
 
-    def test_skills_and_references_do_not_instruct_direct_rlm_mcp_calls(self) -> None:
-        forbidden = ["rlm_index", "rlm_start", "rlm_execute", "rlm_end"]
-        docs = list(self.skill_root().glob("**/*.md")) + list(
-            self.reference_root().glob("**/*.md")
-        )
-        for doc in docs:
-            text = doc.read_text(encoding="utf-8")
-            for token in forbidden:
-                with self.subTest(path=doc.relative_to(self.repo_root()), token=token):
-                    self.assertNotIn(token, text)
-
     def test_runtime_is_tool_native_and_v8_runner_skill_is_not_shipped(self) -> None:
         """rule: INV.SURFACE.RUNTIME-NO-SKILL"""
         skill_dir = self.skill_root() / "v8-runner"

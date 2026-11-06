@@ -450,7 +450,7 @@ class CollectResultsTests(unittest.TestCase):
             self.collect.collect(self.artifacts, self.root / "fresh", self.jobs_file({"Unica CI": "skipped"}), "", "")
 
     def test_job_name_and_artifact_prefixes_match_the_workflows(self) -> None:
-        release = workflow("unica-plugin-release.yml")
+        release = workflow("release.yml")
         jobs = release["jobs"]
         self.assertEqual(jobs["unica-ci"]["name"], self.collect.GATE_JOB)
         self.assertEqual(self.collect.GATE_JOB, "Unica CI")
@@ -478,12 +478,10 @@ class CollectResultsTests(unittest.TestCase):
                 self.assertIn(".build/ci-report/results-*", results["with"]["path"])
         reports = [step["with"]["name"] for job in ("unica-ci", "rust-os") for step in uploads(job)
                    if not step["with"]["name"].startswith("ci-rust-inventory")]
-        reports += [step["with"]["name"] for step in workflow("unica-nightly.yml")["jobs"]["lines"]["steps"] if "upload-artifact" in step.get("uses", "")]
         self.assertTrue(all(name.startswith(prefixes) for name in reports), reports)
         verification = [step["with"]["name"] for step in uploads("unica-ci") if step["with"]["name"].startswith("ci-rust-inventory")]
         self.assertEqual(verification, ["ci-rust-inventory-verification", "ci-rust-inventory-${{ env.GATE_PROFILE }}"])
-        pages = workflow("unica-pages.yml")
-        pattern = next(step["with"]["pattern"] for step in pages["jobs"]["build"]["steps"] if "download-artifact" in step.get("uses", ""))
+        pattern = next(step["with"]["pattern"] for step in jobs["pages-build"]["steps"] if "download-artifact" in step.get("uses", ""))
         self.assertEqual(pattern, "{" + ",".join(prefix.rstrip("-") for prefix in prefixes) + "}-*")
 
     def test_runner_artifacts_nest_lane_directories_and_attribute_gaps_to_the_runner_job(self) -> None:

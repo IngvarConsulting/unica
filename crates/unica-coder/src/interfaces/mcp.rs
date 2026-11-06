@@ -2174,7 +2174,7 @@ mod medium_tests {
             "sections": [
                 {
                     "role": "semantic",
-                    "provider": "rlm",
+                    "provider": "semantic-fixture",
                     "status": "unavailable",
                     "termination": {"code": "providerUnavailable", "retryable": false},
                     "searchComplete": false,
@@ -6418,7 +6418,8 @@ mod medium_tests {
                     deadline_ms: 300_000,
                     next_update_within_ms: 2_000,
                     providers: vec![unica_code_intelligence::model::SearchProviderProgress {
-                        identity: unica_code_intelligence::model::ProviderId::Rlm.identity(),
+                        identity: unica_code_intelligence::model::ProviderId::SemanticFixture
+                            .identity(),
                         state: unica_code_intelligence::model::SearchProviderState::Running,
                         phase,
                         detail_code: Some(detail_code.to_string()),
@@ -8229,7 +8230,7 @@ mod medium_tests {
             let producer_cancelled = self.producer_cancelled.clone();
             let (identity, lease) = invocation
                 .join_index_work(
-                    "rlm",
+                    "semantic-fixture",
                     "bsl-1",
                     "manual-shared-generation",
                     move |producer| {

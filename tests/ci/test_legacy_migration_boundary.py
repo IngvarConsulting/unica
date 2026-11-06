@@ -40,7 +40,7 @@ class LegacyMigrationBoundaryTests(unittest.TestCase):
             encoding="utf-8"
         )
         release = (
-            REPO_ROOT / ".github/workflows/unica-plugin-release.yml"
+            REPO_ROOT / ".github/workflows/release.yml"
         ).read_text(encoding="utf-8")
 
         for marker in (

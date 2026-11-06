@@ -88,37 +88,6 @@ fn assert_external(command: &Command, fixture: &CwdFixture) {
 }
 
 #[test]
-fn rlm_command_sets_external_cwd_and_preserves_explicit_source_and_generation() {
-    for (nested, cache_inside) in [(false, false), (true, false), (false, true), (true, true)] {
-        let mut fixture = CwdFixture::new(nested);
-        if cache_inside {
-            fixture.context.cache_root = fixture.context.workspace_root.join(".cache");
-        }
-        let command = rlm_transport_command_for_build(
-            PathBuf::from("not-executed-rlm"),
-            &fixture.context,
-            &fixture.source,
-            &fixture.build,
-        )
-        .unwrap();
-        assert_external(&command, &fixture);
-        let environment = command.get_envs().collect::<HashMap<_, _>>();
-        assert_eq!(
-            environment[OsStr::new("RLM_INDEX_DIR")],
-            Some(fixture.build.as_os_str())
-        );
-        assert_eq!(environment[OsStr::new("PYTHONUTF8")], Some(OsStr::new("1")));
-        assert_eq!(
-            environment[OsStr::new("PYTHONIOENCODING")],
-            Some(OsStr::new("utf-8:surrogateescape"))
-        );
-        let start =
-            rlm_start_arguments(&fixture.source, "CwdProbe", Duration::from_secs(2)).unwrap();
-        assert_eq!(start["path"], fixture.source.to_str().unwrap());
-    }
-}
-
-#[test]
 fn bsl_command_sets_external_cwd_and_preserves_source_specific_cache() {
     for (nested, cache_inside) in [(false, false), (true, false), (false, true), (true, true)] {
         let mut fixture = CwdFixture::new(nested);
