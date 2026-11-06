@@ -34,4 +34,3 @@ inputs = [
     "tests/fixtures/platform_8_3_27/support-edit-bin-only",
     "tests/fixtures/platform_8_3_27/template-new-xml/seed",
 ]
-read-outside-baseline = 1
