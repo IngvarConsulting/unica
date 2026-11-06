@@ -97,7 +97,6 @@ pub enum NodeKind {
     Region,
     Interface,
     Event,
-    Compilation,
     UrlTemplate,
     Operation,
     Channel,
@@ -226,7 +225,6 @@ const V13_KIND_SPELLINGS: &[V13KindSpelling] = &[
     spelling(NodeKind::Interface, &["Интерфейс"]),
     spelling(NodeKind::Group, &["Группа"]),
     spelling(NodeKind::Event, &["Событие"]),
-    spelling(NodeKind::Compilation, &["Компиляция"]),
     spelling(NodeKind::UrlTemplate, &["ШаблонURL"]),
     spelling(NodeKind::Operation, &["Операция"]),
     spelling(NodeKind::Channel, &["Канал"]),
@@ -437,7 +435,6 @@ impl NodeKind {
             Self::Region => "Region",
             Self::Interface => "Interface",
             Self::Event => "Event",
-            Self::Compilation => "Compilation",
             Self::UrlTemplate => "URLTemplate",
             Self::Operation => "Operation",
             Self::Channel => "Channel",
@@ -1686,5 +1683,27 @@ mod body_line_addresses {
             assert_eq!(at.to_string(), raw);
             assert_eq!(at.segments().last().unwrap().kind(), NodeKind::Item);
         }
+    }
+}
+
+#[cfg(test)]
+mod retired_compilation_tests {
+    use super::QualifiedAddress;
+
+    /// rule: INV.SOURCE.MODULE-COMPILATION
+    #[test]
+    fn compilation_branches_are_retired_but_the_method_name_is_valid() {
+        for suffix in [
+            "Compilation",
+            "Компиляция",
+            "Method.Test.Compilation",
+            "Method.Test.Компиляция",
+        ] {
+            assert!(
+                QualifiedAddress::parse(&format!("main:CommonModule.Sample.{suffix}")).is_err(),
+                "{suffix}"
+            );
+        }
+        assert!(QualifiedAddress::parse("main:CommonModule.Sample.Method.Compilation").is_ok());
     }
 }

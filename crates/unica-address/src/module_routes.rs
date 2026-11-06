@@ -222,12 +222,7 @@ pub fn has_nested_module_route(owner_kind: NodeKind) -> bool {
 fn module_projection_suffix_is_valid(suffix: &[AddressSegment]) -> bool {
     match suffix {
         [] => true,
-        [branch]
-            if matches!(branch.kind(), NodeKind::Compilation | NodeKind::Body)
-                && branch.name().is_none() =>
-        {
-            true
-        }
+        [branch] if matches!(branch.kind(), NodeKind::Body) && branch.name().is_none() => true,
         [branch]
             if matches!(
                 branch.kind(),
@@ -239,7 +234,7 @@ fn module_projection_suffix_is_valid(suffix: &[AddressSegment]) -> bool {
         [method, projection]
             if method.kind() == NodeKind::Method
                 && method.name().is_some()
-                && matches!(projection.kind(), NodeKind::Compilation | NodeKind::Body)
+                && matches!(projection.kind(), NodeKind::Body)
                 && projection.name().is_none() =>
         {
             true
