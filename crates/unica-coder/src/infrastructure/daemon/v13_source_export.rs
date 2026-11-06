@@ -1625,7 +1625,6 @@ mod medium_tests {
         }
     }
 
-    /// rule: INV.RUNTIME.FULL-EXPORT-PLATFORM-TRUST
     #[test]
     fn adapter_preparation_projects_the_effective_local_provider_without_selecting_it() {
         for local_provider in ["ibcmd", "designer"] {
@@ -1773,6 +1772,7 @@ mod medium_tests {
         }
     }
 
+    /// rule: INV.RUNTIME.FULL-EXPORT-PLATFORM-TRUST
     #[test]
     fn selected_executor_must_be_attested_locally_before_continue_or_stage_writes() {
         for executor in [
