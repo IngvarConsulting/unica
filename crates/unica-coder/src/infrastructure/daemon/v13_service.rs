@@ -9278,7 +9278,8 @@ mod medium_tests {
             .join("plugins/unica/third-party/tools.lock.json");
         let lock: serde_json::Value =
             serde_json::from_slice(&std::fs::read(lock_path).unwrap()).unwrap();
-        for (role, tool, artifact) in [(ProviderRole::Symbol, "bsl-analyzer", "bsl-analyzer")] {
+        {
+            let (role, tool, artifact) = (ProviderRole::Symbol, "bsl-analyzer", "bsl-analyzer");
             assert_eq!(super::selected_role_engine(role), Some(tool));
             let pinned = lock["tools"]
                 .as_array()

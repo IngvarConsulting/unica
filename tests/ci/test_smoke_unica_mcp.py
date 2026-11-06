@@ -2674,7 +2674,7 @@ class SmokeUnicaMcpTests(unittest.TestCase):
         }
         ready = json.loads(json.dumps(unavailable))
         ready["ok"] = True
-        ready["data"]["sections"][1] = {
+        ready["data"]["sections"][0] = {
             "provider": "bsl-analyzer",
             "status": "ok",
             "hits": [

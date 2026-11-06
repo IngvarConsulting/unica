@@ -453,7 +453,6 @@ pub(crate) fn is_retryable_cache_state_conflict(error: &str, paths: &[PathBuf]) 
 mod tests {
     use super::*;
 
-
     #[test]
     fn cache_conflict_classifier_requires_an_exact_planned_cache_path() {
         let root = PathBuf::from("/workspace");

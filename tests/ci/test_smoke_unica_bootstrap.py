@@ -64,13 +64,13 @@ class SmokeUnicaBootstrapTests(unittest.TestCase):
                                 }
                             },
                         },
-                        "archive-tools": {
+                        "tools-archive": {
                             "version": "1.33.0",
                             "role": "engine",
                             "targets": {
                                 "linux-x64": {
                                     "asset": {
-                                        "name": "archive-tools-linux-x64.tar.gz",
+                                        "name": "tools-archive-linux-x64.tar.gz",
                                         "sha256": self.PUBLISHED_SHA,
                                     }
                                 }

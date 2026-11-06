@@ -39,9 +39,9 @@ def make_bundle(root: Path) -> Path:
     files = {
         "unica": (target / "unica", "unica", True),
         "bsl-analyzer": (target / "bsl-analyzer", "bsl-analyzer", True),
-        "archive-tool-index": (target / "archive-tool-index", "archive-tools", True),
-        "archive-tool-server": (target / "archive-tool-server", "archive-tools", True),
-        "archive-library": (library, "archive-tools", False),
+        "tool-index": (target / "tool-index", "tools-archive", True),
+        "tool-server": (target / "tool-server", "tools-archive", True),
+        "archive-library": (library, "tools-archive", False),
         "v8-runner": (target / "v8-runner", "v8-runner", True),
     }
     for name, (path, _artifact, executable) in files.items():
@@ -62,7 +62,7 @@ def make_bundle(root: Path) -> Path:
                 "sha256": "a" * 64,
                 "size": 1,
                 "executable": False,
-                "artifact": "archive-tools",
+                "artifact": "tools-archive",
             }
         ],
     }
@@ -90,7 +90,7 @@ class StageUnicaAssessmentEngineTests(unittest.TestCase):
                     "--artifact",
                     "bsl-analyzer",
                     "--artifact",
-                    "archive-tools",
+                    "tools-archive",
                 ],
                 check=True,
                 capture_output=True,
@@ -104,11 +104,11 @@ class StageUnicaAssessmentEngineTests(unittest.TestCase):
                 [
                     "bin/linux-x64/bsl-analyzer",
                     "bin/linux-x64/lib/libpython3.12.so.1.0",
-                    "bin/linux-x64/archive-tool-index",
-                    "bin/linux-x64/archive-tool-server",
+                    "bin/linux-x64/tool-index",
+                    "bin/linux-x64/tool-server",
                 ],
             )
-            self.assertEqual(members["bin/linux-x64/archive-tool-server"].mode, 0o755)
+            self.assertEqual(members["bin/linux-x64/tool-server"].mode, 0o755)
             self.assertEqual(
                 members["bin/linux-x64/lib/libpython3.12.so.1.0"].mode,
                 0o644,
@@ -131,7 +131,7 @@ class StageUnicaAssessmentEngineTests(unittest.TestCase):
                     "--artifact",
                     "bsl-analyzer",
                     "--artifact",
-                    "archive-tools",
+                    "tools-archive",
                 ],
                 check=True,
                 capture_output=True,
@@ -147,12 +147,12 @@ class StageUnicaAssessmentEngineTests(unittest.TestCase):
                 [
                     "bin/linux-x64/bsl-analyzer",
                     "bin/linux-x64/lib/libpython3.12.so.1.0",
-                    "bin/linux-x64/archive-tool-index",
-                    "bin/linux-x64/archive-tool-server",
+                    "bin/linux-x64/tool-index",
+                    "bin/linux-x64/tool-server",
                 ],
             )
             self.assertEqual(
-                stat.S_IMODE((out_dir / "bin/linux-x64/archive-tool-server").stat().st_mode),
+                stat.S_IMODE((out_dir / "bin/linux-x64/tool-server").stat().st_mode),
                 0o755,
             )
             self.assertEqual(
@@ -166,7 +166,7 @@ class StageUnicaAssessmentEngineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bundle = make_bundle(root)
-            (bundle / "bin/linux-x64/archive-tool-server").write_bytes(b"tampered")
+            (bundle / "bin/linux-x64/tool-server").write_bytes(b"tampered")
 
             result = subprocess.run(
                 [
@@ -177,7 +177,7 @@ class StageUnicaAssessmentEngineTests(unittest.TestCase):
                     "--out-dir",
                     str(root / "assessment-engine"),
                     "--artifact",
-                    "archive-tools",
+                    "tools-archive",
                 ],
                 capture_output=True,
                 text=True,

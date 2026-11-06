@@ -3984,10 +3984,11 @@ pub(crate) mod medium_tests {
         app.call_tool("unica.code.diagnostics", &analyze).unwrap();
         assert_eq!(ports.load_calls.load(Ordering::SeqCst), 1);
 
-        for (tool_name, args) in [(
-            "unica.code.search",
-            json!({"query": "needle", "sourceDir": "."}),
-        )] {
+        {
+            let (tool_name, args) = (
+                "unica.code.search",
+                json!({"query": "needle", "sourceDir": "."}),
+            );
             let error = app
                 .call_tool(tool_name, args.as_object().unwrap())
                 .unwrap_err();
@@ -4088,7 +4089,12 @@ pub(crate) mod medium_tests {
 
         let tool_name = "unica.code.search";
         let result = app
-            .call_tool(tool_name, json!({"query": "Needle", "sourceSet": "main"}).as_object().unwrap())
+            .call_tool(
+                tool_name,
+                json!({"query": "Needle", "sourceSet": "main"})
+                    .as_object()
+                    .unwrap(),
+            )
             .expect("valid full-range config must not panic public dispatch");
         assert!(
             result.ok,

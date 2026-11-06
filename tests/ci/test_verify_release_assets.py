@@ -308,7 +308,7 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
 
             shutil.copy2(
                 assets / "unica-runtime-linux-x64.tar.gz",
-                assets / "archive-tools-runtime-linux-x64.tar.gz",
+                assets / "tools-archive-runtime-linux-x64.tar.gz",
             )
             with self.assertRaisesRegex(SystemExit, "must be \\[unica\\]"):
                 verifier.verify_release_target(assets, "linux-x64")

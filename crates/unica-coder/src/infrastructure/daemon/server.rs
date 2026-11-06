@@ -4561,7 +4561,8 @@ pub(crate) mod medium_actor_capacity_tests {
                 .unwrap()
                 .contains("bundled_tool_missing"));
 
-            for (role, artifact) in [("symbol", "bsl-analyzer")] {
+            {
+                let (role, artifact) = ("symbol", "bsl-analyzer");
                 let result = submit_canonical(
                     &runtime,
                     &workspace,

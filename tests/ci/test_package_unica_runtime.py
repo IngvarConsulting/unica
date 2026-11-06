@@ -34,8 +34,8 @@ def make_bundle(root: Path) -> Path:
     bin_dir.mkdir(parents=True)
     unica = bin_dir / "unica"
     analyzer = bin_dir / "bsl-analyzer"
-    archive_server = bin_dir / "archive-tool-server"
-    archive_index = bin_dir / "archive-tool-index"
+    archive_server = bin_dir / "tool-server"
+    archive_index = bin_dir / "tool-index"
     shared_library = bin_dir / "libpython3.12.so.1.0"
     unica.write_bytes(b"unica")
     analyzer.write_bytes(b"analyzer")
@@ -46,22 +46,22 @@ def make_bundle(root: Path) -> Path:
         executable.chmod(0o755)
     shared_library.chmod(0o644)
     runtime_paths = [unica, analyzer, archive_server, archive_index, shared_library]
-    # archive-tool-server и archive-tool-index приезжают одним архивом на 69 МБ, и общая
+    # tool-server и tool-index приезжают одним архивом на 69 МБ, и общая
     # библиотека принадлежит ему же: артефакт у всех трёх один.
     artifact_of = {
         unica: "unica",
         analyzer: "bsl-analyzer",
-        archive_server: "archive-tools",
-        archive_index: "archive-tools",
-        shared_library: "archive-tools",
+        archive_server: "tools-archive",
+        archive_index: "tools-archive",
+        shared_library: "tools-archive",
     }
     # Ядро мы пакуем сами и раскладку выбираем сами; чужая поставка ложится
     # так, как её издал тулчейн.
     delivered_of = {
         unica: "bin/linux-x64/unica",
         analyzer: "bsl-analyzer",
-        archive_server: "payload/archive-tool-server",
-        archive_index: "payload/archive-tool-index",
+        archive_server: "payload/tool-server",
+        archive_index: "payload/tool-index",
         shared_library: "payload/libpython3.12.so.1.0",
     }
     (bundle / "tools.json").write_text(
@@ -78,10 +78,10 @@ def make_bundle(root: Path) -> Path:
                         "mediaType": "application/octet-stream",
                         "sha256": "a" * 64,
                     },
-                    "archive-tools": {
+                    "tools-archive": {
                         "repository": "https://github.com/IngvarConsulting/unica-toolchain",
-                        "tag": "archive-tools-v1.33.0-build.3",
-                        "name": "archive-tools-linux-x64.tar.gz",
+                        "tag": "tools-archive-v1.33.0-build.3",
+                        "name": "tools-archive-linux-x64.tar.gz",
                         "mediaType": "application/gzip",
                         "sha256": "b" * 64,
                     },
@@ -111,17 +111,17 @@ def make_bundle(root: Path) -> Path:
                         "sha256": sha256(analyzer),
                     },
                     {
-                        "name": "archive-tool-server",
+                        "name": "tool-server",
                         "version": "1.33.0",
-                        "artifact": "archive-tools",
-                        "binaryPath": "bin/linux-x64/archive-tool-server",
+                        "artifact": "tools-archive",
+                        "binaryPath": "bin/linux-x64/tool-server",
                         "sha256": sha256(archive_server),
                     },
                     {
-                        "name": "archive-tool-index",
+                        "name": "tool-index",
                         "version": "1.33.0",
-                        "artifact": "archive-tools",
-                        "binaryPath": "bin/linux-x64/archive-tool-index",
+                        "artifact": "tools-archive",
+                        "binaryPath": "bin/linux-x64/tool-index",
                         "sha256": sha256(archive_index),
                     },
                 ],
@@ -177,7 +177,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 sorted(first),
                 [
                     "bsl-analyzer-runtime-linux-x64.json",
-                    "archive-tools-runtime-linux-x64.json",
+                    "tools-archive-runtime-linux-x64.json",
                     "unica-runtime-linux-x64.json",
                     "unica-runtime-linux-x64.tar.gz",
                 ],
@@ -211,7 +211,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
             runtime = json.load(member)
 
         self.assertEqual(runtime["artifactAssets"], source["artifactAssets"])
-        for artifact in ("bsl-analyzer", "archive-tools"):
+        for artifact in ("bsl-analyzer", "tools-archive"):
             published = json.loads(
                 produced[f"{artifact}-runtime-linux-x64.json"].read_text(encoding="utf-8")
             )
@@ -240,24 +240,24 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
         )
         # Движок описан, но не переиздан: адрес есть, архива нет.
         engine = json.loads(
-            (out_dir / "archive-tools-runtime-linux-x64.json").read_text(encoding="utf-8")
+            (out_dir / "tools-archive-runtime-linux-x64.json").read_text(encoding="utf-8")
         )
         self.assertEqual(engine["role"], "engine")
-        self.assertEqual(engine["asset"]["name"], "archive-tools-linux-x64.tar.gz")
+        self.assertEqual(engine["asset"]["name"], "tools-archive-linux-x64.tar.gz")
         self.assertEqual(engine["asset"]["sha256"], "b" * 64)
         self.assertEqual(
             engine["assetOrigin"],
             {
                 "repository": "https://github.com/IngvarConsulting/unica-toolchain",
-                "tag": "archive-tools-v1.33.0-build.3",
+                "tag": "tools-archive-v1.33.0-build.3",
             },
         )
         self.assertEqual(
             [item["path"] for item in engine["files"]],
             [
                 "payload/libpython3.12.so.1.0",
-                "payload/archive-tool-index",
-                "payload/archive-tool-server",
+                "payload/tool-index",
+                "payload/tool-server",
             ],
         )
         self.assertNotIn("entrypoint", engine)
@@ -343,7 +343,7 @@ class PackageUnicaRuntimeTests(unittest.TestCase):
                 if label == "missing":
                     library.unlink()
                 elif label == "extra":
-                    (library.parent / "archive-tools").write_bytes(b"legacy")
+                    (library.parent / "tools-archive").write_bytes(b"legacy")
                 elif label == "digest":
                     library.write_bytes(b"drifted-payloa")
                 else:

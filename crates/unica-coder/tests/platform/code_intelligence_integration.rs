@@ -1749,7 +1749,8 @@ mod medium_tests {
             20,
             &cancellation,
         );
-        for section in [analyzer] {
+        {
+            let section = analyzer;
             assert_eq!(section.status, ProviderSectionStatus::Failed);
             assert!(section.hits.is_empty());
             assert!(section.diagnostics[0].starts_with(CANCELLED_PREFIX));
