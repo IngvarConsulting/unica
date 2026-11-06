@@ -1190,6 +1190,9 @@
                       ],
                       "type": "string"
                     },
+                    "IncludeConfigurationExtensions": {
+                      "type": "boolean"
+                    },
                     "IncludeHelpInContents": {
                       "type": "boolean"
                     },

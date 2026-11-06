@@ -1,0 +1,502 @@
+{
+  "id": "S-1658-exchange-extensions",
+  "issue": 1658,
+  "area": "Метаданные",
+  "task": "Переключить включение расширений в распределённой ИБ, сохранив состав обмена и модули, отказать несовместимой паре и устаревшему плану.",
+  "workspace": "tests/fixtures/acceptance/workspace-exchange-extensions",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/IncludeConfigurationExtensions/type",
+          "eq": "boolean"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "43b2f306fe8549258b512573700bd55e8ced7416248441d4189df861d845b896"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0": {
+          "kind": "sha256",
+          "file": "src/ExchangePlans/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "IncludeConfigurationExtensions": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ExchangePlan/{*}Properties/{*}IncludeConfigurationExtensions",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/IncludeConfigurationExtensions",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/DistributedInfoBase",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1": {
+          "kind": "sha256",
+          "file": "src/ExchangePlans/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "IncludeConfigurationExtensions": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ExchangePlan/{*}Properties/{*}IncludeConfigurationExtensions",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/IncludeConfigurationExtensions",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/DistributedInfoBase",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2": {
+          "kind": "sha256",
+          "file": "src/ExchangePlans/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "IncludeConfigurationExtensions": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "xml",
+          "select": "./{*}ExchangePlan/{*}Properties/{*}IncludeConfigurationExtensions",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:ExchangePlan.Codes"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/IncludeConfigurationExtensions",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/DistributedInfoBase",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        },
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "43b2f306fe8549258b512573700bd55e8ced7416248441d4189df861d845b896"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "IncludeConfigurationExtensions": true,
+                "DistributedInfoBase": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: IncludeConfigurationExtensions=true requires DistributedInfoBase=true",
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "43b2f306fe8549258b512573700bd55e8ced7416248441d4189df861d845b896"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "IncludeConfigurationExtensions": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:ExchangePlan.Codes",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "DistributedInfoBase": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "changed": {
+          "kind": "sha256",
+          "file": "src/ExchangePlans/Codes.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: ExchangePlans/Codes.xml; input `ExchangePlans/Codes.xml`: source write target; the plan retains its original state to prevent o",
+      "fileAssertions": [
+        {
+          "path": "src/ExchangePlans/Codes.xml",
+          "kind": "sha256",
+          "eq": "$capture.changed"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "793547fc57bba12049fc835475e90249cd31284187c226cf7666bd0462048f9c"
+        },
+        {
+          "path": "src/ExchangePlans/Codes/Ext/Content.xml",
+          "kind": "sha256",
+          "eq": "4eb796561db028cbb7a4bf7fffb4ec35ac9cae1c869ea35a124092c91ed1ad71"
+        }
+      ]
+    }
+  ]
+}

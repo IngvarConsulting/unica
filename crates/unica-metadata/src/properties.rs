@@ -612,6 +612,11 @@ mod tests {
                 ],
             ),
             (
+                "IncludeConfigurationExtensions",
+                MetaPropertyValue::Boolean(true),
+                &[ExchangePlan],
+            ),
+            (
                 "DistributedInfoBase",
                 MetaPropertyValue::Boolean(true),
                 &[ExchangePlan],

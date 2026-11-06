@@ -1448,6 +1448,83 @@ pub fn typed_diagnostic(
         None => diagnostic,
     }
 }
+fn validate_exchange_extension_flags(
+    properties: roxmltree::Node<'_, '_>,
+    changes: &unica_metadata::MetaPropertyChanges,
+) -> Result<(), MetaDiagnostic> {
+    use MetaPropertyKey::{DistributedInfoBase, IncludeConfigurationExtensions};
+    if !changes
+        .entries()
+        .iter()
+        .any(|(key, _)| matches!(key, DistributedInfoBase | IncludeConfigurationExtensions))
+    {
+        return Ok(());
+    }
+    let mut final_values = [false; 2];
+    for (index, (key, tag)) in [
+        (DistributedInfoBase, "DistributedInfoBase"),
+        (
+            IncludeConfigurationExtensions,
+            "IncludeConfigurationExtensions",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let invalid = || {
+            typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            format!("existing {tag} is missing or damaged; restore a confirmed boolean before changing exchange flags"),
+            Some("values"),
+        )
+        };
+        let nodes: Vec<_> = properties
+            .children()
+            .filter(|n| n.is_element() && n.tag_name().name() == tag)
+            .collect();
+        if nodes.len() != 1 {
+            return Err(invalid());
+        }
+        let node = nodes[0];
+        let text: String = node
+            .children()
+            .filter(|n| n.is_text())
+            .filter_map(|n| n.text())
+            .collect();
+        if node.tag_name().namespace() != Some("http://v8.1c.ru/8.3/MDClasses")
+            || node.attributes().len() != 0
+            || node.children().any(|n| n.is_element())
+        {
+            return Err(invalid());
+        }
+        let original = match text.as_str() {
+            "true" => true,
+            "false" => false,
+            _ => return Err(invalid()),
+        };
+        final_values[index] = changes
+            .entries()
+            .iter()
+            .find_map(|(changed, value)| {
+                if *changed == key {
+                    if let MetaPropertyValue::Boolean(value) = value {
+                        return Some(*value);
+                    }
+                }
+                None
+            })
+            .unwrap_or(original);
+    }
+    if final_values[1] && !final_values[0] {
+        return Err(typed_diagnostic(
+            MetaDiagnosticCode::InvalidArguments,
+            "IncludeConfigurationExtensions=true requires DistributedInfoBase=true",
+            Some("values.IncludeConfigurationExtensions"),
+        ));
+    }
+    Ok(())
+}
+
 pub fn apply_typed_properties(
     xml_text: &mut String,
     changes: &unica_metadata::MetaPropertyChanges,
@@ -1484,6 +1561,9 @@ pub fn apply_typed_properties(
             None,
         )
     })?;
+    if kind == MetadataKind::ExchangePlan {
+        validate_exchange_extension_flags(properties, changes)?;
+    }
     let previous_type = if changes
         .entries()
         .iter()
@@ -4399,44 +4479,56 @@ mod prefixed_property_writer_tests {
                 else {
                     continue;
                 };
-                let Some(current) = current_text(&plain, spec.xml_name) else {
-                    continue;
-                };
-                let Some(changes) = changed_value(*kind, spec, &current) else {
-                    continue;
-                };
-                let mut plain_after = plain.clone();
-                if apply_typed_properties(&mut plain_after, &changes, "ru").is_err()
-                    || plain_after == plain
-                {
-                    continue;
-                }
-                covered = true;
-                let source = prefixed(&plain);
-                let mut after = source.clone();
-                if let Err(error) = apply_typed_properties(&mut after, &changes, "ru") {
-                    failures.push(format!(
-                        "{} of {}: {error:?}",
-                        spec.public_name,
-                        kind.as_str()
-                    ));
+                // Optional fields need a real descriptor sample when the
+                // minimal creation template intentionally omits them.
+                let optional = (*kind == MetadataKind::ExchangePlan).then_some(include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../tests/fixtures/acceptance/workspace-exchange-extensions/src/ExchangePlans/Codes.xml"
+                )));
+                for plain in std::iter::once(plain).chain(optional.map(str::to_string)) {
+                    let Some(current) = current_text(&plain, spec.xml_name) else {
+                        continue;
+                    };
+                    let Some(changes) = changed_value(*kind, spec, &current) else {
+                        continue;
+                    };
+                    let mut plain_after = plain.clone();
+                    if apply_typed_properties(&mut plain_after, &changes, "ru").is_err()
+                        || plain_after == plain
+                    {
+                        continue;
+                    }
+                    covered = true;
+                    let source = prefixed(&plain);
+                    let mut after = source.clone();
+                    if let Err(error) = apply_typed_properties(&mut after, &changes, "ru") {
+                        failures.push(format!(
+                            "{} of {}: {error:?}",
+                            spec.public_name,
+                            kind.as_str()
+                        ));
+                        break;
+                    }
+                    let label = format!("{} of {}", spec.public_name, kind.as_str());
+                    if unprefixed(&after) != plain_after {
+                        failures.push(format!(
+                            "{label}: prefixed result differs from the default-namespace result"
+                        ));
+                    } else if elements(&after) != elements(&plain_after) {
+                        failures.push(format!("{label}: element namespaces changed"));
+                    } else {
+                        let mut repeat = after.clone();
+                        apply_typed_properties(&mut repeat, &changes, "ru").unwrap();
+                        if repeat != after {
+                            failures
+                                .push(format!("{label}: repeat changed the prefixed descriptor"));
+                        }
+                    }
                     break;
                 }
-                let label = format!("{} of {}", spec.public_name, kind.as_str());
-                if unprefixed(&after) != plain_after {
-                    failures.push(format!(
-                        "{label}: prefixed result differs from the default-namespace result"
-                    ));
-                } else if elements(&after) != elements(&plain_after) {
-                    failures.push(format!("{label}: element namespaces changed"));
-                } else {
-                    let mut repeat = after.clone();
-                    apply_typed_properties(&mut repeat, &changes, "ru").unwrap();
-                    if repeat != after {
-                        failures.push(format!("{label}: repeat changed the prefixed descriptor"));
-                    }
+                if covered {
+                    break;
                 }
-                break;
             }
             if !covered {
                 missing.push(spec.public_name);
