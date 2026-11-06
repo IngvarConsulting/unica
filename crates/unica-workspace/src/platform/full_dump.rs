@@ -2437,11 +2437,9 @@ impl PreparedPublication {
             |_| {
                 self.recheck_inputs()?;
                 self.recheck_platform()?;
-                let current = validate_staged_dump_with(
-                    &self.private.staged_tree,
-                    self.source_kind,
-                    self.semantic_validator.as_ref(),
-                )?;
+                // Проверка содержимого уже прошла на этом снимке: совпадение байт с ним
+                // доказывает тот же результат, поэтому дерево заново не разбирается.
+                let current = TreeSnapshot::capture_target(&self.private.staged_tree)?;
                 if &current != staged_snapshot {
                     return Err("private staged dump changed after validation".into());
                 }
@@ -2501,11 +2499,9 @@ impl PreparedPublication {
             |_| {
                 self.recheck_inputs()?;
                 self.recheck_platform()?;
-                let current = validate_staged_dump_with(
-                    &self.private.staged_tree,
-                    self.source_kind,
-                    self.semantic_validator.as_ref(),
-                )?;
+                // Проверка содержимого уже прошла на этом снимке: совпадение байт с ним
+                // доказывает тот же результат, поэтому дерево заново не разбирается.
+                let current = TreeSnapshot::capture_target(&self.private.staged_tree)?;
                 if &current != staged_snapshot {
                     return Err("private staged dump changed after validation".to_string());
                 }
@@ -6378,24 +6374,18 @@ fn capture_directory_snapshot_recursive(
     ))
 }
 
-fn validate_staged_dump_with(
-    root: &Path,
-    kind: SourceSetKind,
-    validator: &dyn DumpSemanticValidator,
-) -> Result<TreeSnapshot, String> {
-    let snapshot = TreeSnapshot::capture_target(root)?;
-    validate_staged_dump_snapshot(root, kind, &snapshot, validator)
-        .map_err(|error| error.to_string())?;
-    Ok(snapshot)
-}
 fn validate_staged_dump_snapshot(
     root: &Path,
     kind: SourceSetKind,
     snapshot: &TreeSnapshot,
     validator: &dyn DumpSemanticValidator,
 ) -> Result<(), DumpValidationFailure> {
+    #[cfg(any(test, feature = "test-support"))]
+    TEST_SEMANTIC_VALIDATIONS.with(|count| count.set(count.get() + 1));
     let read = BoundDumpTree { root, snapshot };
-    validator.validate_stage(&DumpTreeObservation::from_read_port(&read), kind)
+    let validated = validator.validate_stage(&DumpTreeObservation::from_read_port(&read), kind);
+    run_publication_hook(PublicationCheckpoint::AfterStagedValidation);
+    validated
 }
 
 struct BoundDumpTree<'a> {
@@ -6761,27 +6751,6 @@ fn publish_staged_tree(
     };
 
     run_publication_hook(PublicationCheckpoint::BeforeInstalledSnapshot);
-    let installed = match target_parent.capture_child(target_name, target) {
-        Ok(installed) => installed,
-        Err(error) => {
-            return reject_publication(
-                private,
-                None,
-                format!("could not verify the published target before commit: {error}"),
-            );
-        }
-    };
-    if &installed != staged {
-        return reject_publication(
-            private,
-            Some(&installed),
-            format!(
-                "published dump differs from the validated staged snapshot before commit: {}",
-                target.display()
-            ),
-        );
-    }
-
     let checkpoint_error =
         run_publication_failpoint(PublicationCheckpoint::AfterStageInstall).err();
     let published = match target_parent.capture_child(target_name, target) {
@@ -7322,6 +7291,7 @@ fn rename_child_no_replace(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublicationCheckpoint {
     AfterStagedCapture,
+    AfterStagedValidation,
     AfterBackup,
     BeforeStageInstall,
     BeforeSealedPublishRename,
@@ -7395,6 +7365,17 @@ pub fn with_publication_failpoint<T>(
     let previous = TEST_PUBLICATION_FAILPOINT.with(|slot| slot.replace(Some(checkpoint)));
     let _reset = Reset(previous);
     action()
+}
+
+#[cfg(any(test, feature = "test-support"))]
+thread_local! {
+    static TEST_SEMANTIC_VALIDATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Сколько раз на этом потоке выполнялась проверка содержимого выгрузки.
+#[cfg(any(test, feature = "test-support"))]
+pub fn semantic_validations_on_this_thread() -> usize {
+    TEST_SEMANTIC_VALIDATIONS.with(std::cell::Cell::get)
 }
 
 #[cfg(any(test, feature = "test-support"))]
