@@ -24,7 +24,7 @@ pub(crate) use self::invocation_service::{
 };
 use super::protocol::InvocationRequest;
 use crate::application::tool_contracts::SurfaceRelease;
-pub(super) use invocation_service::closed_daemon_source_relative_path;
+pub(super) use invocation_service::{closed_daemon_source_relative_path, WORKSPACE_ACTOR_SCOPE};
 use unica_analysis_services::provider_host::ProviderHostOwner;
 use unica_execution::clock::TokioClock;
 use unica_execution::invocation::InvocationResponseDeadline;
@@ -4296,6 +4296,31 @@ pub(crate) mod medium_actor_capacity_tests {
             owned_stop: Option<Arc<AtomicBool>>,
         ) -> Self {
             Self::over_configured(canonical, service, owned_stop, None)
+        }
+
+        /// The live daemon with the product LSP service over the same actors
+        /// its MCP calls reach.
+        pub(crate) fn start_with_product_lsp(service: Arc<dyn CanonicalInvocationService>) -> Self {
+            let actors = Arc::new(crate::infrastructure::source_workspace::actor_registry());
+            let canonical = Arc::new(V5CanonicalInvocationRuntime::with_shared_workspace_actors(
+                Arc::clone(&service),
+                Arc::new(TokioClock),
+                Arc::clone(&actors),
+            ));
+            let host = Arc::new(unica_lsp::UnicaLspHost::new(Arc::new(
+                super::super::lsp_workspaces::ProductLspWorkspaces::new(actors),
+            )));
+            Self::over_configured(
+                canonical,
+                service,
+                Some(Arc::new(AtomicBool::new(false))),
+                Some(host),
+            )
+        }
+
+        /// Workspace actors alive in the daemon's one registry.
+        pub(crate) fn live_workspace_actors(&self) -> usize {
+            self.canonical.workspace_actors.live_len_for_test().unwrap()
         }
 
         fn over_configured(

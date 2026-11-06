@@ -1471,7 +1471,7 @@ fn bind_workspace_invocation_controlled(
                     source.source_profile,
                 )
             }),
-            "canonical-v0.13",
+            WORKSPACE_ACTOR_SCOPE,
         )
         .map_err(|error| match error {
             WorkspaceActorRegistryError::InvalidIdentity(_) => {
@@ -1535,6 +1535,10 @@ fn bind_workspace_invocation_controlled(
         runtime_service: resources.runtime_service,
     })
 }
+
+/// The scope under which a workspace is admitted. The actor of a workspace
+/// is the same only for the same inputs (`actor-identity`).
+pub(in crate::infrastructure::daemon) const WORKSPACE_ACTOR_SCOPE: &str = "canonical-v0.13";
 
 pub(in crate::infrastructure::daemon) fn closed_daemon_source_relative_path(
     path: &str,

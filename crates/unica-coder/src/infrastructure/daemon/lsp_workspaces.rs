@@ -1,7 +1,7 @@
 //! Продуктовая сторона службы LSP: папка редактора допускается так же, как
 //! `workspace_hint` вызова MCP, и модуль читается той же авторизацией чтения.
 
-use super::server::closed_daemon_source_relative_path;
+use super::server::{closed_daemon_source_relative_path, WORKSPACE_ACTOR_SCOPE};
 use crate::domain::source_capabilities::bsl_profile_for_source;
 use crate::infrastructure::source_workspace::{
     discover_project_source_admission, WorkspaceActor, WorkspaceActorRegistry,
@@ -20,10 +20,6 @@ use unica_lsp::{
 };
 use unica_source_contract::{SourceFormat, SourceProfile};
 use unica_workspace::actor::{ProviderRootBinding, WorkspaceSourceSetInput};
-
-/// The scope under which MCP admits a workspace. The actor of a workspace is
-/// the same only for the same inputs (`actor-identity`).
-const ACTOR_SCOPE: &str = "canonical-v0.13";
 
 pub(super) struct ProductLspWorkspaces {
     actors: Arc<WorkspaceActorRegistry>,
@@ -81,7 +77,7 @@ impl LspWorkspaces for ProductLspWorkspaces {
                         SourceProfile::platform_xml_8_3_27_format_2_20(),
                     )
                 }),
-                ACTOR_SCOPE,
+                WORKSPACE_ACTOR_SCOPE,
             )
             .ok()?;
         let bindings = sources
