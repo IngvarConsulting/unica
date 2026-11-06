@@ -60,6 +60,94 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// канал не обрывается.
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NetworkWaits {
+    connect: Duration,
+    read: Duration,
+}
+
+#[cfg(test)]
+mod wait_policy_tests {
+    use super::*;
+
+    #[test]
+    fn connection_and_next_data_waits_keep_their_existing_defaults() {
+        assert_eq!(
+            NetworkWaits::from_environment(&|_| None).unwrap(),
+            NetworkWaits {
+                connect: Duration::from_secs(30),
+                read: Duration::from_secs(60),
+            }
+        );
+    }
+
+    #[cfg(not(feature = "test-support"))]
+    #[test]
+    fn ordinary_client_does_not_read_test_wait_environment() {
+        let _client = NetworkClient::from_environment(&|name| {
+            assert!(!name.starts_with("UNICA_TEST_NETWORK_"), "{name}");
+            None
+        })
+        .unwrap();
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn test_support_changes_only_the_requested_wait() {
+        assert_eq!(
+            NetworkWaits::from_environment(&|name| {
+                (name == "UNICA_TEST_NETWORK_READ_WAIT_MS").then(|| "40".into())
+            })
+            .unwrap(),
+            NetworkWaits {
+                connect: Duration::from_secs(30),
+                read: Duration::from_millis(40),
+            }
+        );
+        assert_eq!(
+            NetworkWaits::from_environment(&|_| Some("0".into()))
+                .unwrap_err()
+                .failure(),
+            NetworkFailure::Configuration
+        );
+    }
+}
+
+impl NetworkWaits {
+    fn from_environment(lookup: EnvLookup<'_>) -> Result<Self, NetworkError> {
+        #[cfg(not(feature = "test-support"))]
+        let _ = lookup;
+        let waits = Self {
+            connect: CONNECT_TIMEOUT,
+            read: READ_TIMEOUT,
+        };
+        #[cfg(feature = "test-support")]
+        {
+            let read_wait = |name, default| {
+                let Some(raw) = lookup(name) else {
+                    return Ok(default);
+                };
+                raw.parse::<u64>()
+                    .ok()
+                    .filter(|millis| *millis > 0)
+                    .map(Duration::from_millis)
+                    .ok_or_else(|| {
+                        NetworkError::new(
+                            NetworkFailure::Configuration,
+                            format!("invalid test-support network wait {name}"),
+                        )
+                    })
+            };
+            Ok(Self {
+                connect: read_wait("UNICA_TEST_NETWORK_CONNECT_WAIT_MS", waits.connect)?,
+                read: read_wait("UNICA_TEST_NETWORK_READ_WAIT_MS", waits.read)?,
+            })
+        }
+        #[cfg(not(feature = "test-support"))]
+        Ok(waits)
+    }
+}
+
 /// HTTP-клиент процесса: одна конфигурация TLS, одни настройки прокси.
 ///
 /// `ureq` 2 задаёт прокси на весь агент и не знает `NO_PROXY`, поэтому внутри
@@ -125,14 +213,15 @@ impl NetworkClient {
     /// Клиент с переменными прокси из `lookup` и доверием ОС.
     pub fn from_environment(lookup: EnvLookup<'_>) -> Result<Self, NetworkError> {
         let settings = ProxySettings::from_lookup(lookup);
+        let waits = NetworkWaits::from_environment(lookup)?;
         let (tls, trust) = tls_config()?;
         let build = |proxy: Option<&ProxyChoice>| {
             let mut builder = ureq::AgentBuilder::new()
                 .tls_config(Arc::clone(&tls))
                 .user_agent(USER_AGENT)
                 .try_proxy_from_env(false)
-                .timeout_connect(CONNECT_TIMEOUT)
-                .timeout_read(READ_TIMEOUT)
+                .timeout_connect(waits.connect)
+                .timeout_read(waits.read)
                 .redirects(0);
             if let Some(choice) = proxy {
                 builder = builder.proxy(choice.proxy.clone());
