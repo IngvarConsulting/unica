@@ -30,3 +30,6 @@ tempfile.workspace = true
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 unica-process = { path = "../unica-process", features = ["test-support"] }
 unica-analysis-services = { path = "../unica-analysis-services", features = ["test-support"] }
+
+[package.metadata.unica]
+read-outside-baseline = 1

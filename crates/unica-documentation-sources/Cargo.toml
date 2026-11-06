@@ -29,3 +29,6 @@ sha2.workspace = true
 unica-metadata = { path = "../unica-metadata" }
 tempfile.workspace = true
 unica-network = { path = "../unica-network", features = ["test-support"] }
+
+[package.metadata.unica]
+read-outside-baseline = 1
