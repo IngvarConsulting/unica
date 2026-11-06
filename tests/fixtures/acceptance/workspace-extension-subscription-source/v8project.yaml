@@ -1,0 +1,8 @@
+format: DESIGNER
+source-set:
+  - name: base
+    type: CONFIGURATION
+    path: base
+  - name: ext
+    type: EXTENSION
+    path: ext
