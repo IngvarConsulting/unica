@@ -136,21 +136,6 @@ pub(crate) fn page_root_verdict(
 ) -> DomainResult {
     let probe = ViewCursorStore::token_probe();
     let binding = question.binding();
-    let render =
-        |node: &Value, items: Vec<Value>, cursor: Option<String>, stopped_by: &'static str| {
-            let mut page = check_page_result(node, items, cursor.clone(), stopped_by);
-            if let Some(cursor) = cursor {
-                page.next.insert(
-                    0,
-                    json!({
-                        "tool": "unica.check",
-                        "args": {"limit": question.limit, "cursor": cursor},
-                        "reason": "остальные группы диагностик того же вердикта",
-                    }),
-                );
-            }
-            page
-        };
     if let Some(cursor) = cursor {
         let stored = match cursors.read(cursor, &binding.question()) {
             Ok(stored) => stored,
@@ -172,7 +157,8 @@ pub(crate) fn page_root_verdict(
             Err(error) => return error.into_result(None),
         };
         let node = stored.snapshot.node();
-        let render = |items, cursor, stopped_by| render(node, items, cursor, stopped_by);
+        let render =
+            |items, cursor, stopped_by| root_page_result(node, question, items, cursor, stopped_by);
         let page = match prepare_check_page(&render, &window, 0, question.limit, &probe) {
             Ok(page) => page,
             Err(message) => return check_page_refusal(None, message),
@@ -201,7 +187,8 @@ pub(crate) fn page_root_verdict(
     let Some((node, items)) = split_diagnostics(result.clone()) else {
         return result;
     };
-    let render = |items, cursor, stopped_by| render(&node, items, cursor, stopped_by);
+    let render =
+        |items, cursor, stopped_by| root_page_result(&node, question, items, cursor, stopped_by);
     if let Err(message) = preflight_check_pages(&render, &items, &probe) {
         return check_page_refusal(None, message);
     }
@@ -220,6 +207,27 @@ pub(crate) fn page_root_verdict(
     render(page.items, next, page.stopped_by)
 }
 
+fn root_page_result(
+    node: &Value,
+    question: &RootCheckQuestion,
+    items: Vec<Value>,
+    cursor: Option<String>,
+    stopped_by: &'static str,
+) -> DomainResult {
+    let mut page = check_page_result(node, items, cursor.clone(), stopped_by);
+    if let Some(cursor) = cursor {
+        page.next.insert(
+            0,
+            json!({
+                "tool": "unica.check",
+                "args": {"limit": question.limit, "cursor": cursor},
+                "reason": "остальные группы диагностик того же вердикта",
+            }),
+        );
+    }
+    page
+}
+
 /// Splits a check result into the verdict with its diagnostic count and the
 /// diagnostics themselves.
 fn split_diagnostics(mut result: DomainResult) -> Option<(Value, Vec<Value>)> {
@@ -230,6 +238,46 @@ fn split_diagnostics(mut result: DomainResult) -> Option<(Value, Vec<Value>)> {
     data.insert("diagnosticCount".to_string(), json!(items.len()));
     let node = serde_json::to_value(&result).expect("a check result serializes");
     Some((node, items))
+}
+
+/// The encoded size of a page without its diagnostics, with and without a
+/// continuation. Rendering a page parses the whole verdict, whose checks grow
+/// with the source sets, so a page's size is added up from these two
+/// measurements and the sizes of its diagnostics: an answer renders a fixed
+/// number of times however many diagnostics it holds.
+struct PageEnvelope {
+    last_page: usize,
+    continued_page: usize,
+}
+
+impl PageEnvelope {
+    fn measure(render: &RenderPage<'_>, probe: &str) -> Self {
+        Self {
+            last_page: serialized_result_size(&render(Vec::new(), None, "complete")),
+            continued_page: serialized_result_size(&render(
+                Vec::new(),
+                Some(probe.to_owned()),
+                "complete",
+            )),
+        }
+    }
+
+    /// `items_bytes` is the encoded size of `items` diagnostics; a JSON array
+    /// adds one comma between each two of them.
+    fn page_bytes(&self, items: usize, items_bytes: usize, continued: bool) -> usize {
+        let envelope = if continued {
+            self.continued_page
+        } else {
+            self.last_page
+        };
+        envelope + items_bytes + items.saturating_sub(1)
+    }
+}
+
+fn serialized_value_size(value: &Value) -> usize {
+    serde_json::to_vec(value)
+        .expect("a check diagnostic serializes")
+        .len()
 }
 
 struct PreparedCheckPage {
@@ -248,9 +296,10 @@ fn prepare_check_page(
     if offset > items.len() {
         return Err("check cursor offset is invalid");
     }
-    let base = render(Vec::new(), None, "complete");
-    let prefer_bytes = serialized_result_size(&base) <= PREFERRED_PAGE_BYTES;
+    let envelope = PageEnvelope::measure(render, probe);
+    let prefer_bytes = envelope.last_page <= PREFERRED_PAGE_BYTES;
     let mut page_items = Vec::new();
+    let mut page_items_bytes = 0;
     let stopped_by = loop {
         if offset == items.len() {
             break "complete";
@@ -258,14 +307,12 @@ fn prepare_check_page(
         if page_items.len() == limit {
             break "limit";
         }
-        let mut candidate = page_items.clone();
-        candidate.push(items[offset].clone());
-        let probe = render(
-            candidate.clone(),
-            (offset + 1 < items.len()).then(|| probe.to_owned()),
-            "complete",
+        let candidate_bytes = page_items_bytes + serialized_value_size(&items[offset]);
+        let bytes = envelope.page_bytes(
+            page_items.len() + 1,
+            candidate_bytes,
+            offset + 1 < items.len(),
         );
-        let bytes = serialized_result_size(&probe);
         if bytes > MAX_CANONICAL_RESULT_BYTES {
             if page_items.is_empty() {
                 return Err("one check diagnostic exceeds the transport result limit");
@@ -275,7 +322,8 @@ fn prepare_check_page(
         if prefer_bytes && bytes > PREFERRED_PAGE_BYTES && !page_items.is_empty() {
             break "bytes";
         }
-        page_items = candidate;
+        page_items.push(items[offset].clone());
+        page_items_bytes = candidate_bytes;
         offset += 1;
     };
     Ok(PreparedCheckPage {
@@ -290,15 +338,15 @@ fn preflight_check_pages(
     items: &[Value],
     probe: &str,
 ) -> Result<(), &'static str> {
-    if serialized_result_size(&render(Vec::new(), None, "complete")) > MAX_CANONICAL_RESULT_BYTES {
+    let envelope = PageEnvelope::measure(render, probe);
+    if envelope.last_page > MAX_CANONICAL_RESULT_BYTES {
         return Err("check result metadata exceed the transport result limit");
     }
     for (index, item) in items.iter().enumerate() {
-        let cursor = (index + 1 < items.len()).then(|| probe.to_owned());
         // `complete` is the longest stop reason. The last page may be three
         // bytes larger than an intermediate page even without a cursor.
-        let probe = render(vec![item.clone()], cursor, "complete");
-        if serialized_result_size(&probe) > MAX_CANONICAL_RESULT_BYTES {
+        let bytes = envelope.page_bytes(1, serialized_value_size(item), index + 1 < items.len());
+        if bytes > MAX_CANONICAL_RESULT_BYTES {
             return Err("one check diagnostic exceeds the transport result limit");
         }
     }
@@ -990,6 +1038,64 @@ mod tests {
         assert!(!refused.ok, "{refused:?}");
         assert_eq!(refused.diagnostics[0]["code"], "result_too_large");
         assert!(refused.cursor.is_none());
+    }
+
+    fn counted_pages(items: usize) -> usize {
+        let renders = std::cell::Cell::new(0);
+        let verdict = root_verdict(&vec![10; items]);
+        let (node, items) = super::split_diagnostics(verdict).unwrap();
+        let question = RootCheckQuestion::new("workspace", 20);
+        let render = |page, cursor, stopped_by| {
+            renders.set(renders.get() + 1);
+            super::root_page_result(&node, &question, page, cursor, stopped_by)
+        };
+        let probe = ViewCursorStore::token_probe();
+        super::preflight_check_pages(&render, &items, &probe).unwrap();
+        super::prepare_check_page(&render, &items, 0, 20, &probe).unwrap();
+        renders.get()
+    }
+
+    /// A workspace with hundreds of source sets gets hundreds of diagnostic
+    /// groups and a verdict that grows with them; rendering per group made the
+    /// answer quadratic and held a root check for many seconds after its
+    /// inspection had finished.
+    #[test]
+    fn answering_renders_the_page_the_same_number_of_times_for_any_diagnostic_count() {
+        assert_eq!(counted_pages(3), counted_pages(3_000));
+    }
+
+    /// The page limits are decided on added-up sizes, so the sum has to be the
+    /// exact encoded size of what is then sent, with and without a cursor, for
+    /// text that JSON escapes or encodes in several bytes.
+    /// rule: INV.WIRE.READ-PAGE-BUDGET
+    #[test]
+    fn an_added_up_page_size_is_the_encoded_size_of_that_page() {
+        let (node, _) = super::split_diagnostics(root_verdict(&[1])).unwrap();
+        let question = RootCheckQuestion::new("workspace", 20);
+        let render = |page, cursor, stopped_by| {
+            super::root_page_result(&node, &question, page, cursor, stopped_by)
+        };
+        let probe = ViewCursorStore::token_probe();
+        let envelope = super::PageEnvelope::measure(&render, &probe);
+        let items = [
+            json!({"code": "a", "message": "plain"}),
+            json!({"code": "b", "message": "кириллица и \"кавычки\"\n\t\\"}),
+            json!({"code": "c", "count": 3, "paths": ["src/Файл.xml", null, 1.5]}),
+            json!({"code": "d", "nested": {"empty": [], "emoji": "😀"}}),
+        ];
+        for count in 0..=items.len() {
+            let page = items[..count].to_vec();
+            let bytes = page.iter().map(super::serialized_value_size).sum();
+            for cursor in [None, Some(probe.clone())] {
+                let continued = cursor.is_some();
+                let rendered = render(page.clone(), cursor, "complete");
+                assert_eq!(
+                    envelope.page_bytes(count, bytes, continued),
+                    super::serialized_result_size(&rendered),
+                    "{count} diagnostics, continued: {continued}"
+                );
+            }
+        }
     }
 
     /// #1119 (9c): the same verdict to the same question is saved once and
