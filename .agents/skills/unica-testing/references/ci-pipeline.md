@@ -8,12 +8,14 @@
 `run-static-tests.py`: модули Python без `medium` и без `[pr] skip` из
 `.config/python-sizes.toml`, параллельно. Цель до трёх минут.
 
-Очередь всегда исполняет Clippy всего workspace, Python small, смоук продукта и снимки
-контрактов (`[queue] keep-medium`). Тесты Rust выбирает `queue-tests.py`: изменённые
-крейты и, при правке строк `pub` в их `src`, прямо зависимые. Полный набор, включая Python
-medium, идёт при правке `Cargo.*`, `build.rs`, `.config`, `.cargo`, `.github`, `scripts`,
-при любом пути вне крейтов, кроме прозы и `tests/ci`, `tests/dev`, и при сбое чтения diff.
-Пропущенное исполняет ночь.
+Очередь всегда исполняет Clippy всего workspace на Linux и Windows, весь Rust `small`,
+Python small, смоук продукта и снимки контрактов (`[queue] keep-medium`). К ним `queue-tests.py`
+добавляет `medium` изменённых крейтов, включая `unica-coder`. Изменённым считается и крейт,
+в исходниках которого упомянут правленый путь из `plugins`, `tests/fixtures` или `scripts`,
+кроме `scripts/ci`. Полный набор идёт при правке `Cargo.lock`, корневого `Cargo.toml`,
+тулчейна и при сбое чтения diff. `medium` остальных крейтов, Python medium и large идут ночью.
+
+**Красная ночь.** Виновный PR откатывается, очередь стоит до зелёного `main`.
 
 **Откат выбора.** Переменная репозитория `QUEUE_FULL_TESTS=true` включает полный набор без
 правки кода. Её ставят, когда ночь за 30 дней дважды находит поломку в тесте, который
