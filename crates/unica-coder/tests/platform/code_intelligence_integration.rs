@@ -1465,7 +1465,7 @@ mod medium_tests {
     }
 
     #[test]
-    fn bsl_analyzer_budget_envelope_keeps_its_hits_as_a_partial_result() {
+    fn bsl_analyzer_budget_envelope_reaches_the_provider_limit_without_failing() {
         // Так анализатор отвечает на обычный запрос к большой конфигурации:
         // вывод не помещается в его бюджет, и лишние попадания отброшены.
         let envelope = serde_json::json!({
@@ -1492,7 +1492,12 @@ mod medium_tests {
 
         let section = parse_bsl_analyzer_search(&envelope.to_string(), &context());
 
-        assert_eq!(section.status, ProviderSectionStatus::Partial);
+        assert_eq!(section.status, ProviderSectionStatus::LimitReached);
+        assert_eq!(
+            section.termination.as_ref().unwrap().code,
+            unica_code_intelligence::model::SearchTerminationCode::LimitReached
+        );
+        assert!(!section.search_complete);
         assert_eq!(section.hits.len(), 1);
         let hit = &section.hits[0];
         assert_eq!(hit.rank, Some(1));
@@ -2075,7 +2080,146 @@ mod medium_tests {
         assert_eq!(calls[0].1["action"], "search_code");
         assert_eq!(calls[0].1["query"], "Post");
         assert_eq!(calls[0].1["limit"], 50);
+        assert_eq!(calls[0].1["max_output_tokens"], 50_000);
         assert!(calls[0].2 <= Duration::from_secs(120));
+    }
+
+    #[test]
+    fn bsl_analyzer_listing_frame_is_not_reported_as_unparsed_output() {
+        let section = parse_bsl_analyzer_search(
+            "Modality tag per hit: [L] lexical-only\n\
+             #1 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n\
+             \n\
+             -- semantic skipped: not configured (set EMBEDDING_URL) --\n\
+             Indexing lexical: ready\n\
+             Indexing semantic: disabled\n",
+            &context(),
+        );
+        assert_eq!(section.hits.len(), 1);
+        assert_eq!(
+            section.diagnostics,
+            vec!["semantic skipped: not configured (set EMBEDDING_URL)".to_string()]
+        );
+
+        // Неготовый индекс рядом с попаданиями не прячется.
+        let pending = parse_bsl_analyzer_search(
+            "#1 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)\n\
+             \n\
+             Indexing lexical: running\n",
+            &context(),
+        );
+        assert!(pending
+            .diagnostics
+            .iter()
+            .any(|line| line.contains("Indexing lexical: running")));
+    }
+
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    #[test]
+    fn bsl_analyzer_process_log_never_reaches_the_search_answer() {
+        // Журнал сборки индекса растёт вместе с процессом: попав в ответ, он
+        // занимал страницу и вытеснял попадания.
+        let log = "2026-11-06T16:19:28.850332300+05:00  WARN table not found alias=secret-marker\n"
+            .repeat(4_000);
+        let budget_envelope = serde_json::json!({
+            "budget_exhausted": true,
+            "freshness": {"completeness": {"reasons": [
+                {"code": "output_budget", "detail": "hits trimmed to fit max_output_tokens"}
+            ]}},
+            "hits": [{
+                "line_start": 3,
+                "location": {"path": "Module.bsl"},
+                "snippet": "Procedure Run()",
+                "symbol": "Run"
+            }]
+        })
+        .to_string();
+        for (reply, status, reason) in [
+            (
+                budget_envelope.as_str(),
+                ProviderSectionStatus::LimitReached,
+                Some("max_output_tokens"),
+            ),
+            (
+                "#broken header\n#2 [L] CommonModules/Sales/Ext/Module.bsl:1 :: Post (procedure)",
+                ProviderSectionStatus::Partial,
+                Some("malformed"),
+            ),
+            (
+                r#"{"status":"not_ready","detail":"indexing 40%","retry_after_ms":1500}"#,
+                ProviderSectionStatus::TimedOut,
+                Some("indexing 40%"),
+            ),
+            (
+                "unexpected analyzer reply",
+                ProviderSectionStatus::Failed,
+                None,
+            ),
+        ] {
+            let client = FakeBslClient {
+                calls: Mutex::new(Vec::new()),
+                output: McpToolOutput {
+                    result_text: reply.to_string(),
+                    stderr: log.clone(),
+                },
+            };
+            let provider = BslAnalyzerProvider::new(
+                &client,
+                crate::infrastructure::analysis_composition::source_bindings(),
+            );
+
+            let section = provider.search(
+                &SearchRequest {
+                    query: "Post".to_string(),
+                    limit: 50,
+                },
+                &context(),
+                ProviderDeadline::new(Instant::now() + Duration::from_secs(120)),
+                &CancellationToken::new(),
+            );
+
+            assert_eq!(section.status, status, "{reply}");
+            let text = serde_json::to_string(&section).unwrap();
+            assert!(!text.contains("secret-marker"), "{reply}: {text}");
+            assert!(text.len() < 4_096, "{reply}: {} bytes", text.len());
+            if let Some(reason) = reason {
+                assert!(
+                    section.diagnostics.iter().any(|line| line.contains(reason)),
+                    "{reply}: {:?}",
+                    section.diagnostics
+                );
+            }
+        }
+
+        // Причина после журнала остаётся, но одной короткой строкой.
+        let fatal = format!("fatal: graph database is unavailable {}", "x".repeat(5_000));
+        let client = FakeBslClient {
+            calls: Mutex::new(Vec::new()),
+            output: McpToolOutput {
+                result_text: "unexpected analyzer reply".to_string(),
+                stderr: format!("{log}{fatal}\n"),
+            },
+        };
+        let section = BslAnalyzerProvider::new(
+            &client,
+            crate::infrastructure::analysis_composition::source_bindings(),
+        )
+        .search(
+            &SearchRequest {
+                query: "Post".to_string(),
+                limit: 50,
+            },
+            &context(),
+            ProviderDeadline::new(Instant::now() + Duration::from_secs(120)),
+            &CancellationToken::new(),
+        );
+        let text = serde_json::to_string(&section).unwrap();
+        assert!(
+            text.contains("fatal: graph database is unavailable"),
+            "{text}"
+        );
+        assert!(!text.contains("secret-marker"), "{text}");
+        assert!(text.len() < 4_096, "{} bytes", text.len());
     }
 
     /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
@@ -2150,7 +2294,7 @@ mod medium_tests {
             &CancellationToken::new(),
         );
         assert_eq!(section.hits.len(), 1);
-        assert_eq!(section.status, ProviderSectionStatus::Partial);
+        assert_eq!(section.status, ProviderSectionStatus::LimitReached);
         assert!(!section.search_complete);
         assert_eq!(section.matches.relation, SearchCountRelation::LowerBound);
     }
