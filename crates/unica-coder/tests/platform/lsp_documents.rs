@@ -330,3 +330,26 @@ fn unica_uris_of_common_object_and_form_modules_read_the_disk_without_open() {
         assert_eq!(documents.file_of_uri(&uri).unwrap(), file_uri(&path));
     }
 }
+
+/// `src` and `SRC` are one directory on Windows: the file has no single source
+/// set, and the connection says so rather than choosing one.
+#[cfg(windows)]
+#[test]
+fn source_sets_differing_only_in_letter_case_do_not_merge_silently() {
+    let space = space("");
+    let mut shared = layout("shared", &space.root);
+    let mut other = shared.source_sets[0].clone();
+    other.name = "other".to_owned();
+    other.root = space.root.join("SRC");
+    shared.source_sets.push(other);
+    let documents = LspDocuments::new("session", vec![shared]);
+
+    let error = documents
+        .uri_of_file(&file_uri(&space.root.join("src").join(MODULE)))
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, LspDocumentError::AmbiguousSourceSet(names) if names.len() == 2),
+        "{error:?}"
+    );
+}

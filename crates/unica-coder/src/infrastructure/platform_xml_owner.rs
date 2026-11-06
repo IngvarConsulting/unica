@@ -190,7 +190,7 @@ fn resolve_platform_xml_owners_with_optional_exact_root(
                     message,
                 },
             )?;
-        if target.starts_with(&source_root) {
+        if unica_workspace::paths::path_starts_with_host_root(&target, &source_root) {
             containing.push((source_set, source_root));
         }
     }
@@ -336,7 +336,7 @@ fn resolve_existing_platform_xml_owners_for_new_output_with_optional_exact_root(
                     message,
                 },
             )?;
-        if target.starts_with(&source_root) {
+        if unica_workspace::paths::path_starts_with_host_root(&target, &source_root) {
             containing.push((source_set, source_root));
         }
     }
@@ -733,8 +733,9 @@ fn owner_path_in_source_set(
             Some(source_root.join("Configuration.xml"))
         }
         SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => {
-            let relative = target.strip_prefix(source_root).ok()?;
-            let first = relative.components().next()?.as_os_str();
+            let relative = unica_workspace::paths::host_path_relative_to(target, source_root)?;
+            let first = relative.components().next()?;
+            let first = first.as_os_str();
             let first_path = Path::new(first);
             let artifact = if first_path.extension().and_then(|ext| ext.to_str()) == Some("xml") {
                 first_path.file_stem()?
@@ -1690,6 +1691,53 @@ pub(crate) mod medium_tests {
             assert!(!error.message.contains("ambiguous"), "{label}: {error:?}");
             let _ = fs::remove_dir_all(&context.cwd);
         }
+    }
+
+    #[test]
+    fn external_owner_of_an_absent_target_ignores_the_host_spelling_of_the_root() {
+        use unica_workspace::test_support::{
+            extended_length_spelling_for_test, other_letter_case_for_test,
+        };
+        let context = temp_context("host-spelling-owner");
+        let source = context.cwd.join("Src");
+
+        let owner = owner_path_in_source_set(
+            &extended_length_spelling_for_test(&source),
+            &other_letter_case_for_test(&source).join("Tool/Absent/Form.xml"),
+            SourceSetKind::ExternalProcessor,
+        );
+
+        assert_eq!(
+            owner,
+            Some(extended_length_spelling_for_test(&source).join("Tool.xml"))
+        );
+        let _ = fs::remove_dir_all(&context.cwd);
+    }
+
+    /// `Foo` and `foo` are one directory where the host ignores letter case:
+    /// two source sets declared with both spellings own its files equally, and
+    /// neither may win silently. Where case separates paths, each owns its own.
+    #[test]
+    fn source_sets_differing_only_in_letter_case_merge_only_loudly() {
+        let context = temp_context("letter-case-sets");
+        fs::write(
+            context.cwd.join("v8project.yaml"),
+            "format: DESIGNER\nsource-set:\n  - name: upper\n    type: CONFIGURATION\n    path: Foo\n  - name: lower\n    type: EXTENSION\n    path: foo\n",
+        )
+        .unwrap();
+
+        let result = resolve_existing_platform_xml_owners_for_new_output(
+            &context.cwd.join("foo/Absent/Form.xml"),
+            &context,
+        );
+
+        if unica_workspace::paths::same_host_path(Path::new("Foo"), Path::new("foo")) {
+            let error = result.expect_err("one directory declared twice has no single owner");
+            assert!(error.message.contains("ambiguous"), "{}", error.message);
+        } else if let Err(error) = result {
+            assert!(!error.message.contains("ambiguous"), "{}", error.message);
+        }
+        let _ = fs::remove_dir_all(&context.cwd);
     }
 
     #[test]

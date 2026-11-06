@@ -7776,23 +7776,23 @@ fn validate_dump_target(
     base_path: &Path,
     work_path: &Path,
 ) -> Result<(), String> {
-    if !target.starts_with(workspace_root) {
+    if !crate::paths::path_starts_with_host_root(target, workspace_root) {
         return Err(format!(
             "dump target must stay inside workspace root {}: {}",
             workspace_root.display(),
             target.display()
         ));
     }
-    if target == workspace_root {
+    if crate::paths::same_host_path(target, workspace_root) {
         return Err(format!(
             "dump target must not equal workspace root: {}",
             target.display()
         ));
     }
-    if target == base_path {
+    if crate::paths::same_host_path(target, base_path) {
         return Err("dump target must not equal project basePath".to_string());
     }
-    if target == work_path {
+    if crate::paths::same_host_path(target, work_path) {
         return Err("dump target must not equal workPath".to_string());
     }
     if target.parent().is_none() || target == Path::new("/") {
@@ -7917,16 +7917,16 @@ impl DumpTargetCapture {
         let target_parent_path = target
             .parent()
             .ok_or_else(|| format!("dump target has no parent directory: {}", target.display()))?;
-        let target_parent_relative = target_parent_path
-            .strip_prefix(&workspace_root)
-            .map_err(|_| {
-                format!(
-                    "dump target parent is not physically addressable below workspace root {}: {}",
-                    workspace_root.display(),
-                    target_parent_path.display()
-                )
-            })?
-            .to_path_buf();
+        let target_parent_relative =
+            crate::paths::host_path_relative_to(target_parent_path, &workspace_root).ok_or_else(
+                || {
+                    format!(
+                "dump target parent is not physically addressable below workspace root {}: {}",
+                workspace_root.display(),
+                target_parent_path.display()
+            )
+                },
+            )?;
         run_target_parent_capture_hook(target_parent_path);
         let (target_parent, target_missing_parents) = if config_store.is_some() {
             capture_existing_target_parent(&workspace_anchor, &target_parent_relative)?
@@ -7936,11 +7936,16 @@ impl DumpTargetCapture {
                 Vec::new(),
             )
         };
-        let target_parent_relative = target_parent
-            .path
-            .strip_prefix(&workspace_root)
-            .map_err(|error| error.to_string())?
-            .to_path_buf();
+        let target_parent_relative =
+            crate::paths::host_path_relative_to(&target_parent.path, &workspace_root).ok_or_else(
+                || {
+                    format!(
+                        "dump target parent {} left workspace root {}",
+                        target_parent.path.display(),
+                        workspace_root.display()
+                    )
+                },
+            )?;
         let target_snapshot = if target_missing_parents.is_empty() {
             target_parent.capture_child(
                 target
@@ -8572,4 +8577,34 @@ pub mod test_support_os {
         pending_writer_scrub_contract::run as pending_writer_scrub_contract,
         with_effective_config_create_hook,
     };
+}
+
+#[cfg(all(test, windows))]
+mod host_path_tests {
+    use super::validate_dump_target;
+    use std::path::Path;
+
+    #[test]
+    fn dump_target_boundaries_follow_the_windows_host_spelling() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let plain = crate::paths::strip_windows_extended_length_prefix(&root);
+        assert_ne!(root, plain);
+        let base = plain.join("base");
+        let work = plain.join("work");
+
+        validate_dump_target(&root.join(r"Absent\dump"), &plain, &base, &work).unwrap();
+        for (target, reason) in [
+            (root.clone(), "equal workspace root"),
+            (root.join("BASE"), "equal project basePath"),
+            (root.join("WORK"), "equal workPath"),
+        ] {
+            let error = validate_dump_target(&target, &plain, &base, &work)
+                .expect_err("the boundary holds in every spelling");
+            assert!(error.contains(reason), "{target:?}: {error}");
+        }
+        assert!(
+            validate_dump_target(Path::new(r"Z:\elsewhere\dump"), &plain, &base, &work).is_err()
+        );
+    }
 }

@@ -760,6 +760,8 @@ fn normalize_code_intelligence_path(
     raw: &str,
     context: &CodeIntelligenceContext,
 ) -> Result<String, String> {
+    use unica_workspace::paths::{host_path_relative_to, path_starts_with_host_root};
+
     let source_root = unica_workspace::paths::normalize_path_identity(&context.source_root.path)?;
     let workspace_root =
         unica_workspace::paths::normalize_path_identity(&context.workspace.workspace_root)?;
@@ -777,9 +779,9 @@ fn normalize_code_intelligence_path(
     } else {
         let from_cwd = normalize_lexical_path(&cwd.join(raw_path));
         let from_workspace = normalize_lexical_path(&workspace_root.join(raw_path));
-        if from_cwd.starts_with(&source_root) {
+        if path_starts_with_host_root(&from_cwd, &source_root) {
             from_cwd
-        } else if from_workspace.starts_with(&source_root) {
+        } else if path_starts_with_host_root(&from_workspace, &source_root) {
             from_workspace
         } else if raw_path
             .components()
@@ -792,15 +794,18 @@ fn normalize_code_intelligence_path(
     };
     let resolved = unica_workspace::paths::normalize_path_identity(&candidate)
         .map_err(|error| format!("failed to normalize code intelligence path `{raw}`: {error}"))?;
-    if !resolved.starts_with(&workspace_root) || !resolved.starts_with(&source_root) {
+    if !path_starts_with_host_root(&resolved, &workspace_root) {
         return Err(format!(
             "path `{raw}` resolves outside resolved source root {}",
             context.source_root.path.display()
         ));
     }
-    let relative = resolved
-        .strip_prefix(&source_root)
-        .map_err(|error| format!("failed to normalize code intelligence path `{raw}`: {error}"))?;
+    let relative = host_path_relative_to(&resolved, &source_root).ok_or_else(|| {
+        format!(
+            "path `{raw}` resolves outside resolved source root {}",
+            context.source_root.path.display()
+        )
+    })?;
     if relative.as_os_str().is_empty() {
         return Err(format!(
             "path `{raw}` resolves to the source root rather than a source file"
@@ -2449,6 +2454,46 @@ mod medium_tests {
         .unwrap_err();
 
         assert!(error.contains("outside resolved source root"), "{error}");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn code_intelligence_read_path_of_an_absent_file_follows_the_host_spelling() {
+        use unica_workspace::test_support::{
+            extended_length_spelling_for_test, other_letter_case_for_test,
+        };
+        let (root, context) = code_intelligence_context_for_paths();
+        let workspace = &context.workspace.workspace_root;
+        let module = Path::new("CommonModules/Absent/Ext/Module.bsl");
+        let source = Path::new("src/cf");
+
+        for raw in [
+            extended_length_spelling_for_test(workspace)
+                .join(source)
+                .join(module),
+            extended_length_spelling_for_test(workspace)
+                .join(other_letter_case_for_test(source))
+                .join(module),
+            other_letter_case_for_test(source).join(module),
+        ] {
+            let raw = raw.display().to_string();
+            let normalized = normalize_code_intelligence_read_request(
+                CodeIntelligenceReadRequest::Outline {
+                    path: raw.clone(),
+                    include_methods: true,
+                },
+                &context,
+            )
+            .unwrap_or_else(|error| panic!("{raw}: {error}"));
+            assert!(
+                matches!(
+                    &normalized,
+                    CodeIntelligenceReadRequest::Outline { path, .. }
+                        if path == "CommonModules/Absent/Ext/Module.bsl"
+                ),
+                "{raw}: {normalized:?}"
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 
