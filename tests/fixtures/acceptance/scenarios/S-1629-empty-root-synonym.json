@@ -1,0 +1,592 @@
+{
+  "id": "S-1629-empty-root-synonym",
+  "issue": 1629,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-empty-root-synonym",
+  "task": "По согласованной границе компактный Synonym опускает известную пустоту, а .Props.Synonym возвращает пустую строку; отсутствие даёт not_found, повреждение сохраняет причину в limits корня и отказ ведёт к нему. Discovery ведёт к возвращённым Constant/Catalog. Непустой перевод, title fallback, Comment, false, Type и права записи сохраняются; SHA исходников подтверждают readonly.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ],
+      "captures": {
+        "configuration": {
+          "pointer": "/next/0/args/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/28/at",
+          "eq": "main:Constant"
+        },
+        {
+          "pointer": "/data/branches/29/at",
+          "eq": "main:Catalog"
+        }
+      ],
+      "captures": {
+        "constants": {
+          "pointer": "/data/branches/28/at"
+        },
+        "catalogs": {
+          "pointer": "/data/branches/29/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.constants"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Constant.Absent"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Constant.Empty"
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "eq": "main:Constant.Known"
+        },
+        {
+          "pointer": "/data/items/3/at",
+          "eq": "main:Constant.Broken"
+        },
+        {
+          "pointer": "/data/items/4/at",
+          "eq": "main:Constant.Foreign"
+        },
+        {
+          "pointer": "/data/items/5/at",
+          "eq": "main:Constant.Whitespace"
+        },
+        {
+          "pointer": "/data/items/6/at",
+          "eq": "main:Constant.EmptyTranslation"
+        }
+      ],
+      "captures": {
+        "absent": {
+          "pointer": "/data/items/0/at"
+        },
+        "empty": {
+          "pointer": "/data/items/1/at"
+        },
+        "known": {
+          "pointer": "/data/items/2/at"
+        },
+        "broken": {
+          "pointer": "/data/items/3/at"
+        },
+        "foreign": {
+          "pointer": "/data/items/4/at"
+        },
+        "whitespace": {
+          "pointer": "/data/items/5/at"
+        },
+        "emptytranslation": {
+          "pointer": "/data/items/6/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.empty"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Empty"
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/PasswordMode",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/Type/variants/0/kind",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "rights": {
+          "pointer": "/data/can"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Empty.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.absent"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Absent"
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        },
+        {
+          "pointer": "/data/can",
+          "eq": "$capture.rights"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Absent.Props.Synonym"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Constant.Absent"
+        }
+      ],
+      "refusal": "not_found: node `main:Constant.Absent` has no property `Synonym`"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.known"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "Непустой синоним & контроль"
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Непустой синоним & контроль"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": "$capture.rights"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Known.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": "Непустой синоним & контроль"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.broken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Broken"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "Synonym"
+        },
+        {
+          "pointer": "/data/can",
+          "eq": "$capture.rights"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Broken.Props.Synonym"
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Constant.Broken"
+        }
+      ],
+      "refusal": "not_found: node `main:Constant.Broken` has no property `Synonym`"
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.foreign"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "Synonym"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.whitespace"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "Whitespace"
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.Whitespace.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.emptytranslation"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "EmptyTranslation"
+        },
+        {
+          "pointer": "/data/limits",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Constant.EmptyTranslation.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.catalogs"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.EmptyCatalog"
+        }
+      ],
+      "captures": {
+        "catalog": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.catalog"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "absent": true
+        },
+        {
+          "pointer": "/data/title",
+          "eq": "EmptyCatalog"
+        },
+        {
+          "pointer": "/data/props/Comment",
+          "eq": ""
+        },
+        {
+          "pointer": "/data/props/Hierarchical",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.EmptyCatalog.Props.Synonym"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/Synonym",
+          "eq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/EmptyCatalog/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Catalogs/EmptyCatalog.xml",
+          "kind": "sha256",
+          "eq": "ff70a217d89d7ababc7f27d97f0383fc026eac96043e282d2d78666ee5a1085e"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "e80371373103bee85e38299e46f69d0ab94397300f5f356256049ddb7ecaef51"
+        },
+        {
+          "path": "src/Constants/Absent/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Absent/Ext/ValueManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Absent.xml",
+          "kind": "sha256",
+          "eq": "0acbadb42402ada2dee6729849126c754952c0c093ab4db88342861da825fd76"
+        },
+        {
+          "path": "src/Constants/Broken/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Broken/Ext/ValueManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Broken.xml",
+          "kind": "sha256",
+          "eq": "c7f59cd36928050eb1f4d59ca8de241ed4d04701039bc80da9b1d3ade6e87887"
+        },
+        {
+          "path": "src/Constants/Empty/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Empty/Ext/ValueManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Empty.xml",
+          "kind": "sha256",
+          "eq": "debc526ac0304ce704b0ae532d8520c172f811e85a2ea0e385f9e2ef13109277"
+        },
+        {
+          "path": "src/Constants/EmptyTranslation/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/EmptyTranslation/Ext/ValueManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/EmptyTranslation.xml",
+          "kind": "sha256",
+          "eq": "b87222f27d322deb0c1d5ee461c0f5b3b756214083c7ebf90af721e16bdec4e3"
+        },
+        {
+          "path": "src/Constants/Foreign/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Foreign/Ext/ValueManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Foreign.xml",
+          "kind": "sha256",
+          "eq": "d8a2214aa12970e80980443db000fe5d70eec6aa1150255c50dec6811fa785fe"
+        },
+        {
+          "path": "src/Constants/Known/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Known/Ext/ValueManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Known.xml",
+          "kind": "sha256",
+          "eq": "45305db47e56ae78b943cfb35b21682e56bf610e83ec762bae724aaf9c3b66ff"
+        },
+        {
+          "path": "src/Constants/Whitespace/Ext/ManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Whitespace/Ext/ValueManagerModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Constants/Whitespace.xml",
+          "kind": "sha256",
+          "eq": "a12ef830f9058299311cfd805b464b6e8c01601b83b64c95c087c2a7186456e7"
+        },
+        {
+          "path": "src/Languages/English.xml",
+          "kind": "sha256",
+          "eq": "793a0ca7b1fd37786355963660a7472947354e05bfab2d8a33320e785ccd1469"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    }
+  ]
+}
