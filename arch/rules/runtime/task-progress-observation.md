@@ -1,10 +1,5 @@
 ---
 id: CTR.RUNTIME.TASK-PROGRESS-OBSERVATION
-check:
-  - crates/unica-execution/src/receipt_runtime/progress.rs::phases_are_not_poll_heartbeats_and_late_reporters_cannot_republish
-  - crates/unica-execution/src/receipt_runtime/progress.rs::unwind_and_inline_attempts_leave_no_observation
-  - crates/unica-coder/src/interfaces/mcp.rs::silent_extension_runner_progress_and_cancel_are_visible_over_public_mcp
-  - tests/ci/test_acceptance_scenarios.py::AcceptanceFaultCorpusRunTests.test_silent_runner_task_phase_and_cancellation_over_public_mcp
 ---
 
 # Наблюдение этапа не меняет состояние задания

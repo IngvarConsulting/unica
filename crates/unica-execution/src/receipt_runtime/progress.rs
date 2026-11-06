@@ -158,6 +158,7 @@ mod tests {
         }
     }
 
+    /// rule: CTR.RUNTIME.TASK-PROGRESS-OBSERVATION
     #[test]
     fn phases_are_not_poll_heartbeats_and_late_reporters_cannot_republish() {
         let clock = Arc::new(Clock(AtomicU64::new(100)));
@@ -193,6 +194,7 @@ mod tests {
         assert!(LiveProgress::default().snapshot(first).is_none());
     }
 
+    /// rule: CTR.RUNTIME.TASK-PROGRESS-OBSERVATION
     #[test]
     fn unwind_and_inline_attempts_leave_no_observation() {
         let registry = LiveProgress::default();

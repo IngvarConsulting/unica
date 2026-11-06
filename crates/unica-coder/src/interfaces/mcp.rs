@@ -4637,6 +4637,7 @@ mod medium_tests {
             }
         }
     }
+    /// rule: CTR.RUNTIME.TASK-PROGRESS-OBSERVATION
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn silent_extension_runner_progress_and_cancel_are_visible_over_public_mcp() {
         silent_extension_runner_case(false).await;

@@ -2506,6 +2506,7 @@ class AcceptanceFaultCorpusRunTests(unittest.TestCase):
             self.assertEqual(sum(record["tool"] == "unica.check" for record in records), 6)
 
     def test_silent_runner_task_phase_and_cancellation_over_public_mcp(self):
+        """rule: CTR.RUNTIME.TASK-PROGRESS-OBSERVATION"""
         from tests.ci.acceptance_task_progress import prepare_silent_runner
         run_corpus(self, fault_cases(self.corpus, "silent-extension-runner"),
                    scenario_driver=prepare_silent_runner)
