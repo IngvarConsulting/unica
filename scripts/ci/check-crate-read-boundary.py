@@ -19,8 +19,11 @@ A read under a declared input is allowed. A crate fails when its undeclared
 reads exceed its baseline, so existing ones stay and new ones do not. Both keys
 live in the crate, so PRs touching different crates do not meet in one list.
 
-The guard reads source text and does not follow values: a path returned by a
-helper is counted where the helper walks up, not where the path is used.
+The guard reads source text. It follows variables bound to the manifest
+directory in one file, not values across functions: a path returned by a helper
+is counted where the helper walks up, not where the path is used. A lowered
+count does not fail, so PRs moving reads out of one crate do not conflict on its
+baseline; `--write-baseline` lowers it.
 """
 from __future__ import annotations
 
@@ -53,6 +56,11 @@ FILE_RELATIVE = re.compile(r"(?:include_str!|include_bytes!)\s*\(\s*$|#\[path\s*
 FILE_RELATIVE_REACH = 64
 CFG_TEST = re.compile(r"#\[cfg\((?:all\(|any\()?test\b")
 WALK_UP = re.compile(r"\.parent\(\)|\.ancestors\(\)")
+BINDING = re.compile(r"\b(?:let(?:\s+mut)?|const|static)\s+([A-Za-z_]\w*)")
+BRACE = re.compile(r"[{}]")
+IDENTIFIER = re.compile(r"[A-Za-z_]\w*")
+PLACEHOLDER_PREFIX = re.compile(r"^\{[^}]*\}")
+WHITESPACE = re.compile(r"\s")
 STATEMENT_END = re.compile(r"[;{}]")
 TEST_FILE = re.compile(r"(?:^|/)(?:tests?|benches)(?:/|\.rs$)|_tests?(?:/|\.rs$)|(?:^|/)test_[^/]*\.rs$")
 
@@ -136,6 +144,47 @@ def fixture_target(crate: Crate, value: str, root: Path) -> str | None:
     return f"{prefix}/{tail}" if prefix.startswith("crates/") else tail
 
 
+def block_end(code: str, offset: int) -> int:
+    """End of the block that holds `offset`; the end of the file at the top level."""
+    depth = 0
+    for match in BRACE.finditer(code, offset):
+        depth += 1 if match.group() == "{" else -1
+        if depth < 0:
+            return match.start()
+    return len(code)
+
+
+def manifest_bindings(code: str, source: str) -> list[tuple[str, int, int]]:
+    """Variables that hold the manifest directory itself, with their scope.
+
+    A path joined to it or walked up from it is another path: its later use says
+    nothing about the crate directory.
+    """
+    if MANIFEST_VARIABLE not in source:
+        return []
+    bindings: list[tuple[str, int, int]] = []
+    for match in BINDING.finditer(code):
+        end = code.find(";", match.end())
+        end = end if end >= 0 else len(code)
+        value = source[match.end():end]
+        masked = code[match.end():end]
+        if ".join(" in masked or ".." in value or WALK_UP.search(masked):
+            continue
+        visible = {name for name, start, stop in bindings if start <= match.start() < stop}
+        if MANIFEST_VARIABLE in value or not visible.isdisjoint(IDENTIFIER.findall(masked)):
+            bindings.append((match.group(1), match.start(), block_end(code, end)))
+    return bindings
+
+
+def walks_from_base(statement: str) -> bool:
+    """`.parent()` or `.ancestors()` of the base, not of a path joined to it."""
+    walk = WALK_UP.search(statement)
+    if walk is None:
+        return False
+    join = statement.find(".join(")
+    return join < 0 or walk.start() < join
+
+
 def source_reads(crate: Crate, relative: str, source: str, root: Path) -> list[Read]:
     if not CANDIDATE.search(source):
         return []
@@ -147,16 +196,37 @@ def source_reads(crate: Crate, relative: str, source: str, root: Path) -> list[R
         line = source.count("\n", 0, offset) + 1
         reads.append(Read(crate.name, relative, line, target, kind_of(relative, code, offset)))
 
+    bindings = manifest_bindings(code, source)
+
+    def names_at(offset: int) -> set[str]:
+        return {name for name, start, stop in bindings if start <= offset < stop}
+
+    if bindings:
+        named = "|".join(sorted({name for name, _, _ in bindings}))
+        for match in re.finditer(rf"\b({named})\b\)*\s*\.(?:parent|ancestors)\(\)", code):
+            if match.group(1) in names_at(match.start()):
+                report(match.start(), ".")
+
     for offset, raw_value in strings:
-        value = raw_value.replace("\\\\", "/").replace("\\", "/")
+        # `format!("{}/../other", base)`: the placeholder is the base.
+        value = PLACEHOLDER_PREFIX.sub("", raw_value.replace("\\\\", "/").replace("\\", "/"))
         if not (value == MANIFEST_VARIABLE or ".." in value or FIXTURES in value):
             continue
+        # Paths in the repository have no whitespace; a text with one is a message.
+        if WHITESPACE.search(value):
+            continue
         start, end = statement_bounds(code, offset)
-        uses_manifest = MANIFEST_VARIABLE in source[start:end]
+        statement = code[start:end]
+        names_manifest = bool(bindings) and not names_at(offset).isdisjoint(IDENTIFIER.findall(statement))
+        literal_manifest = MANIFEST_VARIABLE in source[start:end]
+        uses_manifest = literal_manifest or names_manifest
         walks_up = uses_manifest and (
-            WALK_UP.search(code[start:end]) is not None
-            or any(v == ".." for o, v in strings if start <= o < end)
+            walks_from_base(statement) or any(v == ".." for o, v in strings if start <= o < end)
         )
+        if value == ".." and names_manifest and not literal_manifest and start not in walked:
+            walked.add(start)
+            report(offset, ".")
+            continue
         if value == MANIFEST_VARIABLE:
             # A walk that names its fixture is counted by that literal, which an
             # input can declare; a bare walk has only the repository as its target.
@@ -225,7 +295,8 @@ def crate_reads(root: Path, crate: Crate) -> list[Read]:
 
 
 def declared(target: str, inputs: list[str]) -> bool:
-    return any(target == item or target.startswith(item.rstrip("/") + "/") for item in inputs)
+    normal = [posixpath.normpath(item) for item in inputs]
+    return any(target == item or target.startswith(item + "/") for item in normal)
 
 
 def input_errors(root: Path, crate: Crate) -> list[str]:

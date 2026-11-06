@@ -56,6 +56,17 @@ class CrateReadBoundaryTests(unittest.TestCase):
 
     def test_the_real_workspace_has_no_reads_over_its_baselines(self) -> None:
         self.assertEqual(guard.check(ROOT), [])
+        crates = guard.load_crates(ROOT)
+        if any(crate.baseline for crate in crates):
+            self.assertTrue(any(guard.crate_reads(ROOT, crate) for crate in crates))
+
+    def test_an_input_is_compared_in_normal_form(self) -> None:
+        self.workspace.crate(
+            "sample",
+            'const A: &str = include_str!("../../../tests/fixtures/shared/a.xml");\n',
+            'inputs = ["./tests//fixtures/shared/"]',
+        )
+        self.assertEqual(guard.check(self.workspace.root), [])
 
     def test_a_read_outside_the_crate_is_counted_in_every_form(self) -> None:
         cases = {
@@ -69,10 +80,32 @@ class CrateReadBoundaryTests(unittest.TestCase):
             'Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")': ".",
             'Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2)': ".",
             'Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("tests/fixtures/shared")': "tests/fixtures/shared",
+            'format!("{}/../other/a.txt", env!("CARGO_MANIFEST_DIR"))': "crates/other/a.txt",
         }
         for expression, target in cases.items():
             with self.subTest(expression):
                 self.assertEqual(self.targets(f"fn f() {{ let _ = {expression}; }}\n"), [target])
+
+    def test_a_manifest_variable_covers_its_block_and_not_a_path_built_from_it(self) -> None:
+        cases = (
+            'fn f() { let m = env!("CARGO_MANIFEST_DIR"); }\nfn g(m: &Path) { let _ = m.parent(); }',
+            'fn f() { let m = Path::new(env!("CARGO_MANIFEST_DIR")); let p = m.join("a/b"); let _ = p.parent(); }',
+        )
+        for source in cases:
+            with self.subTest(source):
+                self.assertEqual(self.targets(source), [])
+
+    def test_a_variable_bound_to_the_manifest_directory_is_followed(self) -> None:
+        cases = {
+            'const BASE: &str = env!("CARGO_MANIFEST_DIR");\nfn f() { let _ = Path::new(BASE).join("../../plugins/unica"); }': ["plugins/unica"],
+            'fn f() { let m = Path::new(env!("CARGO_MANIFEST_DIR")); let r = m.parent().unwrap(); }': ["."],
+            'fn f() { let m = std::env::var("CARGO_MANIFEST_DIR").unwrap(); let p = PathBuf::from(m).join("../../plugins"); }': ["plugins"],
+            'fn f() { let m = env!("CARGO_MANIFEST_DIR"); let r = Path::new(m); let p = r.join("../../plugins"); }': ["plugins"],
+            'fn f() { let m = env!("CARGO_MANIFEST_DIR"); let p = Path::new(m).join("..").join("x"); }': ["."],
+        }
+        for source, targets in cases.items():
+            with self.subTest(source):
+                self.assertEqual(self.targets(source), targets)
 
     def test_what_stays_in_the_crate_or_is_only_data_is_not_counted(self) -> None:
         cases = (
@@ -86,6 +119,9 @@ class CrateReadBoundaryTests(unittest.TestCase):
             'fn f() { if name.contains("..") {} }',
             'fn f() { panic!("differs from tests/fixtures/shared"); }',
             'fn f() { let _ = env!("CARGO_MANIFEST_DIR"); }',
+            'fn f() { panic!("tests/fixtures/shared/a.xml is missing"); }',
+            'fn f() { let _ = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/own").parent(); }',
+            'fn f() { let m = env!("CARGO_MANIFEST_DIR"); let _ = other.join("../x"); }',
         )
         for source in cases:
             with self.subTest(source):
