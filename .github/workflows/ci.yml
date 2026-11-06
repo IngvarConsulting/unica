@@ -153,7 +153,9 @@ jobs:
           save-if: false
       - name: Формат
         if: env.KEPT != 'true'
-        run: cargo fmt --all -- --check
+        run: |
+          cargo fmt --all -- --check
+          python scripts/ci/check-discovered-modules-format.py
       - name: Контракт версий
         if: env.KEPT != 'true'
         run: python scripts/ci/check-version-contract.py

@@ -71,6 +71,8 @@ PACKAGE_PATHS = {
 CI_CONTRACT_PATHS = {
     "scripts/ci/check-component-boundaries.py",
     "tests/ci/test_component_boundaries.py",
+    "scripts/ci/check-discovered-modules-format.py",
+    "tests/ci/test_discovered_modules_format.py",
     "scripts/ci/workflow_routing.py",
     "scripts/dev/install-local-unica.sh",
     "scripts/ci/classify-workflow-changes.py",

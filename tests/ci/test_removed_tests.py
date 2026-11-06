@@ -183,6 +183,17 @@ class RemovedTestsTests(unittest.TestCase):
             ("crates/demo/src/a/plain/mod.rs", "demo", "a::plain", True),
         ])
 
+    def test_resolves_the_modules_build_rs_declares_for_a_crate_root(self):
+        # crates/unica-metadata-designer/build.rs lists `src/*.rs`; each module
+        # keeps `<stem>/` for its own children, and the root is not its own child.
+        source = 'include!(concat!(env!("OUT_DIR"), "/a_modules.rs"));\ndeclare_modules!();\n'
+        files = ["crates/demo/src/lib.rs", "crates/demo/src/one.rs", "crates/demo/src/one/child.rs"]
+        children = list(removed_tests.Packages.children("crates/demo/src/lib.rs", source, "demo", "", True, files))
+        self.assertEqual(children, [("crates/demo/src/one.rs", "demo", "one", False)])
+        nested = list(removed_tests.Packages.children(
+            "crates/demo/src/one.rs", "mod child;\n", "demo", "one", False, files))
+        self.assertEqual(nested[0][:3], ("crates/demo/src/one/child.rs", "demo", "one::child"))
+
     def test_resolves_the_modules_build_rs_declares_from_the_module_directory(self):
         # crates/unica-coder/build.rs declares `mod <stem>;` for each `*.rs` of
         # the module's own directory; the include must reach exactly those files.
