@@ -140,4 +140,4 @@ syn.workspace = true
 tar.workspace = true
 
 [package.metadata.unica]
-read-outside-baseline = 186
+read-outside-baseline = 170
