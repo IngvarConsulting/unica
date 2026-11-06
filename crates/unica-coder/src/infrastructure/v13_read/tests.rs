@@ -22,6 +22,7 @@ mod support;
 mod task_addressing;
 mod wsreference_definition;
 mod xdto_missing_target;
+mod xdto_serialization;
 
 use support::*;
 

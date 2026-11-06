@@ -184,6 +184,14 @@ pub(crate) fn properties(reader: LogicalReader, kind: NodeKind) -> &'static [Pro
                 &[
                     special(write("Comment", "props.set")),
                     observed(
+                        "elementFormQualified",
+                        "Observed package element qualification; no write operand",
+                    ),
+                    observed(
+                        "attributeFormQualified",
+                        "Observed package attribute qualification; no write operand",
+                    ),
+                    observed(
                         "targetNamespace",
                         "Namespace identity of the package; no namespace writer",
                     ),
@@ -208,6 +216,7 @@ pub(crate) fn properties(reader: LogicalReader, kind: NodeKind) -> &'static [Pro
                     derived("kind", "Named valueType/objectType discriminator"),
                     observed("abstract", "Observed type attribute preserved by type.set"),
                     observed("mixed", "Observed type attribute preserved by type.set"),
+                    observed("open", "Observed named objectType flag; no write operand"),
                     special(write("base", "type.set")),
                     special(derived("baseAt", "Resolved address of one local base type")),
                     creation(
@@ -222,6 +231,10 @@ pub(crate) fn properties(reader: LogicalReader, kind: NodeKind) -> &'static [Pro
         (LogicalReader::Xdto, NodeKind::Property) => {
             const {
                 &[
+                    observed("form", "Observed XML Element/Attribute/Text form; no write operand"),
+                    observed("nillable", "Observed nil permission; no write operand"),
+                    observed("fixed", "Boolean flag fixing the default literal; no write operand"),
+                    observed("default", "Observed default literal, including an explicit empty string; no write operand"),
                     input(
                         creation(
                             "type",
@@ -285,6 +298,13 @@ pub(super) fn direct_props(
     properties(reader, kind)
         .iter()
         .filter_map(|spec| {
+            if reader == LogicalReader::Xdto
+                && kind == NodeKind::Type
+                && matches!(spec.name, "open" | "mixed")
+                && value["kind"] != "objectType"
+            {
+                return None;
+            }
             value
                 .get(spec.input?)
                 .and_then(|value| {
@@ -337,6 +357,12 @@ pub(crate) fn property(
         }
     }
     if reader == LogicalReader::Xdto {
+        if kind == NodeKind::Type
+            && matches!(name, "open" | "mixed")
+            && props["kind"] != "objectType"
+        {
+            return None;
+        }
         if kind == NodeKind::Type && name == "facets" && props["kind"] != "valueType" {
             return None;
         }

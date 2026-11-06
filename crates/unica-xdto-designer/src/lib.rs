@@ -57,3 +57,7 @@ pub mod edit_plan;
 pub mod test_support;
 
 pub mod facets;
+mod serialization;
+
+#[cfg(test)]
+mod serialization_tests;

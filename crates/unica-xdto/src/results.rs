@@ -59,6 +59,49 @@ pub struct XdtoBoundsInfo {
     pub upper_explicit: bool,
     pub unbounded: bool,
 }
+/// Serialization observations do not add operands to the mutation grammar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum XdtoPropertyForm {
+    Element,
+    Attribute,
+    Text,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XdtoPackageSerialization {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub element_form_qualified: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribute_form_qualified: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub serialization_limits: Vec<String>,
+}
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XdtoObjectSerialization {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mixed: Option<bool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub serialization_limits: Vec<String>,
+}
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct XdtoPropertySerialization {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub form: Option<XdtoPropertyForm>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nillable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fixed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub serialization_limits: Vec<String>,
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XdtoAnonymousTypeInfo {
@@ -74,6 +117,8 @@ pub struct XdtoAnonymousTypeInfo {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XdtoPropertyInfo {
+    #[serde(flatten)]
+    pub serialization: XdtoPropertySerialization,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -97,6 +142,8 @@ pub struct XdtoQNameInfo {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XdtoTypeInfo {
+    #[serde(flatten)]
+    pub serialization: XdtoObjectSerialization,
     #[serde(skip_serializing_if = "crate::facets::ValueFacets::is_empty")]
     pub facets: crate::facets::ValueFacets,
     pub kind: XdtoTypeKind,
@@ -113,6 +160,8 @@ pub struct XdtoTypeInfo {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XdtoTypeSummary {
+    #[serde(flatten)]
+    pub serialization: XdtoObjectSerialization,
     pub kind: XdtoTypeKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -123,6 +172,8 @@ pub struct XdtoTypeSummary {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct XdtoInfoData {
+    #[serde(flatten)]
+    pub serialization: XdtoPackageSerialization,
     pub source_set: String,
     pub metadata_path: String,
     pub location: XdtoLocation,

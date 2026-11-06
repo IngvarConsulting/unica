@@ -83,6 +83,7 @@ pub struct Import {
 
 #[derive(Clone, Debug)]
 pub struct Property {
+    pub serialization: unica_xdto::results::XdtoPropertySerialization,
     pub key: String,
     pub name: Option<LocatedValue>,
     pub reference: Option<QNameRef>,
@@ -121,6 +122,7 @@ pub struct AnonymousObject {
 
 #[derive(Clone, Debug)]
 pub struct NamedType {
+    pub serialization: unica_xdto::results::XdtoObjectSerialization,
     pub facets: super::facets::ValueFacets,
     pub kind: TypeKind,
     pub key: String,
@@ -132,6 +134,7 @@ pub struct NamedType {
 
 #[derive(Clone, Debug)]
 pub struct PackageModel {
+    pub serialization: unica_xdto::results::XdtoPackageSerialization,
     pub root_span: SourceSpan,
     pub target_namespace: Option<LocatedValue>,
     pub top_level: Vec<TopLevelNode>,
@@ -166,18 +169,24 @@ impl PackageModel {
 
         let root_span = root.range().into();
         let target_namespace = attribute(root, None, "targetNamespace");
+        let mut unsupported = Vec::new();
+        let serialization = super::serialization::package(root, "$package", &mut unsupported);
         let mut model = Self {
+            serialization,
             root_span,
             target_namespace,
             top_level: Vec::new(),
             imports: Vec::new(),
             global_properties: Vec::new(),
             types: Vec::new(),
-            unsupported: Vec::new(),
+            unsupported,
         };
         collect_unsupported_attributes(
             root,
-            &[AttrName::plain("targetNamespace")],
+            &std::iter::once("targetNamespace")
+                .chain(super::serialization::PACKAGE_NAMES.iter().copied())
+                .map(AttrName::plain)
+                .collect::<Vec<_>>(),
             "$package",
             &mut model.unsupported,
         );
@@ -304,7 +313,11 @@ fn parse_named_type(
             .map(AttrName::plain)
             .collect::<Vec<_>>()
         } else {
-            vec![AttrName::plain("name"), AttrName::plain("base")]
+            ["name", "base"]
+                .into_iter()
+                .chain(super::serialization::OBJECT_NAMES.iter().copied())
+                .map(AttrName::plain)
+                .collect::<Vec<_>>()
         },
         &key,
         unsupported,
@@ -336,6 +349,11 @@ fn parse_named_type(
         super::facets::ValueFacets::default()
     });
     NamedType {
+        serialization: if kind == TypeKind::Object {
+            super::serialization::object(node, &key, unsupported)
+        } else {
+            Default::default()
+        },
         facets,
         kind,
         key,
@@ -361,13 +379,11 @@ fn parse_property(
     let key = format!("{parent_key}/property:{identity}");
     collect_unsupported_attributes(
         node,
-        &[
-            AttrName::plain("name"),
-            AttrName::plain("ref"),
-            AttrName::plain("type"),
-            AttrName::plain("lowerBound"),
-            AttrName::plain("upperBound"),
-        ],
+        &["name", "ref", "type", "lowerBound", "upperBound"]
+            .into_iter()
+            .chain(super::serialization::PROPERTY_NAMES.iter().copied())
+            .map(AttrName::plain)
+            .collect::<Vec<_>>(),
         &key,
         unsupported,
     );
@@ -385,6 +401,7 @@ fn parse_property(
         }
     }
     Property {
+        serialization: super::serialization::property(node, &key, unsupported),
         key,
         name,
         reference,

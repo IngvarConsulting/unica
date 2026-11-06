@@ -1,0 +1,600 @@
+{
+  "id": "S-1592-xdto-serialization-facts",
+  "issue": 1592,
+  "area": "XDTO",
+  "workspace": "tests/fixtures/acceptance/workspace-xdto-serialization",
+  "task": "По returned package/type/property/anonymous child адресам прочитать восемь параметров сериализации. Различить Attribute/Text/Element, false/0/1, отсутствие, пустой/экранированный default, invalid и foreign поля; ref-only строка сохраняет локальную причину без выдуманного адреса. QName/bounds/base и все исходные байты сохраняются.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effectiveSourceSet",
+          "eq": "main"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.Serialization"
+        }
+      ],
+      "captures": {
+        "packageNode": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.packageNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/elementFormQualified",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/attributeFormQualified",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/targetNamespace",
+          "eq": "urn:unica:serialization"
+        }
+      ],
+      "captures": {
+        "typeBranch": {
+          "pointer": "/data/branches/1/at"
+        },
+        "globalBranch": {
+          "pointer": "/data/branches/2/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.typeBranch"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/2/props/open",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/2/props/mixed",
+          "eq": true
+        }
+      ],
+      "captures": {
+        "probeType": {
+          "pointer": "/data/items/2/at"
+        },
+        "baseType": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.baseType"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/open",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/mixed",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.probeType"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/open",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/mixed",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/base/local",
+          "eq": "Base"
+        },
+        {
+          "pointer": "/data/props/base/namespace",
+          "eq": "urn:unica:serialization"
+        }
+      ],
+      "captures": {
+        "propertyBranch": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.propertyBranch"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/form",
+          "eq": "Element"
+        },
+        {
+          "pointer": "/data/items/0/props/nillable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/0/props/fixed",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/0/props/default",
+          "eq": "FIRSTSHIPMENT"
+        },
+        {
+          "pointer": "/data/items/8/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/8/nillable",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/8/limits/0",
+          "contains": "nillable"
+        }
+      ],
+      "captures": {
+        "literalNode": {
+          "pointer": "/data/items/0/at"
+        },
+        "absentNode": {
+          "pointer": "/data/items/1/at"
+        },
+        "emptyNode": {
+          "pointer": "/data/items/2/at"
+        },
+        "whitespaceNode": {
+          "pointer": "/data/items/3/at"
+        },
+        "nestedNode": {
+          "pointer": "/data/items/4/at"
+        },
+        "brokenNode": {
+          "pointer": "/data/items/5/at"
+        },
+        "foreignNode": {
+          "pointer": "/data/items/6/at"
+        },
+        "dualNode": {
+          "pointer": "/data/items/7/at"
+        },
+        "opaqueNode": {
+          "pointer": "/data/items/9/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.literalNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/form",
+          "eq": "Element"
+        },
+        {
+          "pointer": "/data/props/nillable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/fixed",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/default",
+          "eq": "FIRSTSHIPMENT"
+        },
+        {
+          "pointer": "/data/props/type/namespace",
+          "eq": "http://www.w3.org/2001/XMLSchema"
+        },
+        {
+          "pointer": "/data/props/type/local",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/bounds",
+          "eq": {
+            "lower": "0",
+            "upper": "-1",
+            "lowerExplicit": true,
+            "upperExplicit": true,
+            "unbounded": true
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.absentNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/form",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/nillable",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fixed",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/default",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.emptyNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/form",
+          "eq": "Attribute"
+        },
+        {
+          "pointer": "/data/props/nillable",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/fixed",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/default",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.whitespaceNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/default",
+          "eq": "  keep \t & \"  "
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.brokenNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/form",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/nillable",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/fixed",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/default",
+          "eq": "keep"
+        },
+        {
+          "pointer": "/data/props/type/local",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "form"
+        },
+        {
+          "pointer": "/data/limits/1",
+          "contains": "nillable"
+        },
+        {
+          "pointer": "/data/limits/2",
+          "contains": "fixed"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.foreignNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/form",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/nillable",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/default",
+          "absent": true
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "urn:foreign"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.dualNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/form",
+          "eq": "Element"
+        },
+        {
+          "pointer": "/data/limits/0",
+          "contains": "urn:foreign"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.nestedNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/anonymousType",
+          "eq": "ObjectType"
+        }
+      ],
+      "captures": {
+        "nestedBranch": {
+          "pointer": "/data/branches/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.nestedBranch"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/form",
+          "eq": "Attribute"
+        },
+        {
+          "pointer": "/data/items/1/props/form",
+          "eq": "Text"
+        }
+      ],
+      "captures": {
+        "attributeNode": {
+          "pointer": "/data/items/0/at"
+        },
+        "textNode": {
+          "pointer": "/data/items/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.attributeNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/form",
+          "eq": "Attribute"
+        },
+        {
+          "pointer": "/data/props/lowerBound",
+          "eq": "0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.textNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/form",
+          "eq": "Text"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.opaqueNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/open",
+          "absent": true
+        },
+        {
+          "pointer": "/data/props/mixed",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.globalBranch"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/props/form",
+          "eq": "Attribute"
+        },
+        {
+          "pointer": "/data/items/0/props/default",
+          "eq": ""
+        }
+      ],
+      "captures": {
+        "globalNode": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.globalNode"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/form",
+          "eq": "Attribute"
+        },
+        {
+          "pointer": "/data/props/nillable",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/fixed",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/default",
+          "eq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "7355626a60e5c258a2538dd1c2c0516ebe67d6531e4e31cad9a50c1966f4eaa3"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/XDTOPackages/Serialization/Ext/Package.bin",
+          "kind": "sha256",
+          "eq": "a52bdebce970eea6cb05eef09e1aa3009cbc4dab014b23c0105fb93da4b09ad6"
+        },
+        {
+          "path": "src/XDTOPackages/Serialization.xml",
+          "kind": "sha256",
+          "eq": "7f4aa0ea039b03ea11c5d9545f0706beb78a55c19f9ba45e31e3291106b3281d"
+        }
+      ]
+    }
+  ]
+}
