@@ -101,9 +101,11 @@ CI_CONTRACT_PATHS = {
     "scripts/ci/collect-results.py",
     "tests/ci/test_run_tests.py",
     "tests/ci/test_gate_profiles.py",
-    "scripts/ci/nightly-lines.py",
+    "scripts/ci/nightly-decide.py",
+    "scripts/ci/release-alpha.py",
+    "tests/ci/test_release_alpha.py",
     "scripts/ci/resolve-line.py",
-    "tests/ci/test_nightly_lines.py",
+    "tests/ci/test_nightly_decide.py",
     "tests/ci/test_resolve_line.py",
     "tests/ci/test_python_sizes.py",
     "tests/ci/test_research_policy.py",
@@ -170,7 +172,7 @@ SEARCH_INTEGRATION_PATHS = {
 # whether the assessment runs at all.
 ASSESSMENT_PATHS = {
     "scripts/ci/workflow_routing.py",
-    ".github/workflows/unica-plugin-release.yml",
+    ".github/workflows/release.yml",
     "crates/unica-coder/src/infrastructure/plugin_runtime.rs",
     "plugins/unica/third-party/tools.lock.json",
     "scripts/ci/build-unica-tools.py",

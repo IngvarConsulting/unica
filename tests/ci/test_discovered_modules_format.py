@@ -69,7 +69,7 @@ class DiscoveredModulesFormatTests(unittest.TestCase):
                 self.assertTrue(any(module.startswith(directory) for module in modules))
 
     def test_both_format_gates_run_the_pass(self) -> None:
-        for workflow in ("ci.yml", "unica-plugin-release.yml"):
+        for workflow in ("ci.yml", "release.yml"):
             with self.subTest(workflow):
                 text = (ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8")
                 self.assertIn("cargo fmt --all -- --check", text)

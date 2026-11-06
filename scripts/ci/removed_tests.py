@@ -11,6 +11,11 @@ from each crate and requires a declaration for each, before the queue:
 
     python scripts/ci/removed_tests.py --base origin/main --description-file pr.md
 
+Полный прогон сверяет то же от базы инвентаря: `--baseline` берёт из её документа
+коммит базы и объявления pull request, влитых после неё.
+
+    python scripts/ci/removed_tests.py --baseline .build/ci-baseline/baseline.json
+
 The case ID is rebuilt without a build, as nextest names it: the binary from
 the crate targets the queue lanes build (`[[test]]`/`[[bin]]` of the manifest
 whose `required-features` a lane enables, `src/lib.rs`, `tests/x.rs` →
@@ -368,15 +373,34 @@ def event_description() -> str | None:
     return baseline.description(os.environ["GITHUB_REPOSITORY"], number) or ""
 
 
+def baseline_scope(document: dict) -> tuple[str, str] | None:
+    """База и объявления из документа прежнего инвентаря; `None`, когда сверять не с чем."""
+    source = document.get("source")
+    explanations = document.get("explanations", {})
+    if not source or explanations.get("reset"):
+        return None
+    declared = [f"Removes-test: {item}" for item in explanations.get("removedTests", [])]
+    declared += [f"Removes-test-target: {item}" for item in explanations.get("removedTargets", [])]
+    return source["headSha"], "\n".join(declared)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--base", required=True, help="base revision, e.g. origin/main or the pull request base SHA")
+    origin = parser.add_mutually_exclusive_group(required=True)
+    origin.add_argument("--base", help="base revision, e.g. origin/main or the pull request base SHA")
+    origin.add_argument("--baseline", type=Path, help="document of the previous inventory: its commit and the declarations merged since")
     parser.add_argument("--head", default="HEAD")
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--description-file", type=Path, help="pull request description text")
     source.add_argument("--description", help="pull request description text")
     parser.add_argument("--repo-root", type=Path, default=ROOT)
     args = parser.parse_args()
+    if args.baseline is not None:
+        scope = baseline_scope(json.loads(args.baseline.read_text(encoding="utf-8")))
+        if scope is None:
+            print("no previous inventory or a declared reset: nothing to compare")
+            return 0
+        args.base, args.description = scope
     if args.description_file is not None:
         description = args.description_file.read_text(encoding="utf-8")
     elif args.description is not None:
