@@ -523,6 +523,16 @@ const METADATA_DETAIL_RELATIONS: &[(&str, &str, &str)] = &[
 ];
 
 fn metadata_relation_error_field(field: &str) -> Option<String> {
+    if field == "properties.ChoiceParameters" {
+        return Some("details.choiceParameters".to_string());
+    }
+    if field
+        .strip_prefix("details.choiceParameters")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
+    {
+        return Some(field.to_string());
+    }
+
     if field.starts_with("relations.") {
         return Some(field.to_string());
     }
@@ -568,6 +578,12 @@ fn metadata_missing_relation_limits(payload: &Value) -> Vec<String> {
                 .filter(|(name, _, _)| details.get(*name).is_some_and(Value::is_null))
                 .map(|(name, _, _)| format!("details.{name}")),
         );
+    }
+    if metadata_details(payload)
+        .and_then(|details| details.get("choiceParameters"))
+        .is_some_and(Value::is_null)
+    {
+        missing.push("details.choiceParameters".to_string());
     }
     missing
         .into_iter()
@@ -798,6 +814,16 @@ fn metadata_relations(address: &QualifiedAddress, payload: &Value) -> Vec<Value>
             if let Some(target) = target {
                 items.extend(addressed(relation, target));
             }
+        }
+    }
+    for entry in details
+        .and_then(|details| details.get("choiceParameters"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(target) = entry.pointer("/value/reference").and_then(Value::as_str) {
+            items.extend(addressed("constantChoiceParameter", target));
         }
     }
     for item in relations
@@ -1129,6 +1155,20 @@ fn metadata_detail_props(
                 place_prop(&mut props, limits, address, role, value, false, &subject);
             }
         }
+    }
+    if let Some(value) = details
+        .get("choiceParameters")
+        .filter(|value| value.is_array())
+    {
+        place_prop(
+            &mut props,
+            limits,
+            address,
+            "choiceParameters",
+            value,
+            false,
+            "constant choice parameters",
+        );
     }
     // Тип корня — свойство платформы `Type`, под тем же именем его
     // принимает запись.
