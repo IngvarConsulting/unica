@@ -1,0 +1,1235 @@
+{
+  "id": "S-1577-dcs-nested-setting-facts",
+  "issue": 1577,
+  "area": "СКД",
+  "task": "Из возвращённых Setting/Item/Property прочитать вложенный NotGroup анонимной структуры, четыре правила оформления и пять типизированных width-параметров; проверить владельцев, пустой/отсутствующий фильтр, страницы и сохранность исходников.",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs-nested-setting-facts",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.Probe.Template.Schema"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "settings": {
+          "pointer": "/data/branches/1/at"
+        },
+        "h0": {
+          "file": "src/Configuration.xml",
+          "kind": "sha256"
+        },
+        "h1": {
+          "file": "src/Reports/Probe.xml",
+          "kind": "sha256"
+        },
+        "h2": {
+          "file": "src/Reports/Probe/Templates/Schema.xml",
+          "kind": "sha256"
+        },
+        "h3": {
+          "file": "src/Reports/Probe/Templates/Schema/Ext/Template.xml",
+          "kind": "sha256"
+        },
+        "h4": {
+          "file": "v8project.yaml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/branches/1/at",
+          "eq": "main:Report.Probe.Template.Schema.Setting"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.settings"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "root": {
+          "pointer": "/data/items/0/at"
+        },
+        "mobile": {
+          "pointer": "/data/items/1/at"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Report.Probe.Template.Schema.Setting.Root"
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "eq": "main:Report.Probe.Template.Schema.Setting.Mobile"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.root"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "rootItems": {
+          "pointer": "/data/branches/0/at"
+        },
+        "rootProps": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rootItems"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/index",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/0/groupBy",
+          "eq": [
+            "Серия"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rootProps",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "kind": "FilterContainer",
+              "state": "present",
+              "scope": "root"
+            },
+            {
+              "kind": "Filter",
+              "index": 0,
+              "itemType": "FilterItemComparison",
+              "field": "НачальныйОстаток",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 1,
+              "itemType": "FilterItemComparison",
+              "field": "Приход",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 2,
+              "itemType": "FilterItemComparison",
+              "field": "Расход",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 3,
+              "itemType": "FilterItemComparison",
+              "field": "КонечныйОстаток",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Order",
+              "index": 0,
+              "itemType": "OrderItemField",
+              "field": "Серия",
+              "direction": "Asc",
+              "scope": "root"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "present",
+              "scope": "structure",
+              "structureIndex": 0
+            },
+            {
+              "kind": "Filter",
+              "index": 0,
+              "itemType": "FilterItemGroup",
+              "groupType": "NotGroup",
+              "scope": "structure",
+              "structureIndex": 0
+            },
+            {
+              "kind": "Filter",
+              "index": 0,
+              "itemType": "FilterItemComparison",
+              "field": "Серия",
+              "comparison": "NotFilled",
+              "scope": "structure",
+              "structureIndex": 0,
+              "parentIndexes": [
+                0
+              ]
+            },
+            {
+              "kind": "Filter",
+              "index": 1,
+              "itemType": "FilterItemComparison",
+              "field": "НачальныйОстаток",
+              "comparison": "Equal",
+              "scope": "structure",
+              "structureIndex": 0,
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              },
+              "parentIndexes": [
+                0
+              ]
+            },
+            {
+              "kind": "Filter",
+              "index": 2,
+              "itemType": "FilterItemComparison",
+              "field": "Приход",
+              "comparison": "Equal",
+              "scope": "structure",
+              "structureIndex": 0,
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              },
+              "parentIndexes": [
+                0
+              ]
+            },
+            {
+              "kind": "Filter",
+              "index": 3,
+              "itemType": "FilterItemComparison",
+              "field": "Расход",
+              "comparison": "Equal",
+              "scope": "structure",
+              "structureIndex": 0,
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              },
+              "parentIndexes": [
+                0
+              ]
+            },
+            {
+              "kind": "Filter",
+              "index": 4,
+              "itemType": "FilterItemComparison",
+              "field": "КонечныйОстаток",
+              "comparison": "Equal",
+              "scope": "structure",
+              "structureIndex": 0,
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              },
+              "parentIndexes": [
+                0
+              ]
+            },
+            {
+              "kind": "Order",
+              "index": 0,
+              "itemType": "OrderItemField",
+              "field": "Серия",
+              "direction": "Asc",
+              "scope": "structure",
+              "structureIndex": 0
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/3/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/4/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/5/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/6/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/7/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/8/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/9/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/10/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/11/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/12/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/13/at",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rootProps",
+        "limit": 10
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "rootCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "kind": "FilterContainer",
+              "state": "present",
+              "scope": "root"
+            },
+            {
+              "kind": "Filter",
+              "index": 0,
+              "itemType": "FilterItemComparison",
+              "field": "НачальныйОстаток",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 1,
+              "itemType": "FilterItemComparison",
+              "field": "Приход",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 2,
+              "itemType": "FilterItemComparison",
+              "field": "Расход",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 3,
+              "itemType": "FilterItemComparison",
+              "field": "КонечныйОстаток",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Order",
+              "index": 0,
+              "itemType": "OrderItemField",
+              "field": "Серия",
+              "direction": "Asc",
+              "scope": "root"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "present",
+              "scope": "structure",
+              "structureIndex": 0
+            },
+            {
+              "kind": "Filter",
+              "index": 0,
+              "itemType": "FilterItemGroup",
+              "groupType": "NotGroup",
+              "scope": "structure",
+              "structureIndex": 0
+            },
+            {
+              "kind": "Filter",
+              "index": 0,
+              "itemType": "FilterItemComparison",
+              "field": "Серия",
+              "comparison": "NotFilled",
+              "scope": "structure",
+              "structureIndex": 0,
+              "parentIndexes": [
+                0
+              ]
+            },
+            {
+              "kind": "Filter",
+              "index": 1,
+              "itemType": "FilterItemComparison",
+              "field": "НачальныйОстаток",
+              "comparison": "Equal",
+              "scope": "structure",
+              "structureIndex": 0,
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              },
+              "parentIndexes": [
+                0
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.rootProps",
+        "limit": 10,
+        "cursor": "$capture.rootCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "kind": "Filter",
+              "index": 2,
+              "itemType": "FilterItemComparison",
+              "field": "Приход",
+              "comparison": "Equal",
+              "scope": "structure",
+              "structureIndex": 0,
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              },
+              "parentIndexes": [
+                0
+              ]
+            },
+            {
+              "kind": "Filter",
+              "index": 3,
+              "itemType": "FilterItemComparison",
+              "field": "Расход",
+              "comparison": "Equal",
+              "scope": "structure",
+              "structureIndex": 0,
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              },
+              "parentIndexes": [
+                0
+              ]
+            },
+            {
+              "kind": "Filter",
+              "index": 4,
+              "itemType": "FilterItemComparison",
+              "field": "КонечныйОстаток",
+              "comparison": "Equal",
+              "scope": "structure",
+              "structureIndex": 0,
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              },
+              "parentIndexes": [
+                0
+              ]
+            },
+            {
+              "kind": "Order",
+              "index": 0,
+              "itemType": "OrderItemField",
+              "field": "Серия",
+              "direction": "Asc",
+              "scope": "structure",
+              "structureIndex": 0
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mobile"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mobileItems": {
+          "pointer": "/data/branches/0/at"
+        },
+        "mobileProps": {
+          "pointer": "/data/branches/1/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mobileItems"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Report.Probe.Template.Schema.Setting.Mobile.Item.Named"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mobileProps",
+        "limit": 50
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "kind": "FilterContainer",
+              "state": "present",
+              "scope": "root"
+            },
+            {
+              "kind": "Filter",
+              "index": 0,
+              "itemType": "FilterItemComparison",
+              "field": "НачальныйОстаток",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 1,
+              "itemType": "FilterItemComparison",
+              "field": "Приход",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 2,
+              "itemType": "FilterItemComparison",
+              "field": "Расход",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 3,
+              "itemType": "FilterItemComparison",
+              "field": "КонечныйОстаток",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "ConditionalAppearance",
+              "index": 0,
+              "fields": "Номенклатура",
+              "scope": "root",
+              "filterState": "empty"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "empty",
+              "scope": "root",
+              "appearanceIndex": 0
+            },
+            {
+              "kind": "AppearanceParameter",
+              "index": 0,
+              "appearanceIndex": 0,
+              "parameter": "МаксимальнаяШирина",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "20"
+              },
+              "scope": "root"
+            },
+            {
+              "kind": "ConditionalAppearance",
+              "index": 1,
+              "fields": "Артикул",
+              "scope": "root",
+              "filterState": "empty"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "empty",
+              "scope": "root",
+              "appearanceIndex": 1
+            },
+            {
+              "kind": "AppearanceParameter",
+              "index": 0,
+              "appearanceIndex": 1,
+              "parameter": "МинимальнаяШирина",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "6"
+              },
+              "scope": "root"
+            },
+            {
+              "kind": "ConditionalAppearance",
+              "index": 2,
+              "fields": "КонечныйОстаток",
+              "scope": "root",
+              "filterState": "empty"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "empty",
+              "scope": "root",
+              "appearanceIndex": 2
+            },
+            {
+              "kind": "AppearanceParameter",
+              "index": 0,
+              "appearanceIndex": 2,
+              "parameter": "МинимальнаяШирина",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "12"
+              },
+              "scope": "root"
+            },
+            {
+              "kind": "AppearanceParameter",
+              "index": 1,
+              "appearanceIndex": 2,
+              "parameter": "МаксимальнаяШирина",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "12"
+              },
+              "scope": "root"
+            },
+            {
+              "kind": "ConditionalAppearance",
+              "index": 3,
+              "fields": "Единица",
+              "scope": "root",
+              "filterState": "empty"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "empty",
+              "scope": "root",
+              "appearanceIndex": 3
+            },
+            {
+              "kind": "AppearanceParameter",
+              "index": 0,
+              "appearanceIndex": 3,
+              "parameter": "МаксимальнаяШирина",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "4"
+              },
+              "scope": "root"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "absent",
+              "scope": "structure",
+              "structureIndex": 0,
+              "group": "Named"
+            },
+            {
+              "kind": "Order",
+              "index": 0,
+              "itemType": "OrderItemField",
+              "field": "Серия",
+              "direction": "Asc",
+              "scope": "structure",
+              "structureIndex": 0,
+              "group": "Named"
+            }
+          ]
+        },
+        {
+          "pointer": "/data/items/0/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/1/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/2/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/3/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/4/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/5/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/6/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/7/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/8/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/9/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/10/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/11/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/12/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/13/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/14/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/15/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/16/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/17/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/18/at",
+          "absent": true
+        },
+        {
+          "pointer": "/data/items/19/at",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mobileProps",
+        "limit": 10
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "mobileCursor": {
+          "pointer": "/cursor"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "kind": "FilterContainer",
+              "state": "present",
+              "scope": "root"
+            },
+            {
+              "kind": "Filter",
+              "index": 0,
+              "itemType": "FilterItemComparison",
+              "field": "НачальныйОстаток",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 1,
+              "itemType": "FilterItemComparison",
+              "field": "Приход",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 2,
+              "itemType": "FilterItemComparison",
+              "field": "Расход",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "Filter",
+              "index": 3,
+              "itemType": "FilterItemComparison",
+              "field": "КонечныйОстаток",
+              "comparison": "Equal",
+              "scope": "root",
+              "value": "0",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "0"
+              }
+            },
+            {
+              "kind": "ConditionalAppearance",
+              "index": 0,
+              "fields": "Номенклатура",
+              "scope": "root",
+              "filterState": "empty"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "empty",
+              "scope": "root",
+              "appearanceIndex": 0
+            },
+            {
+              "kind": "AppearanceParameter",
+              "index": 0,
+              "appearanceIndex": 0,
+              "parameter": "МаксимальнаяШирина",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "20"
+              },
+              "scope": "root"
+            },
+            {
+              "kind": "ConditionalAppearance",
+              "index": 1,
+              "fields": "Артикул",
+              "scope": "root",
+              "filterState": "empty"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "empty",
+              "scope": "root",
+              "appearanceIndex": 1
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.mobileProps",
+        "limit": 10,
+        "cursor": "$capture.mobileCursor"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "kind": "AppearanceParameter",
+              "index": 0,
+              "appearanceIndex": 1,
+              "parameter": "МинимальнаяШирина",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "6"
+              },
+              "scope": "root"
+            },
+            {
+              "kind": "ConditionalAppearance",
+              "index": 2,
+              "fields": "КонечныйОстаток",
+              "scope": "root",
+              "filterState": "empty"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "empty",
+              "scope": "root",
+              "appearanceIndex": 2
+            },
+            {
+              "kind": "AppearanceParameter",
+              "index": 0,
+              "appearanceIndex": 2,
+              "parameter": "МинимальнаяШирина",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "12"
+              },
+              "scope": "root"
+            },
+            {
+              "kind": "AppearanceParameter",
+              "index": 1,
+              "appearanceIndex": 2,
+              "parameter": "МаксимальнаяШирина",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "12"
+              },
+              "scope": "root"
+            },
+            {
+              "kind": "ConditionalAppearance",
+              "index": 3,
+              "fields": "Единица",
+              "scope": "root",
+              "filterState": "empty"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "empty",
+              "scope": "root",
+              "appearanceIndex": 3
+            },
+            {
+              "kind": "AppearanceParameter",
+              "index": 0,
+              "appearanceIndex": 3,
+              "parameter": "МаксимальнаяШирина",
+              "typedValue": {
+                "type": {
+                  "namespace": "http://www.w3.org/2001/XMLSchema",
+                  "localName": "decimal"
+                },
+                "value": "4"
+              },
+              "scope": "root"
+            },
+            {
+              "kind": "FilterContainer",
+              "state": "absent",
+              "scope": "structure",
+              "structureIndex": 0,
+              "group": "Named"
+            },
+            {
+              "kind": "Order",
+              "index": 0,
+              "itemType": "OrderItemField",
+              "field": "Серия",
+              "direction": "Asc",
+              "scope": "structure",
+              "structureIndex": 0,
+              "group": "Named"
+            }
+          ]
+        },
+        {
+          "pointer": "/cursor",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "$capture.h0"
+        },
+        {
+          "path": "src/Reports/Probe.xml",
+          "kind": "sha256",
+          "eq": "$capture.h1"
+        },
+        {
+          "path": "src/Reports/Probe/Templates/Schema.xml",
+          "kind": "sha256",
+          "eq": "$capture.h2"
+        },
+        {
+          "path": "src/Reports/Probe/Templates/Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.h3"
+        },
+        {
+          "path": "v8project.yaml",
+          "kind": "sha256",
+          "eq": "$capture.h4"
+        }
+      ]
+    }
+  ]
+}
