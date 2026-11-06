@@ -1,0 +1,294 @@
+{
+  "id": "S-1665-document-sequence-filling",
+  "issue": 1665,
+  "area": "Метаданные",
+  "task": "Изменить режим заполнения последовательностей документа, сохранив настройки проведения, непустой состав движений и модули.",
+  "workspace": "tests/fixtures/acceptance/workspace-register-dimensions",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/SequenceFilling/enum",
+          "eq": [
+            "AutoFill",
+            "AutoFillOff"
+          ]
+        }
+      ],
+      "captures": {
+        "initial": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        },
+        "route": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход/Ext/ObjectModule.bsl"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before0": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SequenceFilling": "AutoFillOff"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}SequenceFilling",
+          "eq": [
+            "AutoFillOff"
+          ]
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.route"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/SequenceFilling",
+          "eq": "AutoFillOff"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before1": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SequenceFilling": "AutoFillOff"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}SequenceFilling",
+          "eq": [
+            "AutoFillOff"
+          ]
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.route"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before1"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/SequenceFilling",
+          "eq": "AutoFillOff"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before2": {
+          "kind": "sha256",
+          "file": "src/Documents/Приход.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Приход",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "SequenceFilling": "AutoFill"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.before2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "xml",
+          "select": "./{*}Document/{*}Properties/{*}SequenceFilling",
+          "eq": [
+            "AutoFill"
+          ]
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.route"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Приход"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/SequenceFilling",
+          "eq": "AutoFill"
+        }
+      ]
+    }
+  ]
+}
