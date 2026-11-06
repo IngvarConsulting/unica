@@ -4,7 +4,9 @@
 Всегда идёт весь `small`: вместе с Clippy всего workspace он ловит поломку интерфейса
 в зависимых. К нему добавляется `medium` изменённых крейтов. Крейтом считается и файл
 вне крейтов, который читают его тесты: `plugins`, `tests/fixtures`, `scripts` кроме
-`scripts/ci`, по упоминанию пути в исходниках крейта. Полный набор идёт при правке
+`scripts/ci`, по упоминанию пути в исходниках крейта. Прямые зависимые изменённого кода
+исполняют интеграционные цели: логическая поломка доходит до них и без смены интерфейса.
+`daemon_receipt_ledger` и транзитивные зависимые остаются ночи. Полный набор идёт при правке
 `Cargo.lock`, корневого `Cargo.toml`, тулчейна, при сбое чтения diff и при
 `QUEUE_FULL_TESTS=true`. Остальное исполняет ночь; правило для красной ночи и откат —
 в `.agents/skills/unica-testing/references/ci-pipeline.md`.
@@ -27,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # Меняют сборку всех крейтов: что затронуто, по пути не определить.
 WHOLE_BUILD = re.compile(r"^(Cargo\.lock|Cargo\.toml|rust-toolchain[^/]*|\.cargo/.*)$")
 # Читаются тестами крейтов, поэтому идут по упоминанию. Манифест сценариев читает только Python.
+DEPENDENT_FILTER = "kind(test) & not binary(daemon_receipt_ledger)"
 MENTIONED = re.compile(r"^(plugins/|tests/fixtures/(?!acceptance/scenario-manifest/)|scripts/(?!ci/))")
 # Крейт, который собирает путь к данным из частей, читает любой их каталог.
 ASSEMBLED_FIXTURES = '"tests/fixtures"'
@@ -37,13 +40,21 @@ class Choice:
     full: bool
     packages: tuple[str, ...]
     reason: str
+    dependents: tuple[str, ...] = ()
 
 
-def workspace(root: Path = ROOT) -> dict[str, str]:
-    """Каталоги крейтов."""
+def workspace(root: Path = ROOT) -> tuple[dict[str, str], dict[str, set[str]]]:
+    """Каталоги крейтов и их прямые зависимые, включая dev-зависимости."""
     meta = json.loads(subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"], cwd=root, text=True, encoding="utf-8"))
     base = meta["workspace_root"].replace("\\", "/").rstrip("/")
-    return {os.path.dirname(package["manifest_path"]).replace("\\", "/").removeprefix(base + "/"): package["name"] for package in meta["packages"]}
+    directories = {os.path.dirname(package["manifest_path"]).replace("\\", "/").removeprefix(base + "/"): package["name"] for package in meta["packages"]}
+    names = set(directories.values())
+    dependents: dict[str, set[str]] = {}
+    for package in meta["packages"]:
+        for dependency in package["dependencies"]:
+            if dependency["name"] in names:
+                dependents.setdefault(dependency["name"], set()).add(package["name"])
+    return directories, dependents
 
 
 def crate_of(path: str, directories: dict[str, str]) -> str | None:
@@ -68,22 +79,25 @@ def mentions(text: str, root: Path = ROOT) -> list[str]:
     return completed.stdout.split()
 
 
-def choose(paths: list[str], directories: dict[str, str], *, force_full: bool = False, find: Callable[[str], list[str]] = mentions) -> Choice:
+def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, set[str]] | None = None, *,
+           force_full: bool = False, find: Callable[[str], list[str]] = mentions) -> Choice:
     if force_full:
         return Choice(True, (), "QUEUE_FULL_TESTS")
     if not paths:
         return Choice(True, (), "пустой diff")
-    selected = set()
+    selected, edited = set(), set()
     for path in paths:
         if WHOLE_BUILD.match(path):
             return Choice(True, (), f"общая сборка: {path}")
         crate = crate_of(path, directories)
         if crate:
+            edited.add(crate)
             selected.add(crate)
         elif MENTIONED.match(path):
             texts = [needle(path), *([ASSEMBLED_FIXTURES] if path.startswith("tests/") else [])]
             selected.update(crate for text in texts for crate in (crate_of(item, directories) for item in find(text)) if crate)
-    return Choice(False, tuple(sorted(selected)), f"medium: {sorted(selected) or 'нет'}")
+    reached = sorted({name for crate in edited for name in (dependents or {}).get(crate, set())} - selected)
+    return Choice(False, tuple(sorted(selected)), f"medium: {sorted(selected) or 'нет'}, цели зависимых: {reached or 'нет'}", tuple(reached))
 
 
 def load_runner():
@@ -94,12 +108,15 @@ def load_runner():
     return module
 
 
-def commands(packages: tuple[str, ...], runner) -> list[list[str]]:
+def commands(packages: tuple[str, ...], runner, dependents: tuple[str, ...] = ()) -> list[list[str]]:
     """`small` остальных крейтов и `small` с `medium` выбранных: без повтора одних и тех же тестов."""
     others = ("--workspace", *(item for package in packages for item in ("--exclude", package)))
     planned = [[*runner.rust_command("pr", others), "--no-tests=pass"]]
     if packages:
         selection = tuple(item for package in packages for item in ("-p", package))
+        planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
+    if dependents:
+        selection = (*(item for package in dependents for item in ("-p", package)), "-E", DEPENDENT_FILTER)
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
     if "unica-coder" in packages:
         planned.append(runner.rust_command("queue", runner.LEDGER_FEATURE_SELECTION))
@@ -116,7 +133,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         paths = subprocess.check_output(["git", "diff", "--name-only", "--no-renames", args.base, args.head, "--"], cwd=ROOT, text=True, encoding="utf-8", errors="replace").split("\n")
-        choice = choose([path for path in paths if path], workspace(), force_full=os.environ.get("QUEUE_FULL_TESTS") == "true")
+        directories, dependents = workspace()
+        choice = choose([path for path in paths if path], directories, dependents, force_full=os.environ.get("QUEUE_FULL_TESTS") == "true")
     except (subprocess.CalledProcessError, OSError, ValueError) as error:
         choice = Choice(True, (), f"выбор не определён: {error}")
     print(f"{'полный набор' if choice.full else 'small всех крейтов'}: {choice.reason}", flush=True)
@@ -127,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         return 0
     runner = load_runner()
-    planned = runner.rust_commands("queue") if choice.full else commands(choice.packages, runner)
+    planned = runner.rust_commands("queue") if choice.full else commands(choice.packages, runner, choice.dependents)
     code = 0
     for command in planned:
         print("+ " + " ".join(command), flush=True)

@@ -21,14 +21,15 @@ sys.modules["queue_tests"] = queue
 SPEC.loader.exec_module(queue)
 
 DIRS = {"crates/a": "unica-a", "crates/b": "unica-b", "crates/coder": "unica-coder", "vendor/ureq": "ureq"}
+DEPENDENTS = {"unica-a": {"unica-b", "unica-coder"}, "unica-b": {"unica-coder"}}
 
 
 def choose(paths, found=(), **options):
-    return queue.choose(paths, DIRS, find=lambda text: list(found), **options)
+    return queue.choose(paths, DIRS, DEPENDENTS, find=lambda text: list(found), **options)
 
 
 class ChoiceTests(unittest.TestCase):
-    def test_any_file_of_a_crate_selects_that_crate_and_no_dependents(self) -> None:
+    def test_any_file_of_a_crate_selects_that_crate(self) -> None:
         for path in ("crates/a/src/lib.rs", "crates/a/tests/t.rs", "crates/a/build.rs", "crates/a/Cargo.toml", "crates/a/README.md"):
             with self.subTest(path=path):
                 choice = choose([path])
@@ -37,6 +38,26 @@ class ChoiceTests(unittest.TestCase):
 
     def test_unica_coder_is_selected_like_any_other_crate(self) -> None:
         self.assertEqual(choose(["crates/coder/src/lib.rs", "crates/a/src/lib.rs"]).packages, ("unica-a", "unica-coder"))
+
+    def test_direct_dependents_run_integration_targets_and_transitive_ones_wait_for_the_night(self) -> None:
+        self.assertEqual(choose(["crates/a/src/lib.rs"]).dependents, ("unica-b", "unica-coder"))
+        # unica-coder здесь зависит от unica-b, а не транзитивно через него попадает.
+        no_direct = queue.choose(["crates/a/src/lib.rs"], DIRS, {"unica-a": {"unica-b"}, "unica-b": {"unica-coder"}}, find=lambda text: [])
+        self.assertEqual(no_direct.dependents, ("unica-b",))
+        self.assertEqual(choose(["crates/a/src/lib.rs", "crates/coder/src/lib.rs"]).dependents, ("unica-b",))
+
+    def test_a_crate_chosen_by_mention_does_not_pull_its_dependents(self) -> None:
+        choice = choose(["plugins/unica/x.md"], ["crates/a/src/lib.rs"])
+        self.assertEqual(choice.packages, ("unica-a",))
+        self.assertEqual(choice.dependents, ())
+
+    def test_the_dependent_filter_keeps_integration_targets_without_the_ledger(self) -> None:
+        self.assertEqual(queue.DEPENDENT_FILTER, "kind(test) & not binary(daemon_receipt_ledger)")
+        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
+        runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
+        planned = queue.commands(("unica-a",), runner, ("unica-coder",))
+        self.assertEqual(planned[-1], ["queue", "-p", "unica-coder", "-E", queue.DEPENDENT_FILTER, "--no-tests=pass"])
+        self.assertNotIn(["queue", "ledger"], planned)
 
     def test_only_the_whole_build_runs_everything(self) -> None:
         for path in ("Cargo.lock", "Cargo.toml", "rust-toolchain.toml", ".cargo/config.toml"):
@@ -109,7 +130,7 @@ class GuardTests(unittest.TestCase):
             asked.append(text)
             return ["crates/coder/tests/x.rs"] if text == queue.ASSEMBLED_FIXTURES else []
 
-        self.assertEqual(queue.choose(["tests/fixtures/xdto/a.xml"], DIRS, find=find).packages, ("unica-coder",))
+        self.assertEqual(queue.choose(["tests/fixtures/xdto/a.xml"], DIRS, DEPENDENTS, find=find).packages, ("unica-coder",))
         self.assertEqual(asked, ["tests/fixtures/xdto", queue.ASSEMBLED_FIXTURES])
 
 
