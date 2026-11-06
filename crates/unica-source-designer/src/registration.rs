@@ -460,6 +460,15 @@ pub fn owner_registration_image(
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
+    // The registration writes `<Kind>` in the default namespace; a prefixed
+    // configuration is edited in that form and restored below.
+    let original = source;
+    let (normalized, form) = unica_xml_format::prefix_form::PrefixForm::normalize(original)
+        .map_err(|message| {
+            ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+                .at_path(format!("ops[{op_index}].args.at"))
+        })?;
+    let source = normalized.as_str();
     let (updated, changed) = if register {
         let mut updated = source.to_string();
         let changed = cf_edit_add_child_object_text(&mut updated, kind, name).map_err(|error| {
@@ -473,7 +482,11 @@ pub fn owner_registration_image(
     if !changed {
         return Ok(None);
     }
-    let updated = preserve_inserted_line_endings(source, &updated);
+    let updated = form.restore(&updated).map_err(|message| {
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message)
+            .at_path(format!("ops[{op_index}].args.at"))
+    })?;
+    let updated = preserve_inserted_line_endings(original, &updated);
     let mut image = Vec::with_capacity(bom.len() + updated.len());
     image.extend_from_slice(bom);
     image.extend_from_slice(updated.as_bytes());

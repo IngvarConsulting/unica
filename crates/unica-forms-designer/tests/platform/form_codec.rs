@@ -345,6 +345,32 @@ fn form_registration_takes_the_platform_slot_of_its_owner_kind() {
     ] {
         let updated = register_form_in_object_text(&owner(kind, existing), "New");
         assert_eq!(children(&updated), expected, "{kind} {existing:?}");
+        // A prefixed owner gets the same registration with its own prefix.
+        let prefixed_owner = prefixed(&owner(kind, existing));
+        let updated_prefixed = register_form_in_object_text(&prefixed_owner, "New");
+        assert_eq!(updated_prefixed, prefixed(&updated), "{kind} {existing:?}");
+        assert_eq!(
+            register_form_in_object_text(&updated_prefixed, "New"),
+            updated_prefixed
+        );
+    }
+    /// Every element of these synthetic owners is an MDClasses element.
+    fn prefixed(xml: &str) -> String {
+        let mut text = String::new();
+        let mut rest = xml;
+        while let Some(at) = rest.find('<') {
+            text.push_str(&rest[..=at]);
+            rest = &rest[at + 1..];
+            if rest.starts_with('/') {
+                text.push('/');
+                rest = &rest[1..];
+            }
+            if rest.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+                text.push_str("md:");
+            }
+        }
+        text.push_str(rest);
+        text.replacen("xmlns=", "xmlns:md=", 1)
     }
 }
 
