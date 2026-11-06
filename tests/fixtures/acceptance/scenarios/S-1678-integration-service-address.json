@@ -1,0 +1,1084 @@
+{
+  "id": "S-1678-integration-service-address",
+  "issue": 1678,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-integration-service-address",
+  "task": "Обнаружить узкий контракт адреса существующего сервиса интеграции, сменить пустой адрес на два точных URL с Unicode/ampersand/кавычками и очистить; preview не пишет, token публикует, view читает точную строку. SHA всего дерева сохраняют UUID, InternalInfo, оба канала, модуль и остальные файлы. Повтор пустого адреса — no-op.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:IntegrationService.Шина"
+        }
+      ],
+      "captures": {
+        "owner": {
+          "pointer": "/data/items/0/at"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceAddress",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:IntegrationService.Шина.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/ExternalIntegrationServiceAddress/type",
+          "eq": "string"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/Comment",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ExternalIntegrationServiceAddress": "https://example.invalid/Первый?a=1&b=2"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "address0": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "00ed8c7704483780e885afc4a5c0bfe0cf3f222d8e8f59aded1180738d2ccbd1"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        },
+        {
+          "path": "src/IntegrationServices/Шина/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "2513530d91d1b6c9faaf67f1cfd7f1f0551de24cbd7f04412d8cc689ea02200b"
+        },
+        {
+          "path": "src/IntegrationServices/Шина.xml",
+          "kind": "sha256",
+          "eq": "1aa21f648f66fa907f937633109992d87e3126da3947a7b5f981bd239d79fd05"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.address0"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "00ed8c7704483780e885afc4a5c0bfe0cf3f222d8e8f59aded1180738d2ccbd1"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        },
+        {
+          "path": "src/IntegrationServices/Шина/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "2513530d91d1b6c9faaf67f1cfd7f1f0551de24cbd7f04412d8cc689ea02200b"
+        },
+        {
+          "path": "src/IntegrationServices/Шина.xml",
+          "kind": "sha256",
+          "eq": "cc605dd57edd739932795b94918ac970a2c03ffd11fae339224ef7e41bb88052"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceAddress",
+          "eq": "https://example.invalid/Первый?a=1&b=2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ExternalIntegrationServiceAddress": "https://example.invalid/Второй?quote=\"x\""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "address1": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "00ed8c7704483780e885afc4a5c0bfe0cf3f222d8e8f59aded1180738d2ccbd1"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        },
+        {
+          "path": "src/IntegrationServices/Шина/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "2513530d91d1b6c9faaf67f1cfd7f1f0551de24cbd7f04412d8cc689ea02200b"
+        },
+        {
+          "path": "src/IntegrationServices/Шина.xml",
+          "kind": "sha256",
+          "eq": "cc605dd57edd739932795b94918ac970a2c03ffd11fae339224ef7e41bb88052"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.address1"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "00ed8c7704483780e885afc4a5c0bfe0cf3f222d8e8f59aded1180738d2ccbd1"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        },
+        {
+          "path": "src/IntegrationServices/Шина/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "2513530d91d1b6c9faaf67f1cfd7f1f0551de24cbd7f04412d8cc689ea02200b"
+        },
+        {
+          "path": "src/IntegrationServices/Шина.xml",
+          "kind": "sha256",
+          "eq": "0964f616f6e13e1dc32b1594970d0856955404c6bb9d285878ec658e005d29ab"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceAddress",
+          "eq": "https://example.invalid/Второй?quote=\"x\""
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ExternalIntegrationServiceAddress": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "address2": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "00ed8c7704483780e885afc4a5c0bfe0cf3f222d8e8f59aded1180738d2ccbd1"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        },
+        {
+          "path": "src/IntegrationServices/Шина/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "2513530d91d1b6c9faaf67f1cfd7f1f0551de24cbd7f04412d8cc689ea02200b"
+        },
+        {
+          "path": "src/IntegrationServices/Шина.xml",
+          "kind": "sha256",
+          "eq": "0964f616f6e13e1dc32b1594970d0856955404c6bb9d285878ec658e005d29ab"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.address2"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "00ed8c7704483780e885afc4a5c0bfe0cf3f222d8e8f59aded1180738d2ccbd1"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        },
+        {
+          "path": "src/IntegrationServices/Шина/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "2513530d91d1b6c9faaf67f1cfd7f1f0551de24cbd7f04412d8cc689ea02200b"
+        },
+        {
+          "path": "src/IntegrationServices/Шина.xml",
+          "kind": "sha256",
+          "eq": "1aa21f648f66fa907f937633109992d87e3126da3947a7b5f981bd239d79fd05"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/ExternalIntegrationServiceAddress",
+          "eq": ""
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "ExternalIntegrationServiceAddress": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        },
+        {
+          "pointer": "/changed",
+          "absent": true
+        }
+      ],
+      "captures": {
+        "noop": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "00ed8c7704483780e885afc4a5c0bfe0cf3f222d8e8f59aded1180738d2ccbd1"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        },
+        {
+          "path": "src/IntegrationServices/Шина/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "2513530d91d1b6c9faaf67f1cfd7f1f0551de24cbd7f04412d8cc689ea02200b"
+        },
+        {
+          "path": "src/IntegrationServices/Шина.xml",
+          "kind": "sha256",
+          "eq": "1aa21f648f66fa907f937633109992d87e3126da3947a7b5f981bd239d79fd05"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.noop"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        },
+        {
+          "pointer": "/changed",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccountingRegisters/Бухгалтерский.xml",
+          "kind": "sha256",
+          "eq": "58737b6d687f5e83f34ec54eac808e272f59b695486bd6f1c236e206eff7a117"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/AccumulationRegisters/Остатки.xml",
+          "kind": "sha256",
+          "eq": "7f58e4de59bcfe7403d0d02a44088f3d0c13b10b36ea61f7c8762107699bbd9f"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/CalculationRegisters/Начисления.xml",
+          "kind": "sha256",
+          "eq": "c8a74db5704b2ce24a7d315af65a068dfe8f0d2c89261c21ac14792bdaf44821"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfAccounts/Хозрасчетный.xml",
+          "kind": "sha256",
+          "eq": "c5cb9540bb9a8144ac45b24a47d56b71cff5293788673ea57e814bc25a911ca6"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/ChartsOfCalculationTypes/ВидыРасчета.xml",
+          "kind": "sha256",
+          "eq": "cfe7a1ca36a597e5b22cfa7b9a5a3020ea6aed704d03e81f7e423f0d92744686"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "00ed8c7704483780e885afc4a5c0bfe0cf3f222d8e8f59aded1180738d2ccbd1"
+        },
+        {
+          "path": "src/Documents/Приход/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/Documents/Приход.xml",
+          "kind": "sha256",
+          "eq": "2fb973851c3830261cade10a095e78be78bb1bdeb834c3fdc44fc462cfb5a4eb"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/InformationRegisters/Цены/Ext/RecordSetModule.bsl",
+          "kind": "sha256",
+          "eq": "f1945cd6c19e56b3c1c78943ef5ec18116907a4ca1efc40a57d48ab1db7adfc5"
+        },
+        {
+          "path": "src/InformationRegisters/Цены.xml",
+          "kind": "sha256",
+          "eq": "4ce1a29efea258a760998e5736a00c7c7440e921b3e60a66454b8f0f80ca8d7a"
+        },
+        {
+          "path": "src/IntegrationServices/Шина/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "2513530d91d1b6c9faaf67f1cfd7f1f0551de24cbd7f04412d8cc689ea02200b"
+        },
+        {
+          "path": "src/IntegrationServices/Шина.xml",
+          "kind": "sha256",
+          "eq": "1aa21f648f66fa907f937633109992d87e3126da3947a7b5f981bd239d79fd05"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    }
+  ]
+}

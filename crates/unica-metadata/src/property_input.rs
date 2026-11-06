@@ -39,6 +39,11 @@ pub struct ConfigurationPropertyChanges {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IntegrationServicePropertyChanges {
+    pub address: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WsReferencePropertyChanges {
     pub location_url: String,
     pub comment: Option<String>,
@@ -48,6 +53,7 @@ pub struct WsReferencePropertyChanges {
 pub enum PropertiesIntent {
     DocumentNumerator(crate::document_numerator::DocumentNumeratorChanges),
     Metadata(MetaPropertyChanges),
+    IntegrationService(IntegrationServicePropertyChanges),
     LanguageCode {
         code: String,
         comment: Option<String>,
@@ -398,6 +404,23 @@ fn decode_with_contract(
                         )?;
                     }
                     PropertiesIntent::Metadata(changes)
+                }
+                PropertiesSite::IntegrationService => {
+                    let comment = values_reader.string(DescriptorProperty::Comment)?;
+                    let address = values_reader
+                        .string(DescriptorProperty::ExternalIntegrationServiceAddress)?;
+                    match (address, comment) {
+                    (Some(address), None) => {
+                    if !address.chars().all(|ch| matches!(ch, '\t' | '\n' | '\r' | '\u{20}'..='\u{d7ff}' | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}')) {
+                        return Err(invalid(format!("{values_path}.ExternalIntegrationServiceAddress"), "address contains a character that XML 1.0 cannot represent"));
+                    }
+                    PropertiesIntent::IntegrationService(IntegrationServicePropertyChanges {
+                        address,
+                    })
+                    }
+                    (None, Some(comment)) => PropertiesIntent::CommentOnly { kind: unica_address::address::NodeKind::IntegrationService, comment },
+                    _ => return Err(invalid(&values_path, "supply either ExternalIntegrationServiceAddress or Comment, one property per operation")),
+                    }
                 }
                 PropertiesSite::Language => {
                     let comment = values_reader.string(DescriptorProperty::Comment)?;
@@ -925,6 +948,59 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(error.path, expected_path, "{}", error.message);
+        }
+    }
+}
+
+#[cfg(test)]
+mod integration_address_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn integration_address_decoder_keeps_exact_strings_and_rejects_nontext_and_controls() {
+        for value in ["", " https://example.invalid/Путь?a=1&b=2 ", "a\rb\r\nc"] {
+            assert_eq!(
+                decode_properties(
+                    PropertiesOperation::Set,
+                    PropertiesSite::IntegrationService,
+                    &json!({"values":{"ExternalIntegrationServiceAddress":value}}),
+                    "ops[0].args"
+                )
+                .unwrap(),
+                PropertiesIntent::IntegrationService(IntegrationServicePropertyChanges {
+                    address: value.into()
+                })
+            );
+        }
+        for value in [
+            json!(false),
+            json!(17),
+            json!(null),
+            json!([]),
+            json!({}),
+            json!("\u{0}"),
+            json!("\u{1}"),
+        ] {
+            assert!(decode_properties(
+                PropertiesOperation::Set,
+                PropertiesSite::IntegrationService,
+                &json!({"values":{"ExternalIntegrationServiceAddress":value}}),
+                "ops[0].args"
+            )
+            .is_err());
+        }
+        for values in [
+            json!({"ExternalIntegrationServiceAddress":"a", "Comment":"x"}),
+            json!({}),
+            json!({"ExternalIntegrationServiceAddress":"a", "externalIntegrationServiceAddress":"b"}),
+        ] {
+            assert!(decode_properties(
+                PropertiesOperation::Set,
+                PropertiesSite::IntegrationService,
+                &json!({"values":values}),
+                "ops[0].args"
+            )
+            .is_err());
         }
     }
 }

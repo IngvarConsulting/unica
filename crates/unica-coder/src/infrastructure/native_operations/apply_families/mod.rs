@@ -1475,6 +1475,9 @@ pub(crate) fn plan_hidden_v13_apply(
 }
 
 #[cfg(test)]
+mod integration_service_address_tests;
+
+#[cfg(test)]
 mod calculation_code_type_tests;
 
 #[cfg(test)]

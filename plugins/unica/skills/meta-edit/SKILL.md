@@ -58,7 +58,7 @@ allowed-tools:
 `CommonAttribute`, `FunctionalOptionsParameter`,
 `SessionParameter`, `FilterCriterion`, `SettingsStorage`, `CommonCommand`,
 `CommandGroup`, `CommonForm`, `CommonTemplate`, `CommonPicture`,
-`IntegrationService`, `XDTOPackage`,
+`XDTOPackage`,
 `Sequence` и `Style`. Для общей формы адресуй дескриптор
 `main:CommonForm.<Имя>.Metadata`; остальные владельцы адресуются как
 `main:<Вид>.<Имя>`. Например, `{"values":{"Comment":"Назначение параметра"}}`;
@@ -505,3 +505,9 @@ Font/Border, повреждённый или отсутствующий Value н
   }
 }
 ```
+
+У `IntegrationService` отдельная операция `props.set` меняет строковый
+`ExternalIntegrationServiceAddress` (псевдоним `externalIntegrationServiceAddress`)
+или `Comment`/`comment`. Передавай одно свойство на операцию; смешанный ввод
+отклоняется до записи. Для изменения только комментария проверка адреса
+сервиса не требуется.

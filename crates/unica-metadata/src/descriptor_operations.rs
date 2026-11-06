@@ -55,6 +55,7 @@ pub enum PropertiesSite {
     Role,
     WSReference,
     Subsystem,
+    IntegrationService,
     Language,
     StyleItem,
     /// The root of a source set: the configuration's own `Configuration.xml`,
@@ -101,6 +102,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension: true } => {
                         match self { $(Self::$field => $extension),+ }
                     }
+                    PropertiesSite::IntegrationService => matches!(self, Self::ExternalIntegrationServiceAddress | Self::Comment),
                     PropertiesSite::Metadata { .. } => false,
                     PropertiesSite::DocumentNumerator => self == Self::Comment,
                     PropertiesSite::CommentOnly(_) | PropertiesSite::Language => self == Self::Comment,
@@ -120,6 +122,7 @@ macro_rules! descriptor_properties {
 // re-export of 8.3.27 resets a configuration's own
 // `ConfigurationExtensionCompatibilityMode`, so only an extension sets it.
 descriptor_properties!(
+    ExternalIntegrationServiceAddress => ("ExternalIntegrationServiceAddress", "externalIntegrationServiceAddress", String, false, false, false, false),
     LocationUrl => ("LocationURL", "locationURL", String, false, false, false, false),
     Location => ("Location", "location", String, false, false, false, false),
     PrivilegedGetMode => ("PrivilegedGetMode", "privilegedGetMode", Boolean, false, false, false, false),
@@ -236,6 +239,7 @@ impl PropertiesSite {
         };
         owner.name()?;
         match owner.kind() {
+            NodeKind::IntegrationService => Some(Self::IntegrationService),
             NodeKind::DocumentNumerator => Some(Self::DocumentNumerator),
             NodeKind::StyleItem => Some(Self::StyleItem),
             NodeKind::FunctionalOption => Some(Self::FunctionalOption),
@@ -252,7 +256,6 @@ impl PropertiesSite {
             | NodeKind::CommandGroup
             | NodeKind::CommonTemplate
             | NodeKind::CommonPicture
-            | NodeKind::IntegrationService
             | NodeKind::XdtoPackage
             | NodeKind::Sequence
             | NodeKind::Style => Some(Self::CommentOnly(owner.kind())),
@@ -302,7 +305,8 @@ impl PropertiesSite {
                     properties.remove("EditType");
                 }
             }
-            Self::StyleItem
+            Self::IntegrationService
+            | Self::StyleItem
             | Self::WSReference
             | Self::FunctionalOption
             | Self::Language
@@ -354,6 +358,9 @@ impl PropertiesSite {
             // neither merge these groups nor erase diagnostic provenance.
             values["x-unica-alias-groups"] = json!(groups);
         }
+        if self == Self::IntegrationService {
+            values["maxProperties"] = json!(1);
+        }
         values
     }
 }
@@ -385,12 +392,13 @@ impl PropertiesOperation {
                     PropertiesSite::WSReference => json!({"values":{"LocationURL":"https://example.invalid/service?wsdl"}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
                     PropertiesSite::Configuration { .. } => json!({"values":{"Version":"1.0.0.2"}}),
+                    PropertiesSite::IntegrationService => json!({"values":{"ExternalIntegrationServiceAddress":"https://example.invalid/service"}}),
                     PropertiesSite::StyleItem => json!({"values":{"Value":"#F0F0F0"}}),
                     PropertiesSite::Language => json!({"values":{"LanguageCode":"de"}}),
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::IntegrationService | PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -707,7 +715,8 @@ mod tests {
             let properties = schema["properties"]["values"]["properties"]
                 .as_object()
                 .unwrap();
-            assert_eq!(properties.len(), 2, "{at}: {properties:?}");
+            let expected_fields = if kind == "IntegrationService" { 4 } else { 2 };
+            assert_eq!(properties.len(), expected_fields, "{at}: {properties:?}");
             for alias in ["Comment", "comment"] {
                 assert_eq!(properties[alias], json!({"type":"string"}));
                 assert!(
@@ -954,6 +963,58 @@ mod tests {
                     .normalize(&json!({"values":values}), "args")
                     .is_err());
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod integration_service_tests {
+    use super::*;
+
+    #[test]
+    fn integration_service_properties_are_a_narrow_existing_descriptor_site() {
+        let at = QualifiedAddress::parse("main:IntegrationService.Bus").unwrap();
+        let site = PropertiesSite::from_address(&at, SourceSetKind::Configuration)
+            .expect("existing integration service has a scalar write profile");
+        let contract = PropertiesOperation::Set.contract(site);
+        let fields = contract.schema["properties"]["values"]["properties"]
+            .as_object()
+            .unwrap();
+        assert_eq!(fields.len(), 4);
+        for name in ["Comment", "comment"] {
+            assert_eq!(fields[name]["type"], "string");
+        }
+        assert_eq!(
+            fields["ExternalIntegrationServiceAddress"]["type"],
+            "string"
+        );
+        assert_eq!(
+            fields["externalIntegrationServiceAddress"]["type"],
+            "string"
+        );
+        assert!(
+            MetadataKind::parse("IntegrationService").is_err(),
+            "one property must not grant object.create and unrelated writers"
+        );
+        assert!(PropertiesSite::from_address(
+            &QualifiedAddress::parse("main:IntegrationService.Bus.Module.IntegrationService")
+                .unwrap(),
+            SourceSetKind::Configuration
+        )
+        .is_none());
+        for other in [
+            PropertiesSite::Role,
+            PropertiesSite::Subsystem,
+            PropertiesSite::Configuration { extension: false },
+            PropertiesSite::Metadata {
+                kind: MetadataKind::Catalog,
+                source_kind: SourceSetKind::Configuration,
+            },
+        ] {
+            let schema = PropertiesOperation::Set.contract(other).schema;
+            assert!(schema["properties"]["values"]["properties"]
+                .get("ExternalIntegrationServiceAddress")
+                .is_none());
         }
     }
 }
