@@ -97,7 +97,7 @@
       "license": "LGPL-3.0-or-later",
       "assetStrategy": "cargo-workspace",
       "binaryName": "unica",
-      "cargoPackage": "unica-coder",
+      "cargoPackage": "unica-product",
       "cargoBin": "unica",
       "assets": {
         "darwin-arm64": {

@@ -1191,7 +1191,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                         {
                             "name": "unica",
                             "binaryName": "unica",
-                            "cargoPackage": "unica-coder",
+                            "cargoPackage": "unica-product",
                             "cargoBin": "unica",
                         }
                     ],
@@ -1202,7 +1202,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     target="win-x64",
                     exe=".exe",
                     workspace_binary_owners={
-                        "unica": {"unica-coder"},
+                        "unica": {"unica-product"},
                         "unica-bootstrap": {"unica-bootstrap"},
                     },
                 )
@@ -1225,7 +1225,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                     "--release",
                     "--locked",
                     "--package",
-                    "unica-coder",
+                    "unica-product",
                     "--package",
                     "unica-bootstrap",
                     "--bin",
@@ -1245,14 +1245,14 @@ class BuildUnicaToolsTests(unittest.TestCase):
             with patch.object(module, "run") as cargo_run:
                 with self.assertRaisesRegex(
                     SystemExit,
-                    "unica-coder does not own binary target unica-bootstrap",
+                    "unica-product does not own binary target unica-bootstrap",
                 ):
                     module.build_cargo_workspace_binaries(
                         [
                             {
                                 "name": "unica",
                                 "binaryName": "unica",
-                                "cargoPackage": "unica-coder",
+                                "cargoPackage": "unica-product",
                                 "cargoBin": "unica-bootstrap",
                             }
                         ],
@@ -1263,7 +1263,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
                         target="linux-x64",
                         exe="",
                         workspace_binary_owners={
-                            "unica": {"unica-coder"},
+                            "unica": {"unica-product"},
                             "unica-bootstrap": {"unica-bootstrap"},
                         },
                     )
@@ -1275,7 +1275,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         metadata = {
             "packages": [
                 {
-                    "name": "unica-coder",
+                    "name": "unica-product",
                     "targets": [
                         {"name": "unica", "kind": ["bin"]},
                         {"name": "unica_coder", "kind": ["lib"]},
@@ -1295,7 +1295,7 @@ class BuildUnicaToolsTests(unittest.TestCase):
         self.assertEqual(
             owners,
             {
-                "unica": {"unica-coder"},
+                "unica": {"unica-product"},
                 "unica-bootstrap": {"unica-bootstrap"},
             },
         )

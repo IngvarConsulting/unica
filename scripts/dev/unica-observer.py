@@ -2336,7 +2336,7 @@ def main(argv: list[str] | None = None) -> int:
 
     binary = (args.unica or default_binary()).resolve()
     if not binary.is_file():
-        parser.error(f"нет бинаря unica: {binary}; соберите `cargo build --release -p unica-coder --bin unica` или укажите --unica")
+        parser.error(f"нет бинаря unica: {binary}; соберите `cargo build --release -p unica-product --bin unica` или укажите --unica")
     workspace = args.workspace.resolve()
     if not workspace.is_dir():
         parser.error(f"нет каталога рабочей области: {workspace}")

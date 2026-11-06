@@ -256,9 +256,11 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
         return {
             "rust-build-meta": {"target-directory": str(root / "target"),
                 "platforms": {"host": {"platform": {"triple": target}}, "targets": [{"platform": {"triple": target}}]},
-                "non-test-binaries": {"exact-coder-package": [{"name": "unica", "kind": "bin-exe", "build-platform": "target", "path": target + "/debug/unica"}]}},
+                "non-test-binaries": {"exact-product-package": [{"name": "unica", "kind": "bin-exe", "build-platform": "target", "path": target + "/debug/unica"}]}},
             "rust-suites": {"unica-coder": {"package-name": "unica-coder", "package-id": "exact-coder-package", "kind": "lib",
-                "binary-id": "unica-coder", "build-platform": "target", "testcases": {"selected": {"ignored": False}}}},
+                "binary-id": "unica-coder", "build-platform": "target", "testcases": {"selected": {"ignored": False}}},
+                "unica-product::bin/unica": {"package-name": "unica-product", "package-id": "exact-product-package", "kind": "bin",
+                "binary-id": "unica-product::bin/unica", "build-platform": "target", "testcases": {}}},
         }
 
     def test_native_mac_and_windows_metadata_bind_the_target_specific_executable(self):
@@ -269,7 +271,7 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
                 metadata = listed["rust-build-meta"]
                 metadata["platforms"] = {"host": {"platform": {"triple": target}}, "targets": [{"platform": {"triple": target}}]}
                 relative = f"{target}/debug/{name}"
-                metadata["non-test-binaries"]["exact-coder-package"][0]["path"] = relative.replace("/", "\\") if system == "Windows" else relative
+                metadata["non-test-binaries"]["exact-product-package"][0]["path"] = relative.replace("/", "\\") if system == "Windows" else relative
                 binary = root / "target" / relative
                 binary.parent.mkdir(parents=True)
                 binary.write_bytes(b"native archive fixture")
@@ -380,17 +382,17 @@ class ArchiveFixtureBinaryTests(unittest.TestCase):
             binary.write_bytes(b"archive binary")
             mutations = [
                 lambda row: row["rust-build-meta"].pop("non-test-binaries"),
-                lambda row: row["rust-suites"]["unica-coder"].update({"package-id": "another-package"}),
-                lambda row: row["rust-suites"]["unica-coder"].update({"package-name": "another-package"}),
+                lambda row: row["rust-suites"]["unica-product::bin/unica"].update({"package-id": "another-package"}),
+                lambda row: row["rust-suites"]["unica-product::bin/unica"].update({"package-name": "another-package"}),
                 lambda row: row["rust-build-meta"]["platforms"]["host"]["platform"].update({"triple": "another-host"}),
                 lambda row: row["rust-build-meta"]["platforms"]["targets"].append({"platform": {"triple": "another-target"}}),
                 lambda row: row["rust-build-meta"].update({"target-directory": str(root / "elsewhere")}),
             ]
             for changes in ({"kind": "bin"}, {"build-platform": "host"}, {"name": "unica-bootstrap"},
                             {"path": "../unica"}, {"path": "/tmp/unica"}, {"path": "x86_64-unknown-linux-gnu/debug/deps/unica"}):
-                mutations.append(lambda row, changes=changes: row["rust-build-meta"]["non-test-binaries"]["exact-coder-package"][0].update(changes))
-            mutations.append(lambda row: row["rust-build-meta"]["non-test-binaries"]["exact-coder-package"].append(
-                copy.deepcopy(row["rust-build-meta"]["non-test-binaries"]["exact-coder-package"][0])))
+                mutations.append(lambda row, changes=changes: row["rust-build-meta"]["non-test-binaries"]["exact-product-package"][0].update(changes))
+            mutations.append(lambda row: row["rust-build-meta"]["non-test-binaries"]["exact-product-package"].append(
+                copy.deepcopy(row["rust-build-meta"]["non-test-binaries"]["exact-product-package"][0])))
             for index, mutate in enumerate(mutations):
                 row = copy.deepcopy(original)
                 mutate(row)

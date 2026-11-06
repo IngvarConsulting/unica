@@ -269,12 +269,12 @@ def fixture_binary_descriptor(root: Path, listed: dict, identity: dict) -> dict:
         or platforms.get("host", {}).get("platform", {}).get("triple") != target
         or [item.get("platform", {}).get("triple") for item in platforms.get("targets", [])] != [target]):
         raise ValueError("fixture binary metadata does not describe the native archive target")
-    suite = listed.get("rust-suites", {}).get("unica-coder", {})
-    if (suite.get("package-name"), suite.get("binary-id"), suite.get("kind"), suite.get("build-platform")) != ("unica-coder", "unica-coder", "lib", "target"):
-        raise ValueError("fixture binary metadata is missing the unica-coder package")
+    suite = listed.get("rust-suites", {}).get("unica-product::bin/unica", {})
+    if (suite.get("package-name"), suite.get("binary-id"), suite.get("kind"), suite.get("build-platform")) != ("unica-product", "unica-product::bin/unica", "bin", "target"):
+        raise ValueError("fixture binary metadata is missing the unica-product package")
     package = suite.get("package-id")
     if not isinstance(package, str) or not package:
-        raise ValueError("fixture binary metadata is missing the unica-coder package identity")
+        raise ValueError("fixture binary metadata is missing the unica-product package identity")
     candidates = [entry for entry in metadata.get("non-test-binaries", {}).get(package, []) if entry.get("name") == "unica"]
     relative = fixture_binary_path(identity)
     described_path = candidates[0].get("path") if len(candidates) == 1 else None
@@ -812,7 +812,7 @@ def same_selection(first: str, second: str, host: str | None = None) -> bool:
 
 
 def binary_of(case: str, binaries: list[str]) -> str | None:
-    # Binary ids nest (`unica-coder`, `unica-coder::daemon_receipt_ledger`):
+    # Binary ids nest (`unica-coder`, `unica-coder::role_registration`):
     # a case belongs to the longest id it starts with.
     return max((binary for binary in binaries if case.startswith(binary + "::")), key=len, default=None)
 

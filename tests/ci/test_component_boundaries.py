@@ -107,6 +107,8 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-dcs-designer", "unica-templates-designer"),
             ("unica-dcs-designer", "unica-coder"),
             ("unica-dcs-integration-tests", "unica-coder"),
+            ("unica-dcs-integration-tests", "unica-product"),
+            ("unica-coder", "unica-product"),
         )
         for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
             for owner, target in refused:
@@ -122,6 +124,11 @@ class ComponentBoundaryTests(unittest.TestCase):
         ):
             with self.subTest(owner=owner, target=target, kind=kind):
                 self.assertEqual(checker.edge_errors(owner, target, kind), [])
+
+    def test_only_the_product_package_depends_on_the_composition(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
+        for kind in ("dependencies", "dev-dependencies"):
+            self.assertEqual(checker.edge_errors("unica-product", "unica-coder", kind), [])
 
     def test_composition_selects_the_dcs_codec_in_one_place(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""

@@ -870,7 +870,7 @@ class ProductContractTests(unittest.TestCase):
         # её не собирает: в каждом профиле, включая PR, это делает ordinary-архив
         # Rust (не-тестовый бинарь `unica`, фичи объединены с dev-зависимостями
         # тестов), а вне PR и push в main — шаг `product` точным
-        # production-набором фич (`cargo build -p unica-coder --bin unica`).
+        # production-набором фич (`cargo build -p unica-product --bin unica`).
         """rule: INV.WIRE.SDK-TRANSPORT"""
         sources = {
             path: (REPO_ROOT / path).read_bytes()

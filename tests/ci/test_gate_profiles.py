@@ -63,8 +63,8 @@ UREQ_SELECTION = (
 # until full nightly shows them green on Windows (#1835, #1820), with the
 # source file that declares them.
 NIGHTLY_ONLY_TARGETS = {
-    "platform_project_health": "crates/unica-coder/tests/platform/project_health.rs",
-    "v13_workspace_bootstrap": "crates/unica-coder/tests/platform/v13_canonical_symlinked_workspace.rs",
+    "platform_project_health": "crates/unica-product/tests/platform/project_health.rs",
+    "v13_workspace_bootstrap": "crates/unica-product/tests/platform/v13_canonical_symlinked_workspace.rs",
 }
 
 
@@ -170,7 +170,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         # обвязки сценариев идут в его бинаре, поэтому `--lib` (тестовая
         # сборка всего `unica-coder`) варианту не нужен.
         expected = (
-            "-p", "unica-coder", "--features", "receipt-ledger-test-support",
+            "-p", "unica-product", "--features", "receipt-ledger-test-support",
             "--test", "daemon_receipt_ledger",
             "-E", "binary(daemon_receipt_ledger)",
         )
@@ -197,9 +197,9 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(len(checks), 34)
         self.assertIn("fresh_task_listener_after_restart_survives_its_prepare_barrier_release", checks)
         self.assertIn("successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life", checks)
-        ledger = (coder / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
+        ledger = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
         self.assertIn('#[path = "daemon_receipt_ledger/receipt_scenario_harness.rs"]\nmod receipt_scenario_harness;', ledger)
-        wrapper = (coder / "tests/daemon_receipt_ledger/receipt_scenario_harness.rs").read_text(encoding="utf-8")
+        wrapper = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger/receipt_scenario_harness.rs").read_text(encoding="utf-8")
         self.assertIn("unica_coder::receipt_scenario_harness_tests!();", wrapper)
         # Бинарь контракта — `kind(test)`: размер `medium` идёт из каталога,
         # особой переразметки у запускателя для обвязки нет.
@@ -292,7 +292,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         large = self.config["profile"]["large"]["default-filter"]
         groups = large_groups(large)
         self.assertEqual(sum(map(len, groups.values())), large.count("test("))
-        ledger = (REPO_ROOT / "crates" / "unica-coder" / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
+        ledger = (REPO_ROOT / "crates" / "unica-product" / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
         declared_by_target = {
             "daemon_receipt_ledger": attributed_test_functions(ledger),
             "unica_coder": set(),
@@ -318,8 +318,8 @@ class GateProfileCompositionTests(unittest.TestCase):
         for target, names in groups.items():
             # The declared source must be what the target compiles, or the
             # catalogue would vouch for a file that no longer runs.
-            included = Path(NIGHTLY_ONLY_TARGETS[target]).relative_to("crates/unica-coder/tests").as_posix()
-            root = (REPO_ROOT / "crates/unica-coder/tests" / f"{target}.rs").read_text(encoding="utf-8")
+            included = Path(NIGHTLY_ONLY_TARGETS[target]).relative_to("crates/unica-product/tests").as_posix()
+            root = (REPO_ROOT / "crates/unica-product/tests" / f"{target}.rs").read_text(encoding="utf-8")
             self.assertIn(f'include!("{included}");', root, f"{target} must compile its declared source")
             declared = test_function_attributes((REPO_ROOT / NIGHTLY_ONLY_TARGETS[target]).read_text(encoding="utf-8"))
             for name in names:
@@ -461,7 +461,7 @@ FACADE_GUARDS = (
 class FacadeGuardInventoryTests(unittest.TestCase):
     def test_facade_guards_are_contract_tests_the_receipt_lane_runs(self) -> None:
         coder = REPO_ROOT / "crates/unica-coder"
-        guards = (coder / "tests/daemon_receipt_ledger/facade_guards.rs").read_text(encoding="utf-8")
+        guards = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger/facade_guards.rs").read_text(encoding="utf-8")
         self.assertEqual(sorted(attributed_test_functions(guards)), sorted(FACADE_GUARDS))
         # Страж исполняется, а не только объявлен: ни `#[ignore]`, ни `cfg`
         # не выключают его молча — у каждого ровно один атрибут `#[test]`.
@@ -470,7 +470,7 @@ class FacadeGuardInventoryTests(unittest.TestCase):
                 attributes = re.search(rf"((?:^[ \t]*#\[[^\n]*\]\n)*)fn {name}\(", guards, re.M)
                 self.assertIsNotNone(attributes)
                 self.assertEqual(attributes[1].strip(), "#[test]")
-        ledger = (coder / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
+        ledger = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
         module = re.search(r'((?:^#\[[^\n]*\]\n)*)mod facade_guards;', ledger, re.M)
         self.assertIsNotNone(module)
         self.assertEqual(module[1].strip(), '#[path = "daemon_receipt_ledger/facade_guards.rs"]')
