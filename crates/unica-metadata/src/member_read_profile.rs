@@ -8,6 +8,7 @@ use unica_source_contract::SourceSetKind;
 #[serde(rename_all = "camelCase")]
 pub enum MetaMemberReadProfile {
     CatalogTabularSection220,
+    CalculationRegisterDimension220,
     DocumentCommand220,
     InformationRegisterDimension220,
     AccumulationRegisterDimension220,
@@ -17,6 +18,7 @@ pub enum MetaMemberReadProfile {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetaMemberReadContext {
     TabularSection,
+    CalculationRegisterDimension,
     TabularAttribute,
     DocumentCommand,
     InformationRegisterDimension,
@@ -152,6 +154,7 @@ impl MetaMemberReadProfile {
             return None;
         }
         match owner {
+            MetadataKind::CalculationRegister => Some(Self::CalculationRegisterDimension220),
             MetadataKind::Catalog => Some(Self::CatalogTabularSection220),
             MetadataKind::Document => Some(Self::DocumentCommand220),
             MetadataKind::InformationRegister => Some(Self::InformationRegisterDimension220),
@@ -163,6 +166,7 @@ impl MetaMemberReadProfile {
 
     pub fn owner_kind(self) -> MetadataKind {
         match self {
+            Self::CalculationRegisterDimension220 => MetadataKind::CalculationRegister,
             Self::CatalogTabularSection220 => MetadataKind::Catalog,
             Self::DocumentCommand220 => MetadataKind::Document,
             Self::InformationRegisterDimension220 => MetadataKind::InformationRegister,
@@ -177,6 +181,12 @@ impl MetaMemberReadProfile {
     ) -> impl Iterator<Item = &'static MetaMemberPropertySpec> {
         let properties = match self {
             Self::CatalogTabularSection220 => CATALOG_MEMBER_PROPERTIES,
+            Self::CalculationRegisterDimension220 => &[MetaMemberPropertySpec {
+                name: "BaseDimension",
+                public_name: "BaseDimension",
+                context: MetaMemberReadContext::CalculationRegisterDimension,
+                kind: MetaMemberValueKind::Boolean,
+            }],
             Self::DocumentCommand220 => DOCUMENT_COMMAND_PROPERTIES,
             Self::InformationRegisterDimension220 => INFORMATION_DIMENSION_PROPERTIES,
             Self::AccumulationRegisterDimension220 => ACCUMULATION_DIMENSION_PROPERTIES,
@@ -189,6 +199,10 @@ impl MetaMemberReadProfile {
 
     pub fn context_for_field(self, field: &str) -> Option<MetaMemberReadContext> {
         let direct = match self {
+            Self::CalculationRegisterDimension220 => Some((
+                "collections.dimensions[",
+                MetaMemberReadContext::CalculationRegisterDimension,
+            )),
             Self::CatalogTabularSection220 => None,
             Self::DocumentCommand220 => Some((
                 "collections.commands[",
@@ -238,6 +252,9 @@ impl MetaMemberReadProfile {
                 return None;
             }
             let context = match self {
+                Self::CalculationRegisterDimension220 => {
+                    MetaMemberReadContext::CalculationRegisterDimension
+                }
                 Self::DocumentCommand220 => MetaMemberReadContext::DocumentCommand,
                 Self::InformationRegisterDimension220 => {
                     MetaMemberReadContext::InformationRegisterDimension
@@ -292,6 +309,7 @@ fn indexed_field_suffix<'a>(field: &'a str, prefix: &str) -> Option<&'a str> {
 impl MetaMemberReadContext {
     pub fn xml_tag(self) -> &'static str {
         match self {
+            Self::CalculationRegisterDimension => "Dimension",
             Self::TabularSection => "TabularSection",
             Self::TabularAttribute => "Attribute",
             Self::DocumentCommand => "Command",

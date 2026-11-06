@@ -189,6 +189,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
         } else {
             fields.remove("templateType");
             fields.insert("typeReductionMode".into(), json!({"type":"string", "enum":["Deny", "TransformValues"]}));
+            fields.insert("baseDimension".into(), json!({"type":"boolean"}));
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
@@ -260,6 +261,14 @@ fn metadata_element_schema(
             "typeReductionMode".into(),
             json!({"type":"string", "enum":["Deny", "TransformValues"]}),
         );
+    }
+    if update
+        && collection == MetaCollection::Dimensions
+        && site.is_some_and(|site| {
+            site.owner == crate::MetadataKind::CalculationRegister && !site.in_section
+        })
+    {
+        fields.insert("baseDimension".into(), json!({"type":"boolean"}));
     }
     let selector = if update { "newName" } else { "name" };
     fields[selector]

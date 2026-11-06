@@ -594,6 +594,7 @@ pub struct MetaElementUpdateInput {
     pub indexing: Option<String>,
     /// `DenyIncompleteValues` of a register dimension.
     pub deny_incomplete_values: Option<bool>,
+    pub base_dimension: Option<bool>,
     pub master: Option<bool>,
     pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
@@ -611,6 +612,7 @@ pub struct MetaElementUpdate {
     pub position: Option<MetaPosition>,
     pub indexing: Option<String>,
     pub deny_incomplete_values: Option<bool>,
+    pub base_dimension: Option<bool>,
     pub master: Option<bool>,
     pub main_filter: Option<bool>,
     pub type_reduction_mode: Option<String>,
@@ -963,6 +965,7 @@ impl MetaElementUpdate {
             && input.master.is_none()
             && input.main_filter.is_none()
             && input.deny_incomplete_values.is_none()
+            && input.base_dimension.is_none()
             && input.type_reduction_mode.is_none()
         {
             return Err(invalid_operation(
@@ -986,6 +989,12 @@ impl MetaElementUpdate {
                     "typeReductionMode requires a dimension and Deny or TransformValues",
                 ));
             }
+        }
+        if input.base_dimension.is_some() && collection != MetaCollection::Dimensions {
+            return Err(invalid_operation(
+                format!("{field}.baseDimension"),
+                "baseDimension requires a dimension",
+            ));
         }
         let spec = metadata_collection_spec(collection);
         validate_element_fields(
@@ -1012,6 +1021,7 @@ impl MetaElementUpdate {
             master: input.master,
             main_filter: input.main_filter,
             deny_incomplete_values: input.deny_incomplete_values,
+            base_dimension: input.base_dimension,
             type_reduction_mode: input.type_reduction_mode,
         })
     }
@@ -1827,6 +1837,13 @@ pub fn validate_metadata_operation_capabilities(
         } => {
             validate_metadata_kind_collection(owner_kind, *collection)?;
             for (index, element) in elements.iter().enumerate() {
+                if element.base_dimension.is_some()
+                    && (owner_kind != MetadataKind::CalculationRegister
+                        || *collection != MetaCollection::Dimensions
+                        || scope.is_some())
+                {
+                    return Err(invalid_operation(format!("elements[{index}].baseDimension"), "baseDimension is available only for direct calculation register dimensions"));
+                }
                 validate_dimension_flag_owner(
                     owner_kind,
                     *collection,
@@ -3541,6 +3558,101 @@ mod tests {
         .unwrap();
 
         assert!(update.validate_targets(&existing).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod base_dimension_tests {
+    use super::*;
+    use crate::contracts::{metadata_member_add, metadata_member_set, MetadataSite};
+    #[test]
+    fn base_dimension_contract_and_model_keep_the_owner_collection_and_input_matrix_closed() {
+        for owner in MetadataKind::ALL {
+            for in_section in [false, true] {
+                let site = Some(MetadataSite {
+                    owner: *owner,
+                    in_section,
+                });
+                for collection in [
+                    MetaCollection::Dimensions,
+                    MetaCollection::Resources,
+                    MetaCollection::Attributes,
+                ] {
+                    let expected = *owner == MetadataKind::CalculationRegister
+                        && collection == MetaCollection::Dimensions
+                        && !in_section;
+                    let schema = metadata_member_set(collection, site).schema;
+                    assert_eq!(
+                        schema["properties"]["values"]["properties"]
+                            .get("baseDimension")
+                            .is_some(),
+                        expected,
+                        "{owner:?} {collection:?} {in_section}"
+                    );
+                    assert!(
+                        metadata_member_add(collection, site).schema["properties"]["items"]
+                            ["items"]["properties"]
+                            .get("baseDimension")
+                            .is_none()
+                    );
+                }
+            }
+        }
+        for value in [false, true] {
+            let input = crate::request::parse_element_update(
+                &serde_json::json!({"name":"Item", "baseDimension": value}),
+                "element",
+            )
+            .unwrap();
+            let element =
+                MetaElementUpdate::convert_at(MetaCollection::Dimensions, input.clone(), "element")
+                    .unwrap();
+            assert_eq!(element.base_dimension, Some(value));
+            assert!(
+                MetaElementUpdate::convert_at(MetaCollection::Resources, input, "element").is_err()
+            );
+            for kind in [
+                MetadataKind::CalculationRegister,
+                MetadataKind::AccumulationRegister,
+            ] {
+                let owner = MetadataAddress::parse(
+                    unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
+                    &format!("{}.Facts", kind.as_str()),
+                )
+                .unwrap();
+                let op = MetaEditOperation::Update {
+                    collection: MetaCollection::Dimensions,
+                    scope: None,
+                    elements: vec![element.clone()],
+                };
+                assert_eq!(
+                    validate_metadata_operation_capabilities(kind, &owner, &op).is_ok(),
+                    kind == MetadataKind::CalculationRegister
+                );
+            }
+        }
+        for value in [
+            serde_json::json!("true"),
+            serde_json::json!("false"),
+            serde_json::json!(null),
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!({}),
+            serde_json::json!([]),
+        ] {
+            assert!(crate::request::parse_element_update(
+                &serde_json::json!({"name":"Item", "baseDimension":value}),
+                "element"
+            )
+            .is_err());
+        }
+        for key in ["BaseDimension", "unknown"] {
+            assert!(crate::request::parse_element_update(
+                &serde_json::json!({"name":"Item", key:true}),
+                "element"
+            )
+            .is_err());
+        }
     }
 }
 

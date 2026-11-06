@@ -1,0 +1,1733 @@
+{
+  "id": "S-1701-calculation-base-dimension",
+  "issue": 1701,
+  "area": "Метаданные",
+  "workspace": "tests/fixtures/acceptance/workspace-calculation-base-dimension",
+  "task": "Переключить BaseDimension существующего измерения регистра расчёта false→true→false через обнаруженный контракт, preview и executionToken. Сохранить тип, UUID, соседние поля и исходники; проверить no-op, неверный тип/контекст, атомарный отказ и stale token. Функциональная native проверка базы выполняется отдельно на реальных postimages.",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CalculationRegister.Accruals"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:CalculationRegister.Accruals.Dimension"
+        },
+        {
+          "pointer": "/data/branches/0/count",
+          "eq": 2
+        }
+      ],
+      "captures": {
+        "dimensions": {
+          "pointer": "/data/branches/0/at"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "d4a0a9ab82dea9fdbb56bcf0985c7838bcd78b0a7690951e96afae4ded248a2f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.dimensions"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:CalculationRegister.Accruals.Dimension.Employee"
+        },
+        {
+          "pointer": "/data/items/0/props/BaseDimension",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/BaseDimension",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "selected": {
+          "pointer": "/data/items/0/at"
+        },
+        "original": {
+          "file": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "d4a0a9ab82dea9fdbb56bcf0985c7838bcd78b0a7690951e96afae4ded248a2f"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CalculationRegister.Accruals.Dimension.Employee.Can.dimension.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/baseDimension/type",
+          "eq": "boolean"
+        },
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/additionalProperties",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CalculationRegister.Accruals.Resource.Amount.Can.resource.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/baseDimension",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Document.Orders.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties/baseDimension",
+          "absent": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.selected",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "baseDimension": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/data/effects",
+          "notEq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "disabled": {
+          "file": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "045c130952f76212e84fe42f28084373570ff6ada71aca75c54cb3146f8692ae"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}BaseDimension",
+          "eq": [
+            "true",
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.selected"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/BaseDimension",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/required",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/type/variants/0/length",
+          "eq": 20
+        },
+        {
+          "pointer": "/data/props/type/variants/0/allowedLength",
+          "eq": "variable"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "045c130952f76212e84fe42f28084373570ff6ada71aca75c54cb3146f8692ae"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.selected",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "baseDimension": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "045c130952f76212e84fe42f28084373570ff6ada71aca75c54cb3146f8692ae"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "045c130952f76212e84fe42f28084373570ff6ada71aca75c54cb3146f8692ae"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}BaseDimension",
+          "eq": [
+            "true",
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.selected",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "baseDimension": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "045c130952f76212e84fe42f28084373570ff6ada71aca75c54cb3146f8692ae"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}BaseDimension",
+          "eq": [
+            "false",
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.selected"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/BaseDimension",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CalculationRegister.Accruals.Dimension.Employee",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "baseDimension": "true"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `baseDimension` must be a boolean",
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CalculationRegister.Accruals.Dimension.Employee",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "baseDimension": 0
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `baseDimension` must be a boolean",
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CalculationRegister.Accruals.Resource.Amount",
+        "ops": [
+          {
+            "op": "resource.set",
+            "args": {
+              "values": {
+                "baseDimension": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: baseDimension requires a dimension",
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.Orders",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "baseDimension": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `dimension.set` does not apply to Document `main:Document.Orders`; it addresses `Kind.Name.Dimension.D` of a register",
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CalculationRegister.Accruals",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "at": "main:CalculationRegister.Accruals.Dimension.Employee",
+              "values": {
+                "baseDimension": true
+              }
+            }
+          },
+          {
+            "op": "dimension.set",
+            "args": {
+              "at": "main:CalculationRegister.Accruals.Dimension.Missing",
+              "values": {
+                "baseDimension": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: element `Missing` was not found",
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.selected",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "baseDimension": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        }
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CalculationRegister.Accruals",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Concurrent base dimension update"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.original"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "captures": {
+        "concurrent": {
+          "file": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Dimension/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}BaseDimension",
+          "eq": [
+            "false",
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: CalculationRegisters/Accruals.xml; input `CalculationRegisters/Accruals.xml`: source write target; the plan retains its origina",
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        },
+        {
+          "path": "src/CalculationRegisters/Accruals.xml",
+          "kind": "sha256",
+          "eq": "$capture.concurrent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.selected"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/BaseDimension",
+          "eq": false
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/ChartsOfCalculationTypes/Kinds.xml",
+          "kind": "sha256",
+          "eq": "368e0eb42cfee0dbc56d2e3c08b74a0093ee930d16ff63debbe6e86ed241ec57"
+        },
+        {
+          "path": "src/CommonModules/Probe/Ext/Module.bsl",
+          "kind": "sha256",
+          "eq": "1aa896f317fbc3cbc947d8f085500b1869cce695b94dbdf614813e06e74c81e1"
+        },
+        {
+          "path": "src/CommonModules/Probe.xml",
+          "kind": "sha256",
+          "eq": "bbdc84d4713899b6c45473f5b6380c0dad0dccd2c09bf7fd9c4bd797aea14c19"
+        },
+        {
+          "path": "src/ConfigDumpInfo.xml",
+          "kind": "sha256",
+          "eq": "ac0a034d5c57455d8cc2695128b6b0f82f9d12b3849dbc72f61d1b0c1c5355e9"
+        },
+        {
+          "path": "src/Configuration.xml",
+          "kind": "sha256",
+          "eq": "a5d3affd10dde8e25cd24f407835dca62b1252b2baf8fe94610dd8bdea515cfc"
+        },
+        {
+          "path": "src/Documents/Orders.xml",
+          "kind": "sha256",
+          "eq": "e54a95de08a6ef06ead7d4335ca4609a4836359c94f04ae163e7660909c0ec72"
+        },
+        {
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "kind": "sha256",
+          "eq": "0a84b26395fff630f14b8f18797442a56711213444fcd8ba69d28f5e42c100e8"
+        },
+        {
+          "path": "src/Ext/ManagedApplicationModule.bsl",
+          "kind": "sha256",
+          "eq": "b7af997d9f99df4c1cbc34c7c3d2cc0465429e5f406d4502054d519b51ad56b4"
+        },
+        {
+          "path": "src/Languages/Русский.xml",
+          "kind": "sha256",
+          "eq": "ddfd511fb5397985bb76298eea53c970dd647e10c40c24e2a0e7a4ca66aae250"
+        }
+      ]
+    }
+  ]
+}
