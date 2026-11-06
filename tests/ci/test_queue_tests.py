@@ -46,14 +46,27 @@ class ChoiceTests(unittest.TestCase):
                 self.assertTrue(choose({path: [], "crates/a/src/lib.rs": []}).full)
 
     def test_a_path_outside_crates_runs_everything_unless_it_cannot_touch_rust(self) -> None:
-        for path in ("plugins/unica/x.json", "tests/fixtures/a.xml", "arch/resource-limits.json"):
+        for path in ("plugins/unica/x.json", "plugins/unica/skills/x/SKILL.md", "tests/fixtures/a.xml", "tests/fixtures/x/a.md",
+                     "tests/fixtures/acceptance/corpus.json", "arch/resource-limits.json", "scripts/dev/x.py", ".gitattributes"):
             with self.subTest(path=path):
                 self.assertTrue(choose({path: []}).full)
-        for path in ("README.md", "docs/pages/a.html", ".agents/skills/x/SKILL.md", "tests/ci/test_x.py", "arch/rules/a.md"):
+        for path in ("README.md", "docs/pages/a.html", ".agents/skills/x/SKILL.md", "tests/ci/test_x.py", "arch/rules/a.md",
+                     "tests/fixtures/acceptance/scenario-manifest/x.json", ".config/python-sizes.toml", ".github/CODEOWNERS"):
             with self.subTest(path=path):
                 choice = choose({path: []})
                 self.assertFalse(choice.full)
                 self.assertEqual(choice.packages, ())
+
+    def test_prose_inside_a_crate_is_a_change_of_that_crate(self) -> None:
+        self.assertEqual(choose({"crates/a/README.md": ["+text"]}).packages, ("unica-a",))
+
+    def test_rust_does_not_read_the_paths_the_rule_lets_through(self) -> None:
+        import subprocess
+        for needle in ("scenario-manifest", "python-sizes.toml", "CODEOWNERS", ".agents/", '"tests/ci/', '"tests/dev/', '"docs/', '../docs/'):
+            with self.subTest(needle=needle):
+                found = subprocess.run(["git", "grep", "-lF", needle, "--", "crates/**/*.rs", "vendor/**/*.rs"], cwd=ROOT,
+                                       capture_output=True, text=True, encoding="utf-8").stdout.split()
+                self.assertEqual(found, [])
 
     def test_an_empty_diff_and_the_switch_run_everything(self) -> None:
         self.assertTrue(choose({}).full)

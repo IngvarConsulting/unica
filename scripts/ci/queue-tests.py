@@ -26,8 +26,12 @@ ROOT = Path(__file__).resolve().parents[2]
 PUB = re.compile(r"^[+-]\s*pub\s+(?!\()")
 # Читаются сборкой или задают её: крейт по ним не определить.
 UNRESOLVABLE = re.compile(r"(^|/)(Cargo\.toml|Cargo\.lock|build\.rs|rust-toolchain[^/]*)$|^\.(cargo|config|github)/|^scripts/")
-# Вне крейтов и без влияния на Rust.
-NO_RUST = re.compile(r"\.md$|^docs/|^\.agents/|^tests/(ci|dev)/")
+# Вне крейтов и без влияния на Rust: тесты Rust и сборка эти пути не читают. Страж
+# в `tests/ci/test_queue_tests.py` следит за этим. `.md` в крейте — правка крейта.
+NO_RUST = re.compile(
+    r"^(?!plugins/|tests/).*\.md$|^docs/|^\.agents/|^tests/(ci|dev)/|^tests/fixtures/acceptance/scenario-manifest/"
+    r"|^\.config/python-sizes\.toml$|^\.github/(CODEOWNERS|ISSUE_TEMPLATE/|PULL_REQUEST_TEMPLATE)"
+)
 
 
 @dataclass(frozen=True)
@@ -77,13 +81,13 @@ def choose(files: dict[str, list[str]], directories: dict[str, str], dependents:
         return Choice(True, (), "пустой diff")
     changed, public = set(), set()
     for path, lines in files.items():
+        crate = crate_of(path, directories)
+        if crate is None and NO_RUST.search(path):
+            continue
         if UNRESOLVABLE.search(path):
             return Choice(True, (), f"неразрешимый путь {path}")
-        crate = crate_of(path, directories)
         if crate is None:
-            if not NO_RUST.search(path):
-                return Choice(True, (), f"путь вне крейтов {path}")
-            continue
+            return Choice(True, (), f"путь вне крейтов {path}")
         changed.add(crate)
         if "/src/" in path and any(PUB.match(line) for line in lines):
             public.add(crate)
