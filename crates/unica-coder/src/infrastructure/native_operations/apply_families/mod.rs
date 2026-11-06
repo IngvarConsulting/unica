@@ -1383,6 +1383,14 @@ pub(crate) fn plan_hidden_v13_apply(
         cursor = end;
     }
 
+    unica_metadata_designer::planner::validate_final_dimension_totals(
+        &mut staged.proposal(),
+        binding.source_kind(),
+        parsed.iter().filter_map(|operation| match operation {
+            ParsedApplyOperation::Metadata(operation) => Some(operation),
+            _ => None,
+        }),
+    )?;
     code_type_plan.validate_final(&mut staged.proposal(), binding.source_kind())?;
     unica_metadata_designer::planner::validate_final_numerators(
         &mut staged.proposal(),

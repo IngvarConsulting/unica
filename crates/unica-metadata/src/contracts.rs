@@ -189,6 +189,7 @@ pub fn metadata_element_input_schema(update: bool, attributes: bool) -> &'static
         } else {
             fields.remove("templateType");
             fields.insert("typeReductionMode".into(), json!({"type":"string", "enum":["Deny", "TransformValues"]}));
+            fields.insert("useInTotals".into(), json!({"type":"boolean"}));
         }
         json!({"type":"object","additionalProperties":false,"required":["name"],"properties":fields})
     })
@@ -260,6 +261,14 @@ fn metadata_element_schema(
             "typeReductionMode".into(),
             json!({"type":"string", "enum":["Deny", "TransformValues"]}),
         );
+    }
+    if update
+        && collection == MetaCollection::Dimensions
+        && site.is_some_and(|site| {
+            site.owner == crate::MetadataKind::AccumulationRegister && !site.in_section
+        })
+    {
+        fields.insert("useInTotals".into(), json!({"type":"boolean"}));
     }
     let selector = if update { "newName" } else { "name" };
     fields[selector]
@@ -418,7 +427,7 @@ pub fn metadata_member_set(
             "The existing member at its own address: <source-set>:<Kind>.<Name>.<Leaf>.<Member>."
         },
         effect: "Change the listed fields of the member; newName renames it. Unlisted fields stay.",
-        notes: "The member is named by its address, not by values.name. Read the member first. Cross-field rules — fillValue must match the member type — are checked by the planner, not by this schema.",
+        notes: "The member is named by its address, not by values.name. Read the member first. Cross-field rules are checked by the planner: fillValue must match the member type; useInTotals is available only for accumulation-register dimensions, requires an existing boolean property, and must preserve register mode and dimension order. Balance permits only true; Turnovers requires included dimensions before excluded dimensions after each operation.",
         example_args: json!({"values":{"synonym":"Sample"}}),
         help: METADATA_HELP,
         format_validators: &[],

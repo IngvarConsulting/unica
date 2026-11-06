@@ -831,6 +831,9 @@ where
             after,
         });
     }
+    if operations.iter().any(crate::dimension_totals::requested) {
+        crate::dimension_totals::validate(&working)?;
+    }
     validate_typed_event_source_final_state(&working, operations)?;
     *xml_text = form.restore(&working).map_err(|message| {
         unica_metadata::request::MetaFailure::from(typed_diagnostic(
@@ -1090,6 +1093,14 @@ pub fn typed_operation_effect_value(
                 }),
                 &target,
             )?;
+            let value = if elements
+                .iter()
+                .any(|element| element.use_in_totals.is_some())
+            {
+                crate::dimension_totals::effect(xml, object, value)?
+            } else {
+                value
+            };
             if elements
                 .iter()
                 .any(|element| element.type_reduction_mode.is_some())
@@ -2480,6 +2491,12 @@ pub fn update_typed_element(
             )
         })?;
     let mut properties_text = node_xml[properties_range.clone()].to_string();
+    if let Some(value) = update.use_in_totals {
+        if let Some((edit, token)) = crate::dimension_totals::edit(xml_text, range.clone(), value)?
+        {
+            flag_edits.push((edit, token.to_string()));
+        }
+    }
     if let Some(value) = &update.type_reduction_mode {
         if let Some(edit) = crate::dimension_reduction::edit(xml_text, range.clone(), value)? {
             flag_edits.push(edit);
@@ -2672,6 +2689,9 @@ pub fn update_typed_element(
                 Some("position"),
             )
         })?;
+    }
+    if update.use_in_totals.is_some() {
+        crate::dimension_totals::validate(xml_text)?;
     }
     Ok(())
 }
