@@ -48,32 +48,22 @@
       ],
       "assertions": [
         {
-          "pointer": "/data/diagnostics/1/code",
-          "eq": "source_set.autodetected_main_conflict"
-        },
-        {
-          "pointer": "/data/diagnostics/1/severity",
-          "eq": "warning"
-        },
-        {
-          "pointer": "/data/diagnostics/1/count",
-          "eq": 2
-        },
-        {
-          "pointer": "/data/diagnostics/1/paths",
-          "sameItems": [
-            "src/cf",
-            "src/cfe/main",
-            "src/extensions/main"
-          ]
-        },
-        {
-          "pointer": "/data/diagnostics/1/evidence",
-          "sameItems": [
-            "selected: src/cf",
-            "skipped: src/cfe/main",
-            "skipped: src/extensions/main"
-          ]
+          "pointer": "/data/diagnostics",
+          "someMatches": {
+            "code": "source_set.autodetected_main_conflict",
+            "severity": "warning",
+            "count": 2,
+            "paths": [
+              "src/cf",
+              "src/cfe/main",
+              "src/extensions/main"
+            ],
+            "evidence": [
+              "selected: src/cf",
+              "skipped: src/cfe/main",
+              "skipped: src/extensions/main"
+            ]
+          }
         },
         {
           "pointer": "/data/diagnostics",
