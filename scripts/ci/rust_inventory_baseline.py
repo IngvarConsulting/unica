@@ -26,7 +26,10 @@ import sys
 import tempfile
 
 ARTIFACT = "ci-rust-inventory-"
-WORKFLOW = ".github/workflows/unica-plugin-release.yml"
+# Ночь публикует базу от своего имени, вызывая `release.yml`. Прежний файл читается,
+# пока его артефакты не истекут: первый прогон сравнивается с его базой.
+WORKFLOW = ".github/workflows/release.yml"
+WORKFLOWS = {WORKFLOW, ".github/workflows/nightly.yml", ".github/workflows/unica-plugin-release.yml"}
 ANCESTORS = 200
 PAGES = 10
 REMOVED = re.compile(r"^[ \t*-]*Removes-test-target:[ \t]*`?([^\s`]+)`?[ \t]*$", re.MULTILINE)
@@ -97,7 +100,7 @@ def download(repository: str, artifact: dict) -> dict:
     if (document.get("sha") != run["head_sha"] or document.get("runId") != str(run["id"])
         or ARTIFACT + str(document.get("profile")) != artifact["name"]):
         raise ValueError("previous inventory does not match its artifact run")
-    if gh("api", f"repos/{repository}/actions/runs/{run['id']}", "--jq", ".path").strip() != WORKFLOW:
+    if gh("api", f"repos/{repository}/actions/runs/{run['id']}", "--jq", ".path").strip() not in WORKFLOWS:
         raise ValueError("previous inventory was published by another workflow")
     return document
 
@@ -110,7 +113,7 @@ def previous_macos_plans(repository: str, repository_id: int, inventory: dict) -
     run = json.loads(gh("api", f"repos/{repository}/actions/runs/{run_id}/attempts/{attempt}"))
     if (run.get("conclusion") != "success" or str(run.get("id")) != run_id
         or str(run.get("run_attempt")) != attempt or run.get("head_sha") != inventory["sha"]
-        or run.get("path") != WORKFLOW or run.get("repository", {}).get("id") != repository_id
+        or run.get("path") not in WORKFLOWS or run.get("repository", {}).get("id") != repository_id
         or run.get("head_repository", {}).get("id") != repository_id):
         raise ValueError("previous macOS plan requires the successful inventory workflow attempt of this repository")
     listed = json.loads(gh("api", f"repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100"))["artifacts"]

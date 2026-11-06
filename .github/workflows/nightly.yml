@@ -1,0 +1,69 @@
+name: Unica Nightly
+
+# Полный прогон вершины main: все ОС, все размеры тестов, сборка пакета, инвентарь
+# и снятые тесты, отчёты в Code Scanning. Отдельного конвейера нет: ночь вызывает
+# `release.yml`, поэтому проверяет ровно то, что выпускается. Итог прогона честный:
+# красная джоба красит ночь. Зелёные тесты выпускают alpha, а сайт собирается
+# заданием того же прогона. Расписание у GitHub работает только на ветке по
+# умолчанию; релизные линии проверяют кнопкой `release.yml` перед выпуском.
+on:
+  schedule:
+    # Не на круглой минуте: расписания на :00 и :30 GitHub исполняет с
+    # наибольшим опозданием, 06.09.2026 ночь пришла в 06:08 UTC.
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Прогнать и выпустить alpha, даже если эта вершина main уже проверена"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unica-nightly
+  cancel-in-progress: false
+
+jobs:
+  # Вершина, которую уже проверили, ночью не гоняется: память о прошлом прогоне
+  # лежит на сайте. Кнопка с `force` прогоняет её снова.
+  decide:
+    name: Сдвинулась ли вершина main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - id: decide
+        env:
+          FORCE: ${{ inputs.force && '--force' || '' }}
+          SITE: https://ingvarconsulting.github.io/unica
+        run: |
+          # shellcheck disable=SC2086 # пустой флаг не должен становиться аргументом
+          python scripts/ci/nightly-decide.py --site "$SITE" --sha "$GITHUB_SHA" --summary "$GITHUB_STEP_SUMMARY" $FORCE >> "$GITHUB_OUTPUT"
+
+  # Права вызова — верхняя граница для заданий `release.yml`, их нужно объявить
+  # все, даже если задание тут не идёт. Каждое задание там сужает их до своих.
+  full:
+    name: Полный прогон
+    needs: decide
+    if: ${{ needs.decide.outputs.run == 'true' }}
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
+      security-events: write
+      pages: write
+      id-token: write
+    uses: $/.github/workflows/release.yml
+    with:
+      profile: large
+      alpha: ${{ github.ref == 'refs/heads/main' }}
+      force_alpha: ${{ inputs.force || false }}

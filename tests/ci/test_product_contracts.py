@@ -1971,22 +1971,24 @@ class ProductContractTests(unittest.TestCase):
         must exist before them, and staging must never touch the catalog.
         """
         repo_root = Path(__file__).resolve().parents[2]
-        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+        publish = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 
         self.assertIn("needs: [gate, stage, anchor, verify-fresh-install, verify-upgrade]", publish)
         self.assertIn("needs: [gate, stage, anchor]", publish)
         # A published tag never moves; a rerun proves sameness instead.
-        self.assertNotIn("git tag -f", publish)
-        self.assertNotIn("--force", publish)
+        marketplace = publish[publish.index("  gate:
+"):]
+        self.assertNotIn("git tag -f", marketplace)
+        self.assertNotIn("--force", marketplace)
         # No scheduled babysitter exists anymore; the pipeline is one pass.
         self.assertFalse((repo_root / ".github/workflows/release-warden.yml").exists())
         self.assertFalse((repo_root / "scripts/ci/release-warden.py").exists())
 
     def test_release_tag_is_not_hardcoded_in_the_build_workflow(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+        release = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
         # A hardcoded release version is a location no contract check covers, and
@@ -2118,7 +2120,7 @@ class ProductContractTests(unittest.TestCase):
 
     def test_the_candidate_anchor_names_the_staging_commit(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+        publish = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 
@@ -2158,10 +2160,10 @@ class ProductContractTests(unittest.TestCase):
 
     def test_publish_workflow_promotes_both_host_catalogs(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        publish = (repo_root / ".github/workflows/publish-unica-marketplace.yml").read_text(
+        publish = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
-        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+        release = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 
@@ -3134,7 +3136,7 @@ fn test_only() { std::process::Command::new("git"); }
         пользователя. Шаг легко выпасть незамеченным, поэтому он закреплён.
         """
         repo_root = Path(__file__).resolve().parents[2]
-        release = (repo_root / ".github/workflows/unica-plugin-release.yml").read_text(
+        release = (repo_root / ".github/workflows/release.yml").read_text(
             encoding="utf-8"
         )
 
