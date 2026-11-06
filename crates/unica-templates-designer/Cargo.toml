@@ -22,3 +22,6 @@ roxmltree.workspace = true
 
 [dev-dependencies]
 unica-templates = { path = "../unica-templates" }
+
+[package.metadata.unica]
+read-outside-baseline = 11
