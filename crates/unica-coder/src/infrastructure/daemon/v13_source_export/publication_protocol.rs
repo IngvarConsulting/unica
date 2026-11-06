@@ -763,15 +763,14 @@ mod tests {
     use super::*;
     use unica_source_contract::read::full_dump::{DumpValidationFailure, DumpValidationReason};
 
-    #[cfg(windows)]
     #[test]
-    fn extended_windows_form_names_the_same_directory() {
+    fn canonical_form_of_a_directory_names_the_same_directory() {
         let root = tempfile::tempdir().unwrap();
         let plain = root.path().join("staged-source");
         std::fs::create_dir(&plain).unwrap();
-        let extended = plain.canonicalize().unwrap();
-        assert!(extended.to_string_lossy().starts_with(r"\\?\"));
-        assert!(super::same_path(&extended, &plain));
+        // На Windows каноническая форма — расширенная: `\\\\?\\E:\\…`.
+        let canonical = plain.canonicalize().unwrap();
+        assert!(super::same_path(&canonical, &plain));
     }
 
     #[test]
