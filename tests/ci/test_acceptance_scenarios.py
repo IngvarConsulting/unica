@@ -2522,25 +2522,53 @@ class AcceptanceFaultCorpusRunTests(unittest.TestCase):
         """rule: INV.WIRE.V13-REFUSAL-CHANNEL"""
         from unittest.mock import patch
         from tests.ci.search_failure_fixture import CANARIES, prepare_fixture
+        from tests.ci.test_search_failure_diagnosis import load_smoke
+        smoke = load_smoke()
         with tempfile.TemporaryDirectory(prefix="unica-search-failure-corpus-") as raw:
             root = Path(raw).resolve()
             _, environment, log = prepare_fixture(root, "unknown-json")
+            cache = root / "workspace-cache"
+            environment["UNICA_CACHE_DIR"] = str(cache)
             plugin = Path(environment["UNICA_PLUGIN_ROOT"])
             cases = fault_cases(self.corpus, "analyzer-search-failure")
             self.assertEqual([case["id"] for case in cases["scenarios"]],
                              ["S-2470-search-response-diagnosis"])
 
+            ownership = None
+            owned = set()
             def observe(server, scenario):
+                nonlocal ownership
+                # AcceptanceServer does not create a private process session.
+                # Only explicitly observed service identities and their children
+                # belong to this fixture; never claim its inherited session.
+                ownership = smoke.ProcessOwnership(server.process, None, None)
                 original = server.call
                 def call(tool, arguments, label=None, *, timeout=None):
-                    result = original(tool, arguments, label, timeout=timeout)
+                    try:
+                        result = original(tool, arguments, label, timeout=timeout)
+                    finally:
+                        services = ownership.capture_identities(smoke._workspace_service_pids(cache))
+                        owned.update(ownership.snapshot(services))
                     encoded = json.dumps(result, ensure_ascii=False)
                     self.assertFalse(any(marker in encoded for marker in CANARIES), encoded)
                     return result
                 server.call = call
 
-            with patch.dict(os.environ, environment):
-                run_corpus(self, cases, plugin, scenario_driver=observe)
+            def cleanup():
+                service_pids = smoke._shutdown_workspace_services(cache, 10)
+                smoke._wait_for_workspace_services(cache, 10, service_pids)
+                if ownership is not None:
+                    self.assertEqual(ownership.wait(owned, 10), set(), "owned analyzer did not exit")
+
+            try:
+                with patch.dict(os.environ, environment):
+                    run_corpus(self, cases, plugin, scenario_driver=observe, fixture_cleanup=cleanup)
+                self.assertIsNotNone(ownership)
+                self.assertGreaterEqual(len(owned), 2, "service and analyzer were observed")
+                self.assertEqual(ownership.survivors(owned), set(), "corpus left owned processes alive")
+            finally:
+                if ownership is not None:
+                    smoke._quiesce_owned_processes(ownership, owned, 10)
             calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(sum(call.get("name") == "search" for call in calls), 1)
 
