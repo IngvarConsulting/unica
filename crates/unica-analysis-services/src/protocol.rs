@@ -115,6 +115,42 @@ pub enum PreparedBslReply {
     Finished { response: Box<ServiceResponse> },
 }
 
+/// Finite transport observations; private provider messages are carried separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BslFailureKind {
+    RequestWriteFailed,
+    ResponseReadFailed,
+    MalformedToolResult,
+    RemoteProviderFailed,
+    DeadlineElapsed,
+    Cancelled,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassifiedBslCallError {
+    pub message: String,
+    pub kind: Option<BslFailureKind>,
+}
+
+impl From<String> for ClassifiedBslCallError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            kind: None,
+        }
+    }
+}
+
+impl std::fmt::Display for ClassifiedBslCallError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.message.fmt(formatter)
+    }
+}
+
+impl std::error::Error for ClassifiedBslCallError {}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServiceResponse {
     pub ok: bool,
@@ -122,6 +158,8 @@ pub struct ServiceResponse {
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bsl_failure_kind: Option<BslFailureKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -333,6 +371,25 @@ mod tests {
                 "invalid shared reply was accepted: {reply}"
             );
         }
+    }
+
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    #[test]
+    fn bsl_failure_category_survives_normal_and_prepared_reply_roundtrips() {
+        let response = serde_json::json!({
+            "ok": false,
+            "error": "private provider text",
+            "bsl_failure_kind": "malformed_tool_result",
+            "shutdown": false,
+        });
+        let decoded: ServiceResponse = serde_json::from_value(response.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), response);
+        let prepared = serde_json::json!({"phase":"finished", "response":response});
+        let decoded: PreparedBslReply = serde_json::from_value(prepared.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), prepared);
+        let unknown =
+            serde_json::json!({"ok":false, "bsl_failure_kind":"private arbitrary category"});
+        assert!(serde_json::from_value::<ServiceResponse>(unknown).is_err());
     }
 
     #[test]

@@ -20,6 +20,7 @@ gives today:
   cancelled   typed task_cancelled outcome of an intended cancellation
   failed      typed task_failed terminal outcome
   invalid-result typed invalid_result terminal, used by controlled runtime faults
+  provider-failed typed failure from the registered managed search-fault driver
   refused     an intended typed refusal: a code from the closed dictionary in
               crates/unica-refusal/src/lib.rs whose default outcome
               is fixCall or fixSource, or invalid_state (needsHuman);
@@ -45,6 +46,8 @@ import threading
 import time
 from contextlib import ExitStack
 import os
+import platform
+import sys
 import shutil
 import subprocess
 import tempfile
@@ -158,6 +161,7 @@ EXPECT_CLASSES = {
     "cancelled",
     "failed",
     "invalid-result",
+    "provider-failed",
     "refused",
     "gap",
 }
@@ -226,6 +230,8 @@ def classify(response, context):
         return "failed", message[:160]
     if code == "invalid_result":
         return "invalid-result", message[:160]
+    if code == "provider_failed" and context.get("_controlled_search_failure"):
+        return "provider-failed", message[:160]
     if code in REFUSAL_CODES:
         # Typed refusals from the closed code set: the caller's request, not
         # the surface, is what has to change.
@@ -719,6 +725,9 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
                     expected = step["expect"]
                     self.assertTrue(expected, "every step freezes an expectation")
                     self.assertTrue(set(expected) <= EXPECT_CLASSES, expected)
+                    if "provider-failed" in expected:
+                        self.assertEqual(scenario.get("profile"), "fault-injection")
+                        self.assertEqual(scenario.get("driver"), "analyzer-search-failure")
                     if "form" in step:
                         self.assertIs(step["form"], True, "a form step is marked `form: true`")
                     if "gap" in expected:
@@ -2317,6 +2326,8 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
                 attempted.append(case_ordinal)
                 found: list[str] = []
                 context = {"workspace": server.workspace}
+                if scenario.get("driver") == "analyzer-search-failure":
+                    context["_controlled_search_failure"] = True
                 broken = False
                 finish = scenario_driver(server, scenario) if scenario_driver else None
                 verification = []
@@ -2485,11 +2496,81 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
 
 
 
+class ControlledSearchFailureClassificationTests(unittest.TestCase):
+    def test_provider_failure_is_passable_only_for_the_controlled_driver_context(self):
+        response = {"result": {"structuredContent": {
+            "ok": False, "diagnostics": [{"code": "provider_failed", "message": "safe reason"}],
+        }}}
+        self.assertEqual(classify(response, {})[0], "gap-candidate")
+        self.assertEqual(classify(response, {"_controlled_search_failure": True})[0], "provider-failed")
+        response["result"]["structuredContent"]["diagnostics"][0]["code"] = "postcondition_failed"
+        self.assertEqual(classify(response, {"_controlled_search_failure": True})[0], "gap-candidate")
+
+
 class AcceptanceFaultCorpusRunTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         ensure_binary(REPO_ROOT)
         cls.corpus = load_acceptance_corpus()
+
+    @unittest.skipUnless(
+        (sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"})
+        or (sys.platform.startswith("linux") and platform.machine().lower() in {"amd64", "x86_64"}),
+        "host capability executable reader stand-ins: fixture has no native Windows launcher",
+    )
+    def test_unknown_search_response_explains_its_cause_at_the_public_boundary(self):
+        """rule: INV.WIRE.V13-REFUSAL-CHANNEL"""
+        from unittest.mock import patch
+        from tests.ci.search_failure_fixture import CANARIES, prepare_fixture
+        from tests.ci.test_search_failure_diagnosis import load_smoke
+        smoke = load_smoke()
+        with tempfile.TemporaryDirectory(prefix="unica-search-failure-corpus-") as raw:
+            root = Path(raw).resolve()
+            _, environment, log = prepare_fixture(root, "unknown-json")
+            cache = root / "workspace-cache"
+            environment["UNICA_CACHE_DIR"] = str(cache)
+            plugin = Path(environment["UNICA_PLUGIN_ROOT"])
+            cases = fault_cases(self.corpus, "analyzer-search-failure")
+            self.assertEqual([case["id"] for case in cases["scenarios"]],
+                             ["S-2470-search-response-diagnosis"])
+
+            ownership = None
+            owned = set()
+            def observe(server, scenario):
+                nonlocal ownership
+                # AcceptanceServer does not create a private process session.
+                # Only explicitly observed service identities and their children
+                # belong to this fixture; never claim its inherited session.
+                ownership = smoke.ProcessOwnership(server.process, None, None)
+                original = server.call
+                def call(tool, arguments, label=None, *, timeout=None):
+                    try:
+                        result = original(tool, arguments, label, timeout=timeout)
+                    finally:
+                        services = ownership.capture_identities(smoke._workspace_service_pids(cache))
+                        owned.update(ownership.snapshot(services))
+                    encoded = json.dumps(result, ensure_ascii=False)
+                    self.assertFalse(any(marker in encoded for marker in CANARIES), encoded)
+                    return result
+                server.call = call
+
+            def cleanup():
+                service_pids = smoke._shutdown_workspace_services(cache, 10)
+                smoke._wait_for_workspace_services(cache, 10, service_pids)
+                if ownership is not None:
+                    self.assertEqual(ownership.wait(owned, 10), set(), "owned analyzer did not exit")
+
+            try:
+                with patch.dict(os.environ, environment):
+                    run_corpus(self, cases, plugin, scenario_driver=observe, fixture_cleanup=cleanup)
+                self.assertIsNotNone(ownership)
+                self.assertGreaterEqual(len(owned), 2, "service and analyzer were observed")
+                self.assertEqual(ownership.survivors(owned), set(), "corpus left owned processes alive")
+            finally:
+                if ownership is not None:
+                    smoke._quiesce_owned_processes(ownership, owned, 10)
+            calls = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(sum(call.get("name") == "search" for call in calls), 1)
 
     def test_controlled_jsonl_faults_preserve_public_reason_without_provider_input(self):
         """rule: INV.APP.DIAGNOSTIC-PROVIDERS"""

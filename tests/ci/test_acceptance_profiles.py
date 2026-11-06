@@ -208,6 +208,23 @@ class AcceptanceProfileTests(unittest.TestCase):
         self.assertEqual(source | delivery | agent | fault, {s["id"] for s in corpus["scenarios"]})
         self.assertFalse(source & delivery)
 
+    def test_managed_search_fault_requires_its_exact_provider_and_wire(self):
+        scenario = json.loads((REPO / "tests/fixtures/acceptance/scenarios/S-2470-search-response-diagnosis.json").read_text(encoding="utf-8"))
+        corpus = {"workspace": scenario["workspace"], "scenarios": [scenario]}
+        self.assertEqual(select_profile(corpus, "fault-injection")["scenarios"], [scenario])
+        for field, value in [("workspace", SYMBOL_WORKSPACE), ("evaluation", "unknown-json"),
+                             ("driver", "analyzer-jsonl-fault"), ("wire", [])]:
+            altered = json.loads(json.dumps(scenario))
+            altered[field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                select_profile({**corpus, "scenarios": [altered]}, "source")
+        for field, value in [("query", "other query"), ("role", "semantic"), ("limit", 2.0),
+                             ("scope", "main:CommonModule.Other"), ("extra", True)]:
+            altered = json.loads(json.dumps(scenario))
+            altered["wire"][0]["args"][field] = value
+            with self.subTest(argument=field), self.assertRaises(ValueError):
+                select_profile({**corpus, "scenarios": [altered]}, "source")
+
     def test_fault_profile_cannot_silently_change_driver_case_fixture_or_wire(self):
         for field, value in [("evaluation", "unknown"), ("workspace", SYMBOL_WORKSPACE),
                              ("driver", "bsl-analyzer"), ("wire", [{"tool": "unica.view", "args": {}}])]:

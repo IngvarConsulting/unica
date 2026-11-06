@@ -4,15 +4,69 @@ use crate::backend::{
     ServiceEnvironment,
 };
 use crate::protocol::{
-    BslOperationDeadline, BslStopCause, PreparedBslCall, PreparedBslReply, ServiceRequest,
-    ServiceRequestKind, ServiceResponse, WorkspaceRlmOperation,
+    BslFailureKind, BslOperationDeadline, BslStopCause, ClassifiedBslCallError, PreparedBslCall,
+    PreparedBslReply, ServiceRequest, ServiceRequestKind, ServiceResponse, WorkspaceRlmOperation,
 };
 use unica_process::mcp_session::{McpRequestDeadline, McpToolOutput, PersistentMcpSession};
+use unica_process::transport_failure::{FailureCause, FailurePhase};
 use unica_work_control::elapsed_budget::ElapsedBudgetDeadline;
 use unica_work_control::provider_deadline::ProviderDeadline;
 /// A receiver anchors an explicit finite Start once, then lends the same
 /// deadline through queue, replacement and the persistent provider session.
 struct ServiceMcpDeadline<'a>(Option<&'a ElapsedBudgetDeadline>);
+
+fn bsl_transport_failure_kind(phase: FailurePhase, cause: FailureCause) -> BslFailureKind {
+    use BslFailureKind as Kind;
+    match (phase, cause) {
+        (_, FailureCause::Cancelled) => Kind::Cancelled,
+        (_, FailureCause::DeadlineElapsed) => Kind::DeadlineElapsed,
+        (
+            FailurePhase::WriteRequest,
+            FailureCause::WriterUnavailable
+            | FailureCause::EncodeRequest
+            | FailureCause::WriteIo(_)
+            | FailureCause::FlushIo(_),
+        ) => Kind::RequestWriteFailed,
+        (
+            FailurePhase::WaitResponse,
+            FailureCause::StdoutEof | FailureCause::ReadIo(_) | FailureCause::ReaderDisconnected,
+        ) => Kind::ResponseReadFailed,
+        (
+            FailurePhase::WaitResponse,
+            FailureCause::IncompleteFrame
+            | FailureCause::InvalidJson
+            | FailureCause::ResponseTooLarge,
+        )
+        | (FailurePhase::DecodeToolResult, FailureCause::MissingResult) => {
+            Kind::MalformedToolResult
+        }
+        (
+            FailurePhase::DecodeToolResult,
+            FailureCause::RemoteRpcError | FailureCause::RemoteToolError,
+        ) => Kind::RemoteProviderFailed,
+        _ => Kind::Unknown,
+    }
+}
+
+fn bsl_response_error(message: String, kind: Option<BslFailureKind>) -> ServiceResponse {
+    ServiceResponse {
+        bsl_failure_kind: kind,
+        ..ServiceResponse::error(message)
+    }
+}
+
+fn observed_call_stop(
+    deadline: &dyn McpRequestDeadline,
+    cancellation: &CancellationToken,
+) -> Option<BslFailureKind> {
+    if cancellation.is_cancelled() {
+        Some(BslFailureKind::Cancelled)
+    } else if deadline.is_elapsed() {
+        Some(BslFailureKind::DeadlineElapsed)
+    } else {
+        None
+    }
+}
 
 impl McpRequestDeadline for ServiceMcpDeadline<'_> {
     fn remaining(&self) -> Option<Duration> {
@@ -227,6 +281,27 @@ impl<'a> WorkspaceServiceBslCall<'a> {
 }
 
 impl WorkspaceServiceCallDeadline {
+    fn classified_error(
+        &self,
+        message: String,
+        cancellation: &CancellationToken,
+    ) -> ClassifiedBslCallError {
+        let elapsed = self.caller.map_or_else(
+            || self.started.elapsed() >= self.budget,
+            ProviderDeadline::is_elapsed,
+        );
+        ClassifiedBslCallError {
+            message,
+            kind: if cancellation.is_cancelled() {
+                Some(BslFailureKind::Cancelled)
+            } else if elapsed {
+                Some(BslFailureKind::DeadlineElapsed)
+            } else {
+                None
+            },
+        }
+    }
+
     pub fn new(budget: Duration) -> Self {
         Self {
             started: Instant::now(),
@@ -456,16 +531,36 @@ impl<'a> WorkspaceServiceManager<'a> {
         call: WorkspaceServiceBslCall<'_>,
         cancellation: &CancellationToken,
     ) -> Result<McpToolOutput, String> {
+        self.call_bsl_mcp_cancellable_with_budget_classified(
+            context,
+            source_root,
+            call,
+            cancellation,
+        )
+        .map_err(|error| error.message)
+    }
+
+    pub fn call_bsl_mcp_cancellable_with_budget_classified(
+        &self,
+        context: &WorkspaceContext,
+        source_root: &Path,
+        call: WorkspaceServiceBslCall<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<McpToolOutput, ClassifiedBslCallError> {
         let deadline = WorkspaceServiceCallDeadline::new(call.request_budget);
         let mut retried_transport = false;
         loop {
-            let record = self.ensure_service_cancellable_with_deadline(
-                context,
-                source_root,
-                cancellation,
-                &deadline,
-            )?;
-            let send_budget = deadline.remaining(cancellation)?;
+            let record = self
+                .ensure_service_cancellable_with_deadline(
+                    context,
+                    source_root,
+                    cancellation,
+                    &deadline,
+                )
+                .map_err(|error| deadline.classified_error(error, cancellation))?;
+            let send_budget = deadline
+                .remaining(cancellation)
+                .map_err(|error| deadline.classified_error(error, cancellation))?;
             let attempt_timeout = call.timeout.min(send_budget);
             let send_result = self.connector.send(
                 &record,
@@ -483,7 +578,9 @@ impl<'a> WorkspaceServiceManager<'a> {
                 cancellation,
                 send_budget,
             );
-            deadline.remaining(cancellation)?;
+            deadline
+                .remaining(cancellation)
+                .map_err(|error| deadline.classified_error(error, cancellation))?;
             let response = match send_result {
                 Ok(response) => response,
                 Err(error)
@@ -494,12 +591,15 @@ impl<'a> WorkspaceServiceManager<'a> {
                     retried_transport = true;
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.into()),
             };
             if !response.ok {
-                return Err(response
-                    .error
-                    .unwrap_or_else(|| "workspace service bsl request failed".to_string()));
+                return Err(ClassifiedBslCallError {
+                    message: response
+                        .error
+                        .unwrap_or_else(|| "workspace service bsl request failed".to_string()),
+                    kind: response.bsl_failure_kind,
+                });
             }
             return Ok(McpToolOutput {
                 result_text: response.result_text.unwrap_or_default(),
@@ -516,14 +616,30 @@ impl<'a> WorkspaceServiceManager<'a> {
         cancellation: &CancellationToken,
         deadline: ProviderDeadline,
     ) -> Result<McpToolOutput, String> {
+        self.call_bsl_mcp_before_classified(context, source_root, call, cancellation, deadline)
+            .map_err(|error| error.message)
+    }
+
+    pub fn call_bsl_mcp_before_classified(
+        &self,
+        context: &WorkspaceContext,
+        source_root: &Path,
+        call: PreparedBslCall,
+        cancellation: &CancellationToken,
+        deadline: ProviderDeadline,
+    ) -> Result<McpToolOutput, ClassifiedBslCallError> {
         let call_deadline = WorkspaceServiceCallDeadline::from_provider(deadline);
-        let record = self.ensure_service_cancellable_with_deadline(
-            context,
-            source_root,
-            cancellation,
-            &call_deadline,
-        )?;
-        let remaining = call_deadline.remaining_optional(cancellation)?;
+        let record = self
+            .ensure_service_cancellable_with_deadline(
+                context,
+                source_root,
+                cancellation,
+                &call_deadline,
+            )
+            .map_err(|error| call_deadline.classified_error(error, cancellation))?;
+        let remaining = call_deadline
+            .remaining_optional(cancellation)
+            .map_err(|error| call_deadline.classified_error(error, cancellation))?;
         let request = ServiceRequest {
             token: record.token.clone(),
             kind: ServiceRequestKind::BslMcpBegin {
@@ -532,14 +648,20 @@ impl<'a> WorkspaceServiceManager<'a> {
                 deadline: BslOperationDeadline::from_remaining(remaining),
             },
         };
-        let response =
-            self.connector
-                .send_operation_before(&record, request, cancellation, deadline)?;
-        call_deadline.check(cancellation)?;
+        let response = self
+            .connector
+            .send_operation_before(&record, request, cancellation, deadline)
+            .map_err(|error| call_deadline.classified_error(error, cancellation))?;
+        call_deadline
+            .check(cancellation)
+            .map_err(|error| call_deadline.classified_error(error, cancellation))?;
         if !response.ok {
-            return Err(response
-                .error
-                .unwrap_or_else(|| "workspace service provider call failed".into()));
+            return Err(ClassifiedBslCallError {
+                message: response
+                    .error
+                    .unwrap_or_else(|| "workspace service provider call failed".into()),
+                kind: response.bsl_failure_kind,
+            });
         }
         Ok(McpToolOutput {
             result_text: response.result_text.unwrap_or_default(),
@@ -2737,18 +2859,26 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
     ) -> ServiceResponse {
         let call_deadline = ServiceMcpDeadline(deadline);
         if let Err(error) = call_deadline.check(request_cancellation) {
-            return ServiceResponse::error(error);
+            return bsl_response_error(
+                error,
+                observed_call_stop(&call_deadline, request_cancellation),
+            );
         }
         let lane =
             self.analyzer_lane()
                 .acquire_queued(request_cancellation, deadline, yields, || {});
         let lane = match lane {
             Ok(lane) => lane,
-            Err(error) => return ServiceResponse::error(error),
+            Err(error) => {
+                return bsl_response_error(
+                    error,
+                    observed_call_stop(&call_deadline, request_cancellation),
+                )
+            }
         };
         let cancellation = lane.yielding_cancellation().unwrap_or(request_cancellation);
         if let Err(error) = call_deadline.check(cancellation) {
-            return ServiceResponse::error(error);
+            return bsl_response_error(error, observed_call_stop(&call_deadline, cancellation));
         }
         let binding = match self.provider_binding() {
             Ok(binding) => binding,
@@ -2837,6 +2967,11 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
                 let failure_snapshot = analyzer
                     .as_mut()
                     .and_then(|session| session.take_failure_snapshot());
+                let failure_kind = observed_call_stop(&call_deadline, cancellation).or_else(|| {
+                    failure_snapshot
+                        .as_ref()
+                        .map(|snapshot| bsl_transport_failure_kind(snapshot.phase, snapshot.cause))
+                });
                 // A call given up by its deadline or its cancellation leaves
                 // the session reusable: the analyzer was told to stop it, and
                 // its index stays warm for the next caller. Only a session the
@@ -2861,11 +2996,14 @@ impl<B: BslBackend, R: RlmBackend> WorkspaceServices<B, R> {
                         .report_failure(snapshot);
                 }
                 if cancellation.is_cancelled() && !request_cancellation.is_cancelled() {
-                    return ServiceResponse::error(cancelled_error(
-                        "workspace analyzer call gave way to a call that does not yield",
-                    ));
+                    return bsl_response_error(
+                        cancelled_error(
+                            "workspace analyzer call gave way to a call that does not yield",
+                        ),
+                        Some(BslFailureKind::Cancelled),
+                    );
                 }
-                ServiceResponse::error(error)
+                bsl_response_error(error, failure_kind)
             }
         }
     }
@@ -3052,13 +3190,19 @@ impl OperationControl {
     }
 
     fn stop_error(&self) -> Option<String> {
+        self.stop_failure().map(|error| error.message)
+    }
+
+    fn stop_failure(&self) -> Option<ClassifiedBslCallError> {
         match *self.cause.lock().unwrap_or_else(|error| error.into_inner()) {
-            Some(BslStopCause::Expire) => {
-                Some("timeout: workspace service operation deadline elapsed".into())
-            }
-            Some(BslStopCause::Cancel) => {
-                Some(cancelled_error("workspace service operation stopped"))
-            }
+            Some(BslStopCause::Expire) => Some(ClassifiedBslCallError {
+                message: "timeout: workspace service operation deadline elapsed".into(),
+                kind: Some(BslFailureKind::DeadlineElapsed),
+            }),
+            Some(BslStopCause::Cancel) => Some(ClassifiedBslCallError {
+                message: cancelled_error("workspace service operation stopped"),
+                kind: Some(BslFailureKind::Cancelled),
+            }),
             None => None,
         }
     }
@@ -3884,9 +4028,10 @@ fn run_registered_workspace_operation<B: BslBackend, R: RlmBackend>(
             {
                 if let Some(stop) = control
                     .as_ref()
-                    .and_then(|control| control.control.stop_error())
+                    .and_then(|control| control.control.stop_failure())
                 {
-                    response.error = Some(stop);
+                    response.error = Some(stop.message);
+                    response.bsl_failure_kind = stop.kind;
                 }
             }
             drop(guard);
@@ -4889,6 +5034,455 @@ impl WorkspaceServiceCallDeadline {
             started,
             budget,
             caller: None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod classified_bsl_tests {
+    use super::*;
+    use unica_process::transport_failure::SafeIoKind;
+
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    #[test]
+    fn transport_categories_use_typed_causes_and_reject_unmatched_phases() {
+        use BslFailureKind as Kind;
+        use FailureCause as Cause;
+        use FailurePhase as Phase;
+        for (phase, cause, expected) in [
+            (
+                Phase::WriteRequest,
+                Cause::WriterUnavailable,
+                Kind::RequestWriteFailed,
+            ),
+            (
+                Phase::WriteRequest,
+                Cause::EncodeRequest,
+                Kind::RequestWriteFailed,
+            ),
+            (
+                Phase::WriteRequest,
+                Cause::WriteIo(SafeIoKind::BrokenPipe),
+                Kind::RequestWriteFailed,
+            ),
+            (
+                Phase::WriteRequest,
+                Cause::FlushIo(SafeIoKind::PermissionDenied),
+                Kind::RequestWriteFailed,
+            ),
+            (
+                Phase::WaitResponse,
+                Cause::StdoutEof,
+                Kind::ResponseReadFailed,
+            ),
+            (
+                Phase::WaitResponse,
+                Cause::ReadIo(SafeIoKind::ConnectionReset),
+                Kind::ResponseReadFailed,
+            ),
+            (
+                Phase::WaitResponse,
+                Cause::ReaderDisconnected,
+                Kind::ResponseReadFailed,
+            ),
+            (
+                Phase::WaitResponse,
+                Cause::IncompleteFrame,
+                Kind::MalformedToolResult,
+            ),
+            (
+                Phase::WaitResponse,
+                Cause::InvalidJson,
+                Kind::MalformedToolResult,
+            ),
+            (
+                Phase::WaitResponse,
+                Cause::ResponseTooLarge,
+                Kind::MalformedToolResult,
+            ),
+            (
+                Phase::DecodeToolResult,
+                Cause::MissingResult,
+                Kind::MalformedToolResult,
+            ),
+            (
+                Phase::DecodeToolResult,
+                Cause::RemoteRpcError,
+                Kind::RemoteProviderFailed,
+            ),
+            (
+                Phase::DecodeToolResult,
+                Cause::RemoteToolError,
+                Kind::RemoteProviderFailed,
+            ),
+            (
+                Phase::WaitResponse,
+                Cause::DeadlineElapsed,
+                Kind::DeadlineElapsed,
+            ),
+            (Phase::WriteRequest, Cause::Cancelled, Kind::Cancelled),
+            (Phase::WriteRequest, Cause::RemoteToolError, Kind::Unknown),
+        ] {
+            assert_eq!(
+                bsl_transport_failure_kind(phase, cause),
+                expected,
+                "{phase:?}/{cause:?}"
+            );
+        }
+        for text in [
+            "timeout: private secret",
+            "connection reset",
+            "remote tool failed",
+        ] {
+            assert_eq!(ClassifiedBslCallError::from(text.to_owned()).kind, None);
+        }
+    }
+
+    #[test]
+    fn prepared_stop_keeps_expiry_distinct_from_explicit_cancellation() {
+        let control = OperationControl::new();
+        assert_eq!(control.stop_failure(), None);
+        control.expire();
+        let expired = control.stop_failure().unwrap();
+        assert_eq!(expired.kind, Some(BslFailureKind::DeadlineElapsed));
+        assert_eq!(control.stop_error(), Some(expired.message));
+        control.cancel();
+        control.expire();
+        assert_eq!(
+            control.stop_failure().unwrap().kind,
+            Some(BslFailureKind::Cancelled)
+        );
+    }
+
+    struct Environment;
+    impl ServiceEnvironment for Environment {
+        fn core_identity(&self) -> &str {
+            "classified-fixture"
+        }
+        fn verify_executable_build(&self, _: &Path) -> Result<(), String> {
+            Ok(())
+        }
+        fn find_plugin_root(&self, _: &Path) -> Option<PathBuf> {
+            None
+        }
+        fn workspace_policies(&self) -> unica_workspace::policies::WorkspacePolicies {
+            panic!("manager-only fixture does not construct a provider actor")
+        }
+    }
+    struct Spawner;
+    impl ServiceSpawner for Spawner {
+        fn spawn(
+            &self,
+            identity: &WorkspaceServiceIdentity,
+            _: WorkspaceServiceConfig,
+            token: &str,
+            _: &CancellationToken,
+            _: Duration,
+        ) -> Result<WorkspaceServiceRecord, String> {
+            Ok(WorkspaceServiceRecord {
+                schema_version: SERVICE_SCHEMA_VERSION,
+                pid: 1,
+                port: 1,
+                token: token.to_owned(),
+                build: "classified-fixture".into(),
+                version: "fixture".into(),
+                workspace_root: identity.workspace_root.clone(),
+                source_root: identity.source_root.clone(),
+                started_at: 0,
+                last_access_at: 0,
+            })
+        }
+        fn spawn_operation_before(
+            &self,
+            identity: &WorkspaceServiceIdentity,
+            config: WorkspaceServiceConfig,
+            token: &str,
+            cancellation: &CancellationToken,
+            _: ProviderDeadline,
+        ) -> Result<WorkspaceServiceRecord, String> {
+            self.spawn(
+                identity,
+                config,
+                token,
+                cancellation,
+                Duration::from_secs(1),
+            )
+        }
+    }
+    struct Connector {
+        response: ServiceResponse,
+        early_error: Option<EarlyError>,
+    }
+    enum EarlyError {
+        Unchanged,
+        Cancel,
+        Expire,
+    }
+    thread_local! {
+        static CONNECTOR_NOW: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+    }
+    fn connector_now() -> Instant {
+        CONNECTOR_NOW.with(|now| now.get().expect("configured test clock"))
+    }
+    impl ServiceConnector for Connector {
+        fn send(
+            &self,
+            _: &WorkspaceServiceRecord,
+            request: ServiceRequest,
+            _: &CancellationToken,
+            _: Duration,
+        ) -> Result<ServiceResponse, String> {
+            assert!(matches!(request.kind, ServiceRequestKind::BslMcp { .. }));
+            Ok(serde_json::from_slice(&serde_json::to_vec(&self.response).unwrap()).unwrap())
+        }
+        fn send_before(
+            &self,
+            _: &WorkspaceServiceRecord,
+            _: ServiceRequest,
+            _: &CancellationToken,
+            _: OperationDeadline,
+        ) -> Result<ServiceResponse, String> {
+            panic!("unexpected legacy operation route")
+        }
+        fn send_operation_before(
+            &self,
+            _: &WorkspaceServiceRecord,
+            request: ServiceRequest,
+            cancellation: &CancellationToken,
+            deadline: ProviderDeadline,
+        ) -> Result<ServiceResponse, String> {
+            assert!(matches!(
+                request.kind,
+                ServiceRequestKind::BslMcpBegin { .. }
+            ));
+            if let Some(error) = &self.early_error {
+                match error {
+                    EarlyError::Unchanged => {}
+                    EarlyError::Cancel => cancellation.cancel(),
+                    EarlyError::Expire => {
+                        CONNECTOR_NOW
+                            .with(|now| now.set(Some(connector_now() + Duration::from_secs(20))));
+                        assert!(deadline.is_elapsed());
+                    }
+                }
+                return Err("opaque connector failure".into());
+            }
+            let wire = PreparedBslReply::Finished {
+                response: Box::new(self.response.clone()),
+            };
+            let decoded: PreparedBslReply =
+                serde_json::from_slice(&serde_json::to_vec(&wire).unwrap()).unwrap();
+            let PreparedBslReply::Finished { response } = decoded else {
+                panic!("expected finished reply")
+            };
+            Ok(*response)
+        }
+    }
+
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    #[test]
+    fn both_manager_routes_preserve_categories_and_the_legacy_error_message() {
+        let root = tempfile::tempdir().unwrap();
+        let path = std::fs::canonicalize(root.path()).unwrap();
+        let context = WorkspaceContext {
+            cwd: path.clone(),
+            workspace_root: path.clone(),
+            cache_root: path.join("cache"),
+            workspace_epoch: 1,
+        };
+        let cancellation = CancellationToken::new();
+        let legacy_call = || {
+            WorkspaceServiceBslCall::new(
+                "search",
+                serde_json::json!({}),
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+            )
+        };
+        let prepared_call = || PreparedBslCall {
+            tool_name: "search".into(),
+            tool_args: serde_json::json!({}),
+            yields: false,
+        };
+        for kind in [
+            None,
+            Some(BslFailureKind::ResponseReadFailed),
+            Some(BslFailureKind::MalformedToolResult),
+            Some(BslFailureKind::RemoteProviderFailed),
+            Some(BslFailureKind::DeadlineElapsed),
+            Some(BslFailureKind::Cancelled),
+        ] {
+            let message = "private provider path /secret/index.db, stderr canary";
+            let connector = Connector {
+                response: bsl_response_error(message.into(), kind),
+                early_error: None,
+            };
+            let manager =
+                WorkspaceServiceManager::with_io(&connector, &Spawner, Arc::new(Environment));
+            let normal = manager
+                .call_bsl_mcp_cancellable_with_budget_classified(
+                    &context,
+                    &path,
+                    legacy_call(),
+                    &cancellation,
+                )
+                .unwrap_err();
+            let prepared = manager
+                .call_bsl_mcp_before_classified(
+                    &context,
+                    &path,
+                    prepared_call(),
+                    &cancellation,
+                    ProviderDeadline::no_deadline(),
+                )
+                .unwrap_err();
+            assert_eq!(
+                normal,
+                ClassifiedBslCallError {
+                    message: message.into(),
+                    kind
+                }
+            );
+            assert_eq!(prepared, normal);
+            assert_eq!(
+                manager
+                    .call_bsl_mcp_cancellable_with_budget(
+                        &context,
+                        &path,
+                        legacy_call(),
+                        &cancellation
+                    )
+                    .unwrap_err(),
+                message
+            );
+            assert_eq!(
+                manager
+                    .call_bsl_mcp_before(
+                        &context,
+                        &path,
+                        prepared_call(),
+                        &cancellation,
+                        ProviderDeadline::no_deadline()
+                    )
+                    .unwrap_err(),
+                message
+            );
+        }
+        let connector = Connector {
+            response: ServiceResponse {
+                ok: true,
+                result_text: Some("valid result".into()),
+                ..ServiceResponse::default()
+            },
+            early_error: None,
+        };
+        let manager = WorkspaceServiceManager::with_io(&connector, &Spawner, Arc::new(Environment));
+        assert_eq!(
+            manager
+                .call_bsl_mcp_cancellable_with_budget_classified(
+                    &context,
+                    &path,
+                    legacy_call(),
+                    &cancellation
+                )
+                .unwrap()
+                .result_text,
+            "valid result"
+        );
+        assert_eq!(
+            manager
+                .call_bsl_mcp_before_classified(
+                    &context,
+                    &path,
+                    prepared_call(),
+                    &cancellation,
+                    ProviderDeadline::no_deadline()
+                )
+                .unwrap()
+                .result_text,
+            "valid result"
+        );
+        let expired = manager
+            .call_bsl_mcp_cancellable_with_budget_classified(
+                &context,
+                &path,
+                WorkspaceServiceBslCall::new(
+                    "search",
+                    serde_json::json!({}),
+                    Duration::from_secs(1),
+                    Duration::ZERO,
+                ),
+                &cancellation,
+            )
+            .unwrap_err();
+        assert_eq!(expired.kind, Some(BslFailureKind::DeadlineElapsed));
+        let expired = manager
+            .call_bsl_mcp_before_classified(
+                &context,
+                &path,
+                prepared_call(),
+                &cancellation,
+                ProviderDeadline::new(Instant::now()),
+            )
+            .unwrap_err();
+        assert_eq!(expired.kind, Some(BslFailureKind::DeadlineElapsed));
+        cancellation.cancel();
+        assert_eq!(
+            manager
+                .call_bsl_mcp_before_classified(
+                    &context,
+                    &path,
+                    prepared_call(),
+                    &cancellation,
+                    ProviderDeadline::no_deadline(),
+                )
+                .unwrap_err()
+                .kind,
+            Some(BslFailureKind::Cancelled)
+        );
+    }
+
+    /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE
+    #[test]
+    fn prepared_connector_error_keeps_observed_expiry_and_cancellation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = std::fs::canonicalize(root.path()).unwrap();
+        let context = WorkspaceContext {
+            cwd: path.clone(),
+            workspace_root: path.clone(),
+            cache_root: path.join("cache"),
+            workspace_epoch: 1,
+        };
+        for (stop, expected) in [
+            (EarlyError::Expire, Some(BslFailureKind::DeadlineElapsed)),
+            (EarlyError::Cancel, Some(BslFailureKind::Cancelled)),
+            (EarlyError::Unchanged, None),
+        ] {
+            let start = Instant::now();
+            CONNECTOR_NOW.with(|now| now.set(Some(start)));
+            let deadline =
+                ProviderDeadline::with_clock(start + Duration::from_secs(10), connector_now);
+            let connector = Connector {
+                response: ServiceResponse::default(),
+                early_error: Some(stop),
+            };
+            let manager =
+                WorkspaceServiceManager::with_io(&connector, &Spawner, Arc::new(Environment));
+            let error = manager
+                .call_bsl_mcp_before_classified(
+                    &context,
+                    &path,
+                    PreparedBslCall {
+                        tool_name: "search".into(),
+                        tool_args: serde_json::json!({}),
+                        yields: false,
+                    },
+                    &CancellationToken::new(),
+                    deadline,
+                )
+                .unwrap_err();
+            assert_eq!(error.message, "opaque connector failure");
+            assert_eq!(error.kind, expected);
         }
     }
 }

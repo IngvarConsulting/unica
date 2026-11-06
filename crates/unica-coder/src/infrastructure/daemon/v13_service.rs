@@ -3627,9 +3627,14 @@ fn provider_search_failure(
             RefusalCode::ProviderUnavailable,
             "search provider is unavailable",
         ),
-        Some(SearchTerminationCode::ProviderFailed) => {
-            error_result(None, RefusalCode::ProviderFailed, "search provider failed")
-        }
+        Some(SearchTerminationCode::ProviderFailed) => error_result(
+            None,
+            RefusalCode::ProviderFailed,
+            section
+                .failure_kind
+                .map(|kind| kind.summary())
+                .unwrap_or("search provider failed"),
+        ),
         Some(SearchTerminationCode::LimitReached) => error_result(
             None,
             RefusalCode::ProviderLimitExceeded,
@@ -9132,6 +9137,65 @@ mod medium_tests {
             }
         }
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    /// rule: INV.WIRE.V13-REFUSAL-CHANNEL
+    #[test]
+    fn classified_search_failures_publish_only_static_causal_messages() {
+        use unica_code_intelligence::model::{ProviderId, ProviderSearchFailureKind as Kind};
+        let private = "/private/Customer2470/secret-token-2470; stderr private body";
+        for (kind, message) in [
+            (
+                Kind::UnrecognizedResponse,
+                "search provider response conversion failed: unsupported search payload",
+            ),
+            (
+                Kind::RequestWrite,
+                "search provider request could not be sent to the analyzer",
+            ),
+            (
+                Kind::ConnectionRead,
+                "search provider connection failed while reading the analyzer response",
+            ),
+            (
+                Kind::MalformedToolResult,
+                "search provider response conversion failed: invalid MCP tool result",
+            ),
+            (
+                Kind::RemoteProviderFailure,
+                "search provider reported an operation failure",
+            ),
+            (
+                Kind::Unknown,
+                "search provider failed without a classified cause",
+            ),
+        ] {
+            let mut section = ProviderSearchSection::failed(
+                ProviderId::BslAnalyzer.identity(),
+                private.to_owned(),
+            )
+            .with_failure_kind(kind);
+            section.artifacts.push(private.to_owned());
+            let result = super::provider_search_failure(section);
+            assert!(!result.ok);
+            assert_eq!(result.summary, message);
+            assert_eq!(result.diagnostics[0]["message"], message);
+            assert_eq!(result.diagnostics[0]["code"], "provider_failed");
+            assert_eq!(result.diagnostics[0]["outcome"], "deadEnd");
+            assert_eq!(
+                result.data.as_ref().unwrap()["matches"][0]["termination"]["retryable"],
+                false
+            );
+            let wire = serde_json::to_string(&result).unwrap();
+            for secret in [
+                private,
+                "Customer2470",
+                "secret-token-2470",
+                "stderr private body",
+            ] {
+                assert!(!wire.contains(secret), "private evidence escaped: {wire}");
+            }
+        }
     }
 
     /// rule: INV.APP.CODE-SEARCH-RESULT-EVIDENCE

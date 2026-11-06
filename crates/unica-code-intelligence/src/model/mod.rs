@@ -571,6 +571,37 @@ impl IndexMaintenanceEvidence {
     }
 }
 
+/// Closed observations for a failed provider call. Private provider text is
+/// not a source of public diagnostic messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderSearchFailureKind {
+    UnrecognizedResponse,
+    RequestWrite,
+    ConnectionRead,
+    MalformedToolResult,
+    RemoteProviderFailure,
+    Unknown,
+}
+
+impl ProviderSearchFailureKind {
+    pub const fn summary(self) -> &'static str {
+        match self {
+            Self::UnrecognizedResponse => {
+                "search provider response conversion failed: unsupported search payload"
+            }
+            Self::RequestWrite => "search provider request could not be sent to the analyzer",
+            Self::ConnectionRead => {
+                "search provider connection failed while reading the analyzer response"
+            }
+            Self::MalformedToolResult => {
+                "search provider response conversion failed: invalid MCP tool result"
+            }
+            Self::RemoteProviderFailure => "search provider reported an operation failure",
+            Self::Unknown => "search provider failed without a classified cause",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSearchSection {
@@ -584,6 +615,10 @@ pub struct ProviderSearchSection {
     pub matches: SearchMatchCount,
     pub hits: Vec<ProviderSearchHit>,
     pub diagnostics: Vec<String>,
+    /// The canonical projection uses this typed cause, never the private
+    /// diagnostics above. It is not an additional wire representation.
+    #[serde(skip)]
+    pub failure_kind: Option<ProviderSearchFailureKind>,
     /// Freshness against current workspace sources, when this provider can
     /// identify it. An index answer can be complete for its build while its
     /// freshness against later edits remains unknown.
@@ -703,11 +738,17 @@ impl ProviderSearchSection {
             matches,
             hits,
             diagnostics,
+            failure_kind: None,
             index_freshness: None,
             index_build_id: None,
             index_maintenance: None,
             artifacts: Vec::new(),
         })
+    }
+
+    pub fn with_failure_kind(mut self, kind: ProviderSearchFailureKind) -> Self {
+        self.failure_kind = Some(kind);
+        self
     }
 
     pub fn complete(
@@ -1698,5 +1739,20 @@ mod tests {
             Vec::new(),
         )
         .is_err());
+    }
+    #[test]
+    fn classified_search_failure_is_an_internal_carrier() {
+        let section = ProviderSearchSection::failed(
+            ProviderId::BslAnalyzer.identity(),
+            "private provider text".to_string(),
+        )
+        .with_failure_kind(ProviderSearchFailureKind::UnrecognizedResponse);
+        assert_eq!(
+            section.failure_kind,
+            Some(ProviderSearchFailureKind::UnrecognizedResponse)
+        );
+        let value = serde_json::to_value(section).unwrap();
+        assert!(value.get("failureKind").is_none());
+        assert!(value.get("failure_kind").is_none());
     }
 }
