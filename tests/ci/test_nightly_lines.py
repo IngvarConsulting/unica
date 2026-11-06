@@ -87,6 +87,17 @@ class NightlyLinesTests(unittest.TestCase):
         self.assertEqual(downloaded, [(42, Path("/tmp/large/release-v0.13"))])
         self.assertIn("прогон 42: success", next(d for d in decisions if d["line"] == "release-v0.13")["reason"])
 
+    def test_alpha_takes_the_commit_the_green_run_of_main_really_checked(self) -> None:
+        outcomes = [
+            {"line": "release-v0.13", "run_id": 41, "conclusion": "success", "relayed": True},
+            {"line": "main", "run_id": 42, "conclusion": "success", "relayed": True},
+        ]
+        self.assertEqual(self.module.green_main_sha(outcomes, head_sha=lambda run_id: f"sha-{run_id}"), "sha-42")
+
+    def test_a_red_night_of_main_names_no_commit(self) -> None:
+        outcomes = [{"line": "main", "run_id": 42, "conclusion": "failure", "relayed": True}]
+        self.assertEqual(self.module.green_main_sha(outcomes, head_sha=lambda run_id: "sha"), "")
+
     def test_a_cancelled_run_is_not_relayed_so_the_memory_stays_unproven(self) -> None:
         """Артефакты отменённого прогона неполны, а память по ним пропустила бы вершину без Windows."""
         decisions = self.decisions()

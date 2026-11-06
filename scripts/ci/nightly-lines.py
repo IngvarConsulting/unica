@@ -107,6 +107,23 @@ def watch_run(run_id: int) -> str:
     return completed.stdout.strip()
 
 
+def run_head_sha(run_id: int) -> str:
+    """Коммит, который на самом деле проверил прогон."""
+    completed = subprocess.run(
+        ["gh", "run", "view", str(run_id), "--json", "headSha", "--jq", ".headSha"],
+        check=True, capture_output=True, text=True,
+    )
+    return completed.stdout.strip()
+
+
+def green_main_sha(outcomes: list[dict], head_sha=run_head_sha) -> str:
+    """Коммит зелёного прогона main этой ночи; без такого прогона — пусто."""
+    return next(
+        (head_sha(o["run_id"]) for o in outcomes if o["line"] == "main" and o["conclusion"] == "success"),
+        "",
+    )
+
+
 def download_run(run_id: int, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     subprocess.run(["gh", "run", "download", str(run_id), "--dir", str(dest)], check=True, capture_output=True, text=True)
@@ -202,8 +219,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"count={len(started)}")
     # Линии, чей прогон этой ночи прошёл: по ним ночь выпускает alpha.
     print(f"green={' '.join(o['line'] for o in outcomes if o['conclusion'] == 'success')}")
-    # Alpha собирается из того коммита, что проверила ночь, а не из вершины к её концу.
-    print(f"main_sha={next((d['sha'] for d in decisions if d['line'] == 'main'), '')}")
+    # Alpha собирается из того коммита, что проверил этот прогон: вершина могла
+    # сдвинуться и до его запуска, и к его концу.
+    print(f"main_sha={green_main_sha(outcomes)}")
     return 0
 
 
