@@ -1,8 +1,9 @@
 name: Unica CI
 
 # Ворота pull request и очереди слияния: одна джоба Linux без маршрутов.
-# Что идёт, задают профили `pr` и `queue` в `scripts/ci/run-tests.py`
-# и `.config/nextest.toml`. Windows и macOS целиком, тяжёлые тесты и упаковка
+# Pull request: формат, контракт версий, Clippy и быстрые проверки Python, цель до трёх
+# минут. Очередь: тесты Rust и Python профиля `queue`. Ранний сигнал по тестам — локальный
+# прогон перед снятием черновика. Windows и macOS целиком, тяжёлые тесты и упаковка
 # идут ночью и в выпуске, в `unica-plugin-release.yml`.
 on:
   pull_request:
@@ -138,7 +139,7 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
       - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
-        if: env.KEPT != 'true'
+        if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' }}
         with:
           tool: cargo-nextest@0.9.148
       # Только чтение: pull request и очередь берут кэш области `main`.
@@ -166,11 +167,14 @@ jobs:
           echo "UNICA_PREPARED_BINARY_MANIFEST=$PWD/.build/ci-product/manifest.json" >> "$GITHUB_ENV"
       # Красный шаг не отменяет следующие: упавший тест не прячет остальные.
       - name: Тесты Rust
-        if: ${{ !cancelled() && env.KEPT != 'true' }}
+        if: ${{ !cancelled() && github.event_name == 'merge_group' && env.KEPT != 'true' }}
         run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem rust
       - name: Тесты Python
-        if: ${{ !cancelled() && env.KEPT != 'true' }}
+        if: ${{ !cancelled() && github.event_name == 'merge_group' && env.KEPT != 'true' }}
         run: python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python
+      - name: Статические проверки Python
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        run: python scripts/ci/run-static-tests.py
 
   windows-clippy:
     # Пропуск на pull request не мешает сделать проверку обязательной:
