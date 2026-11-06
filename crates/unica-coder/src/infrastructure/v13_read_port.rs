@@ -1320,6 +1320,22 @@ impl ProviderReadAuthority {
                 }
             }
         }
+        if evidence.artifact_kind() == "CommonPicture" {
+            let relative = self.attached_resource_relative(target, "Picture.xml")?;
+            let companion = self.read_relative_whole(&relative);
+            let companion = match &companion {
+                Ok(bytes) => Ok(bytes.as_slice()),
+                Err(error) if error.detail() == Some(RefusalDetail::SourceUnreadable) => {
+                    Err(error.to_string())
+                }
+                Err(error) => return Err(error.clone()),
+            };
+            unica_metadata_designer::commonpicture_read::enrich(
+                &descriptor,
+                companion,
+                &mut payload,
+            );
+        }
         Ok(payload)
     }
 

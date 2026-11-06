@@ -182,7 +182,8 @@ pub fn attached_resource_relative(
             || (*owner_kind == "Subsystem" && resource == "CommandInterface.xml")
             || (*owner_kind == "XDTOPackage" && resource == "Package.bin")
             || (*owner_kind == "WSReference" && resource == "WSDefinition.xml")
-            || (*owner_kind == "ScheduledJob" && resource == "Schedule.xml") =>
+            || (*owner_kind == "ScheduledJob" && resource == "Schedule.xml")
+            || (*owner_kind == "CommonPicture" && resource == "Picture.xml") =>
         {
             relative.push("Ext");
             relative.push(resource);

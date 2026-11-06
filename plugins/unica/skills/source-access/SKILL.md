@@ -217,6 +217,12 @@ allowed-tools:
 | Подсистема | `Subsystem.<Имя>` → `Interface` → `Command` |
 | Методы модуля | `<объект>.Module.<Роль>` → `Method`, `Region`, `Event`, `Body` |
 
+У общей картинки `CommonPicture` свойства `AvailabilityForAppearance` и
+`Picture` показывают явно заданные XML-факты. `Picture` содержит `Abs`
+и `LoadTransparent` из сопутствующего XML: ссылка `Abs` не означает, что
+содержимое PNG или ZIP прочитано. Повреждённые независимые поля отмечаются
+в `limits`; крупное значение доступно через `.Props.Picture`.
+
 В `Interface` и его ветви `Command` пределы различают ссылку по ID
 `0:<UUID>`, именованную ссылку вне поддерживаемого адресного профиля
 (например, `StandardCommand`) и повреждённое либо нераспознанное
