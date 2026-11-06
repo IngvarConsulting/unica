@@ -104,6 +104,54 @@
       "review": null
     },
     {
+      "id": "bsl-analyzer.search-output-budget-tokens",
+      "class": "step",
+      "resource": "Бюджет вывода одного запроса search_code к анализатору",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-adapter-bsl-analyzer/src/provider.rs",
+        "symbol": "BSL_ANALYZER_SEARCH_OUTPUT_BUDGET"
+      },
+      "expr": "50_000",
+      "value": 50000,
+      "applied": [
+        "crates/unica-adapter-bsl-analyzer/src/provider.rs"
+      ],
+      "status": "unproven",
+      "origin": "умолчание анализатора 6000 токенов срезало окно до 9–10 попаданий на настоящей конфигурации",
+      "problem": "без явного бюджета анализатор обрезал результат раньше своего предела в 50 попаданий",
+      "onReach": "секция сообщает limitReached и нижнюю оценку, причина остаётся в диагностике",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": "50 попаданий на Бухгалтерии для Казахстана заняли 25 КБ текста; предел проверен на одной конфигурации"
+    },
+    {
+      "id": "bsl-analyzer.stderr-reason-chars",
+      "class": "step",
+      "resource": "Длина причины из stderr анализатора в ответе поиска",
+      "unit": "chars",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-adapter-bsl-analyzer/src/provider.rs",
+        "symbol": "BSL_ANALYZER_STDERR_REASON_MAX_CHARS"
+      },
+      "expr": "300",
+      "value": 300,
+      "applied": [
+        "crates/unica-adapter-bsl-analyzer/src/provider.rs"
+      ],
+      "status": "unproven",
+      "origin": "журнал сборки индекса занимал страницу ответа и вытеснял попадания",
+      "problem": "журнал процесса растёт вместе с процессом, а в ответ нужна короткая причина",
+      "onReach": "строка обрезается; журнал в ответ не попадает",
+      "issue": null,
+      "evidence": [],
+      "decision": null,
+      "review": "предел одной строки причины; журнал отсекается независимо от него"
+    },
+    {
       "id": "bsl-analyzer.cancel-notice-timeout-ms",
       "class": "deadline",
       "resource": "Срок записи уведомления notifications/cancelled для вызова анализатора, брошенного по сроку или отмене.",

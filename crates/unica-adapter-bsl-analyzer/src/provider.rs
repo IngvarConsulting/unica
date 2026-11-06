@@ -24,6 +24,12 @@ const BSL_ANALYZER_CAPABILITIES: &[ProviderCapability] = &[
 /// Метод на каждый инструмент отличался бы от соседа одним литералом, а шов
 /// для подмены в проверках нужен один — иначе запрос графа не перехватить, не
 /// поднимая движок.
+/// Бюджет вывода `search_code`. Страницы ответа нарезает сама Unica, поэтому
+/// анализатор не должен резать окно раньше своего предела в 50 попаданий.
+const BSL_ANALYZER_SEARCH_OUTPUT_BUDGET: u64 = 50_000;
+/// Предел длины причины из stderr анализатора в символах.
+const BSL_ANALYZER_STDERR_REASON_MAX_CHARS: usize = 300;
+
 pub trait BslToolClient: Send + Sync {
     fn call(
         &self,
@@ -337,6 +343,7 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
             "action": "search_code",
             "query": request.query,
             "limit": request.limit,
+            "max_output_tokens": BSL_ANALYZER_SEARCH_OUTPUT_BUDGET,
         });
         match self
             .client
@@ -359,15 +366,14 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                 ) {
                     section.index_freshness = Some("unknown".to_string());
                 }
-                // Keep stderr wherever the section is the provider's own
-                // account of why it cannot serve — that includes waiting on
-                // the index, whose stderr names the dependency. A plain
-                // deadline timeout stays quiet: its stderr is a truncated
-                // stream, not an explanation.
-                let retain_stderr = match section.status {
+                // Журнал процесса в ответ не попадает: он растёт вместе с процессом и
+                // занимал бы страницу. Причину даёт только сам отказ поставщика или
+                // ожидание индекса; истечение срока и неполный результат её не несут.
+                let names_a_cause = match section.status {
                     ProviderSectionStatus::Ok
                     | ProviderSectionStatus::Empty
-                    | ProviderSectionStatus::LimitReached => false,
+                    | ProviderSectionStatus::LimitReached
+                    | ProviderSectionStatus::Partial => false,
                     ProviderSectionStatus::TimedOut => section
                         .termination
                         .as_ref()
@@ -375,14 +381,14 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
                             termination.code
                                 == unica_code_intelligence::model::SearchTerminationCode::DependencyPending
                         }),
-                    ProviderSectionStatus::Partial
-                    | ProviderSectionStatus::Unavailable
-                    | ProviderSectionStatus::Failed => true,
+                    ProviderSectionStatus::Unavailable | ProviderSectionStatus::Failed => true,
                 };
-                if retain_stderr && !output.stderr.trim().is_empty() {
-                    section
-                        .diagnostics
-                        .push(format!("bsl-analyzer stderr: {}", output.stderr.trim()));
+                if names_a_cause {
+                    if let Some(reason) = stderr_reason(&output.stderr) {
+                        section
+                            .diagnostics
+                            .push(format!("bsl-analyzer stderr: {reason}"));
+                    }
                 }
                 section
             }
@@ -392,6 +398,38 @@ impl CodeIntelligenceProvider for BslAnalyzerProvider<'_> {
             Err(error) => failed_section(ProviderId::BslAnalyzer, error),
         }
     }
+}
+
+/// Служебные строки обычного текстового ответа: легенда меток и готовый индекс.
+fn is_search_listing_frame(line: &str) -> bool {
+    line.starts_with("Modality tag per hit:")
+        || matches!(
+            line,
+            "Indexing lexical: ready" | "Indexing semantic: ready" | "Indexing semantic: disabled"
+        )
+}
+
+/// Последняя строка stderr, которая не является строкой журнала процесса.
+fn stderr_reason(stderr: &str) -> Option<String> {
+    stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !is_process_log_line(line))
+        .map(|line| {
+            line.chars()
+                .take(BSL_ANALYZER_STDERR_REASON_MAX_CHARS)
+                .collect()
+        })
+}
+
+/// Журнал анализатора пишется как `<время> <уровень> <сообщение>`; ошибка остаётся причиной.
+fn is_process_log_line(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    let stamped = words.next().is_some_and(|stamp| {
+        stamp.len() >= 19 && stamp.as_bytes()[4] == b'-' && stamp.as_bytes()[10] == b'T'
+    });
+    stamped && matches!(words.next(), Some("TRACE" | "DEBUG" | "INFO" | "WARN"))
 }
 
 /// The pending reason of a no-hits answer whose footer names exactly the
@@ -626,7 +664,7 @@ pub fn parse_bsl_analyzer_search(
             if let Some(hit) = current.take() {
                 hits.push(hit);
             }
-        } else {
+        } else if !is_search_listing_frame(line) {
             diagnostics.push(format!("unparsed bsl-analyzer search output: {line}"));
         }
     }
@@ -648,10 +686,10 @@ pub fn parse_bsl_analyzer_search(
         );
     }
     let provider_limit_reached = returned_headers >= effective_limit;
-    if (discarded_result || output_budget_truncated) && provider_limit_reached {
+    if discarded_result && (provider_limit_reached || output_budget_truncated) {
         diagnostics.push("bsl-analyzer result limit was also reached".to_string());
     }
-    let section = if discarded_result || output_budget_truncated {
+    let section = if discarded_result {
         ProviderSearchSection::partial(
             ProviderId::BslAnalyzer.identity(),
             SearchRanking::Provider,
@@ -659,7 +697,7 @@ pub fn parse_bsl_analyzer_search(
             hits,
             diagnostics,
         )
-    } else if provider_limit_reached {
+    } else if provider_limit_reached || output_budget_truncated {
         ProviderSearchSection::limit_reached(
             ProviderId::BslAnalyzer.identity(),
             SearchRanking::Provider,
@@ -681,10 +719,9 @@ pub fn parse_bsl_analyzer_search(
     })
 }
 
-/// Ответ анализатора, упёршийся в свой бюджет вывода: вместо текста он отдаёт
-/// JSON с теми же попаданиями, а лишние отбрасывает (`shown` меньше `total`).
-/// На большой конфигурации так отвечает обычный запрос, поэтому это частичный
-/// результат, а не сбой поставщика.
+/// Ответ анализатора, упёршийся в свой бюджет вывода: вместо текста приходит
+/// JSON с теми же попаданиями, а лишние отбрасываются (`shown` меньше `total`).
+/// Это достигнутый предел поставщика, а не сбой и не потерянное попадание.
 fn parse_bsl_analyzer_search_envelope(
     envelope: &Value,
     raw_hits: &[Value],
@@ -728,8 +765,16 @@ fn parse_bsl_analyzer_search_envelope(
         hit.rank = Some(index + 1);
     }
     let budget_exhausted = envelope.get("budget_exhausted").and_then(Value::as_bool) == Some(true);
-    let section = if budget_exhausted || discarded_result {
+    let section = if discarded_result {
         ProviderSearchSection::partial(
+            ProviderId::BslAnalyzer.identity(),
+            SearchRanking::Provider,
+            SearchOrdering::Provider,
+            hits,
+            diagnostics,
+        )
+    } else if budget_exhausted {
+        ProviderSearchSection::limit_reached(
             ProviderId::BslAnalyzer.identity(),
             SearchRanking::Provider,
             SearchOrdering::Provider,
