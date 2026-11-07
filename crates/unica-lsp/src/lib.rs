@@ -2,9 +2,10 @@
 //!
 //! Порт [`unica_lsp_contract::host::LspHost`] и типы сообщений задаёт контракт;
 //! транспорт принадлежит демону, и служба от него не зависит.
-//! Допуск папки, чтение модуля и служба символов приходят от продукта через
-//! [`LspWorkspaces`].
+//! Допуск папки, чтение модуля, службы символов и диагностик приходят от
+//! продукта через [`LspWorkspaces`].
 
+mod diagnostics;
 #[allow(dead_code)]
 mod document;
 #[allow(dead_code)]
@@ -16,6 +17,7 @@ mod symbols;
 #[allow(dead_code)]
 mod uri;
 
+pub use diagnostics::{LspAnalysis, LspDiagnosticGap, LspDiagnostics, LspFinding, LspSeverity};
 pub use documents::{ModuleSourceRead, SourceSetLayout};
 pub use host::{AdmittedWorkspace, LspActor, LspModuleReads, LspWorkspaces, UnicaLspHost};
 pub use symbols::{LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols};

@@ -14,7 +14,8 @@ use unica_daemon::lsp_lane::MAX_LSP_LANE_WORKERS;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
-    V5LspCapabilities, V5LspLocation, V5LspRange, V5LspWorkspaceSpace,
+    V5LspCapabilities, V5LspDiagnostic, V5LspLocation, V5LspRange, V5LspSeverity,
+    V5LspWorkspaceSpace,
 };
 
 /// Допуск задержки MCP под потоком hover: медиана вызова MCP при занятой
@@ -235,6 +236,10 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
         );
     }
     assert!(
+        capabilities["diagnosticProvider"].is_object(),
+        "diagnostics are served, so declared"
+    );
+    assert!(
         capabilities.get("completionProvider").is_none(),
         "completion is not served yet, so it is not declared"
     );
@@ -296,6 +301,7 @@ fn capabilities_follow_what_the_lsp_service_declares() {
             "hoverProvider": true,
             "definitionProvider": true,
             "referencesProvider": true,
+            "diagnosticProvider": {"interFileDependencies": false, "workspaceDiagnostics": false},
             "workspace": {"textDocumentContent": {"schemes": ["unica"]}},
             "experimental": {"unica": {"workspaces": [{"folder": "file:///work", "space": "w0"}]}},
         })
@@ -332,6 +338,20 @@ fn capabilities_follow_what_the_lsp_service_declares() {
             "uri": "file:///work/a.bsl",
             "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
         }])
+    );
+    let report = editor.request(
+        "textDocument/diagnostic",
+        json!({"textDocument": {"uri": "file:///work/a.bsl"}}),
+    );
+    assert_eq!(
+        report["result"],
+        json!({"kind": "full", "items": [{
+            "range": {"start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 2}},
+            "severity": 2,
+            "code": "bsl.code.known",
+            "source": "unica",
+            "message": "Текст Unica",
+        }]})
     );
     // Nothing found while a source is not ready is no empty list.
     let references = editor.request(
@@ -786,6 +806,7 @@ impl LspHost for HeldHost {
                 hover: true,
                 definition: true,
                 references: true,
+                diagnostics: true,
                 text_document_content: true,
             },
             workspaces: folders
@@ -840,6 +861,20 @@ impl LspHost for HeldHost {
             V5LspCall::References { .. } => {
                 return V5LspOutcome::Failed {
                     failure: V5LspFailure::Incomplete,
+                };
+            }
+            V5LspCall::Diagnostic { .. } => {
+                let start = V5LspPosition {
+                    line: 1,
+                    character: 2,
+                };
+                return V5LspOutcome::Diagnostics {
+                    items: vec![V5LspDiagnostic {
+                        range: V5LspRange { start, end: start },
+                        severity: V5LspSeverity::Warning,
+                        code: "bsl.code.known".into(),
+                        message: "Текст Unica".into(),
+                    }],
                 };
             }
             V5LspCall::Hover { .. } => {}

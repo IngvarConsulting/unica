@@ -31,10 +31,13 @@ use unica_workspace::actor::{
 use unica_workspace::documents::SessionDocuments;
 
 const DISK: &str = "Procedure Disk() EndProcedure\n";
+/// A session no editor opens: its read sees only saved files.
+const SAVED_ONLY: &str = "saved-only";
 const BODY_URI: &str = "unica://work/main/CommonModule.Main.Body";
 
 type Actor = WorkspaceActor<(), ()>;
 
+mod diagnostics;
 mod symbols;
 
 /// Admits a folder whose `main` lies in `source-root` (or `src`).
@@ -42,6 +45,7 @@ mod symbols;
 struct DiskWorkspaces {
     actors: WorkspaceActorRegistry<()>,
     symbols: Arc<symbols::ScriptedSymbols>,
+    diagnostics: Arc<diagnostics::ScriptedDiagnostics>,
 }
 
 impl DiskWorkspaces {
@@ -96,6 +100,7 @@ impl LspWorkspaces for DiskWorkspaces {
                 binding,
             }),
             symbols: self.symbols.clone(),
+            diagnostics: self.diagnostics.clone(),
             actor: actor as Arc<dyn LspActor>,
         })
     }
@@ -107,6 +112,10 @@ struct DiskReads {
 }
 
 impl LspModuleReads for DiskReads {
+    fn saved(&self, source_set: &str) -> Result<Box<dyn ModuleSourceRead>, V5LspFailure> {
+        self.read(SAVED_ONLY, source_set)
+    }
+
     fn read(
         &self,
         session: &str,

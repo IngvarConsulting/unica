@@ -35,6 +35,7 @@ impl LspHost for HeldHost {
                 hover: true,
                 definition: false,
                 references: false,
+                diagnostics: false,
                 text_document_content: false,
             },
             workspaces: folders

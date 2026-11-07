@@ -4691,6 +4691,14 @@ impl CanonicalV13ReadService {
         Ok((at, outcome))
     }
 
+    /// Поставщики диагностик, те же, что у `check`.
+    pub(crate) fn diagnostic_registry(
+        &self,
+    ) -> Result<unica_diagnostics::model::DiagnosticProviderRegistry, String> {
+        use crate::application::ports::ApplicationPorts;
+        self.ports.diagnostic_provider_registry()
+    }
+
     /// Поставщик символов набора исходников, если он есть. Его нет — ответ
     /// собирается из текста модуля и называет причину неполноты.
     fn symbol_provider(

@@ -120,6 +120,24 @@ impl LineIndex {
         }
     }
 
+    /// The LSP position of a zero-based line and a column counted in
+    /// Unicode scalar values. A column past the line names its end; a line
+    /// past the text names the end of the text.
+    pub(crate) fn scalar_position(&self, text: &str, line: usize, column: usize) -> Utf16Position {
+        let Some((start, end)) = self.line_bytes(text, line) else {
+            return self.position(text, text.len());
+        };
+        let units: usize = text[start..end]
+            .chars()
+            .take(column)
+            .map(char::len_utf16)
+            .sum();
+        Utf16Position {
+            line: line as u32,
+            character: units as u32,
+        }
+    }
+
     /// The Unica point of an LSP position.
     pub(crate) fn unica_point(
         &self,

@@ -20,9 +20,9 @@ use std::time::{Duration, Instant};
 use unica_daemon::client_v5::{V5DaemonClient, V5DaemonProcessOwner, V5LspExchangeError};
 use unica_daemon::protocol_v5::V5EndpointRecord;
 use unica_lsp_contract::protocol::{
-    V5LspCall, V5LspContentChange, V5LspFailure, V5LspMessageLevel, V5LspNotification,
-    V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange, V5LspServerNotification, V5LspSessionId,
-    V5LspTextSync, V5LspWorkspaceFolder,
+    V5LspCall, V5LspContentChange, V5LspDiagnostic, V5LspFailure, V5LspMessageLevel,
+    V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange,
+    V5LspServerNotification, V5LspSessionId, V5LspSeverity, V5LspTextSync, V5LspWorkspaceFolder,
 };
 
 /// Бюджет запроса на полосе демона.
@@ -225,6 +225,14 @@ impl Frontend {
                     id,
                     INVALID_PARAMS,
                     "invalid position params",
+                )),
+            },
+            (Phase::Running(_), "textDocument/diagnostic") => match document_uri(&params) {
+                Some(uri) => self.dispatch(id, V5LspCall::Diagnostic { uri }),
+                None => self.send(error_response(
+                    id,
+                    INVALID_PARAMS,
+                    "invalid diagnostic params",
                 )),
             },
             (Phase::Running(_), "workspace/textDocumentContent") => {
@@ -528,6 +536,13 @@ fn call_daemon(
         Ok(V5LspOutcome::Locations { locations }) => {
             json!({"jsonrpc": "2.0", "id": id, "result": locations})
         }
+        // Always a full report: an incomplete one must be asked anew, never
+        // kept as unchanged.
+        Ok(V5LspOutcome::Diagnostics { items }) => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {"kind": "full", "items": items.iter().map(diagnostic_json).collect::<Vec<_>>()},
+        }),
         Ok(V5LspOutcome::Cancelled {}) => {
             error_response(id, REQUEST_CANCELLED, "request cancelled")
         }
@@ -667,6 +682,12 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
     if capabilities.references {
         result.insert("referencesProvider".into(), json!(true));
     }
+    if capabilities.diagnostics {
+        result.insert(
+            "diagnosticProvider".into(),
+            json!({"interFileDependencies": false, "workspaceDiagnostics": false}),
+        );
+    }
     if capabilities.text_document_content {
         result.insert(
             "workspace".into(),
@@ -689,6 +710,23 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
         json!({"unica": {"workspaces": workspaces}}),
     );
     Value::Object(result)
+}
+
+/// One finding as LSP `Diagnostic`, told by Unica.
+fn diagnostic_json(item: &V5LspDiagnostic) -> Value {
+    let severity = match item.severity {
+        V5LspSeverity::Error => 1,
+        V5LspSeverity::Warning => 2,
+        V5LspSeverity::Information => 3,
+        V5LspSeverity::Hint => 4,
+    };
+    json!({
+        "range": item.range,
+        "severity": severity,
+        "code": item.code,
+        "source": "unica",
+        "message": item.message,
+    })
 }
 
 fn server_notification_json(notification: V5LspServerNotification) -> Value {
