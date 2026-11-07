@@ -1,43 +1,7 @@
 use roxmltree::Document;
 use std::collections::HashMap;
 use unica_metadata::support_state::{SupportReadError, SupportReadErrorCode};
-
-#[derive(Debug, Clone)]
-pub struct SupportState {
-    pub global_editing_enabled: bool,
-    pub vendor_count: usize,
-    pub removed: bool,
-    pub counts: [usize; 3],
-    pub object_rules: HashMap<String, u8>,
-    pub vendors: Vec<SupportVendor>,
-}
-
-impl SupportState {
-    pub fn object_rule(&self, object_uuid: &str) -> Option<u8> {
-        self.object_rules
-            .get(&object_uuid.to_ascii_lowercase())
-            .copied()
-    }
-
-    pub fn global_editing_enabled(&self) -> bool {
-        self.global_editing_enabled
-    }
-
-    pub fn removed(&self) -> bool {
-        self.removed
-    }
-
-    pub fn counts(&self) -> [usize; 3] {
-        self.counts
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SupportVendor {
-    pub version: String,
-    pub vendor: String,
-    pub name: String,
-}
+pub use unica_metadata::support_state::{SupportState, SupportVendor};
 
 /// Strict marker parsing retains the result and bounded input windows, never the
 /// complete marker. The compatibility mutation guard intentionally has its own

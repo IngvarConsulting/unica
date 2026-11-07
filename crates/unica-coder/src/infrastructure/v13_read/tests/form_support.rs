@@ -4,7 +4,6 @@ use serde_json::Value;
 /// rule: INV.APP.SUPPORT-STATE
 #[test]
 fn canonical_form_support_keeps_own_rule_and_owner_prohibition() {
-    use unica_metadata_designer::support::support_root_uuid_from_bytes;
     for (owner_rule, form_rule, editing, support, safe) in [
         (1, 0, 0, "locked", false),
         (0, 1, 0, "editableWithSupport", false),
@@ -14,7 +13,9 @@ fn canonical_form_support_keeps_own_rule_and_owner_prohibition() {
     ] {
         let fixture = RealReaderFixture::new();
         let uuid = |path: &str| {
-            support_root_uuid_from_bytes(&fs::read(fixture.source.join(path)).unwrap()).unwrap()
+            crate::infrastructure::family_codecs::metadata_read_codec()
+                .support_root_uuid(&fs::read(fixture.source.join(path)).unwrap())
+                .unwrap()
         };
         let owner = uuid("Reports/ParityReport.xml");
         let form = uuid("Reports/ParityReport/Forms/MainForm.xml");
@@ -126,9 +127,9 @@ fn canonical_form_support_refuses_invalid_marker_and_missing_uuid_even_when_glob
                     .source
                     .join("Reports/ParityReport/Forms/MainForm.xml");
                 let text = fs::read_to_string(&descriptor).unwrap();
-                let uuid =
-                    unica_metadata_designer::support::support_root_uuid_from_bytes(text.as_bytes())
-                        .unwrap();
+                let uuid = crate::infrastructure::family_codecs::metadata_read_codec()
+                    .support_root_uuid(text.as_bytes())
+                    .unwrap();
                 write(&descriptor, &text.replace(&format!("uuid=\"{uuid}\""), ""));
             }
         }
@@ -174,7 +175,9 @@ fn canonical_form_support_unknown_owner_does_not_turn_editable_child_into_safe()
             .join("Reports/ParityReport/Forms/MainForm.xml"),
     )
     .unwrap();
-    let uuid = unica_metadata_designer::support::support_root_uuid_from_bytes(&descriptor).unwrap();
+    let uuid = crate::infrastructure::family_codecs::metadata_read_codec()
+        .support_root_uuid(&descriptor)
+        .unwrap();
     write(
         &fixture.source.join("Ext/ParentConfigurations.bin"),
         &format!("{{6,0,1,1,0,{uuid}}}"),

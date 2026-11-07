@@ -4,12 +4,9 @@ use std::sync::Arc;
 use unica_address::source_target::MetadataAddress;
 use unica_metadata::support_state::{
     ConfigurationSupportData, ConfigurationSupportState, ObjectSupportData, ObjectSupportState,
-    SupportCounts,
+    SupportCounts, SupportState,
 };
 use unica_metadata::MetaSupportStatus;
-use unica_metadata_designer::support::{
-    support_root_uuid_from_bytes, SupportState, SupportStateStreamParser,
-};
 use unica_refusal::RefusalDetail;
 use unica_source_contract::SourceSetKind;
 
@@ -61,12 +58,14 @@ impl ProviderReadAuthority {
                 owned.as_slice()
             }
         };
-        let uuid = support_root_uuid_from_bytes(descriptor).ok_or_else(|| {
-            ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                "metadata descriptor has no support-state UUID evidence",
-            )
-        })?;
+        let uuid = crate::infrastructure::family_codecs::metadata_read_codec()
+            .support_root_uuid(descriptor)
+            .ok_or_else(|| {
+                ViewError::detailed(
+                    RefusalDetail::SourceUnreadable,
+                    "metadata descriptor has no support-state UUID evidence",
+                )
+            })?;
         Ok(object_support_from_state(
             Some(&state),
             object_support_rule(state.object_rule(&uuid)),
@@ -226,7 +225,7 @@ fn parse_support_state(
     mut file: impl std::io::Read,
     checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
 ) -> Result<SupportState, ViewError> {
-    let mut parser = SupportStateStreamParser::default();
+    let mut parser = crate::infrastructure::family_codecs::metadata_read_codec().support_stream();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
         checkpoint()?;

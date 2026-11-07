@@ -293,7 +293,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     pub(crate) fn object_borrowing(
         &self,
         at: &QualifiedAddress,
-    ) -> Result<Option<unica_metadata_designer::xml_model::MetaBorrowing>, ViewError> {
+    ) -> Result<Option<unica_metadata::borrowing::MetaBorrowing>, ViewError> {
         if self.read.source_set_kind() != SourceSetKind::Extension
             || at.segments().len() != 1
             || at.segments()[0].name().is_none()
@@ -311,11 +311,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
             revision: self.exact_revision()?,
         };
         self.verify_registered_owner(&target, &admitted)?;
-        unica_metadata_designer::xml_model::parse_meta_borrowing(
-            &self.read.metadata_descriptor(&target)?,
-        )
-        .map(Some)
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
+        crate::infrastructure::family_codecs::metadata_read_codec()
+            .borrowing(&self.read.metadata_descriptor(&target)?)
+            .map(Some)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
     /// Resolve only registered, readable objects under this retained source.
@@ -1833,16 +1832,10 @@ impl<'a> LogicalViewReadAuthority<'a> {
         let text = std::str::from_utf8(&descriptor).map_err(|error| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
         })?;
-        let document =
-            roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).map_err(|error| {
-                ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-            })?;
-        let properties = common_module_property_container(&document)?;
-        let observation = unica_metadata_designer::info_projection::observe_meta_info_property(
-            properties,
-            MetadataKind::CommonModule,
-            "Synonym",
-        );
+        let properties = crate::infrastructure::family_codecs::metadata_read_codec()
+            .common_module_properties(text)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let observation = properties.info("Synonym");
         let mut props = Map::new();
         let mut limits = Vec::new();
         match observation {
@@ -2835,13 +2828,7 @@ impl LogicalViewReadAuthority<'_> {
         &self,
         route: &LogicalTreeRoute,
         admitted: &ViewSourceSnapshot,
-    ) -> Result<
-        Option<(
-            unica_metadata_designer::xml_model::MetaBorrowing,
-            &'static str,
-        )>,
-        ViewError,
-    > {
+    ) -> Result<Option<(unica_metadata::borrowing::MetaBorrowing, &'static str)>, ViewError> {
         // Модуль формы живёт в её содержимом: без `Form.xml` платформа его
         // не хранит, и узлы модуля такой формы в расширении не существуют.
         let resource = match route.reader() {
@@ -3075,7 +3062,7 @@ pub(crate) const INHERITED_CONTENT: &str = "inherited";
 /// существует: отказ `not_found` направляет к родителю.
 fn project_inherited_part(
     route: &LogicalTreeRoute,
-    borrowing: &unica_metadata_designer::xml_model::MetaBorrowing,
+    borrowing: &unica_metadata::borrowing::MetaBorrowing,
     resource: &str,
 ) -> Result<NodeViewData, ViewError> {
     let at = route.at();
@@ -3319,46 +3306,6 @@ fn module_source_address(
     .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error))
 }
 
-fn common_module_property_container<'a, 'input>(
-    document: &'a roxmltree::Document<'input>,
-) -> Result<roxmltree::Node<'a, 'input>, ViewError> {
-    let root = document.root_element();
-    const NS: &str = "http://v8.1c.ru/8.3/MDClasses";
-    // Оба читателя требуют один CommonModule и один прямой Properties
-    // из пространства имён метаданных. Повреждение структуры не становится
-    // отсутствием локального свойства.
-    let objects = root
-        .children()
-        .filter(roxmltree::Node::is_element)
-        .collect::<Vec<_>>();
-    let [object] = objects.as_slice() else {
-        return Err(ViewError::detailed(
-            RefusalDetail::SourceUnreadable,
-            "common module descriptor must contain one object",
-        ));
-    };
-    if !object.has_tag_name((NS, "CommonModule")) {
-        return Err(ViewError::detailed(
-            RefusalDetail::SourceUnreadable,
-            "common module descriptor has the wrong object kind",
-        ));
-    }
-    let containers = object
-        .children()
-        .filter(|node| node.is_element() && node.tag_name().name() == "Properties")
-        .collect::<Vec<_>>();
-    let properties = match containers.as_slice() {
-        [node] if node.tag_name().namespace() == Some(NS) => *node,
-        _ => {
-            return Err(ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                "common module descriptor must contain one direct Properties container",
-            ))
-        }
-    };
-    Ok(properties)
-}
-
 fn common_module_properties(
     bytes: &[u8],
     source_kind: SourceSetKind,
@@ -3369,19 +3316,16 @@ fn common_module_properties(
             "common module descriptor is not UTF-8",
         )
     })?;
-    let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}'))
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()))?;
     use unica_metadata::{
         MetaInfoPropertyAbsence, MetaInfoPropertyValue, META_INFO_PROPERTY_PROFILE,
     };
-    let properties = common_module_property_container(&document)?;
+    let properties = crate::infrastructure::family_codecs::metadata_read_codec()
+        .common_module_properties(text)
+        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
     let borrowing_property = |name| {
-        unica_metadata_designer::info_projection::observe_meta_borrowing_property(
-            properties,
-            MetadataKind::CommonModule,
-            name,
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))
+        properties
+            .borrowing(name)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))
     };
     borrowing_property("ObjectBelonging")?;
     let borrowed = source_kind == SourceSetKind::Extension
@@ -3392,12 +3336,9 @@ fn common_module_properties(
     // у обычного остаётся ошибкой источника. Записанное значение проверяется
     // одинаково.
     let observe = |name: &str| -> Result<Option<MetaInfoPropertyValue>, ViewError> {
-        let value = unica_metadata_designer::info_projection::observe_meta_info_property(
-            properties,
-            MetadataKind::CommonModule,
-            name,
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
+        let value = properties
+            .info(name)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         if value.is_none()
             && META_INFO_PROPERTY_PROFILE.absence(MetadataKind::CommonModule, name, borrowed)
                 == MetaInfoPropertyAbsence::Required
