@@ -125,9 +125,17 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
         if target not in allowed:
             reasons.append("execution owns outcomes and invokes typed backend ports")
     if name == "daemon" and dependency.startswith("unica-"):
-        allowed = ABSTRACTIONS | frozenset({"execution", "workspace", "process", "bootstrap", "artifact-delivery"})
+        # `lsp-contract` is the port the LSP lane calls, not a component: the
+        # service behind it stays out of the daemon's reach.
+        allowed = ABSTRACTIONS | frozenset({"execution", "workspace", "process", "bootstrap", "artifact-delivery", "lsp-contract"})
         if target not in allowed:
             reasons.append("daemon owns transport and identity without product dispatch or family backends")
+    if name == "lsp-contract" and dependency.startswith("unica-"):
+        reasons.append("the LSP contract is a leaf shared by the transport and the service")
+    if name == "lsp" and dependency.startswith("unica-"):
+        allowed = ABSTRACTIONS | frozenset({"lsp-contract", "workspace", "bsl", "source-designer"})
+        if target not in allowed:
+            reasons.append("the LSP service reaches its transport only through the LSP contract")
     if name == "bsl-parser" and dependency.startswith("unica-") and target not in {"work-control"}:
         reasons.append("the syntax boundary remains a leaf without family policy")
     return [prefix + reason for reason in reasons]

@@ -1,7 +1,7 @@
 //! Private daemon transport, listener ownership and authenticated sessions.
 
 use crate::identity::{CoreIdentity, DaemonStateDirectory};
-use crate::lsp_lane::{LspHost, LspLane};
+use crate::lsp_lane::LspLane;
 use crate::protocol_v5::lsp::{V5LspFailure, V5LspSessionId};
 use crate::protocol_v5::{
     decode_v5_request_frame, read_bounded_v5_handshake_frame_before,
@@ -26,6 +26,7 @@ use unica_execution::receipt_runtime::ports::{InvocationHost, ReceiptRuntimeConf
 use unica_execution::receipt_runtime::{
     ReceiptReply, ReceiptResponse, V5ReceiptRuntime, DURABLE_STEP_BUDGET,
 };
+use unica_lsp_contract::host::LspHost;
 
 /// The already-existing observation writer lifecycle, bound by composition.
 /// Its guard remains alive until the same shutdown/fail-stop point.

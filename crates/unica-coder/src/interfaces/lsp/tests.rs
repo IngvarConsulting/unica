@@ -10,9 +10,10 @@ use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{mpsc, Condvar};
-use unica_daemon::lsp_lane::{LspCallContext, LspClientChannel, LspHost, MAX_LSP_LANE_WORKERS};
-use unica_daemon::protocol_v5::lsp::{V5LspCapabilities, V5LspWorkspaceSpace};
+use unica_daemon::lsp_lane::MAX_LSP_LANE_WORKERS;
 use unica_execution::invocation_store::ToolIdentity;
+use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
+use unica_lsp_contract::protocol::{V5LspCapabilities, V5LspWorkspaceSpace};
 
 /// Допуск задержки MCP под потоком hover: медиана вызова MCP при занятой
 /// полосе LSP не больше полутора медиан без LSP плюс `MCP_LATENCY_TOLERANCE`.
