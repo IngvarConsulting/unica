@@ -2556,73 +2556,81 @@ fn external_alias_search_workspace(workspace: &std::path::Path, git: bool) {
     }
 }
 
+fn external_alias_search_preserves_owner_module_readback_and_physical_pages_in(git: bool) {
+    let root = tempfile::tempdir().unwrap();
+    external_alias_search_workspace(root.path(), git);
+    let mut mcp = McpProcess::start(root.path());
+    initialize_body_mcp(&mut mcp);
+    let mut id = 2;
+    for (owner, payload) in [
+        ("erf:ExternalReport.SyntheticReport", "report-source"),
+        ("epf:ExternalDataProcessor.SyntheticProcessor", "source"),
+    ] {
+        let viewed = mcp.completed_tool_call(call_tool(id, "unica.view", json!({"at":owner})));
+        id += 1;
+        assert_eq!(viewed["ok"], true, "{viewed:#}");
+        for suffix in ["", ".Module.Object", ".Form.Main.Module.Form"] {
+            let scope = format!("{owner}{suffix}");
+            let question = json!({"query":"AliasSearchNeedle", "scope":scope,"limit":1});
+            let mut arguments = question.clone();
+            let mut hits = std::collections::BTreeSet::new();
+            let mut pages = 0;
+            loop {
+                let page = mcp.completed_tool_call(call_tool(id, "unica.search", arguments));
+                id += 1;
+                assert_eq!(page["ok"], true, "git={git} {scope}: {page:#}");
+                for hit in page["data"]["matches"].as_array().unwrap() {
+                    let at = hit["at"]
+                        .as_str()
+                        .expect("a proven alias hit is addressable");
+                    assert!(at.starts_with(owner), "{hit:#}");
+                    assert!(at.contains(".Method.AliasProbe.Body#L"), "{hit:#}");
+                    let line = hit["line"].as_u64().unwrap();
+                    assert!(
+                        view_body_lines(&mut mcp, &mut id, at)[&line].contains("AliasSearchNeedle")
+                    );
+                    let resolved = mcp.completed_tool_call(call_tool(
+                        id,
+                        "unica.resolve",
+                        json!({"at":hit_module(at)}),
+                    ));
+                    id += 1;
+                    assert_eq!(resolved["ok"], true, "{resolved:#}");
+                    let physical = if hit_module(at).contains(".Form.Main.") {
+                        format!("{payload}/Forms/Main/Ext/Form/Module.bsl")
+                    } else {
+                        format!("{payload}/Ext/ObjectModule.bsl")
+                    };
+                    assert_eq!(resolved["data"]["path"], physical, "{resolved:#}");
+                    assert!(hits.insert((at.to_owned(), line)), "duplicate hit: {hit:#}");
+                }
+                pages += 1;
+                assert!(pages <= 4, "cursor must finish");
+                let Some(cursor) = page["cursor"].as_str() else {
+                    assert_eq!(page["data"]["fileCoverage"]["complete"], true, "{page:#}");
+                    break;
+                };
+                arguments = question.clone();
+                arguments["cursor"] = json!(cursor);
+            }
+            assert_eq!(
+                hits.len(),
+                if suffix.is_empty() { 4 } else { 2 },
+                "git={git} {scope}"
+            );
+        }
+    }
+    mcp.finish();
+}
+
 #[test]
 fn external_alias_search_preserves_owner_module_readback_and_physical_pages() {
-    for git in [false, true] {
-        let root = tempfile::tempdir().unwrap();
-        external_alias_search_workspace(root.path(), git);
-        let mut mcp = McpProcess::start(root.path());
-        initialize_body_mcp(&mut mcp);
-        let mut id = 2;
-        for (owner, payload) in [
-            ("erf:ExternalReport.SyntheticReport", "report-source"),
-            ("epf:ExternalDataProcessor.SyntheticProcessor", "source"),
-        ] {
-            let viewed = mcp.completed_tool_call(call_tool(id, "unica.view", json!({"at":owner})));
-            id += 1;
-            assert_eq!(viewed["ok"], true, "{viewed:#}");
-            for suffix in ["", ".Module.Object", ".Form.Main.Module.Form"] {
-                let scope = format!("{owner}{suffix}");
-                let question = json!({"query":"AliasSearchNeedle", "scope":scope,"limit":1});
-                let mut arguments = question.clone();
-                let mut hits = std::collections::BTreeSet::new();
-                let mut pages = 0;
-                loop {
-                    let page = mcp.completed_tool_call(call_tool(id, "unica.search", arguments));
-                    id += 1;
-                    assert_eq!(page["ok"], true, "git={git} {scope}: {page:#}");
-                    for hit in page["data"]["matches"].as_array().unwrap() {
-                        let at = hit["at"]
-                            .as_str()
-                            .expect("a proven alias hit is addressable");
-                        assert!(at.starts_with(owner), "{hit:#}");
-                        assert!(at.contains(".Method.AliasProbe.Body#L"), "{hit:#}");
-                        let line = hit["line"].as_u64().unwrap();
-                        assert!(view_body_lines(&mut mcp, &mut id, at)[&line]
-                            .contains("AliasSearchNeedle"));
-                        let resolved = mcp.completed_tool_call(call_tool(
-                            id,
-                            "unica.resolve",
-                            json!({"at":hit_module(at)}),
-                        ));
-                        id += 1;
-                        assert_eq!(resolved["ok"], true, "{resolved:#}");
-                        let physical = if hit_module(at).contains(".Form.Main.") {
-                            format!("{payload}/Forms/Main/Ext/Form/Module.bsl")
-                        } else {
-                            format!("{payload}/Ext/ObjectModule.bsl")
-                        };
-                        assert_eq!(resolved["data"]["path"], physical, "{resolved:#}");
-                        assert!(hits.insert((at.to_owned(), line)), "duplicate hit: {hit:#}");
-                    }
-                    pages += 1;
-                    assert!(pages <= 4, "cursor must finish");
-                    let Some(cursor) = page["cursor"].as_str() else {
-                        assert_eq!(page["data"]["fileCoverage"]["complete"], true, "{page:#}");
-                        break;
-                    };
-                    arguments = question.clone();
-                    arguments["cursor"] = json!(cursor);
-                }
-                assert_eq!(
-                    hits.len(),
-                    if suffix.is_empty() { 4 } else { 2 },
-                    "git={git} {scope}"
-                );
-            }
-        }
-        mcp.finish();
-    }
+    external_alias_search_preserves_owner_module_readback_and_physical_pages_in(false);
+}
+
+#[test]
+fn external_alias_search_preserves_owner_module_readback_and_physical_pages_under_git() {
+    external_alias_search_preserves_owner_module_readback_and_physical_pages_in(true);
 }
 
 #[test]
