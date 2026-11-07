@@ -18007,9 +18007,9 @@ fn main() {
         run_long_work_contract_obligation(
             "infrastructure::daemon::server::medium_actor_capacity_tests::daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication",
         );
-        run_long_work_contract_obligation(
-            "infrastructure::runtime_jobs_integration::tests::medium_runtime_resource_tree_lease_contract",
-        );
+        // Обязательство нижнего слоя,
+        // `infrastructure::runtime_jobs_integration::tests::medium_runtime_resource_tree_lease_contract`,
+        // идёт отдельным тестом в наборе `unica-coder`: бинарь демона его не содержит.
     }
 
     /// rule: INV.APP.DAEMON-ACTOR-CAPACITY
