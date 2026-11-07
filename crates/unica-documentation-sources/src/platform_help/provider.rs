@@ -609,6 +609,10 @@ impl DocumentationProvider for PlatformSyntaxHelpProvider {
 }
 
 #[cfg(test)]
+#[path = "../../tests/platform/platform_help_disk_effects.rs"]
+mod disk_effects_tests;
+
+#[cfg(test)]
 mod tests {
     // `super::*` уже реэкспортирует `unica_documentation::model::*` (её
     // подключает верхний уровень модуля в Step 3), поэтому повторный прямой
@@ -619,7 +623,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    fn request(query: &str) -> DocumentationSearchRequest {
+    pub(super) fn request(query: &str) -> DocumentationSearchRequest {
         request_in(query, "ru")
     }
 
@@ -664,7 +668,7 @@ mod tests {
     /// `FileStorage`, как ожидает `read_corpus`. Тот же приём, что и у
     /// приватной `corpus::tests::zip_with`, но локально: та функция не видна
     /// за пределами модуля `corpus`.
-    fn hbk_bytes(pages: &[(&str, &str)]) -> Vec<u8> {
+    pub(super) fn hbk_bytes(pages: &[(&str, &str)]) -> Vec<u8> {
         let mut buffer = std::io::Cursor::new(Vec::new());
         {
             let mut writer = zip::ZipWriter::new(&mut buffer);

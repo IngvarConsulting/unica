@@ -1022,6 +1022,31 @@ mod tests {
             .any(|warning| warning.as_str().unwrap().contains("продолжение")));
     }
 
+    /// rule: INV.APP.DOCUMENTATION-NETWORK-READ-BOUNDARIES
+    #[test]
+    fn an_already_cancelled_search_refuses_its_warm_cache() {
+        let (provider, http) = provider(NetworkAccess::Allow, Ok(LIVE_BODY.to_string()));
+        let request = request();
+        let context = context();
+        let first = provider.search(&request, &context);
+        assert!(!first[0].hits.is_empty());
+        let warm = provider.search(&request, &context);
+        assert_eq!(warm[0].hits[0].document_id, first[0].hits[0].document_id);
+        assert_eq!(http.calls.load(Ordering::SeqCst), 1);
+
+        provider.cancellation.cancel();
+        let cancelled = provider.search(&request, &context);
+        assert!(matches!(
+            cancelled[0].status,
+            DocumentationSectionStatus::Unavailable {
+                reason: UnavailableReason::Timeout,
+                ..
+            }
+        ));
+        assert!(cancelled[0].hits.is_empty());
+        assert_eq!(http.calls.load(Ordering::SeqCst), 1);
+    }
+
     /// Повторный одинаковый запрос сессии отвечается кешем процесса, без
     /// второго обращения к серверу.
     /// rule: INV.APP.DOCUMENTATION-STANDARDS-CACHE
