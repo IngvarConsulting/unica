@@ -124,6 +124,10 @@ def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, 
         elif MENTIONED.match(path):
             texts = [needle(path), *([ASSEMBLED_FIXTURES] if path.startswith("tests/") else [])]
             selected.update(crate for text in texts for crate in (crate_of(item, directories) for item in find(text)) if crate)
+    # Cargo отказывает в `--workspace`, из которого исключены все члены, а `small`
+    # остальных крейтов тогда запускать не для кого: это и есть полный набор.
+    if set(directories.values()) - {"ureq"} <= selected:
+        return Choice(True, (), "выбраны все крейты")
     reached = sorted({name for crate in edited for name in (dependents or {}).get(crate, set())} - selected)
     return Choice(False, tuple(sorted(selected)), f"medium: {sorted(selected) or 'нет'}, цели зависимых: {reached or 'нет'}", tuple(reached))
 
