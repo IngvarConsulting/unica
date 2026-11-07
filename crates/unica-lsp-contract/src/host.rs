@@ -111,6 +111,12 @@ impl LspCallContext {
     pub fn deadline(&self) -> Instant {
         self.deadline
     }
+
+    /// The flag the transport sets when it cancels the request, for work
+    /// that watches it through its own cancellation token.
+    pub fn cancellation_signal(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.cancelled)
+    }
 }
 
 /// Очередь уведомлений сессии к редактору, сторона службы: только ставит.

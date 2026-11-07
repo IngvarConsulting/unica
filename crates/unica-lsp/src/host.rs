@@ -12,17 +12,26 @@ use crate::document::ContentChange;
 use crate::documents::ModuleSourceRead;
 use crate::documents::{LspDocumentError, LspDocuments, SourceSetLayout, SpaceLayout};
 use crate::position::Utf16Position;
-use crate::uri::WorkspaceFolder;
+use crate::symbols::{
+    reason_code, LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols,
+};
+use crate::uri::{DocumentUri, WorkspaceFolder};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Instant;
+use unica_code_intelligence::symbols::{
+    SymbolAnswer, SymbolInfo, SymbolLocation, SymbolPosition, SymbolRequestContext,
+};
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
-    V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspFailure, V5LspNotification,
-    V5LspOpening, V5LspOutcome, V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder,
+    V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspFailure, V5LspLocation,
+    V5LspMessageLevel, V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange,
+    V5LspServerNotification, V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder,
     V5LspWorkspaceSpace,
 };
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::actor::WorkspaceActor;
 use unica_workspace::documents::{DocumentOverlay, DocumentOverlayError, DocumentText};
 
@@ -61,6 +70,7 @@ pub struct AdmittedWorkspace {
     pub actor: Arc<dyn LspActor>,
     pub source_sets: Vec<SourceSetLayout>,
     pub reads: Box<dyn LspModuleReads>,
+    pub symbols: Arc<dyn LspSymbols>,
 }
 
 /// Допуск папки редактора. Реализует продукт: у папки и у `workspace_hint`
@@ -78,6 +88,7 @@ pub struct UnicaLspHost {
 struct Session {
     documents: LspDocuments,
     spaces: BTreeMap<String, AdmittedSpace>,
+    client: LspClientChannel,
 }
 
 struct AdmittedSpace {
@@ -85,6 +96,7 @@ struct AdmittedSpace {
     actor: Weak<dyn LspActor>,
     source_sets: Vec<SourceSetLayout>,
     reads: Box<dyn LspModuleReads>,
+    symbols: Arc<dyn LspSymbols>,
 }
 
 impl UnicaLspHost {
@@ -108,7 +120,7 @@ impl LspHost for UnicaLspHost {
         &self,
         session: &V5LspSessionId,
         folders: &[V5LspWorkspaceFolder],
-        _: LspClientChannel,
+        client: LspClientChannel,
         deadline: Instant,
     ) -> Result<V5LspOpening, V5LspFailure> {
         // A folder without admitted sources takes no space name.
@@ -154,12 +166,18 @@ impl LspHost for UnicaLspHost {
         }
         lock(&self.sessions).insert(
             session.clone(),
-            Arc::new(RwLock::new(Session { documents, spaces })),
+            Arc::new(RwLock::new(Session {
+                documents,
+                spaces,
+                client,
+            })),
         );
         Ok(V5LspOpening {
             capabilities: V5LspCapabilities {
                 text_document_sync: V5LspTextSync::Incremental,
-                hover: false,
+                hover: true,
+                definition: true,
+                references: true,
                 text_document_content: true,
             },
             workspaces,
@@ -267,6 +285,9 @@ impl LspHost for UnicaLspHost {
         if context.is_cancelled() {
             return V5LspOutcome::Cancelled {};
         }
+        if let Some(operation) = symbol_operation(&call) {
+            return symbol_answer(&session, &call, operation, context).unwrap_or_else(failed);
+        }
         let session = read(&session);
         answer(&session, call).unwrap_or_else(failed)
     }
@@ -372,8 +393,177 @@ fn answer(session: &Session, call: V5LspCall) -> Result<V5LspOutcome, V5LspFailu
         V5LspCall::TextDocumentContent { uri } => Ok(V5LspOutcome::Text {
             text: document_text(session, &uri)?,
         }),
-        V5LspCall::Hover { .. } => Err(V5LspFailure::NotSupported),
+        V5LspCall::Hover { .. } | V5LspCall::Definition { .. } | V5LspCall::References { .. } => {
+            Err(V5LspFailure::NotSupported)
+        }
     }
+}
+
+fn symbol_operation(call: &V5LspCall) -> Option<LspSymbolOperation> {
+    match call {
+        V5LspCall::Hover { .. } => Some(LspSymbolOperation::Hover),
+        V5LspCall::Definition { .. } => Some(LspSymbolOperation::Definition),
+        V5LspCall::References { .. } => Some(LspSymbolOperation::References),
+        V5LspCall::TextDocumentContent { .. } => None,
+    }
+}
+
+/// What a symbol call takes from the session, under its lock.
+struct SymbolCall {
+    space: String,
+    source_set: String,
+    module: String,
+    buffer: Option<String>,
+    symbols: Arc<dyn LspSymbols>,
+    client: LspClientChannel,
+}
+
+fn symbol_call(session: &Session, uri: &str) -> Result<SymbolCall, V5LspFailure> {
+    let location = session
+        .documents
+        .locate(uri)
+        .map_err(|_| V5LspFailure::DocumentUnknown)?;
+    let space = session
+        .spaces
+        .get(&location.document.space)
+        .ok_or(V5LspFailure::DocumentUnknown)?;
+    let buffer = session
+        .documents
+        .open_document(&location.document)
+        .map(|document| document.text().to_owned());
+    Ok(SymbolCall {
+        symbols: Arc::clone(&space.symbols),
+        client: session.client.clone(),
+        module: location.document.address,
+        space: location.document.space,
+        source_set: location.source_set,
+        buffer,
+    })
+}
+
+/// A symbol call. The provider may take seconds, so it is asked without the
+/// session's lock: the editor's notifications never wait for it. It gets the
+/// request's deadline and cancellation.
+fn symbol_answer(
+    session: &RwLock<Session>,
+    call: &V5LspCall,
+    operation: LspSymbolOperation,
+    context: &LspCallContext,
+) -> Result<V5LspOutcome, V5LspFailure> {
+    let (uri, position) = match call {
+        V5LspCall::Hover { uri, position }
+        | V5LspCall::Definition { uri, position }
+        | V5LspCall::References { uri, position } => (uri, *position),
+        V5LspCall::TextDocumentContent { .. } => return Err(V5LspFailure::NotSupported),
+    };
+    let asked = symbol_call(&read(session), uri)?;
+    let cancellation = CancellationToken::observing(context.cancellation_signal());
+    let answer = asked.symbols.ask(
+        LspSymbolRequest {
+            source_set: &asked.source_set,
+            module: &asked.module,
+            buffer: asked.buffer.as_deref(),
+            position: SymbolPosition {
+                line: position.line as usize,
+                column: position.character as usize,
+            },
+            operation,
+        },
+        &SymbolRequestContext {
+            deadline: ProviderDeadline::new(context.deadline()),
+            cancellation: &cancellation,
+        },
+    )?;
+    if context.is_cancelled() {
+        return Ok(V5LspOutcome::Cancelled {});
+    }
+    match (operation, answer) {
+        (LspSymbolOperation::Hover, LspSymbolAnswer::Info(info)) => Ok(V5LspOutcome::Hover {
+            contents: hover_markdown(&info),
+        }),
+        (
+            LspSymbolOperation::Definition | LspSymbolOperation::References,
+            LspSymbolAnswer::Places(places),
+        ) => {
+            let locations = {
+                let session = read(session);
+                places
+                    .value
+                    .iter()
+                    .filter_map(|place| lsp_location(&session, &asked.space, place))
+                    .collect::<Vec<_>>()
+            };
+            if !places.complete {
+                // Nothing found while a source was not ready is not "none".
+                if locations.is_empty() {
+                    return Err(V5LspFailure::Incomplete);
+                }
+                let _ = asked.client.push(V5LspServerNotification::LogMessage {
+                    level: V5LspMessageLevel::Info,
+                    message: format!("unica: the answer is incomplete: {}", reasons(&places)),
+                });
+            }
+            Ok(V5LspOutcome::Locations { locations })
+        }
+        _ => Err(V5LspFailure::Unavailable),
+    }
+}
+
+fn reasons<T>(answer: &SymbolAnswer<T>) -> String {
+    answer
+        .reasons
+        .iter()
+        .map(reason_code)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A place of the symbol service in this session's space, if the editor can
+/// open it: a metadata node, or a module of no admitted source set, is no
+/// document.
+fn lsp_location(session: &Session, space: &str, place: &SymbolLocation) -> Option<V5LspLocation> {
+    let range = place.range?;
+    let uri = session
+        .documents
+        .spaces()
+        .format(&DocumentUri {
+            space: space.to_owned(),
+            address: place.at.clone(),
+        })
+        .ok()?;
+    session.documents.locate(&uri).ok()?;
+    let point = |position: SymbolPosition| {
+        Some(V5LspPosition {
+            line: u32::try_from(position.line).ok()?,
+            character: u32::try_from(position.column).ok()?,
+        })
+    };
+    Some(V5LspLocation {
+        uri,
+        range: V5LspRange {
+            start: point(range.start)?,
+            end: point(range.end)?,
+        },
+    })
+}
+
+/// Hover in markdown. LSP has no field for an incomplete hover, so its text
+/// says so with Unica's reason codes.
+fn hover_markdown(answer: &SymbolAnswer<Option<SymbolInfo>>) -> Option<String> {
+    let note = (!answer.complete)
+        .then(|| format!("_unica: the answer is incomplete ({})_", reasons(answer)));
+    let Some(info) = &answer.value else {
+        return note;
+    };
+    let head = info.signature.as_deref().unwrap_or(&info.name);
+    let mut text = format!("```bsl\n{head}\n```");
+    if let Some(returns) = &info.return_type {
+        text.push_str(&format!("\n\n→ {returns}"));
+    }
+    if let Some(note) = note {
+        text.push_str(&format!("\n\n{note}"));
+    }
+    Some(text)
 }
 
 fn document_text(session: &Session, uri: &str) -> Result<String, V5LspFailure> {
@@ -411,6 +601,7 @@ fn admit(
             actor: Arc::downgrade(&admitted.actor),
             source_sets: admitted.source_sets,
             reads: admitted.reads,
+            symbols: admitted.symbols,
         },
         admitted.actor,
     ))

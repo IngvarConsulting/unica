@@ -86,6 +86,16 @@ pub enum V5LspCall {
         uri: String,
         position: V5LspPosition,
     },
+    #[serde(rename = "textDocument/definition")]
+    Definition {
+        uri: String,
+        position: V5LspPosition,
+    },
+    #[serde(rename = "textDocument/references")]
+    References {
+        uri: String,
+        position: V5LspPosition,
+    },
     /// Текст документа по адресу `unica://`, который редактор открывает
     /// без файла на диске.
     #[serde(rename = "workspace/textDocumentContent")]
@@ -96,7 +106,10 @@ impl V5LspCall {
     /// Документ, к состоянию которого относится ответ.
     pub fn document_uri(&self) -> Option<&str> {
         match self {
-            Self::Hover { uri, .. } | Self::TextDocumentContent { uri } => Some(uri),
+            Self::Hover { uri, .. }
+            | Self::Definition { uri, .. }
+            | Self::References { uri, .. }
+            | Self::TextDocumentContent { uri } => Some(uri),
         }
     }
 
@@ -191,6 +204,8 @@ pub enum V5LspTextSync {
 pub struct V5LspCapabilities {
     pub text_document_sync: V5LspTextSync,
     pub hover: bool,
+    pub definition: bool,
+    pub references: bool,
     /// `workspace/textDocumentContent` для адресов `unica://`.
     pub text_document_content: bool,
 }
@@ -199,6 +214,8 @@ impl V5LspCapabilities {
     pub const NONE: Self = Self {
         text_document_sync: V5LspTextSync::None,
         hover: false,
+        definition: false,
+        references: false,
         text_document_content: false,
     };
 }
@@ -271,6 +288,17 @@ pub enum V5LspFailure {
     WorkspaceUnavailable,
     /// Адрес не называет модуль, доступный этому соединению.
     DocumentUnknown,
+    /// Источник ответа не готов, а без него ничего не найдено: это не
+    /// значит, что искомого нет.
+    Incomplete,
+}
+
+/// Место в документе соединения.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct V5LspLocation {
+    pub uri: String,
+    pub range: V5LspRange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +317,10 @@ pub enum V5LspOutcome {
     /// Текст документа.
     Text {
         text: String,
+    },
+    /// Места в документах соединения, которые редактор может открыть.
+    Locations {
+        locations: Vec<V5LspLocation>,
     },
     /// Запрос отменён до ответа; его результат не выдаётся.
     Cancelled {},
