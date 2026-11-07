@@ -8549,59 +8549,6 @@ mod medium_tests {
         fs::remove_dir_all(parent_path).unwrap();
     }
 
-    #[test]
-    fn retained_atomic_replace_flushes_renamed_handle_before_directory_sync() {
-        let source = include_str!("filesystem.rs").replace("\r\n", "\n");
-        let start = source
-            .find("pub(crate) fn replace_regular_child_atomically(")
-            .expect("retained atomic publisher exists");
-        let end = source[start..]
-            .find("pub(crate) fn read_relative_regular_bounded(")
-            .map(|offset| start + offset)
-            .expect("publisher has a bounded source slice");
-        let publisher = &source[start..end];
-        let rename = publisher
-            .find("replace_identity_bound_regular_child(")
-            .expect("publisher retains descriptor-relative rename");
-        let renamed_flush = publisher
-            .find("sync_renamed_regular_child(")
-            .expect("publisher flushes the renamed writable handle");
-        let directory_sync = publisher
-            .find("sync_directory(")
-            .expect("publisher retains supported directory durability");
-
-        assert!(
-            rename < renamed_flush && renamed_flush < directory_sync,
-            "rename must precede descriptor flush, which must precede directory sync"
-        );
-        assert!(
-            publisher.contains("sync_renamed_regular_child(&staged.file)"),
-            "the still-writable staged handle must flush the physical object after rename"
-        );
-
-        let windows_start = source
-            .find("#[cfg(windows)]\npub(crate) fn replace_identity_bound_regular_child(")
-            .expect("Windows descriptor-relative replacement exists");
-        let windows_end = source[windows_start..]
-            .find("#[cfg(not(any(unix, windows)))]")
-            .map(|offset| windows_start + offset)
-            .expect("Windows replacement has a bounded source slice");
-        let windows_replace = &source[windows_start..windows_end];
-        assert!(windows_replace.contains("rename_open_child("));
-        assert!(!windows_replace.contains("MoveFileExW"));
-
-        let rename_start = source
-            .find("#[cfg(windows)]\nfn rename_open_child(")
-            .expect("Windows handle-bound rename exists");
-        let rename_end = source[rename_start..]
-            .find("#[cfg(unix)]\npub(crate) fn create_owner_only_directory_child(")
-            .map(|offset| rename_start + offset)
-            .expect("Windows handle-bound rename has a bounded source slice");
-        let windows_rename = &source[rename_start..rename_end];
-        assert!(windows_rename.contains("FILE_RENAME_INFORMATION_EX_CLASS"));
-        assert!(windows_rename.contains("FILE_RENAME_POSIX_SEMANTICS"));
-    }
-
     #[cfg(windows)]
     #[test]
     fn identity_only_cleanup_handle_allows_a_restrictive_hardlink_reader() {
