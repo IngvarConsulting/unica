@@ -2032,7 +2032,7 @@ mod medium_tests {
                 "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":7001,\"call\":{{\"method\":\"textDocument/hover\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
             ),
             format!(
-                "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/definition\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
+                "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/completion\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"
             ),
             format!(
                 "{{\"kind\":\"lsp_call\",\"session\":\"{LSP_SESSION}\",\"request\":-1,\"budgetMs\":1,\"call\":{{\"method\":\"textDocument/hover\",\"uri\":\"file:///a\",\"position\":{{\"line\":0,\"character\":0}}}}}}"

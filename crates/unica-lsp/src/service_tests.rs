@@ -35,10 +35,13 @@ const BODY_URI: &str = "unica://work/main/CommonModule.Main.Body";
 
 type Actor = WorkspaceActor<(), ()>;
 
+mod symbols;
+
 /// Admits a folder whose `main` lies in `source-root` (or `src`).
 #[derive(Default)]
 struct DiskWorkspaces {
     actors: WorkspaceActorRegistry<()>,
+    symbols: Arc<symbols::ScriptedSymbols>,
 }
 
 impl DiskWorkspaces {
@@ -92,6 +95,7 @@ impl LspWorkspaces for DiskWorkspaces {
                 actor: Arc::downgrade(&actor),
                 binding,
             }),
+            symbols: self.symbols.clone(),
             actor: actor as Arc<dyn LspActor>,
         })
     }

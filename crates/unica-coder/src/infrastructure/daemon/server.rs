@@ -1455,14 +1455,20 @@ impl DaemonServerConfig {
     ) -> Self {
         let capacity_observer =
             Arc::new(crate::infrastructure::capacity_observation::CapacityObserver::default());
-        let invocation_service: Arc<dyn CanonicalInvocationService> = Arc::new(
+        let read_service = Arc::new(
             crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::with_capacity_observer(
                 Arc::clone(&capacity_observer),
             ),
         );
+        let invocation_service: Arc<dyn CanonicalInvocationService> = read_service.clone();
         let workspace_actors = Arc::new(crate::infrastructure::source_workspace::actor_registry());
+        // The editor's door reaches the same actors and the same services as
+        // the agent's calls.
         let lsp_host = Arc::new(unica_lsp::UnicaLspHost::new(Arc::new(
-            super::lsp_workspaces::ProductLspWorkspaces::new(Arc::clone(&workspace_actors)),
+            super::lsp_workspaces::ProductLspWorkspaces::new(
+                Arc::clone(&workspace_actors),
+                read_service,
+            ),
         )));
         Self {
             state_root,
@@ -4308,7 +4314,12 @@ pub(crate) mod medium_actor_capacity_tests {
                 Arc::clone(&actors),
             ));
             let host = Arc::new(unica_lsp::UnicaLspHost::new(Arc::new(
-                super::super::lsp_workspaces::ProductLspWorkspaces::new(actors),
+                super::super::lsp_workspaces::ProductLspWorkspaces::new(
+                    actors,
+                    Arc::new(
+                        crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default(),
+                    ),
+                ),
             )));
             Self::over_configured(
                 canonical,
@@ -19728,6 +19739,11 @@ mod medium_finite_deadline_guard {
             "crates/unica-coder/src/infrastructure/application_ports.rs",
             1,
             "NATIVE_TYPED_INVOCATION_DEADLINE: legacy v0.12 surface",
+        ),
+        (
+            "crates/unica-lsp/src/host.rs",
+            1,
+            "a symbol call carries the editor request's own cutoff, set by the LSP lane, to the provider; a_symbol_call_gives_the_provider_the_requests_own_deadline rejects rearming",
         ),
         (
             "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs",

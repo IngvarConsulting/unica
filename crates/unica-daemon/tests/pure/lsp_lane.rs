@@ -33,6 +33,8 @@ impl LspHost for HeldHost {
             capabilities: V5LspCapabilities {
                 text_document_sync: crate::protocol_v5::lsp::V5LspTextSync::Full,
                 hover: true,
+                definition: false,
+                references: false,
                 text_document_content: false,
             },
             workspaces: folders

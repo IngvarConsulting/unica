@@ -2885,10 +2885,12 @@ dependencies = [
  "tempfile",
  "unica-address",
  "unica-bsl",
+ "unica-code-intelligence",
  "unica-execution-contract",
  "unica-lsp-contract",
  "unica-source-contract",
  "unica-source-designer",
+ "unica-work-control",
  "unica-workspace",
  "url",
 ]

@@ -216,9 +216,16 @@ impl Frontend {
                 self.phase = Phase::ShutDown;
                 self.send(json!({"jsonrpc": "2.0", "id": id, "result": null}));
             }
-            (Phase::Running(_), "textDocument/hover") => match hover_call(&params) {
+            (
+                Phase::Running(_),
+                "textDocument/hover" | "textDocument/definition" | "textDocument/references",
+            ) => match position_call(method, &params) {
                 Some(call) => self.dispatch(id, call),
-                None => self.send(error_response(id, INVALID_PARAMS, "invalid hover params")),
+                None => self.send(error_response(
+                    id,
+                    INVALID_PARAMS,
+                    "invalid position params",
+                )),
             },
             (Phase::Running(_), "workspace/textDocumentContent") => {
                 match params.get("uri").and_then(Value::as_str) {
@@ -518,6 +525,9 @@ fn call_daemon(
         Ok(V5LspOutcome::Text { text }) => {
             json!({"jsonrpc": "2.0", "id": id, "result": {"text": text}})
         }
+        Ok(V5LspOutcome::Locations { locations }) => {
+            json!({"jsonrpc": "2.0", "id": id, "result": locations})
+        }
         Ok(V5LspOutcome::Cancelled {}) => {
             error_response(id, REQUEST_CANCELLED, "request cancelled")
         }
@@ -618,6 +628,7 @@ fn failure_code(failure: V5LspFailure) -> &'static str {
         V5LspFailure::Unavailable => "lsp_unavailable",
         V5LspFailure::WorkspaceUnavailable => "lsp_workspace_unavailable",
         V5LspFailure::DocumentUnknown => "lsp_document_unknown",
+        V5LspFailure::Incomplete => "lsp_answer_incomplete",
     }
 }
 
@@ -649,6 +660,12 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
     }
     if capabilities.hover {
         result.insert("hoverProvider".into(), json!(true));
+    }
+    if capabilities.definition {
+        result.insert("definitionProvider".into(), json!(true));
+    }
+    if capabilities.references {
+        result.insert("referencesProvider".into(), json!(true));
     }
     if capabilities.text_document_content {
         result.insert(
@@ -731,11 +748,16 @@ fn position(value: &Value) -> Option<V5LspPosition> {
     })
 }
 
-fn hover_call(params: &Value) -> Option<V5LspCall> {
-    Some(V5LspCall::Hover {
-        uri: document_uri(params)?,
-        position: position(params.get("position")?)?,
-    })
+/// A request about one position of a document.
+fn position_call(method: &str, params: &Value) -> Option<V5LspCall> {
+    let uri = document_uri(params)?;
+    let position = position(params.get("position")?)?;
+    match method {
+        "textDocument/hover" => Some(V5LspCall::Hover { uri, position }),
+        "textDocument/definition" => Some(V5LspCall::Definition { uri, position }),
+        "textDocument/references" => Some(V5LspCall::References { uri, position }),
+        _ => None,
+    }
 }
 
 fn document_notification(method: &str, params: &Value) -> Option<V5LspNotification> {

@@ -4557,11 +4557,25 @@ pub(crate) struct SymbolRequest<'a> {
     pub(crate) operation: SymbolOperation,
 }
 
+/// Ответ службы символов в модели Unica: места или сведения об имени.
+pub(crate) enum SymbolOutcome {
+    Places(
+        unica_code_intelligence::symbols::SymbolAnswer<
+            Vec<unica_code_intelligence::symbols::SymbolLocation>,
+        >,
+    ),
+    Info(
+        unica_code_intelligence::symbols::SymbolAnswer<
+            Option<unica_code_intelligence::symbols::SymbolInfo>,
+        >,
+    ),
+}
+
 impl CanonicalV13ReadService {
     /// Ответ порта символов в модели Unica: адреса и диапазоны, без имён
     /// поставщика. Буфер, отличный от сохранённого модуля, отвечает своим
     /// текстом, а то, что за его пределами знает только поставщик, помечено
-    /// `stale`. Маршрут LSP (#2173) зовёт это в акторе пространства.
+    /// `stale`.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn symbols(
         &self,
@@ -4569,9 +4583,6 @@ impl CanonicalV13ReadService {
         request: SymbolRequest<'_>,
         cancellation: &CancellationToken,
     ) -> DomainResult {
-        use unica_code_intelligence::symbols::{
-            CallDirection, SymbolDocument, SymbolRequestContext, SymbolService,
-        };
         let at = request.module.to_string();
         let source_set = request.module.source_set().to_string();
         let sources = match invocation.read_sources() {
@@ -4596,62 +4607,24 @@ impl CanonicalV13ReadService {
                 return error_result_detailed(Some(at), RefusalDetail::SourceUnreadable, error)
             }
         };
-        // The module's canonical address and path, so the places the
-        // provider names in this module compare equal to the document.
-        let (at, path, saved) =
-            match Self::resolve_with_authority(&authority, &request.module, None).and_then(
-                |resolved| {
-                    authority
-                        .module_text(&request.module)
-                        .map(|text| (resolved.at().to_string(), resolved.path().to_string(), text))
-                },
-            ) {
-                Ok(module) => module,
-                Err(error) => return view_error_result(Some(at), error),
-            };
-        let environment = crate::infrastructure::symbol_environment::ReaderSymbolEnvironment {
-            authority: &authority,
-            source_set: &source_set,
-        };
-        let document = SymbolDocument {
-            at: &at,
-            path: &path,
-            text: request.buffer.unwrap_or(&saved),
-            saved: &saved,
-        };
-        let provider = self.symbol_provider(invocation, &source_set);
-        let service =
-            SymbolService::new(provider.as_deref(), &environment).with_names(&environment);
-        // The provider gets the invocation's deadline, as MCP calls do: a
-        // shorter editor budget would retire the shared analyzer session on
-        // every slow answer until #2189 lets a deadline cancel without that.
-        let context = SymbolRequestContext {
+        // The provider gets the invocation's deadline, as MCP calls do.
+        let context = unica_code_intelligence::symbols::SymbolRequestContext {
             deadline: source.deadline(),
             cancellation,
         };
-        let position = request.position;
-        let data = match request.operation {
-            SymbolOperation::Definition => {
-                serde_json::to_value(service.definition(&document, position, &context))
-            }
-            SymbolOperation::Hover => {
-                serde_json::to_value(service.hover(&document, position, &context))
-            }
-            SymbolOperation::References => {
-                serde_json::to_value(service.references(&document, position, &context))
-            }
-            SymbolOperation::IncomingCalls => serde_json::to_value(service.calls(
-                &document,
-                position,
-                CallDirection::Incoming,
-                &context,
-            )),
-            SymbolOperation::OutgoingCalls => serde_json::to_value(service.calls(
-                &document,
-                position,
-                CallDirection::Outgoing,
-                &context,
-            )),
+        let (at, outcome) = match self.symbols_with(
+            &authority,
+            invocation.workspace_context(),
+            request,
+            &context,
+            false,
+        ) {
+            Ok(answered) => answered,
+            Err(error) => return view_error_result(Some(at), error),
+        };
+        let data = match outcome {
+            SymbolOutcome::Places(answer) => serde_json::to_value(answer),
+            SymbolOutcome::Info(answer) => serde_json::to_value(answer),
         }
         .expect("symbol answers serialize");
         let mut result = DomainResult::success("symbols answered");
@@ -4660,12 +4633,71 @@ impl CanonicalV13ReadService {
         result
     }
 
+    /// The symbol service over one source set's saved sources: the answer
+    /// and the canonical address of the module. `yielding` lets the provider
+    /// give way to an MCP call, as the editor's door asks (`mcp-priority`).
+    pub(crate) fn symbols_with(
+        &self,
+        authority: &crate::infrastructure::v13_read::LogicalViewReadAuthority<'_>,
+        workspace: &unica_source_contract::workspace::WorkspaceContext,
+        request: SymbolRequest<'_>,
+        context: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
+        yielding: bool,
+    ) -> Result<(String, SymbolOutcome), ViewError> {
+        use unica_code_intelligence::symbols::{CallDirection, SymbolDocument, SymbolService};
+        let source_set = request.module.source_set().to_string();
+        // The module's canonical address and path, so the places the
+        // provider names in this module compare equal to the document.
+        let resolved = Self::resolve_with_authority(authority, &request.module, None)?;
+        let saved = authority.module_text(&request.module)?;
+        let (at, path) = (resolved.at().to_string(), resolved.path().to_string());
+        let environment = crate::infrastructure::symbol_environment::ReaderSymbolEnvironment {
+            authority,
+            source_set: &source_set,
+        };
+        let document = SymbolDocument {
+            at: &at,
+            path: &path,
+            text: request.buffer.unwrap_or(&saved),
+            saved: &saved,
+        };
+        let provider = self.symbol_provider(workspace, &source_set, yielding);
+        let service =
+            SymbolService::new(provider.as_deref(), &environment).with_names(&environment);
+        let position = request.position;
+        let outcome = match request.operation {
+            SymbolOperation::Definition => {
+                SymbolOutcome::Places(service.definition(&document, position, context))
+            }
+            SymbolOperation::Hover => {
+                SymbolOutcome::Info(service.hover(&document, position, context))
+            }
+            SymbolOperation::References => {
+                SymbolOutcome::Places(service.references(&document, position, context))
+            }
+            SymbolOperation::IncomingCalls => SymbolOutcome::Places(service.calls(
+                &document,
+                position,
+                CallDirection::Incoming,
+                context,
+            )),
+            SymbolOperation::OutgoingCalls => SymbolOutcome::Places(service.calls(
+                &document,
+                position,
+                CallDirection::Outgoing,
+                context,
+            )),
+        };
+        Ok((at, outcome))
+    }
+
     /// Поставщик символов набора исходников, если он есть. Его нет — ответ
     /// собирается из текста модуля и называет причину неполноты.
     fn symbol_provider(
         &self,
-        invocation: &ActorBoundExecution,
+        workspace: &unica_source_contract::workspace::WorkspaceContext,
         source_set: &str,
+        yielding: bool,
     ) -> Option<Box<dyn unica_code_intelligence::symbols::SymbolProvider>> {
         use crate::application::ports::ApplicationPorts;
         #[cfg(test)]
@@ -4678,11 +4710,14 @@ impl CanonicalV13ReadService {
         args.insert("sourceSet".to_string(), json!(source_set));
         let (context, _) = self
             .ports
-            .resolve_code_search_context(invocation.workspace_context(), &args)
+            .resolve_code_search_context(workspace, &args)
             .ok()?;
-        Some(Box::new(
-            crate::infrastructure::analysis_composition::bsl_symbols(context),
-        ))
+        let provider = crate::infrastructure::analysis_composition::bsl_symbols(context);
+        Some(Box::new(if yielding {
+            provider.yielding()
+        } else {
+            provider
+        }))
     }
 }
 
