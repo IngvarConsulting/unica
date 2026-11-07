@@ -20,6 +20,9 @@ pub struct RuntimeHandoff<'a> {
     /// О чём рассказать вызывающему: прошлый запуск убили, и своего провода у
     /// него не было. `None` — рассказывать нечего, и переменная не появляется.
     pub startup_notice: Option<&'a str>,
+    /// Точные старые попытки; подтвердить их может только MCP-фронтенд,
+    /// отправивший сообщение при успешном открытии сеанса.
+    pub startup_notice_ack: Option<&'a str>,
 }
 
 #[cfg(unix)]
@@ -104,6 +107,14 @@ fn runtime_command(entrypoint: &Path, args: &[String], handoff: &RuntimeHandoff<
     } else {
         command.env_remove("UNICA_STARTUP_NOTICE");
     }
+    if let Some(acknowledgement) = handoff
+        .startup_notice_ack
+        .filter(|_| handoff.startup_notice.is_some())
+    {
+        command.env("UNICA_STARTUP_NOTICE_ACK", acknowledgement);
+    } else {
+        command.env_remove("UNICA_STARTUP_NOTICE_ACK");
+    }
     command
 }
 
@@ -118,6 +129,7 @@ mod medium_tests {
             artifact_cache: Path::new("/private/artifact-cache"),
             runtime_manifest: Path::new("/plugins/unica/runtime-manifest.json"),
             startup_notice: None,
+            startup_notice_ack: None,
         }
     }
 
@@ -130,6 +142,7 @@ mod medium_tests {
             artifact_cache: Path::new(r"C:\private\artifact-cache"),
             runtime_manifest: Path::new(r"C:\plugins\unica\runtime-manifest.json"),
             startup_notice: None,
+            startup_notice_ack: None,
         }
     }
 
@@ -149,6 +162,7 @@ mod medium_tests {
             artifact_cache: Path::new("/private/artifact-cache"),
             runtime_manifest: Path::new("/plugins/unica/runtime-manifest.json"),
             startup_notice: None,
+            startup_notice_ack: None,
         };
 
         let output = runtime_command(Path::new("/bin/sh"), &args, &handoff)
@@ -165,13 +179,14 @@ mod medium_tests {
         // рантайма, и рассказать о ней он может только тем, что ему передали.
         let args = vec![
             "-c".to_string(),
-            "printf %s \"$UNICA_STARTUP_NOTICE\"".to_string(),
+            "printf '%s|%s' \"$UNICA_STARTUP_NOTICE\" \"$UNICA_STARTUP_NOTICE_ACK\"".to_string(),
         ];
         let handoff = RuntimeHandoff {
             provider_state_root: Path::new("/private/provider-state"),
             artifact_cache: Path::new("/private/artifact-cache"),
             runtime_manifest: Path::new("/plugins/unica/runtime-manifest.json"),
             startup_notice: Some("a Unica startup was killed while downloading unica 0.13.0"),
+            startup_notice_ack: Some("[\"old-attempt\"]"),
         };
 
         let output = runtime_command(Path::new("/bin/sh"), &args, &handoff)
@@ -181,7 +196,7 @@ mod medium_tests {
         assert!(output.status.success());
         assert_eq!(
             output.stdout,
-            b"a Unica startup was killed while downloading unica 0.13.0"
+            b"a Unica startup was killed while downloading unica 0.13.0|[\"old-attempt\"]"
         );
     }
 
@@ -192,13 +207,14 @@ mod medium_tests {
         // запущенный без загрузчика, должен вести себя ровно как раньше.
         let args = vec![
             "-c".to_string(),
-            "printf %s \"${UNICA_STARTUP_NOTICE-unset}\"".to_string(),
+            "printf '%s|%s' \"${UNICA_STARTUP_NOTICE-unset}\" \"${UNICA_STARTUP_NOTICE_ACK-unset}\"".to_string(),
         ];
         let handoff = RuntimeHandoff {
             provider_state_root: Path::new("/private/provider-state"),
             artifact_cache: Path::new("/private/artifact-cache"),
             runtime_manifest: Path::new("/plugins/unica/runtime-manifest.json"),
             startup_notice: None,
+            startup_notice_ack: None,
         };
 
         let mut command = runtime_command(Path::new("/bin/sh"), &args, &handoff);
@@ -208,9 +224,12 @@ mod medium_tests {
                 .any(|(name, value)| { name == "UNICA_STARTUP_NOTICE" && value.is_none() }),
             "the child command must explicitly remove an inherited notice"
         );
+        assert!(command
+            .get_envs()
+            .any(|(name, value)| name == "UNICA_STARTUP_NOTICE_ACK" && value.is_none()));
         let output = command.output().unwrap();
 
-        assert_eq!(output.stdout, b"unset");
+        assert_eq!(output.stdout, b"unset|unset");
     }
 
     #[cfg(unix)]

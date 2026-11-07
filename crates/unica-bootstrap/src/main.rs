@@ -49,6 +49,7 @@ fn run(args: Vec<String>) -> Result<i32> {
             // Убитый прошлый запуск своего провода не имел. Провод есть у
             // рантайма — он и расскажет, если рассказывать есть о чём.
             let notice = killed.notice();
+            let acknowledgement = notice.as_ref().map(|_| killed.acknowledgement());
             launch_runtime(
                 &installed.entrypoint,
                 &[],
@@ -57,6 +58,7 @@ fn run(args: Vec<String>) -> Result<i32> {
                     artifact_cache: &artifact_cache,
                     runtime_manifest: &plugin_root.join("runtime-manifest.json"),
                     startup_notice: notice.as_deref(),
+                    startup_notice_ack: acknowledgement.as_deref(),
                 },
             )
         }
@@ -139,7 +141,6 @@ impl unica_artifact_delivery::DownloadObserver for ReportProgress {
 /// Отказ чтения журнала запуск не отменяет: рассказ о прошлой беде не стоит
 /// того, чтобы стать новой.
 struct KilledStartups {
-    log: AttemptLog,
     found: Vec<UnfinishedAttempt>,
 }
 
@@ -147,17 +148,23 @@ impl KilledStartups {
     fn read(artifact_cache: &Path) -> Self {
         let log = AttemptLog::in_cache(artifact_cache);
         let found = log.unfinished().unwrap_or_default();
-        Self { log, found }
+        Self { found }
     }
 
-    /// Готовит сообщение и сразу помечает попытки как переданные.
-    /// При сбое до инициализации MCP сообщение пока теряется (issue #925).
+    /// Подготовка сообщения не подтверждает его доставку клиенту.
     fn notice(&self) -> Option<String> {
-        let notice = unica_artifact_delivery::diagnose(&self.found);
-        if notice.is_some() {
-            let _ = self.log.report(&self.found);
-        }
-        notice
+        unica_artifact_delivery::diagnose(&self.found)
+    }
+
+    fn acknowledgement(&self) -> String {
+        serde_json::to_string(
+            &self
+                .found
+                .iter()
+                .map(|attempt| &attempt.id)
+                .collect::<Vec<_>>(),
+        )
+        .expect("attempt identifiers are JSON strings")
     }
 }
 

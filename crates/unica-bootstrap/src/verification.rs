@@ -62,17 +62,23 @@ struct RuntimeProbe {
 }
 
 impl RuntimeProbe {
-    fn spawn(launch: &ProbeLaunch<'_>) -> Result<Self> {
-        let entrypoint = launch.entrypoint;
-        let mut command = Command::new(entrypoint);
+    fn command(launch: &ProbeLaunch<'_>) -> Command {
+        let mut command = Command::new(launch.entrypoint);
         command
             .env("UNICA_PLUGIN_ROOT", launch.runtime_root)
-            .env("UNICA_PROVIDER_STATE_DIR", launch.provider_state_root);
+            .env("UNICA_PROVIDER_STATE_DIR", launch.provider_state_root)
+            .env_remove("UNICA_STARTUP_NOTICE")
+            .env_remove("UNICA_STARTUP_NOTICE_ACK");
         match launch.runtime_manifest {
             Some(manifest) => command.env("UNICA_RUNTIME_MANIFEST", manifest),
             None => command.env_remove("UNICA_RUNTIME_MANIFEST"),
         };
-        let mut child = command
+        command
+    }
+
+    fn spawn(launch: &ProbeLaunch<'_>) -> Result<Self> {
+        let entrypoint = launch.entrypoint;
+        let mut child = Self::command(launch)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -295,5 +301,49 @@ fn receive_response(
             )));
         }
         return Ok(value);
+    }
+}
+
+#[cfg(test)]
+mod startup_notice_tests {
+    use super::*;
+
+    /// rule: INV.PKG.STARTUP-NOTICE-RETENTION
+    #[test]
+    fn verification_cannot_inherit_a_user_notice_or_its_acknowledgement() {
+        let root = Path::new("runtime");
+        let state = Path::new("provider-state");
+        let manifest = Path::new("runtime-manifest.json");
+        for runtime_manifest in [None, Some(manifest)] {
+            let command = RuntimeProbe::command(&ProbeLaunch {
+                entrypoint: Path::new("unica"),
+                runtime_root: root,
+                runtime_manifest,
+                provider_state_root: state,
+            });
+            let environment = command
+                .get_envs()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(
+                environment.get(std::ffi::OsStr::new("UNICA_STARTUP_NOTICE")),
+                Some(&None)
+            );
+            assert_eq!(
+                environment.get(std::ffi::OsStr::new("UNICA_STARTUP_NOTICE_ACK")),
+                Some(&None)
+            );
+            assert_eq!(
+                environment.get(std::ffi::OsStr::new("UNICA_PLUGIN_ROOT")),
+                Some(&Some(root.as_os_str()))
+            );
+            assert_eq!(
+                environment.get(std::ffi::OsStr::new("UNICA_PROVIDER_STATE_DIR")),
+                Some(&Some(state.as_os_str()))
+            );
+            assert_eq!(
+                environment.get(std::ffi::OsStr::new("UNICA_RUNTIME_MANIFEST")),
+                Some(&runtime_manifest.map(Path::as_os_str))
+            );
+        }
     }
 }
