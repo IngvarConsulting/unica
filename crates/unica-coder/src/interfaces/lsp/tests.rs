@@ -13,7 +13,9 @@ use std::sync::{mpsc, Condvar};
 use unica_daemon::lsp_lane::MAX_LSP_LANE_WORKERS;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
-use unica_lsp_contract::protocol::{V5LspCapabilities, V5LspWorkspaceSpace};
+use unica_lsp_contract::protocol::{
+    V5LspCapabilities, V5LspLocation, V5LspRange, V5LspWorkspaceSpace,
+};
 
 /// Допуск задержки MCP под потоком hover: медиана вызова MCP при занятой
 /// полосе LSP не больше полутора медиан без LSP плюс `MCP_LATENCY_TOLERANCE`.
@@ -226,9 +228,15 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
     let initialized = editor.initialize();
     let capabilities = &initialized["result"]["capabilities"];
     assert_eq!(capabilities["positionEncoding"], "utf-16");
+    for served in ["hoverProvider", "definitionProvider", "referencesProvider"] {
+        assert_eq!(
+            capabilities[served], true,
+            "{served} is served, so declared"
+        );
+    }
     assert!(
-        capabilities.get("hoverProvider").is_none(),
-        "hover is not served yet, so it is not declared"
+        capabilities.get("completionProvider").is_none(),
+        "completion is not served yet, so it is not declared"
     );
     assert_eq!(
         capabilities["experimental"]["unica"]["workspaces"],
@@ -240,10 +248,15 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
         error_code(&editor.request("initialize", json!({}))),
         INVALID_REQUEST
     );
+    // A file path names no document.
     let hover = editor.request("textDocument/hover", hover_params("file:///a.bsl"));
-    assert_eq!(error_code(&hover), METHOD_NOT_FOUND);
+    assert_eq!(hover["error"]["message"], "unica: lsp_document_unknown");
     assert_eq!(
         error_code(&editor.request("textDocument/definition", json!({}))),
+        INVALID_PARAMS
+    );
+    assert_eq!(
+        error_code(&editor.request("textDocument/completion", json!({}))),
         METHOD_NOT_FOUND
     );
 
@@ -281,6 +294,8 @@ fn capabilities_follow_what_the_lsp_service_declares() {
             "positionEncoding": "utf-16",
             "textDocumentSync": {"openClose": true, "change": 2},
             "hoverProvider": true,
+            "definitionProvider": true,
+            "referencesProvider": true,
             "workspace": {"textDocumentContent": {"schemes": ["unica"]}},
             "experimental": {"unica": {"workspaces": [{"folder": "file:///work", "space": "w0"}]}},
         })
@@ -306,6 +321,26 @@ fn capabilities_follow_what_the_lsp_service_declares() {
     assert_eq!(
         hover["result"],
         json!({"contents": {"kind": "markdown", "value": "answer"}})
+    );
+    let definition = editor.request(
+        "textDocument/definition",
+        hover_params("file:///work/a.bsl"),
+    );
+    assert_eq!(
+        definition["result"],
+        json!([{
+            "uri": "file:///work/a.bsl",
+            "range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}},
+        }])
+    );
+    // Nothing found while a source is not ready is no empty list.
+    let references = editor.request(
+        "textDocument/references",
+        hover_params("file:///work/a.bsl"),
+    );
+    assert_eq!(
+        references["error"]["message"],
+        "unica: lsp_answer_incomplete"
     );
 }
 
@@ -667,7 +702,7 @@ fn a_vanished_lsp_client_leaves_the_daemon_and_mcp_serving() {
                 &session,
                 1,
                 5_000,
-                hover_call(&hover_params("file:///a.bsl")).unwrap(),
+                position_call("textDocument/hover", &hover_params("file:///a.bsl")).unwrap(),
                 deadline(),
             )
         })
@@ -693,7 +728,7 @@ fn a_vanished_lsp_client_leaves_the_daemon_and_mcp_serving() {
             &session,
             2,
             1_000,
-            hover_call(&hover_params("file:///a.bsl")).unwrap(),
+            position_call("textDocument/hover", &hover_params("file:///a.bsl")).unwrap(),
             deadline()
         ),
         Ok(V5LspOutcome::Failed {
@@ -749,6 +784,8 @@ impl LspHost for HeldHost {
             capabilities: V5LspCapabilities {
                 text_document_sync: V5LspTextSync::Incremental,
                 hover: true,
+                definition: true,
+                references: true,
                 text_document_content: true,
             },
             workspaces: folders
@@ -783,10 +820,29 @@ impl LspHost for HeldHost {
     }
 
     fn call(&self, _: &V5LspSessionId, call: V5LspCall, context: &LspCallContext) -> V5LspOutcome {
-        if let V5LspCall::TextDocumentContent { uri } = call {
-            return V5LspOutcome::Text {
-                text: format!("// {uri}"),
-            };
+        match call {
+            V5LspCall::TextDocumentContent { uri } => {
+                return V5LspOutcome::Text {
+                    text: format!("// {uri}"),
+                };
+            }
+            V5LspCall::Definition { uri, position } => {
+                return V5LspOutcome::Locations {
+                    locations: vec![V5LspLocation {
+                        uri,
+                        range: V5LspRange {
+                            start: position,
+                            end: position,
+                        },
+                    }],
+                };
+            }
+            V5LspCall::References { .. } => {
+                return V5LspOutcome::Failed {
+                    failure: V5LspFailure::Incomplete,
+                };
+            }
+            V5LspCall::Hover { .. } => {}
         }
         self.started.fetch_add(1, Ordering::AcqRel);
         while !self.released.load(Ordering::Acquire) {
