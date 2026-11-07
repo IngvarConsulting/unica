@@ -16,3 +16,6 @@ mod uri;
 
 pub use documents::{ModuleSourceRead, SourceSetLayout};
 pub use host::{AdmittedWorkspace, LspActor, LspModuleReads, LspWorkspaces, UnicaLspHost};
+
+#[cfg(test)]
+mod service_tests;

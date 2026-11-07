@@ -1,5 +1,7 @@
 //! Служба LSP демона над рабочей областью на диске: те же актор и наборы,
 //! что у MCP, буфер виден только своей сессии и не пишется на диск.
+//! Что служба делает с сессиями, буферами и акторами сама, проверяет
+//! `crates/unica-lsp/src/service_tests.rs`; здесь — допуск и чтение продукта.
 use super::*;
 use std::fs;
 use std::path::PathBuf;
@@ -190,185 +192,6 @@ fn an_editor_folder_reaches_the_mcp_actor_and_its_buffer_stays_in_its_session() 
     );
 }
 
-#[test]
-fn a_folder_without_sources_or_off_disk_gets_a_failure_and_no_space() {
-    let workspace = workspace();
-    let empty = tempfile::tempdir().unwrap();
-    let (host, _workspaces) = service();
-    let session = V5LspSessionId::new();
-    let folders = [
-        folder(empty.path(), "Work"),
-        V5LspWorkspaceFolder {
-            uri: "vscode-vfs://github/repo".into(),
-            name: "Remote".into(),
-        },
-        folder(workspace.path(), "Work"),
-    ];
-
-    let opening = host.open(&session, &folders, client(), soon()).unwrap();
-
-    assert_eq!(
-        opening.workspaces,
-        vec![
-            V5LspWorkspaceSpace::refused(&folders[0].uri, V5LspFailure::WorkspaceUnavailable),
-            V5LspWorkspaceSpace::refused(&folders[1].uri, V5LspFailure::WorkspaceUnavailable),
-            V5LspWorkspaceSpace::opened(&folders[2].uri, "work"),
-        ],
-        "a refused folder takes no name"
-    );
-    assert_eq!(
-        content(&host, &session, "unica://other/main/CommonModule.Main.Body"),
-        V5LspOutcome::Failed {
-            failure: V5LspFailure::DocumentUnknown
-        }
-    );
-}
-
-fn open_buffer(host: &UnicaLspHost, session: &V5LspSessionId, uri: &str, text: &str) {
-    host.notify(
-        session,
-        V5LspNotification::DidOpen {
-            uri: uri.to_owned(),
-            language_id: "bsl".into(),
-            version: 1,
-            text: text.to_owned(),
-        },
-        soon(),
-    )
-    .unwrap();
-}
-
-/// A replaced source root makes the registry give MCP a new actor. The
-/// session follows it there with its buffers instead of holding MCP on the
-/// old one.
-#[test]
-fn after_the_source_root_is_replaced_the_session_moves_its_buffers_to_the_mcp_actor() {
-    let workspace = workspace();
-    let (host, workspaces) = service();
-    let editor = V5LspSessionId::new();
-    host.open(
-        &editor,
-        &[folder(workspace.path(), "Work")],
-        client(),
-        soon(),
-    )
-    .unwrap();
-    let uri = BODY_URI;
-    open_buffer(&host, &editor, uri, "Procedure Buffer() EndProcedure\n");
-    let before = Arc::downgrade(&workspaces.admit(workspace.path(), soon()).unwrap().actor);
-
-    // A fresh export replaces the source directory with an equal one.
-    let source = workspace.path().join("src");
-    fs::rename(&source, workspace.path().join("src.old")).unwrap();
-    fs::create_dir_all(source.join("CommonModules/Main/Ext")).unwrap();
-    fs::copy(
-        workspace.path().join("src.old/Configuration.xml"),
-        source.join("Configuration.xml"),
-    )
-    .unwrap();
-    fs::write(workspace.path().join(MODULE), DISK).unwrap();
-    let mcp = workspaces
-        .admit(workspace.path(), soon())
-        .expect("MCP admits the new root")
-        .actor;
-
-    assert!(
-        before.upgrade().is_none_or(|old| !Arc::ptr_eq(&old, &mcp)),
-        "MCP is not held on the actor of the replaced root"
-    );
-    assert_eq!(
-        content(&host, &editor, uri),
-        text("Procedure Buffer() EndProcedure\n")
-    );
-    assert!(
-        !mcp.documents()
-            .session_documents(editor.as_str(), "main")
-            .unwrap()
-            .is_empty(),
-        "the buffer moved into the new actor's overlay"
-    );
-}
-
-#[test]
-fn a_change_the_buffer_cannot_take_is_refused_so_the_editor_drops_it() {
-    let workspace = workspace();
-    let (host, _workspaces) = service();
-    let editor = V5LspSessionId::new();
-    host.open(
-        &editor,
-        &[folder(workspace.path(), "Work")],
-        client(),
-        soon(),
-    )
-    .unwrap();
-    let uri = BODY_URI.to_owned();
-    let change = |version, line| V5LspNotification::DidChange {
-        uri: uri.clone(),
-        version,
-        changes: vec![V5LspContentChange {
-            range: Some(unica_lsp_contract::protocol::V5LspRange {
-                start: unica_lsp_contract::protocol::V5LspPosition { line, character: 0 },
-                end: unica_lsp_contract::protocol::V5LspPosition { line, character: 0 },
-            }),
-            text: "x".into(),
-        }],
-    };
-
-    assert_eq!(
-        host.notify(&editor, change(2, 0), soon()),
-        Err(V5LspFailure::DocumentUnknown),
-        "a change of a document that is not open"
-    );
-    open_buffer(&host, &editor, &uri, DISK);
-    assert_eq!(
-        host.notify(&editor, change(2, 99), soon()),
-        Err(V5LspFailure::DocumentUnknown),
-        "a range outside the buffer"
-    );
-    // The refused document is closed: a later change does not land on a
-    // buffer that missed one, and answers come from the file.
-    assert_eq!(
-        host.notify(&editor, change(3, 0), soon()),
-        Err(V5LspFailure::DocumentUnknown)
-    );
-    assert_eq!(content(&host, &editor, &uri), text(DISK));
-    open_buffer(&host, &editor, &uri, "Procedure Again() EndProcedure\n");
-    assert_eq!(
-        content(&host, &editor, &uri),
-        text("Procedure Again() EndProcedure\n")
-    );
-}
-
-/// Every form an editor may send for one module reaches it: the encoded
-/// URI the service gives, its decoded text and an authority in any case.
-#[test]
-fn a_module_is_reached_by_every_spelling_of_its_unica_uri() {
-    let workspace = workspace();
-    let module = workspace
-        .path()
-        .join("src/CommonModules/ОбщегоНазначения/Ext/Module.bsl");
-    fs::create_dir_all(module.parent().unwrap()).unwrap();
-    fs::write(&module, "// УТ\n").unwrap();
-    let (host, _workspaces) = service();
-    let editor = V5LspSessionId::new();
-    host.open(
-        &editor,
-        &[folder(workspace.path(), "УТ Проект")],
-        client(),
-        soon(),
-    )
-    .unwrap();
-
-    for uri in [
-        "unica://ут%20проект/main/CommonModule.ОбщегоНазначения.Body",
-        "unica://ут проект/main/CommonModule.ОбщегоНазначения.Body",
-        "unica://УТ%20Проект/main/CommonModule.ОбщегоНазначения.Body",
-        "unica://%D0%A3%D0%A2%20%D0%9F%D1%80%D0%BE%D0%B5%D0%BA%D1%82/main/CommonModule.ОбщегоНазначения.Body",
-    ] {
-        assert_eq!(content(&host, &editor, uri), text("// УТ\n"), "{uri}");
-    }
-}
-
 /// The whole of a large module in one `workspace/textDocumentContent`.
 /// Point `UNICA_LSP_UT_SOURCE` at a Designer dump of a large configuration
 /// (its `src`, beside a `v8project.yaml`), run with `--ignored --nocapture`.
@@ -443,79 +266,31 @@ fn the_module_address_mcp_gives_a_file_with_body_is_its_document_address() {
     }
 }
 
-/// A root gone for a moment drops the document with its buffer: once the root
-/// is back the file answers and the editor can open the document again, from
-/// any version.
+/// Product admission after the source set changes on disk: a replaced root and
+/// a root moved in `v8project.yaml` each get a new actor bound to the new root,
+/// never the old one.
 #[test]
-fn a_document_refused_while_its_root_is_gone_leaves_no_buffer_behind() {
-    let workspace = workspace();
-    let (host, _workspaces) = service();
-    let editor = V5LspSessionId::new();
-    host.open(
-        &editor,
-        &[folder(workspace.path(), "Work")],
-        client(),
-        soon(),
-    )
-    .unwrap();
-    let change = V5LspNotification::DidChange {
-        uri: BODY_URI.to_owned(),
-        version: 6,
-        changes: vec![V5LspContentChange {
-            range: None,
-            text: "Procedure Lost() EndProcedure\n".into(),
-        }],
-    };
-    host.notify(
-        &editor,
-        V5LspNotification::DidOpen {
-            uri: BODY_URI.to_owned(),
-            language_id: "bsl".into(),
-            version: 5,
-            text: "Procedure Buffer() EndProcedure\n".into(),
-        },
-        soon(),
-    )
-    .unwrap();
-    let source = workspace.path().join("src");
-    let aside = workspace.path().join("src.aside");
-
-    fs::rename(&source, &aside).unwrap();
-    assert_eq!(
-        host.notify(&editor, change, soon()),
-        Err(V5LspFailure::WorkspaceUnavailable)
-    );
-    fs::rename(&aside, &source).unwrap();
-
-    assert_eq!(content(&host, &editor, BODY_URI), text(DISK));
-    open_buffer(&host, &editor, BODY_URI, "Procedure Again() EndProcedure\n");
-    assert_eq!(
-        content(&host, &editor, BODY_URI),
-        text("Procedure Again() EndProcedure\n")
-    );
-}
-
-/// A source set moved to another path is a new workspace identity. The session
-/// lets go of the old actor, which would otherwise be retained by its buffer
-/// for the life of the daemon, and reads modules under the new root.
-#[test]
-fn a_moved_source_root_releases_the_old_actor_and_serves_the_new_layout() {
+fn product_admission_gives_a_new_actor_for_a_replaced_or_moved_root() {
     let workspace = workspace();
     let root = workspace.path();
-    let other = root.join("src/CommonModules/Other/Ext/Module.bsl");
-    fs::create_dir_all(other.parent().unwrap()).unwrap();
-    fs::write(&other, "// other\n").unwrap();
-    let (host, workspaces) = service();
-    let editor = V5LspSessionId::new();
-    host.open(&editor, &[folder(root, "Work")], client(), soon())
-        .unwrap();
-    open_buffer(
-        &host,
-        &editor,
-        BODY_URI,
-        "Procedure Buffer() EndProcedure\n",
-    );
-    let before = workspaces.admit(root, soon()).unwrap().actor;
+    let (_host, workspaces) = service();
+    let first = Arc::downgrade(&workspaces.admit(root, soon()).unwrap().actor);
+
+    fs::rename(root.join("src"), root.join("src.old")).unwrap();
+    fs::create_dir_all(root.join(MODULE).parent().unwrap()).unwrap();
+    fs::copy(
+        root.join("src.old/Configuration.xml"),
+        root.join("src/Configuration.xml"),
+    )
+    .unwrap();
+    fs::write(root.join(MODULE), DISK).unwrap();
+    let replaced = workspaces
+        .admit(root, soon())
+        .expect("the new root is admitted");
+    assert!(first
+        .upgrade()
+        .is_none_or(|old| !Arc::ptr_eq(&old, &replaced.actor)));
+    assert!(replaced.source_sets[0].root.ends_with("src"));
 
     fs::rename(root.join("src"), root.join("moved")).unwrap();
     fs::write(
@@ -523,22 +298,9 @@ fn a_moved_source_root_releases_the_old_actor_and_serves_the_new_layout() {
         "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: moved\n",
     )
     .unwrap();
-
-    assert_eq!(
-        content(&host, &editor, BODY_URI),
-        text("Procedure Buffer() EndProcedure\n")
-    );
-    assert!(
-        before
-            .documents()
-            .session_documents(editor.as_str(), "main")
-            .unwrap()
-            .is_empty(),
-        "the old actor keeps no buffer of this session"
-    );
-    assert_eq!(
-        content(&host, &editor, "unica://work/main/CommonModule.Other.Body"),
-        text("// other\n"),
-        "a module with no buffer is read under the new root"
-    );
+    let moved = workspaces
+        .admit(root, soon())
+        .expect("the moved root is admitted");
+    assert!(!Arc::ptr_eq(&replaced.actor, &moved.actor));
+    assert!(moved.source_sets[0].root.ends_with("moved"));
 }
