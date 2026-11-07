@@ -195,6 +195,25 @@ class ResourceLimitRegistryTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("demo.view-page: applied files", errors[0])
 
+    def test_a_reexporting_crate_uses_the_limit_through_the_module_path(self) -> None:
+        self.write("crates/core/src/lib.rs", "pub mod view;\n")
+        self.write("crates/core/src/view.rs", "pub const DEFAULT_LIMIT: usize = 20;\nfn page() -> usize { DEFAULT_LIMIT }\n")
+        self.write("crates/top/src/lib.rs", "pub use core_owner::view;\n")
+        self.write("crates/top/src/user.rs", "use crate::view::DEFAULT_LIMIT;\nfn page() -> usize { DEFAULT_LIMIT }\n")
+        self.write("crates/top/src/lib.rs", "pub use core::view;\n")
+        view = entry(
+            id="core.view-page",
+            **{"class": "step", "unit": "count", "scope": "request", "issue": None},
+            source={"file": "crates/core/src/view.rs", "symbol": "DEFAULT_LIMIT"},
+            expr="20",
+            value=20,
+            applied=["crates/core/src/view.rs"],
+        )
+        self.registry([entry(), self.timeout, self.literal, view])
+        errors = limits.check(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("crates/top/src/user.rs", errors[0])
+
     def test_rejects_a_literal_whose_expression_is_not_in_it(self) -> None:
         self.registry([entry(), self.timeout, {**self.literal, "expr": "16 * 1024 * 1024", "value": 16 * 1024 * 1024}])
         self.assertTrue(any("is not part of literal" in error for error in limits.check(self.root)))

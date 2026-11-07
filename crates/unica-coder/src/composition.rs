@@ -1,21 +1,14 @@
-use crate::application::UnicaApplication;
-use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
-use std::sync::Arc;
-
-impl UnicaApplication {
-    pub fn new() -> Self {
-        Self::with_ports(Arc::new(InfrastructureApplicationPorts::new()))
-    }
-}
-
-impl Default for UnicaApplication {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod testing {
+    use crate::application::UnicaApplication;
+    use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
+    use std::sync::Arc;
+
+    /// Приложение на портах инфраструктуры. Продукт его не собирает: он вызывает
+    /// порты через демон, а этим входом его поверхность проверяют тесты.
+    pub(crate) fn application() -> UnicaApplication {
+        UnicaApplication::with_ports(Arc::new(InfrastructureApplicationPorts::new()))
+    }
 
     pub(crate) use crate::infrastructure::native_operations::meta::{
         with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
@@ -37,14 +30,14 @@ pub(crate) mod testing {
 
 #[cfg(test)]
 mod medium_tests {
-    use super::*;
+    use super::testing::application;
     use crate::application::input_schema_for_tool;
     use serde_json::{Map, Value};
 
     #[test]
-    fn new_and_default_have_identical_tools_and_deterministic_dry_run() {
-        let created = UnicaApplication::new();
-        let defaulted = UnicaApplication::default();
+    fn two_applications_have_identical_tools_and_deterministic_dry_run() {
+        let created = application();
+        let defaulted = application();
         let created_tools = created.tools();
         let defaulted_tools = defaulted.tools();
 

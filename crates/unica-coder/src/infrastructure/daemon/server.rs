@@ -19675,7 +19675,7 @@ mod medium_finite_deadline_guard {
             "explicit analyze timeout; resident actions of the retired code.diagnostics",
         ),
         (
-            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-application/src/application/mod.rs",
             1,
             "PUBLIC_INVOCATION_DEADLINE: legacy v0.12 surface, unreachable from the v0.13 wire",
         ),
