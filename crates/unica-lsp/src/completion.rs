@@ -6,7 +6,7 @@
 //! составляет продукт за портом [`LspCompletion`]; служба LSP переводит
 //! позиции в UTF-16 и строит элементы протокола.
 
-use unica_code_intelligence::completion::{Completion, CompletionMethod};
+use unica_code_model::completion::{Completion, CompletionMethod};
 use unica_lsp_contract::protocol::V5LspFailure;
 use unica_work_control::cancellation::CancellationToken;
 

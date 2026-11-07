@@ -139,11 +139,13 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
         # and the service's work watches; nothing else is shared.
         reasons.append("the LSP contract is a leaf shared by the transport and the service")
     if name == "lsp" and dependency.startswith("unica-"):
-        # `code-intelligence` gives the symbol answers the service turns into
-        # the editor's places; the product composes their provider.
-        allowed = ABSTRACTIONS | frozenset({"lsp-contract", "workspace", "bsl", "source-designer", "code-intelligence"})
+        # `code-model` is the answers the service turns into the editor's
+        # terms; the analysis that builds them stays with the product.
+        allowed = ABSTRACTIONS | frozenset({"lsp-contract", "workspace", "bsl", "source-designer", "code-model"})
         if target not in allowed:
             reasons.append("the LSP service reaches its transport only through the LSP contract")
+    if name == "code-model" and dependency.startswith("unica-") and target != "work-control":
+        reasons.append("the code model is plain data and parses nothing")
     if name == "bsl-parser" and dependency.startswith("unica-") and target not in {"work-control"}:
         reasons.append("the syntax boundary remains a leaf without family policy")
     return [prefix + reason for reason in reasons]
