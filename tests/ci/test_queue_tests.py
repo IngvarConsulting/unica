@@ -98,6 +98,16 @@ class ChoiceTests(unittest.TestCase):
         self.assertTrue(choose([]).full)
         self.assertTrue(choose(["crates/a/src/lib.rs"], force_full=True).full)
 
+    def test_every_crate_selected_runs_the_full_set_in_the_real_workspace(self) -> None:
+        directories, dependents = queue.workspace()
+        members = [path for path, name in directories.items() if name != "ureq"]
+        choice = queue.choose([f"{path}/Cargo.toml" for path in members], directories, dependents)
+        self.assertTrue(choice.full, choice.reason)
+        # Один незатронутый крейт оставляет обычный выбор.
+        choice = queue.choose([f"{path}/Cargo.toml" for path in members[1:]], directories, dependents)
+        self.assertFalse(choice.full, choice.reason)
+        self.assertNotIn(directories[members[0]], choice.packages)
+
     def test_small_runs_everywhere_and_selected_crates_are_not_run_twice(self) -> None:
         runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
         runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
