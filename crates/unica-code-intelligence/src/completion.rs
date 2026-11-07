@@ -7,7 +7,10 @@
 //! [`CompletionSources`]; nothing of an analysis provider is asked.
 
 use std::collections::BTreeSet;
-use unica_address::source_target::{metadata_collection_kind, metadata_collection_names};
+use unica_address::source_target::{
+    metadata_collection_kind, metadata_collection_names, metadata_kind_has_objects,
+    metadata_manager_kinds,
+};
 use unica_bsl_parser::{parse, EditorSymbol, EditorSymbolKind, ParsedModule};
 
 pub use unica_code_model::completion::{
@@ -57,6 +60,7 @@ pub trait CompletionSources {
     fn cancelled(&self) -> bool;
 }
 
+<<<<<<< HEAD
 /// Kinds whose managers are global context properties (`Справочники`).
 const MANAGER_KINDS: [&str; 22] = [
     "Catalog",
@@ -96,6 +100,45 @@ const OBJECT_KINDS: [&str; 10] = [
     "DataProcessor",
     "Report",
 ];
+=======
+/// What an item is, in the editor's terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionKind {
+    Method,
+    Function,
+    Field,
+    Variable,
+    Class,
+    Module,
+    Property,
+    Struct,
+}
+
+/// A method an item names, for its description on resolve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionMethod {
+    pub name: String,
+    /// The common module that exports it; `None` for this module's own.
+    pub common_module: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionItem {
+    pub label: String,
+    pub kind: CompletionKind,
+    /// Orders items: the closer the name, the smaller.
+    pub rank: u8,
+    pub detail: Option<String>,
+    pub method: Option<CompletionMethod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Completion {
+    pub items: Vec<CompletionItem>,
+    /// The bytes of the text the chosen item replaces: the name typed so far.
+    pub replaces: Range<usize>,
+}
+>>>>>>> origin/main
 
 /// How deep a variable's type is followed through loops and assignments.
 const MAX_INFERENCE_DEPTH: usize = 4;
@@ -231,7 +274,7 @@ fn names_in_scope(
             None,
         );
     }
-    for kind in MANAGER_KINDS {
+    for kind in metadata_manager_kinds() {
         // English first, then the Russian name code uses.
         if let Some(name) = metadata_collection_names(kind).and_then(|names| names.get(1)) {
             items.push(name, CompletionKind::Property, 4, None, None);
@@ -341,7 +384,7 @@ fn object_of(
         let kind = manager_kind(manager)?;
         let create = create.to_lowercase();
         let creates = create.starts_with("создать") || create.starts_with("create");
-        return (creates && OBJECT_KINDS.contains(&kind))
+        return (creates && metadata_kind_has_objects(kind))
             .then(|| object_members(sources, kind, name))
             .flatten();
     }
@@ -396,7 +439,8 @@ fn object_items(members: &ObjectMembers, rank: u8, items: &mut Items) {
 }
 
 fn manager_kind(name: &str) -> Option<&'static str> {
-    metadata_collection_kind(name).filter(|kind| MANAGER_KINDS.contains(kind))
+    metadata_collection_kind(name)
+        .filter(|kind| metadata_manager_kinds().any(|known| known == *kind))
 }
 
 /// Every method of a symbol tree, regions flattened.
