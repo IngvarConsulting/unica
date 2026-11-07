@@ -2717,7 +2717,7 @@ pub(crate) mod tests {
         args.insert("cwd".to_string(), json!(context.cwd.display().to_string()));
         args.insert("dryRun".to_string(), json!(false));
 
-        let result = UnicaApplication::new()
+        let result = crate::composition::testing::application()
             .call_tool("unica.cfe.borrow", &args)
             .unwrap();
 

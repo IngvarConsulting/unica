@@ -1,15 +1,15 @@
-//! Discovers the submodules of test modules from their directories.
+//! Discovers the submodules of modules from their directories.
 //!
-//! Every `*.rs` file in a directory of `TEST_MODULES` becomes `mod <file stem>;`
-//! of the test module named after it, in file-name order. A new test file
-//! therefore does not edit a shared registration list, and two changes that add
-//! different files do not conflict.
+//! Every `*.rs` file in a directory of `MODULES` becomes `mod <file stem>;` of
+//! the module named after it, in file-name order. A new file therefore does not
+//! edit a shared registration list, and two changes that add different files do
+//! not conflict.
 //! `scripts/ci/removed_tests.py` and `scripts/ci/check-discovered-modules-format.py`
 //! resolve the same directories.
 use std::path::{Path, PathBuf};
 
-/// The directory of a test module and the file its declarations are written to.
-const TEST_MODULES: &[(&str, &str)] = &[
+/// The directory of a module and the file its declarations are written to.
+const MODULES: &[(&str, &str)] = &[
     (
         "src/infrastructure/daemon/metadata_can_tests",
         "metadata_can_tests_modules.rs",
@@ -17,6 +17,10 @@ const TEST_MODULES: &[(&str, &str)] = &[
     (
         "src/infrastructure/v13_read/tests",
         "v13_read_tests_modules.rs",
+    ),
+    (
+        "src/infrastructure/v13_read_port",
+        "v13_read_port_modules.rs",
     ),
 ];
 /// Lowercase Rust keywords, strict and reserved, and `_`: `mod <keyword>;` does
@@ -34,7 +38,7 @@ fn main() {
     let manifest = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR"),
     );
-    for (directory, generated) in TEST_MODULES {
+    for (directory, generated) in MODULES {
         write_declarations(&manifest, directory, generated);
     }
 }
@@ -46,7 +50,7 @@ fn write_declarations(manifest: &Path, relative: &str, name: &str) {
     println!("cargo:rerun-if-changed={relative}");
     let mut files = std::fs::read_dir(&directory)
         .unwrap_or_else(|error| panic!("read {}: {error}", directory.display()))
-        .map(|entry| entry.expect("test module entry is readable").path())
+        .map(|entry| entry.expect("module entry is readable").path())
         .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "rs"))
         .collect::<Vec<_>>();
     files.sort();
@@ -56,7 +60,7 @@ fn write_declarations(manifest: &Path, relative: &str, name: &str) {
         let name = module_name(&path);
         let path = path
             .to_str()
-            .unwrap_or_else(|| panic!("test module path is not UTF-8: {}", path.display()));
+            .unwrap_or_else(|| panic!("module path is not UTF-8: {}", path.display()));
         generated.push_str(&format!(
             "#[path = {:?}]\nmod {name};\n",
             path.replace('\\', "/")
@@ -74,7 +78,7 @@ fn module_name(path: &Path) -> &str {
     let name = path
         .file_stem()
         .and_then(|stem| stem.to_str())
-        .unwrap_or_else(|| panic!("test module name is not UTF-8: {}", path.display()));
+        .unwrap_or_else(|| panic!("module name is not UTF-8: {}", path.display()));
     let mut chars = name.chars();
     let valid = chars
         .next()
@@ -82,7 +86,7 @@ fn module_name(path: &Path) -> &str {
         && chars.all(|ch| ch == '_' || ch.is_ascii_lowercase() || ch.is_ascii_digit());
     assert!(
         valid && !KEYWORDS.contains(&name),
-        "test module file {} must be a snake_case Rust identifier that is not a keyword",
+        "module file {} must be a snake_case Rust identifier that is not a keyword",
         path.display()
     );
     name

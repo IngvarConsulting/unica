@@ -1881,10 +1881,11 @@ fn staged_attribute_policy_past_the_former_file_and_byte_limits_is_checked() {
 
 #[test]
 fn attribute_policy_that_git_skips_is_reported_not_trusted() {
-    // Git ignores an attribute line over 2048 bytes (and a file of 100 MiB
-    // or more) with a warning. The skipped rule is the only text policy, so
-    // trusting the answer would report missing policy for a project that
-    // has one; the check must say the policy could not be read instead.
+    // Git 2.39.1 and later ignore an attribute line over 2048 bytes (and a file
+    // of 100 MiB or more) with a warning. The skipped rule is the only text
+    // policy, so trusting the answer would report missing policy for a project
+    // that has one; the check must say the policy could not be read instead.
+    // Earlier versions apply the line, and that answer is complete.
     let fixture = policy_fixture();
     fs::write(
         fixture.root.join(".gitattributes"),
@@ -1895,15 +1896,25 @@ fn attribute_policy_that_git_skips_is_reported_not_trusted() {
 
     let inspection = inspect_staged_policy(&fixture);
 
-    assert!(
+    const WARNING: &str = "ignoring overly long attributes line";
+    let probe = Command::new("git")
+        .args(["check-attr", "text", "--", "a.xml"])
+        .current_dir(&fixture.root)
+        // The warning is translated; the service reads it in this locale too.
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .output()
+        .unwrap();
+    assert_eq!(
         inspection.facts.iter().any(|fact| matches!(
             fact,
             ProjectHealthFact::GitInspectionIncomplete {
                 check: ProjectCheckId::RepositoryAttributes,
                 reason,
                 ..
-            } if reason.contains("ignoring overly long attributes line")
+            } if reason.contains(WARNING)
         )),
+        String::from_utf8_lossy(&probe.stderr).contains(WARNING),
         "{:?}",
         inspection.facts
     );

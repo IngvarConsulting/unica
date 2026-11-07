@@ -2460,7 +2460,7 @@ pub(crate) mod medium_tests {
             let mixed = mixed_eol_source(&original, first, remaining);
             let _cwd =
                 unica_workspace::test_support::ProcessCwdGuard::enter(&fixture.root).unwrap();
-            let application = UnicaApplication::new();
+            let application = crate::composition::testing::application();
             let mut observations = Vec::new();
 
             for dry_run in [true, false] {

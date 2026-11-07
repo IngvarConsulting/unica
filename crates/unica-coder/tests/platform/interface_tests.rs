@@ -1,5 +1,4 @@
 use super::*;
-use crate::application::UnicaApplication;
 use serde_json::{Map, Value};
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -307,7 +306,7 @@ fn public_interface_edit_rejects_invalid_subsystem_owner_without_mutating_any_fi
         ("confirm".to_string(), Value::Bool(true)),
     ]);
 
-    let outcome = UnicaApplication::new()
+    let outcome = crate::composition::testing::application()
         .call_tool("unica.interface.edit", &args)
         .unwrap();
 
@@ -357,7 +356,7 @@ fn public_interface_edit_rejects_invalid_configuration_owner_without_mutating_an
         ("confirm".to_string(), Value::Bool(true)),
     ]);
 
-    let outcome = UnicaApplication::new()
+    let outcome = crate::composition::testing::application()
         .call_tool("unica.interface.edit", &args)
         .unwrap();
 
@@ -417,7 +416,7 @@ fn public_interface_edit_prioritizes_newer_metadata_owner_over_older_command_int
         ("confirm".to_string(), Value::Bool(true)),
     ]);
 
-    let outcome = UnicaApplication::new()
+    let outcome = crate::composition::testing::application()
         .call_tool("unica.interface.edit", &args)
         .unwrap();
 

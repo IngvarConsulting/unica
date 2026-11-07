@@ -159,7 +159,22 @@ class ChoiceTests(unittest.TestCase):
             ["queue", "-p", "unica-a", "--no-tests=pass"],
         ])
         planned = queue.commands(("unica-coder", "ureq"), runner)
+        self.assertEqual(planned[1], ["queue", "-p", "unica-coder", "--no-tests=pass"])
         self.assertEqual(planned[2:], [["queue", "ledger"], ["queue", "ureq"]])
+
+    def test_a_vendored_patch_is_selected_in_the_real_workspace(self) -> None:
+        directories, dependents = queue.workspace()
+        self.assertEqual(directories["vendor/ureq"], "ureq")
+        choice = queue.choose(["vendor/ureq/src/stream.rs"], directories, dependents)
+        self.assertFalse(choice.full)
+        self.assertEqual(choice.packages, ("ureq",))
+        # Cargo не принимает `-p` для пакета вне рабочей области.
+        runner = queue.load_runner()
+        planned = queue.commands(choice.packages, runner, choice.dependents)
+        self.assertIn(runner.rust_command("queue", runner.UREQ_RECYCLING_SELECTION), planned)
+        for command in planned:
+            self.assertNotIn(["-p", "ureq"], [command[index:index + 2] for index in range(len(command) - 1)], command)
+            self.assertNotIn(["--exclude", "ureq"], [command[index:index + 2] for index in range(len(command) - 1)], command)
 
     def test_a_failed_diff_runs_everything(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(Path(directory) / "o")}):

@@ -93,7 +93,8 @@ fn compile_registration(entry: &str) -> Output {
 }
 
 fn compile_registration_with_declarations(entry: &str, metadata: &str, form: &str) -> Output {
-    let source = syn::parse_file(include_str!("../src/domain/apply.rs")).unwrap();
+    let source =
+        syn::parse_file(include_str!("../../unica-application/src/domain/apply.rs")).unwrap();
     let macros = source
         .items
         .iter()

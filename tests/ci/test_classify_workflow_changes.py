@@ -292,8 +292,8 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
 
     def test_platform_independent_domain_or_application_rust_uses_primary_rust_contour(self) -> None:
         for path in (
-            "crates/unica-coder/src/domain/cache.rs",
-            "crates/unica-coder/src/application/metadata.rs",
+            "crates/unica-application/src/domain/cache.rs",
+            "crates/unica-application/src/application/metadata.rs",
             "vendor/ureq/src/response.rs",
             "vendor/ureq/src/completed_response_recycling.rs",
         ):
@@ -360,15 +360,15 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
 
     def test_search_mechanism_changes_route_the_long_integration_test(self) -> None:
         for path in (
-            "crates/unica-coder/src/application/code_intelligence.rs",
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/application/operational_config.rs",
-            "crates/unica-coder/src/application/ports.rs",
-            "crates/unica-coder/src/application/source_navigation.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs",
-            "crates/unica-coder/src/domain/code_intelligence.rs",
-            "crates/unica-coder/src/domain/operational_config.rs",
-            "crates/unica-coder/src/domain/source_location.rs",
+            "crates/unica-application/src/application/code_intelligence.rs",
+            "crates/unica-application/src/application/mod.rs",
+            "crates/unica-application/src/application/operational_config.rs",
+            "crates/unica-application/src/application/ports.rs",
+            "crates/unica-application/src/application/source_navigation.rs",
+            "crates/unica-application/src/application/tool_contracts.rs",
+            "crates/unica-application/src/domain/code_intelligence.rs",
+            "crates/unica-application/src/domain/operational_config.rs",
+            "crates/unica-application/src/domain/source_location.rs",
             "crates/unica-coder/src/infrastructure/application_ports.rs",
             "crates/unica-coder/src/infrastructure/code_intelligence.rs",
             "crates/unica-coder/src/infrastructure/internal_adapters.rs",
@@ -553,7 +553,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         search contour at all.
         """
         self.assert_classification(
-            ["crates/unica-coder/src/domain/cache.rs"],
+            ["crates/unica-application/src/domain/cache.rs"],
             rust_changed=True,
             release_required=True,
         )
@@ -614,7 +614,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
         for path in (
             "README.md",
             "plugins/unica/skills/meta-add/SKILL.md",
-            "crates/unica-coder/src/domain/cache.rs",
+            "crates/unica-application/src/domain/cache.rs",
             "docs/provenance/skill-upstreams.json",
         ):
             with self.subTest(unaffected=path):
