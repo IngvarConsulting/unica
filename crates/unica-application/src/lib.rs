@@ -1,2 +1,2 @@
 pub mod application;
-pub mod domain;
+pub use unica_domain as domain;
