@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[package.metadata.unica]
+component = "service"
+file-io = "owned"
+
 [dependencies]
 percent-encoding.workspace = true
 sha2.workspace = true
