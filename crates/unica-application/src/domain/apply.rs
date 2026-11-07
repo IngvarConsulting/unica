@@ -28,7 +28,7 @@ use unica_roles::operations::RoleOperation;
 use unica_xdto::operations::XdtoOperation;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ApplyRequest {
+pub struct ApplyRequest {
     at: QualifiedAddress,
     ops: NonEmptyVec<ApplyOp>,
     dry_run: bool,
@@ -36,7 +36,7 @@ pub(crate) struct ApplyRequest {
 }
 
 impl ApplyRequest {
-    pub(crate) fn parse(
+    pub fn parse(
         input: &Map<String, Value>,
         available_source_sets: &[&str],
     ) -> Result<Self, ApplyValidationError> {
@@ -223,24 +223,24 @@ impl ApplyRequest {
         })
     }
 
-    pub(crate) fn at(&self) -> &QualifiedAddress {
+    pub fn at(&self) -> &QualifiedAddress {
         &self.at
     }
 
-    pub(crate) fn ops(&self) -> &[ApplyOp] {
+    pub fn ops(&self) -> &[ApplyOp] {
         self.ops.as_slice()
     }
 
-    pub(crate) const fn dry_run(&self) -> bool {
+    pub const fn dry_run(&self) -> bool {
         self.dry_run
     }
 
-    pub(crate) fn if_rev(&self) -> Option<&str> {
+    pub fn if_rev(&self) -> Option<&str> {
         self.if_rev.as_deref()
     }
 }
 
-pub(crate) fn valid_borrow_source(parent: &QualifiedAddress, destination_source_set: &str) -> bool {
+pub fn valid_borrow_source(parent: &QualifiedAddress, destination_source_set: &str) -> bool {
     parent.source_set() != destination_source_set
         && (parent.segments().len() == 1
             || (parent.segments().len() == 2
@@ -264,22 +264,22 @@ fn parse_address(
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ApplyOp {
+pub struct ApplyOp {
     name: String,
     args: Map<String, Value>,
     at: QualifiedAddress,
 }
 
 impl ApplyOp {
-    pub(crate) fn name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
-    pub(crate) fn args(&self) -> &Map<String, Value> {
+    pub fn args(&self) -> &Map<String, Value> {
         &self.args
     }
 
-    pub(crate) fn at(&self) -> &QualifiedAddress {
+    pub fn at(&self) -> &QualifiedAddress {
         &self.at
     }
 }
@@ -298,7 +298,7 @@ impl<T> NonEmptyVec<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ApplyValidationError {
+pub struct ApplyValidationError {
     code: RefusalCode,
     location: String,
     message: String,
@@ -313,11 +313,11 @@ impl ApplyValidationError {
         }
     }
 
-    pub(crate) const fn code(&self) -> RefusalCode {
+    pub const fn code(&self) -> RefusalCode {
         self.code
     }
 
-    pub(crate) fn location(&self) -> &str {
+    pub fn location(&self) -> &str {
         &self.location
     }
 }
@@ -332,7 +332,7 @@ impl std::error::Error for ApplyValidationError {}
 
 /// Exact writable identity is admitted here; classification keeps the historical
 /// read fallback separately so an unknown revision cannot gain write admission.
-pub(crate) fn source_set_traits_of_source(
+pub fn source_set_traits_of_source(
     kind: SourceSetKind,
     format: SourceFormat,
     profile: SourceProfile,
@@ -349,7 +349,7 @@ pub(crate) fn source_set_traits_of_source(
 }
 
 /// A logical reader has already admitted the closed semantic platform profile.
-pub(crate) fn source_set_traits_for_read(
+pub fn source_set_traits_for_read(
     kind: SourceSetKind,
     platform: PlatformProfile,
 ) -> SourceSetTraits {
@@ -361,22 +361,19 @@ pub(crate) fn source_set_traits_for_read(
     SourceSetTraits::from_profiles(kind, Some(profile), profile)
 }
 
-pub(crate) fn source_classification_profile(source: SourceSetTraits) -> PlatformProfile {
+pub fn source_classification_profile(source: SourceSetTraits) -> PlatformProfile {
     crate::domain::source_capabilities::bsl_profile_for_source(source.classification_profile())
         .unwrap_or_else(PlatformProfile::v8_3_27)
 }
 
 /// The sole semantic classifier binds pure source facts to a logical address.
-pub(crate) fn operation_site(
-    at: &QualifiedAddress,
-    source: SourceSetTraits,
-) -> Option<OperationSite<'_>> {
+pub fn operation_site(at: &QualifiedAddress, source: SourceSetTraits) -> Option<OperationSite<'_>> {
     let route = classify_route(at, source_classification_profile(source))?;
     Some(OperationSite::from_route(at, source, route))
 }
 
 /// Family write policy remains with operation composition during extraction.
-pub(crate) trait SourceSetWriteSupport {
+pub trait SourceSetWriteSupport {
     fn writes(self, family: OperationFamily) -> bool;
 }
 
@@ -401,12 +398,12 @@ impl SourceSetWriteSupport for SourceSetTraits {
 
 /// Отказ записи в набор, который семейство не пишет. Один текст для
 /// предварительной проверки и разбора планировщиком.
-pub(crate) const UNWRITABLE_SOURCE_MESSAGE: &str =
+pub const UNWRITABLE_SOURCE_MESSAGE: &str =
     "admitted source has no writable exact Platform XML profile";
 
 /// Composition adapters for already-observed family facts. All semantic
 /// predicates/contracts are supplied by the bound family operation.
-pub(crate) trait OperationDescriptorExt {
+pub trait OperationDescriptorExt {
     fn admits_template_format(self, format: Option<TemplateFormat>) -> bool;
     fn admits_form_item(self, role: Option<FormItemRole>) -> bool;
     fn applies_to_node(
@@ -430,7 +427,7 @@ pub(crate) trait OperationDescriptorExt {
     ) -> Option<QualifiedAddress>;
 }
 
-pub(crate) fn observation_lookup<'a>(
+pub fn observation_lookup<'a>(
     template: &'a dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     item: &'a dyn Fn(&QualifiedAddress) -> Option<FormObservation>,
 ) -> impl Fn(&QualifiedAddress, unica_operations::ObservationType) -> Option<Box<dyn std::any::Any>> + 'a
@@ -448,7 +445,7 @@ pub(crate) fn observation_lookup<'a>(
 
 /// The same registry observations with the closed Color profile owned by
 /// metadata. The caller obtains it from retained descriptor bytes.
-pub(crate) fn observation_lookup_with_style_properties<'a>(
+pub fn observation_lookup_with_style_properties<'a>(
     template: &'a dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     item: &'a dyn Fn(&QualifiedAddress) -> Option<FormObservation>,
     color: &'a dyn Fn(
@@ -672,7 +669,7 @@ operation_descriptors!(
 
 /// Product composition supplies the exact ordered family bindings and the
 /// sole semantic Site classifier. Generic operations imports no family owner.
-pub(crate) const fn operation_registry() -> OperationRegistry {
+pub const fn operation_registry() -> OperationRegistry {
     OperationRegistry::new(
         OPERATION_DESCRIPTORS,
         unica_forms::recovery::RETIRED_OPERATIONS,
@@ -680,9 +677,7 @@ pub(crate) const fn operation_registry() -> OperationRegistry {
     )
 }
 
-pub(crate) fn retired_operation(
-    name: &str,
-) -> Option<unica_operations::recovery::RetiredOperation> {
+pub fn retired_operation(name: &str) -> Option<unica_operations::recovery::RetiredOperation> {
     operation_registry().retired(name)
 }
 

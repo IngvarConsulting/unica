@@ -17,10 +17,7 @@ use unica_source_contract::route::RouteClass;
 /// `None` — адрес не может существовать ни в одном дереве: сегмент `Module`
 /// вне модульного маршрута профиля. Ответ `Some` не доказывает существование
 /// узла; наличие и форму адреса проверяет читатель своего маршрута.
-pub(crate) fn classify_route(
-    address: &QualifiedAddress,
-    profile: PlatformProfile,
-) -> Option<RouteClass> {
+pub fn classify_route(address: &QualifiedAddress, profile: PlatformProfile) -> Option<RouteClass> {
     if address.form_metadata_owner().is_some() {
         return Some(RouteClass::Metadata);
     }

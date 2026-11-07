@@ -9,11 +9,11 @@ use unica_execution_contract::source_text_budget::complete_prefix;
 /// получит конкретный клиент, решает его бюджет ([`unica_execution_contract::source_text_budget::apply_response_budget`]),
 /// по умолчанию 16 КиБ. Текст сверх предела не режется на части: ответ
 /// отказывает `result_too_large`.
-pub(crate) const MAX_SOURCE_TEXT_BYTES: usize = unica_bootstrap::MAX_RESPONSE_BUDGET;
+pub const MAX_SOURCE_TEXT_BYTES: usize = unica_bootstrap::MAX_RESPONSE_BUDGET;
 
 /// Текст модуля, прочитанный не дальше предела.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ModuleText {
+pub enum ModuleText {
     /// Файл без начальных U+FEFF; разделители строк — как в файле.
     Text(String),
     /// Текст длиннее [`MAX_SOURCE_TEXT_BYTES`]; `bytes` — его полный размер.
@@ -27,7 +27,7 @@ pub(crate) enum ModuleText {
 /// Собирает текст модуля из потока байтов, не удерживая больше предела:
 /// начальные U+FEFF снимаются, после предела считается только размер.
 #[derive(Debug, Default)]
-pub(crate) struct ModuleTextAccumulator {
+pub struct ModuleTextAccumulator {
     bom_prefix: usize,
     past_bom: bool,
     text: Vec<u8>,
@@ -38,20 +38,20 @@ pub(crate) struct ModuleTextAccumulator {
 }
 
 impl ModuleTextAccumulator {
-    pub(crate) fn with_range(range: BodyLineRange) -> Self {
+    pub fn with_range(range: BodyLineRange) -> Self {
         Self {
             range: Some(range),
             ..Self::default()
         }
     }
 
-    pub(crate) fn line_count(&self) -> usize {
+    pub fn line_count(&self) -> usize {
         self.newlines + usize::from(self.last.is_some_and(|last| last != b'\n'))
     }
 
     const BOM: [u8; 3] = [0xef, 0xbb, 0xbf];
 
-    pub(crate) fn push(&mut self, chunk: &[u8]) {
+    pub fn push(&mut self, chunk: &[u8]) {
         for byte in chunk {
             if !self.past_bom && *byte == Self::BOM[self.bom_prefix % 3] {
                 self.bom_prefix += 1;
@@ -92,7 +92,8 @@ impl ModuleTextAccumulator {
     }
 
     /// Текст в пределе или его полный размер; `Err` — текст не UTF-8.
-    pub(crate) fn finish(mut self) -> Result<ModuleText, ()> {
+    #[allow(clippy::result_unit_err)]
+    pub fn finish(mut self) -> Result<ModuleText, ()> {
         if !self.past_bom {
             // Файл из одних U+FEFF пуст; хвост неполной метки — уже текст.
             let partial = self.bom_prefix % 3;
@@ -119,7 +120,7 @@ impl ModuleTextAccumulator {
 }
 
 /// Проверка предела для уже прочитанного текста; `Err` несёт его размер.
-pub(crate) fn admit_text(text: &str) -> Result<(), u64> {
+pub fn admit_text(text: &str) -> Result<(), u64> {
     if text.len() > MAX_SOURCE_TEXT_BYTES {
         Err(text.len() as u64)
     } else {

@@ -1,6 +1,6 @@
 name: Unica CI
 
-# Ворота pull request и очереди слияния: одна джоба Linux без маршрутов.
+# Ворота pull request и очереди слияния: одна джоба Linux.
 # Pull request: формат, контракт версий, Clippy и быстрые проверки Python, цель до трёх
 # минут. Ранний сигнал по тестам — локальный прогон перед снятием черновика.
 # Очередь: Clippy всего workspace, весь Rust `small`, `medium` изменённых крейтов, Python
@@ -115,7 +115,9 @@ jobs:
     name: Unica CI
     needs: admission
     if: ${{ needs.admission.outputs.admitted == 'true' }}
-    runs-on: ubuntu-latest
+    # Очередь использует общий пул PVE, включая GPU-ВМ. PR и ручные повторы — GitHub.
+    # UNICA_SELF_HOSTED=false (или отсутствие переменной) возвращает новые прогоны на GitHub.
+    runs-on: ${{ fromJSON(github.event_name == 'merge_group' && github.run_attempt == 1 && vars.UNICA_SELF_HOSTED == 'true' && '["self-hosted","Linux","X64","unica-pve"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 60
     defaults:
       run:

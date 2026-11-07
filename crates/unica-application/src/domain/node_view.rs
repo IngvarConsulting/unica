@@ -6,7 +6,7 @@ use unica_operation_contract::OperationRef;
 /// revision facts intentionally live in `DomainResult`, while `items` belongs
 /// to [`CollectionView`] only.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub(crate) struct NodeView {
+pub struct NodeView {
     at: String,
     kind: String,
     title: String,
@@ -23,7 +23,7 @@ pub(crate) struct NodeView {
 /// Предел заголовка узла — тот же, что у компактного свойства: заголовок
 /// берётся из синонима, а огромный синоним не должен раздувать каждую
 /// строку коллекции. Синоним целиком читается по `<узел>.Props.Synonym`.
-pub(crate) const MAX_TITLE_BYTES: usize = 2_048;
+pub const MAX_TITLE_BYTES: usize = 2_048;
 
 /// Заголовок длиннее предела усекается по границе символа и помечается
 /// многоточием.
@@ -39,7 +39,7 @@ pub(crate) fn compact_title(title: String) -> String {
 }
 
 impl NodeView {
-    pub(crate) fn new(
+    pub fn new(
         at: impl Into<String>,
         kind: impl Into<String>,
         title: impl Into<String>,
@@ -57,13 +57,13 @@ impl NodeView {
     }
 
     #[must_use]
-    pub(crate) fn with_branches(mut self, branches: Vec<BranchRef>) -> Self {
+    pub fn with_branches(mut self, branches: Vec<BranchRef>) -> Self {
         self.branches = branches;
         self
     }
 
     /// Adds one branch after those the node already names.
-    pub(crate) fn with_branch(mut self, branch: BranchRef) -> Self {
+    pub fn with_branch(mut self, branch: BranchRef) -> Self {
         self.branches.push(branch);
         self
     }
@@ -72,19 +72,19 @@ impl NodeView {
     /// молчаливое выбрасывание элементов делает счёт ветви и страницу
     /// несогласуемыми, а читателя — уверенным, что он видел всё.
     #[must_use]
-    pub(crate) fn with_limits(mut self, limits: Vec<String>) -> Self {
+    pub fn with_limits(mut self, limits: Vec<String>) -> Self {
         self.limits = limits;
         self
     }
 
     #[must_use]
-    pub(crate) fn with_additional_limits(mut self, limits: Vec<String>) -> Self {
+    pub fn with_additional_limits(mut self, limits: Vec<String>) -> Self {
         self.limits.extend(limits);
         self
     }
 
     #[must_use]
-    pub(crate) fn with_can(mut self, can: Vec<OperationRef>) -> Self {
+    pub fn with_can(mut self, can: Vec<OperationRef>) -> Self {
         self.can = can;
         self
     }
@@ -99,7 +99,7 @@ impl NodeView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct BranchRef {
+pub struct BranchRef {
     at: String,
     count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -107,7 +107,7 @@ pub(crate) struct BranchRef {
 }
 
 impl BranchRef {
-    pub(crate) fn new(at: impl Into<String>, count: usize) -> Self {
+    pub fn new(at: impl Into<String>, count: usize) -> Self {
         Self {
             at: at.into(),
             count,
@@ -115,13 +115,13 @@ impl BranchRef {
         }
     }
 
-    pub(crate) fn at(&self) -> &str {
+    pub fn at(&self) -> &str {
         &self.at
     }
 
     /// Размер текста ветви в байтах UTF-8, когда ветвь отдаёт текст.
     #[must_use]
-    pub(crate) fn with_bytes(mut self, bytes: Option<u64>) -> Self {
+    pub fn with_bytes(mut self, bytes: Option<u64>) -> Self {
         self.bytes = bytes;
         self
     }
@@ -131,18 +131,18 @@ impl BranchRef {
 /// source line has only `line` and `text`; it must never acquire a fabricated
 /// logical address.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub(crate) struct CollectionView {
+pub struct CollectionView {
     #[serde(flatten)]
     node: NodeView,
     items: Vec<Value>,
 }
 
 impl CollectionView {
-    pub(crate) fn new(node: NodeView, items: Vec<Value>) -> Self {
+    pub fn new(node: NodeView, items: Vec<Value>) -> Self {
         Self { node, items }
     }
 
-    pub(crate) fn try_map_items<E>(
+    pub fn try_map_items<E>(
         mut self,
         map: impl FnMut(Value) -> Result<Value, E>,
     ) -> Result<Self, E> {
@@ -155,7 +155,7 @@ impl CollectionView {
 /// Отказ строит тот, кто отдаёт сам текст: контракт операции `.Can.<op>`
 /// того же узла текста не несёт и предела не касается.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum SourceText {
+pub enum SourceText {
     Whole(String),
     Oversized {
         bytes: u64,
@@ -171,7 +171,7 @@ pub(crate) enum SourceText {
 /// Узел с исходным текстом (`Body` модуля или метода BSL). Текст в
 /// сериализацию узла не входит: ответ несёт его отдельным каналом.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub(crate) struct TextView {
+pub struct TextView {
     #[serde(flatten)]
     node: NodeView,
     #[serde(skip)]
@@ -179,14 +179,14 @@ pub(crate) struct TextView {
 }
 
 impl TextView {
-    pub(crate) fn new(node: NodeView, text: SourceText) -> Self {
+    pub fn new(node: NodeView, text: SourceText) -> Self {
         Self { node, text }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
-pub(crate) enum NodeViewData {
+pub enum NodeViewData {
     Node(NodeView),
     Collection(CollectionView),
     Text(TextView),
@@ -194,7 +194,7 @@ pub(crate) enum NodeViewData {
 
 impl NodeViewData {
     #[must_use]
-    pub(crate) fn with_limit(mut self, limit: impl Into<String>) -> Self {
+    pub fn with_limit(mut self, limit: impl Into<String>) -> Self {
         match &mut self {
             Self::Node(node) => node.limits.push(limit.into()),
             Self::Collection(collection) => collection.node.limits.push(limit.into()),
@@ -203,7 +203,7 @@ impl NodeViewData {
         self
     }
 
-    pub(crate) fn at(&self) -> &str {
+    pub fn at(&self) -> &str {
         match self {
             Self::Node(node) => node.at(),
             Self::Collection(collection) => collection.node.at(),
@@ -211,7 +211,7 @@ impl NodeViewData {
         }
     }
 
-    pub(crate) fn kind(&self) -> &str {
+    pub fn kind(&self) -> &str {
         match self {
             Self::Node(node) => node.kind(),
             Self::Collection(collection) => collection.node.kind(),
@@ -231,7 +231,7 @@ impl NodeViewData {
     }
 
     #[must_use]
-    pub(crate) fn with_prop(mut self, name: &str, value: Value) -> Self {
+    pub fn with_prop(mut self, name: &str, value: Value) -> Self {
         if let Self::Node(node) = &mut self {
             node.props.insert(name.into(), value);
         }
@@ -239,7 +239,7 @@ impl NodeViewData {
     }
 
     #[must_use]
-    pub(crate) fn with_additional_limits(mut self, limits: Vec<String>) -> Self {
+    pub fn with_additional_limits(mut self, limits: Vec<String>) -> Self {
         if let Self::Node(node) = &mut self {
             node.limits.extend(limits);
         }
@@ -247,7 +247,7 @@ impl NodeViewData {
     }
 
     #[must_use]
-    pub(crate) fn with_branch(mut self, branch: BranchRef) -> Self {
+    pub fn with_branch(mut self, branch: BranchRef) -> Self {
         if let Self::Node(node) = &mut self {
             node.branches.push(branch);
         }

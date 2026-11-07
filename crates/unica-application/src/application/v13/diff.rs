@@ -9,12 +9,12 @@ use super::saved_pages::SavedPages;
 use super::view::PREFERRED_PAGE_BYTES;
 use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
-pub(crate) const DEFAULT_DIFF_LIMIT: usize = 20;
-pub(crate) const MAX_DIFF_LIMIT: usize = 50;
+pub const DEFAULT_DIFF_LIMIT: usize = 20;
+pub const MAX_DIFF_LIMIT: usize = 50;
 const MAX_CURSOR_ENTRIES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct DiffRequest {
+pub struct DiffRequest {
     left: QualifiedAddress,
     right: QualifiedAddress,
     limit: usize,
@@ -23,7 +23,7 @@ pub(crate) struct DiffRequest {
 }
 
 impl DiffRequest {
-    pub(crate) fn new(left: &str, right: &str) -> Result<Self, DiffError> {
+    pub fn new(left: &str, right: &str) -> Result<Self, DiffError> {
         let left = QualifiedAddress::parse(left).map_err(|error| DiffError::BadValue {
             field: "left".to_string(),
             message: error.to_string(),
@@ -41,31 +41,31 @@ impl DiffRequest {
         })
     }
 
-    pub(crate) fn with_limit(mut self, limit: usize) -> Self {
+    pub fn with_limit(mut self, limit: usize) -> Self {
         self.limit = limit.clamp(1, MAX_DIFF_LIMIT);
         self
     }
 
-    pub(crate) fn with_cursor(mut self, cursor: String) -> Self {
+    pub fn with_cursor(mut self, cursor: String) -> Self {
         self.cursor = Some(cursor);
         self
     }
 
     /// A continuation answers only the workspace that asked the first page.
-    pub(crate) fn in_workspace(mut self, workspace: impl Into<String>) -> Self {
+    pub fn in_workspace(mut self, workspace: impl Into<String>) -> Self {
         self.workspace = workspace.into();
         self
     }
 
-    pub(crate) fn left(&self) -> &QualifiedAddress {
+    pub fn left(&self) -> &QualifiedAddress {
         &self.left
     }
 
-    pub(crate) fn right(&self) -> &QualifiedAddress {
+    pub fn right(&self) -> &QualifiedAddress {
         &self.right
     }
 
-    pub(crate) fn limit(&self) -> usize {
+    pub fn limit(&self) -> usize {
         self.limit
     }
 
@@ -78,14 +78,14 @@ impl DiffRequest {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct DiffSource {
+pub struct DiffSource {
     at: QualifiedAddress,
     kind: String,
     data: Value,
 }
 
 impl DiffSource {
-    pub(crate) fn new(at: QualifiedAddress, kind: impl Into<String>, data: Value) -> Self {
+    pub fn new(at: QualifiedAddress, kind: impl Into<String>, data: Value) -> Self {
         Self {
             at,
             kind: kind.into(),
@@ -102,7 +102,7 @@ pub(crate) struct DiffChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub(crate) struct DiffPage {
+pub struct DiffPage {
     equal: bool,
     changes: Vec<DiffChange>,
     truncated: bool,
@@ -122,18 +122,18 @@ impl DiffPage {
         self.truncated
     }
 
-    pub(crate) fn cursor(&self) -> Option<&str> {
+    pub fn cursor(&self) -> Option<&str> {
         self.cursor.as_deref()
     }
 
     /// Why the page ended: `limit`, `bytes` or `complete`.
-    pub(crate) fn stopped_by(&self) -> &'static str {
+    pub fn stopped_by(&self) -> &'static str {
         self.stopped_by
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum DiffError {
+pub enum DiffError {
     BadValue { field: String, message: String },
     IncomparableNodes,
     InvalidCursor,
@@ -141,7 +141,7 @@ pub(crate) enum DiffError {
 }
 
 impl DiffError {
-    pub(crate) const fn code(&self) -> RefusalCode {
+    pub const fn code(&self) -> RefusalCode {
         match self {
             Self::BadValue { .. } => RefusalCode::BadValue,
             Self::IncomparableNodes => RefusalCode::IncomparableNodes,
@@ -177,7 +177,7 @@ struct SavedPair {
 }
 
 #[derive(Debug)]
-pub(crate) struct DiffHandler {
+pub struct DiffHandler {
     cursors: SavedPages<SavedPair>,
 }
 
@@ -190,7 +190,7 @@ impl Default for DiffHandler {
 }
 
 impl DiffHandler {
-    pub(crate) fn compare(
+    pub fn compare(
         &self,
         request: &DiffRequest,
         left: &DiffSource,
@@ -224,7 +224,7 @@ impl DiffHandler {
 
     /// Continues the pair saved by the first page. The sources are not read
     /// again: a later edit of either side does not replace the saved pair.
-    pub(crate) fn continue_saved(&self, request: &DiffRequest) -> Result<DiffPage, DiffError> {
+    pub fn continue_saved(&self, request: &DiffRequest) -> Result<DiffPage, DiffError> {
         let token = request.cursor.as_deref().ok_or(DiffError::InvalidCursor)?;
         let fingerprint = request.fingerprint();
         let (pair, entry, offset) = self.cursors.read(token).ok_or(DiffError::InvalidCursor)?;

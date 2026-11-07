@@ -23,7 +23,7 @@
         "plugins/unica/skills/code-patch"
       ],
       "contractPaths": [
-        "crates/unica-coder/src/application/tool_contracts.rs",
+        "crates/unica-application/src/application/tool_contracts.rs",
         "crates/unica-coder/src/infrastructure/native_operations/code_patch_composition.rs",
         "crates/unica-bsl/src/input.rs",
         "crates/unica-bsl/src/text.rs",
@@ -37,7 +37,7 @@
         "plugins/unica/skills/source-access"
       ],
       "contractPaths": [
-        "crates/unica-coder/src/application/tool_contracts.rs",
+        "crates/unica-application/src/application/tool_contracts.rs",
         "crates/unica-navigation/src/source_navigation.rs",
         "tests/ci/test_unica_skills.py"
       ]
@@ -141,7 +141,7 @@
         "plugins/unica/skills/role-edit"
       ],
       "contractPaths": [
-        "crates/unica-coder/src/application/tool_contracts.rs",
+        "crates/unica-application/src/application/tool_contracts.rs",
         "crates/unica-coder/src/infrastructure/native_operations/role.rs",
         "tests/ci/test_unica_skills.py"
       ]
@@ -186,7 +186,7 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-application/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/meta/mod.rs"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
@@ -351,8 +351,8 @@
             "plugins/unica/skills/epf-init"
           ],
           "contractPaths": [
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-application/src/application/mod.rs",
+            "crates/unica-application/src/application/tool_contracts.rs",
             "crates/unica-metadata-designer/src/external.rs",
             "tests/ci/test_unica_mcp_smoke.py",
             "tests/ci/test_unica_skills.py"
@@ -372,8 +372,8 @@
             "plugins/unica/skills/erf-init"
           ],
           "contractPaths": [
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-application/src/application/mod.rs",
+            "crates/unica-application/src/application/tool_contracts.rs",
             "crates/unica-metadata-designer/src/external.rs",
             "tests/ci/test_unica_mcp_smoke.py",
             "tests/ci/test_unica_skills.py"
@@ -403,8 +403,8 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-application/src/application/mod.rs",
+            "crates/unica-application/src/application/tool_contracts.rs",
             "crates/unica-forms-designer/src/codec.rs",
             "crates/unica-coder/src/infrastructure/form_composition.rs"
           ],
@@ -433,8 +433,8 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/mod.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-application/src/application/mod.rs",
+            "crates/unica-application/src/application/tool_contracts.rs",
             "crates/unica-forms-designer/src/codec.rs",
             "crates/unica-coder/src/infrastructure/form_composition.rs"
           ],
@@ -506,8 +506,8 @@
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_skill_provenance.py",
             "tests/ci/test_meta_surface_contract.py",
-            "crates/unica-coder/src/application/metadata.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs"
+            "crates/unica-application/src/application/metadata.rs",
+            "crates/unica-application/src/application/tool_contracts.rs"
           ],
           "decision": "ignored-with-reason",
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
@@ -532,8 +532,8 @@
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_meta_surface_contract.py",
-            "crates/unica-coder/src/application/metadata.rs",
-            "crates/unica-coder/src/application/tool_contracts.rs"
+            "crates/unica-application/src/application/metadata.rs",
+            "crates/unica-application/src/application/tool_contracts.rs"
           ],
           "baselineCommit": "cbde49efdaeec190432fdf4a53201a87e83c69de",
           "decision": "ignored-with-reason",
@@ -561,9 +561,9 @@
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_skill_provenance.py",
             "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/metadata.rs",
+            "crates/unica-application/src/application/metadata.rs",
             "crates/unica-coder/src/infrastructure/native_operations/meta/mod.rs",
-            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-application/src/application/mod.rs",
             "crates/unica-coder/src/infrastructure/native_operations/common.rs"
           ],
           "decision": "ignored-with-reason",
@@ -585,7 +585,7 @@
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-compile",
             "plugins/unica/references/specs/1c-spreadsheet-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
-            "crates/unica-coder/src/domain/operation_contract.rs"
+            "crates/unica-application/src/domain/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -610,7 +610,7 @@
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-decompile",
             "plugins/unica/references/specs/1c-spreadsheet-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
-            "crates/unica-coder/src/domain/operation_contract.rs"
+            "crates/unica-application/src/domain/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -635,12 +635,12 @@
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-info",
             "plugins/unica/references/specs/1c-spreadsheet-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
-            "crates/unica-coder/src/domain/operation_contract.rs"
+            "crates/unica-application/src/domain/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_script_parity.py",
-            "crates/unica-coder/src/application/mod.rs",
+            "crates/unica-application/src/application/mod.rs",
             "crates/unica-coder/src/infrastructure/native_operations/common.rs",
             "crates/unica-templates-designer/src/mxl_codec.rs",
             "crates/unica-coder/src/infrastructure/native_operations/mxl_composition.rs"
@@ -687,15 +687,15 @@
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/dcs-compile",
             "plugins/unica/references/specs/1c-dcs-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
-            "crates/unica-coder/src/domain/operation_contract.rs",
+            "crates/unica-application/src/domain/operation_contract.rs",
             "crates/unica-dcs-designer/src/primitives.rs",
             "crates/unica-dcs-designer/src/xml.rs"
           ],
           "contractPaths": [
             "tests/ci/test_dcs_naming_contract.py",
             "tests/fixtures/acceptance/scenario-corpus.json",
-            "crates/unica-coder/src/domain/apply.rs",
-            "crates/unica-coder/src/domain/operation_contract.rs",
+            "crates/unica-application/src/domain/apply.rs",
+            "crates/unica-application/src/domain/operation_contract.rs",
             "crates/unica-dcs-designer/src/primitives/tests.rs"
           ],
           "decision": "ignored-with-reason",
@@ -718,15 +718,15 @@
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/dcs-edit",
             "plugins/unica/references/specs/1c-dcs-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
-            "crates/unica-coder/src/domain/operation_contract.rs",
+            "crates/unica-application/src/domain/operation_contract.rs",
             "crates/unica-dcs-designer/src/primitives.rs",
             "crates/unica-dcs-designer/src/xml.rs"
           ],
           "contractPaths": [
             "tests/ci/test_dcs_naming_contract.py",
             "tests/fixtures/acceptance/scenario-corpus.json",
-            "crates/unica-coder/src/domain/apply.rs",
-            "crates/unica-coder/src/domain/operation_contract.rs",
+            "crates/unica-application/src/domain/apply.rs",
+            "crates/unica-application/src/domain/operation_contract.rs",
             "crates/unica-dcs-designer/src/primitives/tests.rs"
           ],
           "decision": "ported",
@@ -799,7 +799,7 @@
             "tests/fixtures/xdto/enterprise-data-minimal"
           ],
           "contractPaths": [
-            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-application/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
             "crates/unica-product/tests/format_8_3_27_xml_corpus.rs",
             "tests/ci/test_reference_format_profile.py",
@@ -1230,7 +1230,7 @@
             "plugins/unica/skills/autonomous-server"
           ],
           "contractPaths": [
-            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-application/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/internal_adapters.rs",
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_smoke.py"
@@ -1251,7 +1251,7 @@
             "plugins/unica/skills/db-auth-check"
           ],
           "contractPaths": [
-            "crates/unica-coder/src/application/tool_contracts.rs",
+            "crates/unica-application/src/application/tool_contracts.rs",
             "crates/unica-coder/src/infrastructure/internal_adapters.rs",
             "tests/ci/test_unica_skills.py",
             "tests/ci/test_unica_mcp_smoke.py"

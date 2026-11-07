@@ -14,6 +14,7 @@ default = []
 receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "unica-daemon/receipt-ledger-test-support"]
 
 [dependencies]
+unica-application = { path = "../unica-application" }
 unica-daemon = { path = "../unica-daemon" }
 unica-lsp = { path = "../unica-lsp" }
 unica-bindings = { path = "../unica-bindings" }
@@ -105,6 +106,7 @@ cap-primitives.workspace = true
 cap-fs-ext.workspace = true
 
 [dev-dependencies]
+unica-application = { path = "../unica-application", features = ["test-support"] }
 unica-daemon = { path = "../unica-daemon", features = ["test-support"] }
 unica-project-health = { path = "../unica-project-health", features = ["test-support"] }
 unica-roles-designer = { path = "../unica-roles-designer", features = ["test-support"] }

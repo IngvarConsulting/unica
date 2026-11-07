@@ -6,27 +6,27 @@ use unica_refusal::{RefusalCode, RefusalDetail};
 pub(crate) const DEFAULT_TASK_RESULT_WAIT_MS: u64 = 7_000;
 
 #[derive(Debug)]
-pub(crate) struct CompatibilityToolContract {
-    pub(crate) name: &'static str,
-    pub(crate) description: &'static str,
-    pub(crate) input_schema: Value,
+pub struct CompatibilityToolContract {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub input_schema: Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TaskToolAction {
+pub enum TaskToolAction {
     Get,
     Result { wait_ms: u64 },
     Cancel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TaskToolRequest {
-    pub(crate) task_id: TaskId,
-    pub(crate) action: TaskToolAction,
+pub struct TaskToolRequest {
+    pub task_id: TaskId,
+    pub action: TaskToolAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TaskToolError {
+pub enum TaskToolError {
     InvalidTaskId,
     BadWaitMs,
     BadArguments,
@@ -59,13 +59,13 @@ impl TaskToolError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CompatibilityProjection {
+pub enum CompatibilityProjection {
     State,
     TerminalResult,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct CompatibilityTaskSnapshot {
+pub struct CompatibilityTaskSnapshot {
     pub(crate) task_id: TaskId,
     pub(crate) status: InvocationStatus,
     pub(crate) result: Option<DomainResult>,
@@ -80,7 +80,7 @@ pub(crate) struct CompatibilityTaskSnapshot {
 
 impl CompatibilityTaskSnapshot {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub fn new(
         task_id: TaskId,
         status: InvocationStatus,
         result: Option<DomainResult>,
@@ -106,12 +106,12 @@ impl CompatibilityTaskSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CompatibilityProjectionError {
+pub enum CompatibilityProjectionError {
     InvalidStatusPayload,
     ReverseTimestampOrder,
 }
 
-pub(crate) fn compatibility_tool_contracts() -> Vec<CompatibilityToolContract> {
+pub fn compatibility_tool_contracts() -> Vec<CompatibilityToolContract> {
     let task_id = || {
         json!({
             "type": "string",
@@ -156,7 +156,7 @@ fn task_schema(properties: Value) -> Value {
     })
 }
 
-pub(crate) fn parse_task_tool_call(
+pub fn parse_task_tool_call(
     name: &str,
     arguments: &Map<String, Value>,
 ) -> Option<Result<TaskToolRequest, TaskToolError>> {
@@ -204,7 +204,7 @@ fn parse_known_task_call(
     Ok(TaskToolRequest { task_id, action })
 }
 
-pub(crate) fn project_task_snapshot(
+pub fn project_task_snapshot(
     snapshot: &CompatibilityTaskSnapshot,
     projection: CompatibilityProjection,
 ) -> Result<DomainResult, CompatibilityProjectionError> {
@@ -292,7 +292,7 @@ pub(crate) fn project_task_snapshot(
     Ok(result)
 }
 
-pub(crate) fn task_tool_error_result(error: TaskToolError) -> DomainResult {
+pub fn task_tool_error_result(error: TaskToolError) -> DomainResult {
     // The closed code answers through `diagnostics[]` exactly like every other
     // canonical refusal; task errors get no private `data.code` channel.
     let message = match error {
@@ -318,7 +318,7 @@ pub(crate) fn task_tool_error_result(error: TaskToolError) -> DomainResult {
 /// The closed failure vocabulary of the v5 daemon and its fixed host-facing
 /// text. The daemon never sends prose for a failure, so this table is the only
 /// place a failed invocation gets words.
-pub(crate) fn closed_task_failure(reason: V5SafeFailureReason) -> (&'static str, &'static str) {
+pub fn closed_task_failure(reason: V5SafeFailureReason) -> (&'static str, &'static str) {
     match reason {
         V5SafeFailureReason::InvocationFailed => (
             "invocation_failed",

@@ -2345,7 +2345,7 @@ mod medium_tests {
     }
 
     fn application_handler() -> Arc<ToolCallHandler> {
-        let app = Arc::new(UnicaApplication::new());
+        let app = Arc::new(crate::composition::testing::application());
         Arc::new(move |name, arguments, cancellation, progress| {
             call_tool_result_observed(&app, name, arguments, cancellation, progress)
         })
@@ -9224,7 +9224,7 @@ fn main() {
         .clone();
 
         let text = call_tool_text(
-            &UnicaApplication::new(),
+            &crate::composition::testing::application(),
             "unica.code.patch",
             &args,
             CancellationToken::new(),
@@ -9248,7 +9248,7 @@ fn main() {
         invalid_args.insert("dryRun".to_string(), json!(false));
 
         let failed_text = call_tool_text(
-            &UnicaApplication::new(),
+            &crate::composition::testing::application(),
             "unica.code.patch",
             &invalid_args,
             CancellationToken::new(),

@@ -1,13 +1,13 @@
 use unica_diagnostics::model::DiagnosticAction;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SupportGuardRequirement {
+pub enum SupportGuardRequirement {
     Editable,
     Removed,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct OperationDescriptor {
+pub struct OperationDescriptor {
     pub operation: &'static str,
     pub required_args: &'static [&'static str],
     pub write_path_args: &'static [&'static str],
@@ -17,7 +17,7 @@ pub(crate) struct OperationDescriptor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FormatPathPolicy {
+pub enum FormatPathPolicy {
     DeclaredArgs,
     HandlerResolved,
     DefaultSrcObject,
@@ -25,7 +25,7 @@ pub(crate) enum FormatPathPolicy {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum SupportGuardPolicy {
+pub enum SupportGuardPolicy {
     HandlerResolved {
         requirement: SupportGuardRequirement,
     },
@@ -39,7 +39,7 @@ pub(crate) enum SupportGuardPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PathAliasGroup {
+pub struct PathAliasGroup {
     pub canonical: &'static str,
     pub aliases: &'static [&'static str],
 }
@@ -104,20 +104,20 @@ pub(crate) fn diagnostic_action_descriptor(
 }
 
 const EMPTY: &[&str] = &[];
-pub(crate) const CF_PATH: &[&str] = &["ConfigPath", "configPath", "Path", "path"];
+pub const CF_PATH: &[&str] = &["ConfigPath", "configPath", "Path", "path"];
 const EXTENSION_PATH: &[&str] = &["ExtensionPath", "extensionPath"];
-pub(crate) const CFE_VALIDATE_PATH: &[&str] = &["ExtensionPath", "extensionPath", "Path", "path"];
+pub const CFE_VALIDATE_PATH: &[&str] = &["ExtensionPath", "extensionPath", "Path", "path"];
 const CFE_BORROW_SOURCE: &[&str] = &["ExtensionPath", "ConfigPath", "extensionPath", "configPath"];
-pub(crate) const OBJECT_PATH: &[&str] = &["ObjectPath", "objectPath", "Path", "path"];
+pub const OBJECT_PATH: &[&str] = &["ObjectPath", "objectPath", "Path", "path"];
 const SRC_DIR: &[&str] = &["SrcDir", "srcDir"];
-pub(crate) const FORM_PATH: &[&str] = &["FormPath", "formPath", "Path", "path"];
+pub const FORM_PATH: &[&str] = &["FormPath", "formPath", "Path", "path"];
 const CI_PATH: &[&str] = &["CIPath", "ciPath", "path", "Path"];
 const CI_PATH_REQUIRED: &[&str] = &["CIPath"];
-pub(crate) const SUBSYSTEM_PATH: &[&str] = &["SubsystemPath", "subsystemPath", "Path", "path"];
+pub const SUBSYSTEM_PATH: &[&str] = &["SubsystemPath", "subsystemPath", "Path", "path"];
 const SUBSYSTEM_PATH_REQUIRED: &[&str] = &["SubsystemPath"];
 const OUTPUT_PATH: &[&str] = &["OutputPath", "outputPath"];
-pub(crate) const TEMPLATE_PATH: &[&str] = &["TemplatePath", "templatePath", "Path", "path"];
-pub(crate) const RIGHTS_PATH: &[&str] = &["RightsPath", "rightsPath", "Path", "path"];
+pub const TEMPLATE_PATH: &[&str] = &["TemplatePath", "templatePath", "Path", "path"];
+pub const RIGHTS_PATH: &[&str] = &["RightsPath", "rightsPath", "Path", "path"];
 const SUPPORT_PATH: &[&str] = &["Path", "path", "TargetPath", "targetPath"];
 const CFE_DIFF_REQUIRED: &[&str] = &["ExtensionPath", "ConfigPath"];
 const CFE_BORROW_REQUIRED: &[&str] = &["ExtensionPath", "ConfigPath", "Object"];
@@ -174,7 +174,7 @@ const MXL_READ_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP, SRC_DIR_G
 const MXL_INFO_PATH_GROUPS: &[PathAliasGroup] = &[TEMPLATE_PATH_GROUP];
 const RIGHTS_READ_PATH_GROUPS: &[PathAliasGroup] = &[RIGHTS_PATH_GROUP];
 
-pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGroup] {
+pub fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGroup] {
     match operation {
         "cf-edit" => CF_EDIT_PATH_GROUPS,
         "cf-info" | "cf-validate" => CF_READ_PATH_GROUPS,
@@ -198,7 +198,7 @@ pub(crate) fn native_path_alias_groups(operation: &str) -> &'static [PathAliasGr
     }
 }
 
-pub(crate) fn native_operation_descriptor(operation: &str) -> Option<&'static OperationDescriptor> {
+pub fn native_operation_descriptor(operation: &str) -> Option<&'static OperationDescriptor> {
     NATIVE_OPERATION_DESCRIPTORS
         .iter()
         .find(|descriptor| descriptor.operation == operation)

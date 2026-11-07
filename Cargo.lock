@@ -2408,6 +2408,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "unica-application"
+version = "0.15.0-rc.1"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "sha2",
+ "unica-address",
+ "unica-artifact-delivery",
+ "unica-bootstrap",
+ "unica-bsl",
+ "unica-code-intelligence",
+ "unica-configuration",
+ "unica-dcs",
+ "unica-diagnostics",
+ "unica-execution",
+ "unica-execution-contract",
+ "unica-forms",
+ "unica-metadata",
+ "unica-navigation",
+ "unica-operation-contract",
+ "unica-operations",
+ "unica-refusal",
+ "unica-roles",
+ "unica-runner",
+ "unica-source-contract",
+ "unica-templates",
+ "unica-work-control",
+ "unica-workspace",
+ "unica-xdto",
+ "uuid",
+]
+
+[[package]]
 name = "unica-artifact-delivery"
 version = "0.15.0-rc.1"
 dependencies = [
@@ -2567,6 +2601,7 @@ dependencies = [
  "unica-adapter-v8-runner",
  "unica-address",
  "unica-analysis-services",
+ "unica-application",
  "unica-artifact-delivery",
  "unica-bindings",
  "unica-bootstrap",

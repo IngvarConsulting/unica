@@ -2,7 +2,7 @@ use unica_bsl::profile::PlatformProfile;
 
 /// Selects the semantic profile from the exact actor-issued source identity.
 /// Legacy and test-only identities never gain a writable supported profile.
-pub(crate) fn bsl_profile_for_source(
+pub fn bsl_profile_for_source(
     profile: unica_source_contract::SourceProfile,
 ) -> Option<PlatformProfile> {
     if profile != unica_source_contract::SourceProfile::platform_xml_8_3_27_format_2_20() {

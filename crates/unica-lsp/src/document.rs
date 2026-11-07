@@ -8,7 +8,7 @@ use super::position::{LineIndex, PositionError, Utf16Position};
 
 /// One LSP content change: the whole text, or a range and its replacement.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ContentChange {
+pub enum ContentChange {
     Full(String),
     Range {
         start: Utf16Position,
@@ -18,7 +18,7 @@ pub(crate) enum ContentChange {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DocumentChangeError {
+pub enum DocumentChangeError {
     /// The client's version does not move forward.
     StaleVersion { current: i32, offered: i32 },
     /// A range does not name a span of the text.
@@ -28,14 +28,14 @@ pub(crate) enum DocumentChangeError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OpenDocument {
+pub struct OpenDocument {
     version: i32,
     text: String,
     lines: LineIndex,
 }
 
 impl OpenDocument {
-    pub(crate) fn new(version: i32, text: String) -> Self {
+    pub fn new(version: i32, text: String) -> Self {
         let lines = LineIndex::new(&text);
         Self {
             version,
@@ -44,11 +44,11 @@ impl OpenDocument {
         }
     }
 
-    pub(crate) fn version(&self) -> i32 {
+    pub fn version(&self) -> i32 {
         self.version
     }
 
-    pub(crate) fn text(&self) -> &str {
+    pub fn text(&self) -> &str {
         &self.text
     }
 
@@ -57,7 +57,7 @@ impl OpenDocument {
     }
 
     /// Apply the changes of one `didChange` in order and take `version`.
-    pub(crate) fn change(
+    pub fn change(
         &mut self,
         version: i32,
         changes: &[ContentChange],

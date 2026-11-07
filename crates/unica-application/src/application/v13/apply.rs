@@ -4,14 +4,14 @@ use serde_json::{Map, Value};
 use unica_operation_contract::OperationRef;
 use unica_operations::OperationFamily;
 
-pub(crate) fn parse_request(
+pub fn parse_request(
     input: &Map<String, Value>,
     available_source_sets: &[&str],
 ) -> Result<ApplyRequest, ApplyValidationError> {
     ApplyRequest::parse(input, available_source_sets)
 }
 
-pub(crate) fn dispatch_family(operation: &str) -> Option<OperationFamily> {
+pub fn dispatch_family(operation: &str) -> Option<OperationFamily> {
     crate::domain::apply::operation_registry()
         .lookup(operation)
         .map(|descriptor| descriptor.family())

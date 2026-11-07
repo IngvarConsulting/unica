@@ -14,7 +14,7 @@ use unica_refusal::RefusalCode;
 /// Откуда пришёл вопрос. Ровно одна сторона: спрашивать обе разом бессмысленно,
 /// а не спрашивать ни одной — нечего разрешать.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ResolveRequest {
+pub enum ResolveRequest {
     /// Адрес известен, нужен файл.
     Address(QualifiedAddress),
     /// Путь пришёл снаружи, нужен адрес.
@@ -26,7 +26,7 @@ pub(crate) enum ResolveRequest {
 }
 
 impl ResolveRequest {
-    pub(crate) fn new(
+    pub fn new(
         at: Option<&str>,
         path: Option<&str>,
         paths: Option<&[&str]>,
@@ -73,7 +73,7 @@ impl ResolveRequest {
 /// Один элемент пакета: путь и, если задана, физическая строка файла,
 /// нумерованная с единицы, как у `grep -n`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PathLine {
+pub struct PathLine {
     path: String,
     line: Option<usize>,
 }
@@ -126,24 +126,24 @@ impl PathLine {
         })
     }
 
-    pub(crate) fn path(&self) -> &str {
+    pub fn path(&self) -> &str {
         &self.path
     }
 
-    pub(crate) const fn line(&self) -> Option<usize> {
+    pub const fn line(&self) -> Option<usize> {
         self.line
     }
 
     /// Одно написание пути на оба разделителя: пакет разрешает такой путь
     /// один раз, сколько бы строк и повторов в нём ни было.
-    pub(crate) fn key(&self) -> String {
+    pub fn key(&self) -> String {
         self.path.replace('\\', "/")
     }
 }
 
 /// Где лежит физическая строка модуля BSL.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ModuleLine {
+pub enum ModuleLine {
     /// Внутри собственного диапазона метода — того, что `resolve` называет
     /// для `Method`: от первой аннотации до строки окончания.
     Method(QualifiedAddress),
@@ -158,7 +158,7 @@ pub(crate) enum ModuleLine {
 /// вне всех методов (адрес тогда — модуль) или в древовидном файле, где
 /// строка предметом не является (адрес — объект файла).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct ResolvedPath {
+pub struct ResolvedPath {
     at: String,
     kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -167,18 +167,14 @@ pub(crate) struct ResolvedPath {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) enum LinePlace {
+pub enum LinePlace {
     InMethod,
     OutsideMethod,
     NotLineBased,
 }
 
 impl ResolvedPath {
-    pub(crate) fn new(
-        at: impl Into<String>,
-        kind: impl Into<String>,
-        line: Option<LinePlace>,
-    ) -> Self {
+    pub fn new(at: impl Into<String>, kind: impl Into<String>, line: Option<LinePlace>) -> Self {
         Self {
             at: at.into(),
             kind: kind.into(),
@@ -194,7 +190,7 @@ impl ResolvedPath {
 /// пойдёт искать причину, которой нет.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
-pub(crate) enum ResolvedLines {
+pub enum ResolvedLines {
     /// Источник строчный, диапазон настоящий: BSL.
     Range { from: usize, to: usize },
     /// Источник древовидный. Физические строки существуют, но единицей не
@@ -205,7 +201,7 @@ pub(crate) enum ResolvedLines {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ResolvedSource {
+pub struct ResolvedSource {
     at: String,
     kind: String,
     /// Путь относительно корня набора исходников.
@@ -214,7 +210,7 @@ pub(crate) struct ResolvedSource {
 }
 
 impl ResolvedSource {
-    pub(crate) fn new(
+    pub fn new(
         at: impl Into<String>,
         kind: impl Into<String>,
         path: impl Into<String>,
@@ -228,19 +224,19 @@ impl ResolvedSource {
         }
     }
 
-    pub(crate) fn address(&self) -> &str {
+    pub fn address(&self) -> &str {
         &self.at
     }
 
-    pub(crate) fn path(&self) -> &str {
+    pub fn path(&self) -> &str {
         &self.path
     }
 
-    pub(crate) fn at(&self) -> &str {
+    pub fn at(&self) -> &str {
         &self.at
     }
 
-    pub(crate) fn kind(&self) -> &str {
+    pub fn kind(&self) -> &str {
         &self.kind
     }
 
@@ -251,7 +247,7 @@ impl ResolvedSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResolveError {
+pub struct ResolveError {
     code: RefusalCode,
     message: String,
 }
@@ -264,7 +260,7 @@ impl ResolveError {
         }
     }
 
-    pub(crate) const fn code(&self) -> RefusalCode {
+    pub const fn code(&self) -> RefusalCode {
         self.code
     }
 }

@@ -28,21 +28,21 @@ use unica_work_control::progress::ProgressSink;
 use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::cache::{CacheAccess, CacheReport};
 
-pub(crate) struct HandlerOutcome {
-    pub(crate) adapter: AdapterOutcome,
-    pub(crate) data: Option<Value>,
-    pub(crate) job: Option<Value>,
-    pub(crate) events: Vec<DomainEvent>,
-    pub(crate) projected_events: Vec<DomainEvent>,
-    pub(crate) recorded_cache: Option<CacheReport>,
-    pub(crate) diagnostics: Option<Value>,
+pub struct HandlerOutcome {
+    pub adapter: AdapterOutcome,
+    pub data: Option<Value>,
+    pub job: Option<Value>,
+    pub events: Vec<DomainEvent>,
+    pub projected_events: Vec<DomainEvent>,
+    pub recorded_cache: Option<CacheReport>,
+    pub diagnostics: Option<Value>,
 }
 
 impl HandlerOutcome {
     /// Типизированный результат с событиями: конструктор нужен тестовым
     /// портам, которые доказывают путь публикации событий через шов.
-    #[cfg(test)]
-    pub(crate) fn with_data_and_events(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_data_and_events(
         adapter: AdapterOutcome,
         data: Value,
         events: Vec<DomainEvent>,
@@ -58,7 +58,7 @@ impl HandlerOutcome {
         }
     }
 
-    pub(crate) fn plain(adapter: AdapterOutcome) -> Self {
+    pub fn plain(adapter: AdapterOutcome) -> Self {
         Self {
             adapter,
             data: None,
@@ -70,7 +70,7 @@ impl HandlerOutcome {
         }
     }
 
-    pub(crate) fn with_data(adapter: AdapterOutcome, data: Value) -> Self {
+    pub fn with_data(adapter: AdapterOutcome, data: Value) -> Self {
         Self {
             adapter,
             data: Some(data),
@@ -83,13 +83,13 @@ impl HandlerOutcome {
     }
 }
 
-pub(crate) struct PreparedToolInvocation {
-    pub(crate) format_guard: Option<FormatGuardCheck>,
-    pub(crate) handler: Option<HandlerOutcome>,
+pub struct PreparedToolInvocation {
+    pub format_guard: Option<FormatGuardCheck>,
+    pub handler: Option<HandlerOutcome>,
 }
 
 impl PreparedToolInvocation {
-    pub(crate) fn empty() -> Self {
+    pub fn empty() -> Self {
         Self {
             format_guard: None,
             handler: None,
@@ -98,11 +98,11 @@ impl PreparedToolInvocation {
 }
 
 #[allow(dead_code)] // Concrete providers land after this orchestration seam.
-pub(crate) struct MetaPublishReport {
-    pub(crate) data: MetaMutationData,
-    pub(crate) events: Vec<DomainEvent>,
-    pub(crate) recorded_cache: Option<CacheReport>,
-    pub(crate) warnings: Vec<String>,
+pub struct MetaPublishReport {
+    pub data: MetaMutationData,
+    pub events: Vec<DomainEvent>,
+    pub recorded_cache: Option<CacheReport>,
+    pub warnings: Vec<String>,
 }
 
 impl MetaPublishReport {
@@ -117,7 +117,7 @@ impl MetaPublishReport {
     }
 }
 
-pub(crate) trait PreparedMetadataMutation: Send {
+pub trait PreparedMetadataMutation: Send {
     /// The preview and validation image are safe application-layer projections.
     /// Closed handles, preimages, locks, and transactions remain in `Self`.
     fn preview(&self) -> &MetaMutationData;
@@ -132,13 +132,13 @@ fn unavailable_metadata_diagnostic(message: impl Into<String>) -> MetaDiagnostic
     MetaDiagnostic::error(MetaDiagnosticCode::CapabilityUnavailable, message)
 }
 
-pub(crate) enum SupportGuardCheck {
+pub enum SupportGuardCheck {
     Allow,
     Warn(String),
     Block(AdapterOutcome),
 }
 
-pub(crate) enum FormatGuardCheck {
+pub enum FormatGuardCheck {
     Allow,
     Warn {
         warning: String,
@@ -151,7 +151,7 @@ pub(crate) enum FormatGuardCheck {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum XdtoPublicErrorCode {
+pub enum XdtoPublicErrorCode {
     SourceSetUnknown,
     TargetNotFound,
     NotAnXdtoPackage,
@@ -160,7 +160,7 @@ pub(crate) enum XdtoPublicErrorCode {
 }
 
 impl XdtoPublicErrorCode {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::SourceSetUnknown => "source_set_unknown",
             Self::TargetNotFound => "target_not_found",
@@ -178,20 +178,20 @@ struct PublicFormatGuardError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct FormatGuardError {
+pub struct FormatGuardError {
     public: Option<PublicFormatGuardError>,
     internal_cause: String,
 }
 
 impl FormatGuardError {
-    pub(crate) fn internal(cause: impl Into<String>) -> Self {
+    pub fn internal(cause: impl Into<String>) -> Self {
         Self {
             public: None,
             internal_cause: cause.into(),
         }
     }
 
-    pub(crate) fn xdto(
+    pub fn xdto(
         code: XdtoPublicErrorCode,
         public_message: impl Into<String>,
         internal_cause: impl Into<String>,
@@ -205,7 +205,7 @@ impl FormatGuardError {
         }
     }
 
-    pub(crate) fn public_projection(&self) -> Option<(XdtoPublicErrorCode, &str)> {
+    pub fn public_projection(&self) -> Option<(XdtoPublicErrorCode, &str)> {
         self.public
             .as_ref()
             .map(|public| (public.code, public.message.as_str()))
@@ -227,7 +227,7 @@ impl fmt::Display for FormatGuardError {
 
 impl std::error::Error for FormatGuardError {}
 
-pub(crate) trait ApplicationPorts: Send + Sync {
+pub trait ApplicationPorts: Send + Sync {
     fn discover_workspace(
         &self,
         requested_cwd: Option<PathBuf>,

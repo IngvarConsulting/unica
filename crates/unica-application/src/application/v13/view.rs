@@ -20,18 +20,18 @@ use unica_refusal::RefusalCode;
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 50;
-pub(crate) const PREFERRED_PAGE_BYTES: usize = 64 * 1024;
+pub const PREFERRED_PAGE_BYTES: usize = 64 * 1024;
 type ViewProjector<'a> = dyn Fn(&Value) -> Result<Value, ViewError> + 'a;
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ViewRequest {
+pub struct ViewRequest {
     at: QualifiedAddress,
     limit: usize,
     cursor: Option<String>,
 }
 
 impl ViewRequest {
-    pub(crate) fn new(at: &str) -> Result<Self, ViewError> {
+    pub fn new(at: &str) -> Result<Self, ViewError> {
         let at = QualifiedAddress::parse(at)
             .map_err(|error| ViewError::new(RefusalCode::BadValue, error.to_string()))?;
         Ok(Self {
@@ -49,11 +49,11 @@ impl ViewRequest {
         self.limit
     }
 
-    pub(crate) fn cursor(&self) -> Option<&str> {
+    pub fn cursor(&self) -> Option<&str> {
         self.cursor.as_deref()
     }
 
-    pub(crate) fn with_limit(mut self, limit: usize) -> Result<Self, ViewError> {
+    pub fn with_limit(mut self, limit: usize) -> Result<Self, ViewError> {
         if limit == 0 || limit > MAX_LIMIT {
             return Err(ViewError::new(
                 RefusalCode::BadValue,
@@ -64,7 +64,7 @@ impl ViewRequest {
         Ok(self)
     }
 
-    pub(crate) fn with_cursor(mut self, cursor: String) -> Self {
+    pub fn with_cursor(mut self, cursor: String) -> Self {
         self.cursor = Some(cursor);
         self
     }
@@ -105,12 +105,12 @@ impl ViewRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ViewSourceSnapshot {
-    pub(crate) source_set_identity: String,
-    pub(crate) revision: String,
+pub struct ViewSourceSnapshot {
+    pub source_set_identity: String,
+    pub revision: String,
 }
 
-pub(crate) trait ViewReadAuthority: Send + Sync {
+pub trait ViewReadAuthority: Send + Sync {
     fn snapshot(&self, at: &QualifiedAddress) -> Result<ViewSourceSnapshot, ViewError>;
 
     fn read_checkpoint(&self) -> Result<(), ViewError> {
@@ -154,36 +154,36 @@ pub(crate) trait ViewReadAuthority: Send + Sync {
     }
 }
 
-pub(crate) struct ViewService<A> {
+pub struct ViewService<A> {
     authority: A,
     cursors: Arc<ViewCursorStore>,
 }
 
 impl<A: ViewReadAuthority> ViewService<A> {
-    #[cfg(test)]
-    pub(crate) fn authority_for_test(&self) -> &A {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn authority_for_test(&self) -> &A {
         &self.authority
     }
 
-    pub(crate) fn new(authority: A, cursors: ViewCursorStore) -> Self {
+    pub fn new(authority: A, cursors: ViewCursorStore) -> Self {
         Self {
             authority,
             cursors: Arc::new(cursors),
         }
     }
 
-    pub(crate) fn with_shared_cursors(authority: A, cursors: Arc<ViewCursorStore>) -> Self {
+    pub fn with_shared_cursors(authority: A, cursors: Arc<ViewCursorStore>) -> Self {
         Self { authority, cursors }
     }
 
-    pub(crate) fn view(&self, request: ViewRequest) -> DomainResult {
+    pub fn view(&self, request: ViewRequest) -> DomainResult {
         match self.try_view(&request, None, None, None) {
             Ok(result) => result,
             Err(error) => error_result(Some(request.at.to_string()), error),
         }
     }
 
-    pub(crate) fn view_projected(
+    pub fn view_projected(
         &self,
         request: ViewRequest,
         project: &ViewProjector<'_>,
@@ -197,7 +197,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
     /// Page a collection supplied by a non-source provider while binding its
     /// cursor to the owning source node. Continuations reuse the captured
     /// collection; `data` is required only for the first page.
-    pub(crate) fn view_preloaded_collection(
+    pub fn view_preloaded_collection(
         &self,
         request: ViewRequest,
         source_at: &QualifiedAddress,
@@ -215,7 +215,7 @@ impl<A: ViewReadAuthority> ViewService<A> {
         }
     }
 
-    pub(crate) fn view_saved_collection(
+    pub fn view_saved_collection(
         &self,
         request: ViewRequest,
         source_at: &QualifiedAddress,

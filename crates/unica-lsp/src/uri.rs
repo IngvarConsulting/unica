@@ -51,26 +51,26 @@ const COMPONENT: &AsciiSet = &CONTROLS
 
 /// One workspace folder the client opened, as `initialize` names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WorkspaceFolder {
-    pub(crate) name: String,
-    pub(crate) root: PathBuf,
+pub struct WorkspaceFolder {
+    pub name: String,
+    pub root: PathBuf,
 }
 
 /// The spaces of one LSP connection.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct SpaceRegistry {
+pub struct SpaceRegistry {
     spaces: BTreeMap<String, PathBuf>,
 }
 
 /// A document of one space: a source set and a logical address in it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct DocumentUri {
-    pub(crate) space: String,
-    pub(crate) address: String,
+pub struct DocumentUri {
+    pub space: String,
+    pub address: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum UriError {
+pub enum UriError {
     /// Not a `unica://` URI with a space, a source set and an address.
     Malformed(&'static str),
     /// The space was not given to this connection.
@@ -82,7 +82,7 @@ pub(crate) enum UriError {
 impl SpaceRegistry {
     /// Name a space for each folder. Folders are taken in the order given;
     /// a name shared by several folders gets a short hash of each path.
-    pub(crate) fn from_folders(folders: &[WorkspaceFolder]) -> Self {
+    pub fn from_folders(folders: &[WorkspaceFolder]) -> Self {
         let mut uses = BTreeMap::<String, usize>::new();
         for folder in folders {
             *uses.entry(space_name(folder)).or_default() += 1;
@@ -111,7 +111,7 @@ impl SpaceRegistry {
     }
 
     /// The space whose root is `root`.
-    pub(crate) fn space_of_root(&self, root: &Path) -> Option<&str> {
+    pub fn space_of_root(&self, root: &Path) -> Option<&str> {
         self.spaces
             .iter()
             .find(|(_, known)| known.as_path() == root)
@@ -119,7 +119,7 @@ impl SpaceRegistry {
     }
 
     /// The `unica://` URI of `address` in `space`.
-    pub(crate) fn format(&self, document: &DocumentUri) -> Result<String, UriError> {
+    pub fn format(&self, document: &DocumentUri) -> Result<String, UriError> {
         if !self.spaces.contains_key(&document.space) {
             return Err(UriError::ForeignSpace(document.space.clone()));
         }
@@ -138,7 +138,7 @@ impl SpaceRegistry {
     }
 
     /// The space and address a `unica://` URI names.
-    pub(crate) fn parse(&self, uri: &str) -> Result<DocumentUri, UriError> {
+    pub fn parse(&self, uri: &str) -> Result<DocumentUri, UriError> {
         let rest = uri
             .strip_prefix(SCHEME)
             .and_then(|rest| rest.strip_prefix("://"))

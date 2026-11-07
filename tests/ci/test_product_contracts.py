@@ -2219,7 +2219,7 @@ class ProductContractTests(unittest.TestCase):
         """rule: INV.APP.DEPENDENCY-DIRECTION"""
         repo_root = Path(__file__).resolve().parents[2]
         application_root = (
-            repo_root / "crates" / "unica-coder" / "src" / "application"
+            repo_root / "crates" / "unica-application" / "src" / "application"
         )
         offenders = []
         for path in application_root.rglob("*.rs"):

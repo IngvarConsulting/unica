@@ -4,7 +4,7 @@ use unica_artifact_delivery::engine::MissingEngine;
 use unica_execution_contract::invocation::DomainResult;
 use unica_refusal::RefusalDetail;
 
-pub(crate) trait MissingEngineRefusal {
+pub trait MissingEngineRefusal {
     fn refusal_data(&self) -> serde_json::Value;
     fn refusal(&self, at: Option<String>) -> DomainResult;
     fn refusal_with_cause(&self, at: Option<String>, cause: &str) -> DomainResult;

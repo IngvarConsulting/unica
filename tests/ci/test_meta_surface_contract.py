@@ -9,11 +9,11 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-APPLICATION = REPO_ROOT / "crates/unica-coder/src/application/mod.rs"
-METADATA = REPO_ROOT / "crates/unica-coder/src/application/metadata.rs"
-TOOL_CONTRACTS = REPO_ROOT / "crates/unica-coder/src/application/tool_contracts.rs"
+APPLICATION = REPO_ROOT / "crates/unica-application/src/application/mod.rs"
+METADATA = REPO_ROOT / "crates/unica-application/src/application/metadata.rs"
+TOOL_CONTRACTS = REPO_ROOT / "crates/unica-application/src/application/tool_contracts.rs"
 OPERATION_DESCRIPTORS = (
-    REPO_ROOT / "crates/unica-coder/src/application/operation_descriptors.rs"
+    REPO_ROOT / "crates/unica-application/src/application/operation_descriptors.rs"
 )
 META_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/meta"
 META_DOMAIN = REPO_ROOT / "crates/unica-metadata/src"
@@ -328,7 +328,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
             self.assertIn(marker, review["now"])
 
     def test_subsystem_membership_has_one_registered_topology_owner(self) -> None:
-        ports = (REPO_ROOT / "crates/unica-coder/src/application/ports.rs").read_text(
+        ports = (REPO_ROOT / "crates/unica-application/src/application/ports.rs").read_text(
             encoding="utf-8"
         )
         info_binding = (META_RUNTIME / "info.rs").read_text(encoding="utf-8")

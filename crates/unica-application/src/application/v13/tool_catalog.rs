@@ -5,10 +5,10 @@ use unica_navigation::source_navigation::{
 };
 
 #[derive(Debug)]
-pub(crate) struct V13ToolContract {
-    pub(crate) name: &'static str,
-    pub(crate) description: &'static str,
-    pub(crate) input_schema: Value,
+pub struct V13ToolContract {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub input_schema: Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +40,7 @@ pub(crate) struct CatalogSemantics {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RunIntent {
+pub enum RunIntent {
     InfobaseCreate,
     SourceImport,
     SourceExport,
@@ -61,15 +61,15 @@ pub(crate) enum RunIntent {
 const RUNNER_LOAD_GAP: &str = "unavailable with the v8-runner 0.15 adapter: v8-runner 0.15 has push --no-apply, apply and reset, but the adapter does not run them yet, and the runner's upload of a CF/CFE file still applies the database configuration. Sources go through push, which applies the database configuration. Gap: https://github.com/IngvarConsulting/unica/issues/1246";
 
 #[derive(Debug)]
-pub(crate) struct RunOperation {
-    pub(crate) intent: RunIntent,
-    pub(crate) terminal: bool,
-    pub(crate) rejects_sessions: bool,
-    pub(crate) implemented: bool,
+pub struct RunOperation {
+    pub intent: RunIntent,
+    pub terminal: bool,
+    pub rejects_sessions: bool,
+    pub implemented: bool,
 }
 
 impl RunOperation {
-    pub(crate) const fn name(&self) -> &'static str {
+    pub const fn name(&self) -> &'static str {
         match self.intent {
             RunIntent::InfobaseCreate => "infobase.create",
             RunIntent::SourceImport => "push",
@@ -87,7 +87,7 @@ impl RunOperation {
         }
     }
 
-    pub(crate) const fn description(&self) -> &'static str {
+    pub const fn description(&self) -> &'static str {
         match self.intent {
             RunIntent::InfobaseCreate => {
                 "Create an absent infobase. A file infobase is created with the main configuration of the project (its CONFIGURATION source set) and the runner remembers that set, so the first push loads it only if it changed and loads the other sets in full; a cluster infobase is created empty and the first push loads every set in full."
@@ -121,7 +121,7 @@ impl RunOperation {
         }
     }
 
-    pub(crate) const fn support_reason(&self) -> Option<&'static str> {
+    pub const fn support_reason(&self) -> Option<&'static str> {
         match self.intent {
             RunIntent::CfImport | RunIntent::ConfigurationApply | RunIntent::ConfigurationReset => {
                 Some(RUNNER_LOAD_GAP)
@@ -133,14 +133,14 @@ impl RunOperation {
         }
     }
 
-    pub(crate) const fn execution(&self) -> &'static str {
+    pub const fn execution(&self) -> &'static str {
         match self.intent {
             RunIntent::ClientRun => "terminal",
             _ => "previewApply",
         }
     }
 
-    pub(crate) const fn effects(&self) -> &'static [&'static str] {
+    pub const fn effects(&self) -> &'static [&'static str] {
         match self.intent {
             RunIntent::ArtifactBuild => &["workspaceFiles"],
             RunIntent::SourceExport | RunIntent::CfExport | RunIntent::InfobaseExport => {
@@ -158,7 +158,7 @@ impl RunOperation {
         }
     }
 
-    pub(crate) fn args_schema(&self) -> Option<Value> {
+    pub fn args_schema(&self) -> Option<Value> {
         match self.intent {
             RunIntent::ExtensionList => {
                 Some(json!({"type":"object","additionalProperties":false,"properties":{}}))
@@ -256,17 +256,17 @@ impl RunOperation {
 }
 
 #[derive(Debug)]
-pub(crate) struct V13Catalog {
-    pub(crate) tools: Vec<V13ToolContract>,
+pub struct V13Catalog {
+    pub tools: Vec<V13ToolContract>,
     pub(crate) semantics: CatalogSemantics,
-    pub(crate) run_dictionary: Vec<RunOperation>,
+    pub run_dictionary: Vec<RunOperation>,
     pub(crate) result_envelope_schema: Value,
 }
 
 /// Returns the canonical v0.13 catalog selected by package routing. V12 is
 /// retained only as an explicit compatibility/test seam and has no v0.13
 /// catalog.
-pub(crate) fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
+pub fn catalog_for(release: SurfaceRelease) -> Option<V13Catalog> {
     match release {
         SurfaceRelease::V12 => None,
         SurfaceRelease::V13 => Some(V13Catalog {

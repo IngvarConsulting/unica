@@ -9,9 +9,9 @@ use unica_navigation::result_store::{ViewCursorBinding, ViewCursorError, ViewCur
 use unica_refusal::{RefusalCode, RefusalDetail};
 
 /// Diagnostics on one check page when `limit` is omitted.
-pub(crate) const DEFAULT_CHECK_LIMIT: usize = 20;
+pub const DEFAULT_CHECK_LIMIT: usize = 20;
 /// The largest `limit` a check page accepts.
-pub(crate) const MAX_CHECK_LIMIT: usize = 50;
+pub const MAX_CHECK_LIMIT: usize = 50;
 
 /// Renders one page of a check result from its diagnostics, continuation
 /// and stop reason.
@@ -21,7 +21,7 @@ type RenderPage<'a> = dyn Fn(Vec<Value>, Option<String>, &'static str) -> Domain
 /// holds the verdict and every finding; no first page is published unless
 /// each later indivisible finding fits the transport and the snapshot fits
 /// the bounded cursor store.
-pub(crate) fn page_diagnostics(
+pub fn page_diagnostics(
     cursors: &ViewCursorStore,
     binding: ViewCursorBinding,
     fresh: Option<DomainResult>,
@@ -96,13 +96,13 @@ pub(crate) fn page_diagnostics(
 /// The question a workspace verdict page answers: the workspace that asked
 /// the first page and its page size.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RootCheckQuestion {
+pub struct RootCheckQuestion {
     workspace: String,
     limit: usize,
 }
 
 impl RootCheckQuestion {
-    pub(crate) fn new(workspace: impl Into<String>, limit: usize) -> Self {
+    pub fn new(workspace: impl Into<String>, limit: usize) -> Self {
         Self {
             workspace: workspace.into(),
             limit,
@@ -128,7 +128,7 @@ impl RootCheckQuestion {
 /// a continuation reads it without inspecting the workspace again, and the
 /// same verdict to the same question gets the same cursor however it was
 /// delivered.
-pub(crate) fn page_root_verdict(
+pub fn page_root_verdict(
     cursors: &ViewCursorStore,
     question: &RootCheckQuestion,
     fresh: Option<DomainResult>,
@@ -392,7 +392,7 @@ pub(crate) const NATIVE_VALIDATORS: &[CheckValidator] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CheckValidator {
+pub enum CheckValidator {
     Cf,
     Cfe,
     Form,
@@ -408,7 +408,7 @@ impl CheckValidator {
     /// The native validator this step runs, by its operation name. The
     /// read-only format guard of the retired `*.validate` tools is keyed by
     /// the same names, so the canonical check inherits it unchanged.
-    pub(crate) const fn native_operation(self) -> &'static str {
+    pub const fn native_operation(self) -> &'static str {
         match self {
             Self::Cf => "cf-validate",
             Self::Cfe => "cfe-validate",
@@ -442,7 +442,7 @@ impl CheckValidator {
 
     /// The validator that owns an address before the node is read: the
     /// export-format guard names it when the read port cannot open the target.
-    pub(crate) fn for_unread_address(at: &QualifiedAddress, extension: bool) -> Option<Self> {
+    pub fn for_unread_address(at: &QualifiedAddress, extension: bool) -> Option<Self> {
         let kind = at
             .segments()
             .last()
@@ -462,38 +462,38 @@ impl CheckValidator {
 
 /// What `check` knows about a readable node before choosing its validators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct NodeFacts {
+pub struct NodeFacts {
     /// The node lives in a source set of kind `EXTENSION`.
-    pub(crate) extension: bool,
+    pub extension: bool,
     /// A template node's flavour, when the projection states it.
-    pub(crate) template: Option<TemplateFlavour>,
+    pub template: Option<TemplateFlavour>,
     /// The borrowed node carries no companion file of its own (`Rights.xml`,
     /// `Form.xml`, `Template.xml`): its content is the parent's, and there is
     /// nothing in this source set for the companion validator to read.
-    pub(crate) inherited: bool,
+    pub inherited: bool,
     /// The node's owners are subsystems only (`main:Subsystem.A.Interface`):
     /// only there `Interface` is a command interface. The same kind under a
     /// module (`main:CommonModule.X.Interface`) is a slice of its methods
     /// (#1467).
-    pub(crate) subsystem_owned: bool,
+    pub subsystem_owned: bool,
     /// The node lies inside a template (`…Template.T.Area.A.Body`): its
     /// `Body` is template data, not module code.
-    pub(crate) in_template: bool,
+    pub in_template: bool,
     /// The last address segment carries a name. A metadata kind or `Module`
     /// without one is a branch listing its members (`main:Catalog`,
     /// `…Items.Module`), not one descriptor or one module (#1467).
-    pub(crate) named: bool,
+    pub named: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TemplateFlavour {
+pub enum TemplateFlavour {
     DataCompositionSchema,
     SpreadsheetDocument,
 }
 
 /// One validation step of a check plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CheckStep {
+pub enum CheckStep {
     Native(CheckValidator),
     /// The typed metadata validator of one object descriptor.
     Meta,
@@ -503,7 +503,7 @@ pub(crate) enum CheckStep {
 }
 
 impl CheckStep {
-    pub(crate) const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Self::Native(validator) => validator.name(),
             Self::Meta => "meta",
@@ -514,7 +514,7 @@ impl CheckStep {
 
 /// The validators a readable node owns, in the order they run. An empty plan
 /// means the node has no validator and `check` reports readability only.
-pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
+pub fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
     match kind {
         // Заимствованный узел без своего файла читается по дескриптору;
         // валидатор файла прав, формы или макета проверял бы содержимое
@@ -565,7 +565,7 @@ pub(crate) fn plan_for_node(kind: &str, facts: NodeFacts) -> Vec<CheckStep> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CheckError {
+pub enum CheckError {
     BadValue { field: String, message: String },
     DependencyUnavailable,
 }
@@ -577,14 +577,14 @@ impl CheckError {
     /// собственного кода у неё нет с тех пор, как `dependency_unavailable`
     /// снят из словаря как синоним. Уточнение держит код при себе, поэтому
     /// разойтись они не могут.
-    pub(crate) const fn detail(&self) -> Option<RefusalDetail> {
+    pub const fn detail(&self) -> Option<RefusalDetail> {
         match self {
             Self::BadValue { .. } => None,
             Self::DependencyUnavailable => Some(RefusalDetail::ProviderAbsent),
         }
     }
 
-    pub(crate) const fn code(&self) -> RefusalCode {
+    pub const fn code(&self) -> RefusalCode {
         match self {
             Self::BadValue { .. } => RefusalCode::BadValue,
             Self::DependencyUnavailable => RefusalDetail::ProviderAbsent.code(),
@@ -606,7 +606,7 @@ impl fmt::Display for CheckError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct CheckDiagnostic {
+pub struct CheckDiagnostic {
     severity: String,
     code: String,
     message: String,
@@ -615,7 +615,7 @@ pub(crate) struct CheckDiagnostic {
 impl CheckDiagnostic {
     /// A warning that keeps the validator verdict: the closed format codes of
     /// the export-format guard travel through here.
-    pub(crate) fn warning(code: impl Into<String>, message: &str) -> Self {
+    pub fn warning(code: impl Into<String>, message: &str) -> Self {
         Self {
             severity: "warning".to_string(),
             code: code.into(),
@@ -623,21 +623,21 @@ impl CheckDiagnostic {
         }
     }
 
-    pub(crate) fn severity(&self) -> &str {
+    pub fn severity(&self) -> &str {
         &self.severity
     }
 
-    pub(crate) fn code(&self) -> &str {
+    pub fn code(&self) -> &str {
         &self.code
     }
 
-    pub(crate) fn message(&self) -> &str {
+    pub fn message(&self) -> &str {
         &self.message
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NativeCheckOutcome {
+pub struct NativeCheckOutcome {
     ok: bool,
     diagnostics: Vec<CheckDiagnostic>,
     unavailable: bool,
@@ -647,7 +647,7 @@ impl NativeCheckOutcome {
     /// Findings from a retained source model contain XML facts, not provider
     /// paths. Keep expanded XML names and URIs intact; adapter stderr still
     /// goes through the separate sanitized adapter constructor.
-    pub(crate) fn from_source_findings(
+    pub fn from_source_findings(
         findings: impl IntoIterator<Item = (bool, String, String)>,
     ) -> Self {
         let mut ok = true;
@@ -696,12 +696,12 @@ impl NativeCheckOutcome {
 
     /// Prepends one diagnostic without touching the verdict: a read-only
     /// format warning is reported first, the validator findings follow.
-    pub(crate) fn with_leading_diagnostic(mut self, diagnostic: CheckDiagnostic) -> Self {
+    pub fn with_leading_diagnostic(mut self, diagnostic: CheckDiagnostic) -> Self {
         self.diagnostics.insert(0, diagnostic);
         self
     }
 
-    pub(crate) fn unavailable(_detail: &str) -> Self {
+    pub fn unavailable(_detail: &str) -> Self {
         Self {
             ok: false,
             diagnostics: Vec::new(),
@@ -709,7 +709,7 @@ impl NativeCheckOutcome {
         }
     }
 
-    pub(crate) fn from_adapter(
+    pub fn from_adapter(
         outcome: &unica_execution_contract::adapter_outcome::AdapterOutcome,
     ) -> Self {
         let mut diagnostics = outcome
@@ -735,7 +735,7 @@ impl NativeCheckOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct CheckResult {
+pub struct CheckResult {
     at: String,
     kind: String,
     validator: String,
@@ -744,11 +744,11 @@ pub(crate) struct CheckResult {
 }
 
 impl CheckResult {
-    pub(crate) fn ok(&self) -> bool {
+    pub fn ok(&self) -> bool {
         self.ok
     }
 
-    pub(crate) fn diagnostics(&self) -> &[CheckDiagnostic] {
+    pub fn diagnostics(&self) -> &[CheckDiagnostic] {
         &self.diagnostics
     }
 
@@ -761,7 +761,7 @@ impl CheckResult {
     }
 }
 
-pub(crate) fn normalize_native_outcome(
+pub fn normalize_native_outcome(
     at: &QualifiedAddress,
     kind: &str,
     validator: CheckValidator,

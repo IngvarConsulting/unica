@@ -23,7 +23,7 @@ use unica_address::address::{NodeKind, QualifiedAddress};
 
 /// Личность узла графа вызовов.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CallGraphIdentity {
+pub enum CallGraphIdentity {
     /// Метод модуля, адресуемого логически: общий модуль, модуль объекта,
     /// модуль менеджера.
     Logical {
@@ -40,7 +40,7 @@ pub(crate) enum CallGraphIdentity {
 /// Роль модуля в личности анализатора. Закрытый набор: роль, которой замер не
 /// видел, переводом не обслуживается.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CallGraphModuleRole {
+pub enum CallGraphModuleRole {
     Common,
     Object,
     Manager,
@@ -85,7 +85,7 @@ impl CallGraphModuleRole {
 /// Почему перевод не состоялся. Каждый случай назван: молчаливая пустота здесь
 /// хуже отказа, потому что читатель примет её за «вызовов нет».
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CallGraphIdentityError {
+pub enum CallGraphIdentityError {
     /// Адрес не называет метод.
     NotAMethod,
     /// Модуль живёт в файле, а путь вызывающий не дал.
@@ -101,7 +101,7 @@ impl CallGraphIdentity {
     ///
     /// `path` — физический путь модуля, уже разрешённый вызывающим. Он нужен
     /// только формам и командам; для остальных ролей не запрашивается.
-    pub(crate) fn from_address(
+    pub fn from_address(
         address: &QualifiedAddress,
         path: Option<&str>,
     ) -> Result<Self, CallGraphIdentityError> {
@@ -162,7 +162,7 @@ impl CallGraphIdentity {
     }
 
     /// Личность в том написании, которое принимает анализатор.
-    pub(crate) fn to_analyzer_id(&self) -> String {
+    pub fn to_analyzer_id(&self) -> String {
         match self {
             Self::Logical {
                 role,
@@ -178,7 +178,7 @@ impl CallGraphIdentity {
     }
 
     /// Разобрать личность, которую анализатор вернул в странице ветви.
-    pub(crate) fn parse_analyzer_id(id: &str) -> Result<Self, CallGraphIdentityError> {
+    pub fn parse_analyzer_id(id: &str) -> Result<Self, CallGraphIdentityError> {
         let Some(rest) = id.strip_prefix("method/") else {
             return Err(CallGraphIdentityError::Malformed(id.to_string()));
         };
@@ -222,7 +222,7 @@ impl CallGraphIdentity {
     /// `address_for_path` переводит путь в адрес и нужен только личности,
     /// названной файлом: путь наружу не уходит, значит и в ответе ветви его
     /// быть не может.
-    pub(crate) fn to_address(
+    pub fn to_address(
         &self,
         source_set: &str,
         address_for_path: impl FnOnce(&str) -> Option<QualifiedAddress>,

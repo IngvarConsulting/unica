@@ -4,16 +4,16 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use unica_address::address::{NodeKind, QualifiedAddress};
 use unica_refusal::RefusalCode;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_work_control::cancellation::CancellationToken;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_work_control::provider_deadline::ProviderDeadline;
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FindRequest {
+pub struct FindRequest {
     query: String,
     kind: Option<String>,
     scope: Option<QualifiedAddress>,
@@ -21,7 +21,7 @@ pub(crate) struct FindRequest {
 }
 
 impl FindRequest {
-    pub(crate) fn new(query: &str) -> Result<Self, FindError> {
+    pub fn new(query: &str) -> Result<Self, FindError> {
         let query = query.trim();
         if query.is_empty() {
             return Err(FindError::new(
@@ -37,12 +37,12 @@ impl FindRequest {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn query(&self) -> &str {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn query(&self) -> &str {
         &self.query
     }
 
-    pub(crate) fn with_kind(mut self, kind: &str) -> Result<Self, FindError> {
+    pub fn with_kind(mut self, kind: &str) -> Result<Self, FindError> {
         let kind = NodeKind::parse(kind).map_err(|_| {
             FindError::new(RefusalCode::BadValue, format!("unknown node kind `{kind}`"))
         })?;
@@ -50,7 +50,7 @@ impl FindRequest {
         Ok(self)
     }
 
-    pub(crate) fn with_limit(mut self, limit: usize) -> Result<Self, FindError> {
+    pub fn with_limit(mut self, limit: usize) -> Result<Self, FindError> {
         if limit == 0 {
             return Err(FindError::new(
                 RefusalCode::BadValue,
@@ -61,7 +61,7 @@ impl FindRequest {
         Ok(self)
     }
 
-    pub(crate) fn with_scope(mut self, scope: QualifiedAddress) -> Self {
+    pub fn with_scope(mut self, scope: QualifiedAddress) -> Self {
         self.scope = Some(scope);
         self
     }
@@ -84,7 +84,7 @@ impl FindRequest {
 /// One searchable fact whose origin is closed to identity data. There is no
 /// content/body variant, so content search cannot leak into `find` by accident.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FindFactKind {
+pub enum FindFactKind {
     Name,
     Synonym,
     ExportPath,
@@ -105,13 +105,13 @@ impl FindFactKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FindFact {
+pub struct FindFact {
     kind: FindFactKind,
     value: String,
 }
 
 impl FindFact {
-    pub(crate) fn new(kind: FindFactKind, value: impl Into<String>) -> Self {
+    pub fn new(kind: FindFactKind, value: impl Into<String>) -> Self {
         Self {
             kind,
             value: value.into(),
@@ -120,7 +120,7 @@ impl FindFact {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FindDocument {
+pub struct FindDocument {
     at: String,
     kind: String,
     title: String,
@@ -135,17 +135,17 @@ pub(crate) struct FindDocument {
 }
 
 impl FindDocument {
-    pub(crate) fn kind(&self) -> &str {
+    pub fn kind(&self) -> &str {
         &self.kind
     }
 
     /// Присутствует у всякой записи, которую раскладка сумела разместить;
     /// аварийный мост только такие и возвращает.
-    pub(crate) fn placed_path(&self) -> Option<&str> {
+    pub fn placed_path(&self) -> Option<&str> {
         self.path.as_deref()
     }
 
-    pub(crate) fn new(
+    pub fn new(
         at: impl Into<String>,
         kind: impl Into<String>,
         title: impl Into<String>,
@@ -166,20 +166,20 @@ impl FindDocument {
         }
     }
 
-    pub(crate) fn with_owner_descriptor(mut self, path: impl Into<String>) -> Self {
+    pub fn with_owner_descriptor(mut self, path: impl Into<String>) -> Self {
         self.owner_descriptor = Some(path.into());
         self
     }
-    pub(crate) fn owner_descriptor(&self) -> Option<&str> {
+    pub fn owner_descriptor(&self) -> Option<&str> {
         self.owner_descriptor.as_deref()
     }
 
-    pub(crate) fn with_path(mut self, path: impl Into<String>) -> Self {
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
         self.path = Some(path.into());
         self
     }
 
-    pub(crate) fn estimated_identity_bytes(&self) -> usize {
+    pub fn estimated_identity_bytes(&self) -> usize {
         self.at
             .len()
             .saturating_add(self.kind.len())
@@ -196,34 +196,34 @@ impl FindDocument {
             )
     }
 
-    pub(crate) fn at(&self) -> &str {
+    pub fn at(&self) -> &str {
         &self.at
     }
 
-    pub(crate) fn set_path_alias(&mut self, path: Option<FindPathAlias>) {
+    pub fn set_path_alias(&mut self, path: Option<FindPathAlias>) {
         self.path_alias = path;
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FindPathAlias {
-    pub(crate) relative: String,
-    pub(crate) absolute: String,
+pub struct FindPathAlias {
+    pub relative: String,
+    pub absolute: String,
 }
 
 impl FindPathAlias {
-    pub(crate) fn estimated_bytes(&self) -> usize {
+    pub fn estimated_bytes(&self) -> usize {
         self.relative.len().saturating_add(self.absolute.len())
     }
 }
 
-pub(crate) struct FindPathMatch<'a> {
-    pub(crate) owner: &'a FindDocument,
-    pub(crate) path: &'a str,
+pub struct FindPathMatch<'a> {
+    pub owner: &'a FindDocument,
+    pub path: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct FindCandidate {
+pub struct FindCandidate {
     at: String,
     kind: String,
     title: String,
@@ -236,7 +236,7 @@ pub(crate) struct FindCandidate {
 }
 
 impl FindCandidate {
-    pub(crate) fn at(&self) -> &str {
+    pub fn at(&self) -> &str {
         &self.at
     }
 
@@ -248,19 +248,19 @@ impl FindCandidate {
         &self.title
     }
 
-    pub(crate) fn reason(&self) -> &str {
+    pub fn reason(&self) -> &str {
         &self.reason
     }
 
-    #[cfg(test)]
-    pub(crate) fn path(&self) -> Option<&str> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn path(&self) -> Option<&str> {
         self.path.as_deref()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct FindResult {
+pub struct FindResult {
     candidates: Vec<FindCandidate>,
     #[serde(skip_serializing_if = "is_false")]
     nearest: bool,
@@ -273,8 +273,8 @@ fn is_false(value: &bool) -> bool {
 impl FindResult {
     /// Test-only probe result: `find` no longer traverses the logical tree, so
     /// reader-coverage tests answer through the typed reader itself.
-    #[cfg(test)]
-    pub(crate) fn reader_probe(at: &str, reached: bool) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn reader_probe(at: &str, reached: bool) -> Self {
         Self {
             candidates: reached
                 .then(|| FindCandidate {
@@ -290,17 +290,17 @@ impl FindResult {
         }
     }
 
-    pub(crate) fn candidates(&self) -> &[FindCandidate] {
+    pub fn candidates(&self) -> &[FindCandidate] {
         &self.candidates
     }
 
-    pub(crate) const fn is_nearest(&self) -> bool {
+    pub const fn is_nearest(&self) -> bool {
         self.nearest
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FindError {
+pub struct FindError {
     code: RefusalCode,
     message: String,
 }
@@ -313,7 +313,7 @@ impl FindError {
         }
     }
 
-    pub(crate) const fn code(&self) -> RefusalCode {
+    pub const fn code(&self) -> RefusalCode {
         self.code
     }
 }
@@ -325,12 +325,12 @@ impl std::fmt::Display for FindError {
 }
 
 #[derive(Debug)]
-pub(crate) struct FindIndex {
+pub struct FindIndex {
     documents: Vec<FindDocument>,
 }
 
 impl FindIndex {
-    pub(crate) fn new(mut documents: Vec<FindDocument>) -> Self {
+    pub fn new(mut documents: Vec<FindDocument>) -> Self {
         documents.sort_by(|left, right| left.at.cmp(&right.at));
         documents.dedup_by(|left, right| left.at == right.at);
         Self { documents }
@@ -339,7 +339,7 @@ impl FindIndex {
     /// Точный поиск по адресу для аварийного моста: либо этот самый адрес,
     /// либо ничего. Ранжирование и «ближайшее» сюда не попадают — мост на
     /// догадки не имеет права.
-    pub(crate) fn locate_address(&self, at: &str) -> Option<&FindDocument> {
+    pub fn locate_address(&self, at: &str) -> Option<&FindDocument> {
         self.documents
             .iter()
             .find(|document| document.at == at && document.path.is_some())
@@ -355,7 +355,7 @@ impl FindIndex {
     /// Точный поиск по пути. Путь мог прийти абсолютным или относительно
     /// корня рабочего пространства, поэтому хвост принимается тоже — но
     /// только целиком, посегментно, а не подстрокой.
-    pub(crate) fn locate_path(&self, path: &str) -> Option<FindPathMatch<'_>> {
+    pub fn locate_path(&self, path: &str) -> Option<FindPathMatch<'_>> {
         let absolute_query = std::path::Path::new(path).is_absolute();
         let query = normalize_layout_path(path);
         let mut best: Option<FindPathMatch<'_>> = None;
@@ -412,7 +412,7 @@ impl FindIndex {
         best.filter(|_| !ambiguous)
     }
 
-    pub(crate) fn find(&self, request: FindRequest) -> FindResult {
+    pub fn find(&self, request: FindRequest) -> FindResult {
         let limit = request.limit;
         self.find_ranked(request, Some(limit), || Ok(()))
             .expect("an unchecked find cannot fail")
@@ -420,8 +420,8 @@ impl FindIndex {
 
     /// The entire ranked stream of a whole directory: the oracle a name
     /// search ([`NameRanker`]) is checked against.
-    #[cfg(test)]
-    pub(crate) fn find_all_checked(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn find_all_checked(
         &self,
         request: FindRequest,
         deadline: ProviderDeadline,
@@ -538,7 +538,7 @@ impl FindIndex {
 /// depend on the order it was met in.
 /// Nearest names are scored on a second walk, only when nothing matched
 /// directly.
-pub(crate) struct NameRanker {
+pub struct NameRanker {
     request: FindRequest,
     query: String,
     watched: HashMap<String, bool>,
@@ -555,18 +555,18 @@ pub(crate) struct NameRanker {
 
 /// The candidates of one page and what identifies the whole ranked answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RankedNames {
+pub struct RankedNames {
     /// The `keep` best candidates after the previous page, in rank order,
     /// with their rank scores.
-    pub(crate) candidates: Vec<(usize, FindCandidate)>,
-    pub(crate) nearest: bool,
-    pub(crate) matched: usize,
+    pub candidates: Vec<(usize, FindCandidate)>,
+    pub nearest: bool,
+    pub matched: usize,
     /// Count and order-free digest of every ranked match.
-    pub(crate) fingerprint: [u8; 32],
+    pub fingerprint: [u8; 32],
     /// The largest public match, for the transport check of any page.
-    pub(crate) largest_item_bytes: usize,
+    pub largest_item_bytes: usize,
     /// The longest address, for the size of any continuation keyed by it.
-    pub(crate) largest_address_bytes: usize,
+    pub largest_address_bytes: usize,
 }
 
 struct Ranked {
@@ -601,7 +601,7 @@ impl Ord for Ranked {
 }
 
 /// The public shape of one name match, the same on every page.
-pub(crate) fn public_name_match(candidate: &FindCandidate) -> serde_json::Value {
+pub fn public_name_match(candidate: &FindCandidate) -> serde_json::Value {
     serde_json::json!({
         "at": candidate.at,
         "kind": candidate.kind,
@@ -615,7 +615,7 @@ impl NameRanker {
     /// `watched` are addresses whose presence the caller checks afterwards,
     /// such as a search scope; `keep` is how many best candidates the page
     /// needs.
-    pub(crate) fn new(
+    pub fn new(
         request: FindRequest,
         watched: impl IntoIterator<Item = String>,
         keep: usize,
@@ -636,7 +636,7 @@ impl NameRanker {
         }
     }
 
-    pub(crate) fn offer(&mut self, document: FindDocument) {
+    pub fn offer(&mut self, document: FindDocument) {
         if !self.nearest_pass {
             if let Some(present) = self.watched.get_mut(&document.at) {
                 *present = true;
@@ -696,13 +696,13 @@ impl NameRanker {
     }
 
     /// Whether a second walk for nearest names is the answer.
-    pub(crate) fn needs_nearest_pass(&self) -> bool {
+    pub fn needs_nearest_pass(&self) -> bool {
         !self.nearest_pass && self.matched == 0
     }
 
     /// The same question for the second walk; watched addresses keep what
     /// the first walk saw.
-    pub(crate) fn into_nearest_pass(self) -> Self {
+    pub fn into_nearest_pass(self) -> Self {
         Self {
             nearest_pass: true,
             best: BinaryHeap::new(),
@@ -715,7 +715,7 @@ impl NameRanker {
     }
 
     /// The watched addresses the walk met.
-    pub(crate) fn watched_presence(&self) -> HashSet<String> {
+    pub fn watched_presence(&self) -> HashSet<String> {
         self.watched
             .iter()
             .filter(|(_, present)| **present)
@@ -723,7 +723,7 @@ impl NameRanker {
             .collect()
     }
 
-    pub(crate) fn finish(self) -> RankedNames {
+    pub fn finish(self) -> RankedNames {
         let mut fingerprint = Sha256::new();
         fingerprint.update(b"unica-v13-names-ranked-v2\0");
         fingerprint.update((self.matched as u64).to_le_bytes());
@@ -820,7 +820,7 @@ fn normalize(value: &str) -> String {
     value.trim().to_lowercase()
 }
 
-pub(crate) fn normalize_layout_path(path: &str) -> String {
+pub fn normalize_layout_path(path: &str) -> String {
     let normalized = normalize(&path.replace('\\', "/"));
     if let Some(unc) = normalized.strip_prefix("//?/unc/") {
         format!("//{unc}")

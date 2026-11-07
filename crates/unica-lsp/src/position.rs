@@ -8,9 +8,9 @@ use std::cmp::Ordering;
 
 /// An LSP position: zero-based line, UTF-16 code units into that line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct Utf16Position {
-    pub(crate) line: u32,
-    pub(crate) character: u32,
+pub struct Utf16Position {
+    pub line: u32,
+    pub character: u32,
 }
 
 /// A Unica text point: one-based line and the UTF-8 byte column in it.
@@ -22,7 +22,7 @@ pub(crate) struct UnicaPoint {
 
 /// Why a position does not name a point of the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PositionError {
+pub enum PositionError {
     /// The line is past the end of the text.
     LineOutOfRange,
     /// The position falls between the two units of a surrogate pair.
