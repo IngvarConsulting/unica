@@ -442,6 +442,8 @@ receipt-runtime = { max-threads = 4 }
 # получали `store_failed` и истечение срока submit, когда шли одновременно с
 # тяжёлыми тестами поиска по большим корпусам (#2147). Группа не даёт им
 # идти одновременно друг с другом; сроки и остальной прогон не меняются.
+# Она действует только на Windows: на Linux и macOS сбой не наблюдался, а
+# цепочка из 11 тестов подряд дописывала к шагу очереди около 40 с.
 workspace-stdio = { max-threads = 1 }
 
 # Гонка отмены со стартом задания держит отмену, пока задание стартует с
@@ -464,6 +466,7 @@ filter = 'binary(unica_coder) & test(/^infrastructure::daemon::medium_receipt_ru
 test-group = "receipt-runtime"
 
 [[profile.default.overrides]]
+platform = 'cfg(windows)'
 filter = '''
 binary(v13_workspace_bootstrap)
 | (binary(v13_search_integration) & test(/^(text_search_enumerates_wide_and_aggregate_corpora_without_an_entry_quota|resolve_resources::resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp)$/))
