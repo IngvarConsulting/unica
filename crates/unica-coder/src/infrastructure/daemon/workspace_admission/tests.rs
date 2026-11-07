@@ -169,3 +169,59 @@ fn a_view_of_the_extension_and_its_editor_folder_reach_one_actor() {
     assert_eq!(invocation.parent_source_names, vec!["main".to_owned()]);
     assert!(admit_editor_folder(orphan.path(), &runtime.workspace_actors, soon()).is_none());
 }
+
+/// A call holding the actor while its root is replaced: other admissions of
+/// the workspace get a retryable refusal, not a state error, and the next
+/// admission after the call ends gets a new actor.
+#[test]
+fn a_replaced_root_is_temporarily_unavailable_while_a_call_holds_the_old_actor() {
+    let workspace = configuration_with_extension();
+    let root = workspace.path();
+    let runtime = super::super::super::V5CanonicalInvocationRuntime::new(
+        Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()),
+        Arc::new(TokioClock),
+    );
+    let bind = || {
+        let request = InvocationRequest::new(
+            ToolIdentity::View,
+            serde_json::json!({"at": "ext:CommonModule.Main"}),
+            fs::canonicalize(root).unwrap().to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        super::super::bind_workspace_invocation(
+            &request,
+            &runtime.workspace_actors,
+            Arc::clone(&runtime.deliveries),
+            Arc::clone(&runtime.provider_hosts),
+            Arc::clone(&runtime.runtime_resources),
+            None,
+            runtime.capture_response_deadline_for_test(),
+        )
+    };
+    let running = bind().unwrap();
+    fs::rename(root.join("ext"), root.join("ext.old")).unwrap();
+    fs::create_dir_all(root.join("ext/CommonModules/Main/Ext")).unwrap();
+    fs::copy(
+        root.join("ext.old/Configuration.xml"),
+        root.join("ext/Configuration.xml"),
+    )
+    .unwrap();
+    fs::write(root.join("ext/CommonModules/Main/Ext/Module.bsl"), DISK).unwrap();
+
+    assert!(matches!(
+        bind().err(),
+        Some(WorkspaceAdmissionError::Unadmitted {
+            cause: UnadmittedCause::ActorRootUnavailable,
+            ..
+        })
+    ));
+    assert!(admit_editor_folder(root, &runtime.workspace_actors, soon()).is_none());
+
+    let stale = Arc::downgrade(&running.actor);
+    drop(running);
+    let next = bind().expect("the replaced root is admitted after the call ends");
+    assert!(stale.upgrade().is_none());
+    assert!(admit_editor_folder(root, &runtime.workspace_actors, soon())
+        .is_some_and(|editor| Arc::ptr_eq(&editor.actor, &next.actor)));
+}
