@@ -1043,7 +1043,7 @@ pub(crate) mod medium_cf_edit_transaction_tests {
                 ("NoValidate".to_string(), json!(true)),
             ]);
 
-            let result = UnicaApplication::new()
+            let result = crate::composition::testing::application()
                 .call_tool("unica.cf.edit", &args)
                 .unwrap();
 

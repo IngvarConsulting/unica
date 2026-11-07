@@ -1,6 +1,8 @@
-pub mod application;
+pub use unica_application::{application, domain};
+
+#[cfg(test)]
+mod application_medium_tests;
 mod composition;
-pub mod domain;
 pub(crate) mod infrastructure;
 pub mod interfaces;
 

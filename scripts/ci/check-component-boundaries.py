@@ -48,7 +48,7 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
             reasons.append("semantic families use contracts and their declared semantic dependencies")
     if name == "operations" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
         reasons.append("generic operation orchestration must not import a family or backend")
-    if name in COORDINATORS | {"analysis-services"} and dependency.startswith("unica-"):
+    if name in COORDINATORS | {"analysis-services", "application"} and dependency.startswith("unica-"):
         if target.startswith("adapter-") or target.endswith("-designer"):
             reasons.append("coordinators invoke ports without importing their concrete implementations")
     if name == "source-designer" and dependency.startswith("unica-") and target not in ABSTRACTIONS:

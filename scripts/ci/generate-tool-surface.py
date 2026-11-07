@@ -355,7 +355,7 @@ def render(tools: list[dict], review: dict) -> str:
         " [`tool-surface-review.json`](../tests/fixtures/v013/tool-surface-review.json): контракт"
         " результата и сценарии. Имена, описания и аргументы принадлежат"
         " реестру v0.13 в"
-        " `crates/unica-coder/src/application/v13/tool_catalog.rs`; здесь они"
+        " `crates/unica-application/src/application/v13/tool_catalog.rs`; здесь они"
         " лишь показаны рядом."
     )
     out.append("")

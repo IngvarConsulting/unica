@@ -580,7 +580,7 @@ def schema_errors(schema: Any, value: Any, path: str = "$") -> list[str]:
 # Наблюдатель только читает и планирует. Каждый инструмент из `tools/list`
 # классифицирован здесь; инструмент, которого в перечне нет, отклоняется
 # целиком (403), пока его не разберут по схеме и обработчику
-# (`crates/unica-coder/src/application/v13/*.rs`).
+# (`crates/unica-application/src/application/v13/*.rs`).
 #
 #   view, check, resolve, search, diff, docs — чтение: файлов и базы не меняют.
 #   task.get, task.result, task.cancel — только для taskId, которые
