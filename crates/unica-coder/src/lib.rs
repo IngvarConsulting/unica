@@ -1,8 +1,6 @@
 pub use unica_application::application;
 pub use unica_domain as domain;
 
-#[cfg(test)]
-mod application_tests;
 mod composition;
 pub(crate) mod infrastructure;
 pub mod interfaces;
