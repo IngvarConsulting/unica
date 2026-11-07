@@ -442,3 +442,103 @@ fn the_module_address_mcp_gives_a_file_with_body_is_its_document_address() {
         assert_eq!(content(&host, &editor, &uri), text(relative), "{uri}");
     }
 }
+
+/// A root gone for a moment drops the document with its buffer: once the root
+/// is back the file answers and the editor can open the document again, from
+/// any version.
+#[test]
+fn a_document_refused_while_its_root_is_gone_leaves_no_buffer_behind() {
+    let workspace = workspace();
+    let (host, _workspaces) = service();
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+    let change = V5LspNotification::DidChange {
+        uri: BODY_URI.to_owned(),
+        version: 6,
+        changes: vec![V5LspContentChange {
+            range: None,
+            text: "Procedure Lost() EndProcedure\n".into(),
+        }],
+    };
+    host.notify(
+        &editor,
+        V5LspNotification::DidOpen {
+            uri: BODY_URI.to_owned(),
+            language_id: "bsl".into(),
+            version: 5,
+            text: "Procedure Buffer() EndProcedure\n".into(),
+        },
+        soon(),
+    )
+    .unwrap();
+    let source = workspace.path().join("src");
+    let aside = workspace.path().join("src.aside");
+
+    fs::rename(&source, &aside).unwrap();
+    assert_eq!(
+        host.notify(&editor, change, soon()),
+        Err(V5LspFailure::WorkspaceUnavailable)
+    );
+    fs::rename(&aside, &source).unwrap();
+
+    assert_eq!(content(&host, &editor, BODY_URI), text(DISK));
+    open_buffer(&host, &editor, BODY_URI, "Procedure Again() EndProcedure\n");
+    assert_eq!(
+        content(&host, &editor, BODY_URI),
+        text("Procedure Again() EndProcedure\n")
+    );
+}
+
+/// A source set moved to another path is a new workspace identity. The session
+/// lets go of the old actor, which would otherwise be retained by its buffer
+/// for the life of the daemon, and reads modules under the new root.
+#[test]
+fn a_moved_source_root_releases_the_old_actor_and_serves_the_new_layout() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let other = root.join("src/CommonModules/Other/Ext/Module.bsl");
+    fs::create_dir_all(other.parent().unwrap()).unwrap();
+    fs::write(&other, "// other\n").unwrap();
+    let (host, workspaces) = service();
+    let editor = V5LspSessionId::new();
+    host.open(&editor, &[folder(root, "Work")], client(), soon())
+        .unwrap();
+    open_buffer(
+        &host,
+        &editor,
+        BODY_URI,
+        "Procedure Buffer() EndProcedure\n",
+    );
+    let before = workspaces.admit(root, soon()).unwrap().actor;
+
+    fs::rename(root.join("src"), root.join("moved")).unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: moved\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        content(&host, &editor, BODY_URI),
+        text("Procedure Buffer() EndProcedure\n")
+    );
+    assert!(
+        before
+            .documents()
+            .session_documents(editor.as_str(), "main")
+            .unwrap()
+            .is_empty(),
+        "the old actor keeps no buffer of this session"
+    );
+    assert_eq!(
+        content(&host, &editor, "unica://work/main/CommonModule.Other.Body"),
+        text("// other\n"),
+        "a module with no buffer is read under the new root"
+    );
+}

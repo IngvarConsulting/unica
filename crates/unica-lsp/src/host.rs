@@ -189,8 +189,16 @@ impl LspHost for UnicaLspHost {
             Err(failure) => {
                 // Without its actor the session cannot keep the editor's
                 // text: the document is dropped here and refused, so no
-                // answer is given from a buffer that missed this change.
-                let _ = session.documents.close(&DocumentOverlay::default(), &uri);
+                // answer is given from a buffer that missed this change. The
+                // actor may serve again once its root is back, so its copy of
+                // the buffer goes too.
+                let held = session
+                    .spaces
+                    .get(&location.document.space)
+                    .and_then(|space| space.actor.upgrade());
+                let gone = DocumentOverlay::default();
+                let overlay = held.as_ref().map_or(&gone, |actor| actor.documents());
+                let _ = session.documents.close(overlay, &uri);
                 return match notification {
                     V5LspNotification::DidClose { .. } => Ok(()),
                     _ => Err(failure),
@@ -339,8 +347,19 @@ impl Session {
                 }
             }
         }
+        self.documents
+            .replace_source_sets(space, renewed.source_sets.clone());
         if let Some(admitted) = self.spaces.get_mut(space) {
-            *admitted = renewed;
+            let replaced = std::mem::replace(admitted, renewed);
+            // The old actor is out of the session's reach from here on. A
+            // buffer left in it would retain it for the life of the daemon.
+            if let Some(old) = replaced
+                .actor
+                .upgrade()
+                .filter(|old| !std::ptr::addr_eq(Arc::as_ptr(old), Arc::as_ptr(&actor)))
+            {
+                let _ = old.documents().close_session(self.documents.session());
+            }
         }
         Ok(actor)
     }

@@ -122,6 +122,21 @@ impl LspDocuments {
         &self.spaces
     }
 
+    /// The source sets of a space as its new actor admitted them. A document
+    /// of a set that is gone is no longer open; its address no longer resolves.
+    pub(crate) fn replace_source_sets(&mut self, space: &str, mut sets: Vec<SourceSetLayout>) {
+        for set in &mut sets {
+            set.root = canonical(&set.root);
+        }
+        self.open.retain(|_, buffer| {
+            buffer.location.document.space != space
+                || sets
+                    .iter()
+                    .any(|set| set.name == buffer.location.source_set)
+        });
+        self.source_sets.insert(space.to_owned(), sets);
+    }
+
     /// The space, source set and module file a `unica://` URI names.
     pub(crate) fn locate(&self, uri: &str) -> Result<DocumentLocation, LspDocumentError> {
         let document = self.spaces.parse(uri).map_err(LspDocumentError::Uri)?;
