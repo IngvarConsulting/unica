@@ -244,3 +244,29 @@ fn the_session_is_told_when_the_analysis_it_lacked_is_ready() {
         [unica_lsp_contract::protocol::V5LspServerNotification::DiagnosticsRefresh {}]
     );
 }
+
+/// rule: INV.LSP.MCP-PRIORITY
+#[test]
+fn closing_the_document_cancels_an_analysis_nobody_else_waits_for() {
+    let workspace = workspace();
+    let (host, workspaces) = service();
+    let _release = workspaces.diagnostics.hold();
+    let session = open(&host, workspace.path(), "Work");
+    open_buffer(&host, &session, BODY_URI, DISK);
+
+    items(diagnostic(
+        &host,
+        &session,
+        &LspCallContext::for_test(Instant::now() + Duration::from_millis(100)),
+    ));
+    assert_eq!(host.analysis.lock_len_for_test(), 1);
+    host.notify(
+        &session,
+        V5LspNotification::DidClose {
+            uri: BODY_URI.into(),
+        },
+        soon(),
+    )
+    .unwrap();
+    assert_eq!(host.analysis.lock_len_for_test(), 0);
+}

@@ -292,6 +292,11 @@ impl EditorAnalysis {
     }
 
     #[cfg(test)]
+    pub(crate) fn lock_len_for_test(&self) -> usize {
+        self.lock().by_key.len()
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_retention(retention: Duration) -> Self {
         Self {
             retention,
@@ -359,6 +364,35 @@ impl EditorAnalysis {
         entries.evict();
         self.start_queued(&mut entries);
         None
+    }
+
+    /// `waiter` no longer waits: for analyses of `module` of a workspace, or
+    /// for every analysis. An analysis still queued or running that nobody
+    /// waits for any more is cancelled, so a closed document or session does
+    /// not keep the analyzer busy.
+    pub(crate) fn forget(&self, waiter: &str, module: Option<(&str, &str)>) {
+        let mut entries = self.lock();
+        let abandoned = entries
+            .by_key
+            .iter_mut()
+            .filter(|(key, _)| {
+                module.is_none_or(|(workspace, module)| {
+                    key.workspace == workspace && key.module == module
+                })
+            })
+            .filter_map(|(key, slot)| match slot {
+                AnalysisSlot::Pending { waiters, .. } => {
+                    waiters.remove(waiter);
+                    waiters.is_empty().then(|| key.clone())
+                }
+                AnalysisSlot::Done { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        for key in abandoned {
+            if let Some(AnalysisSlot::Pending { cancellation, .. }) = entries.remove(&key) {
+                cancellation.cancel();
+            }
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, EditorAnalysisEntries> {

@@ -364,3 +364,41 @@ fn kept_analyses_are_bounded_and_the_oldest_goes_first() {
         )
         .is_some());
 }
+
+/// An analysis nobody waits for any more is cancelled and leaves no answer;
+/// one somebody still waits for runs on.
+#[test]
+fn an_analysis_nobody_waits_for_is_cancelled() {
+    let analysis = Arc::new(EditorAnalysis::default());
+    let (started, running) = mpsc::channel::<()>();
+    let (cancelled, saw_cancel) = mpsc::channel::<()>();
+    analysis.findings(
+        key("saved"),
+        "request",
+        move |token| {
+            started.send(()).unwrap();
+            while !token.is_cancelled() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            cancelled.send(()).unwrap();
+            complete()
+        },
+        never(),
+    );
+    running.recv_timeout(WAIT).unwrap();
+    analysis.findings(key("saved"), "session", |_| unreachable!(), never());
+
+    analysis.forget("request", None);
+    assert!(
+        saw_cancel.recv_timeout(Duration::from_millis(200)).is_err(),
+        "the session still waits"
+    );
+    analysis.forget("session", Some(("ws", "main:CommonModule.Другой")));
+    assert!(
+        saw_cancel.recv_timeout(Duration::from_millis(200)).is_err(),
+        "another module is forgotten, not this one"
+    );
+    analysis.forget("session", Some(("ws", AT)));
+    saw_cancel.recv_timeout(WAIT).unwrap();
+    assert!(analysis.lock().by_key.is_empty());
+}

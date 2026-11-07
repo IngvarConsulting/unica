@@ -93,7 +93,7 @@ pub struct UnicaLspHost {
     workspaces: Arc<dyn LspWorkspaces>,
     sessions: Mutex<HashMap<V5LspSessionId, Arc<RwLock<Session>>>>,
     /// Анализы сохранённых текстов, общие для всех сессий.
-    analysis: Arc<EditorAnalysis>,
+    pub(crate) analysis: Arc<EditorAnalysis>,
 }
 
 struct Session {
@@ -251,6 +251,16 @@ impl LspHost for UnicaLspHost {
             }
             V5LspNotification::DidClose { .. } => {
                 let _ = documents.close(overlay, &uri);
+                // Nobody in this session asks about the module any more.
+                if let (Some(space), Some(module)) = (
+                    session.spaces.get(&location.document.space),
+                    location.document.address.strip_suffix(BODY),
+                ) {
+                    self.analysis.forget(
+                        &session_waiter(session.documents.session()),
+                        Some((&space.folder.display().to_string(), module)),
+                    );
+                }
                 return Ok(());
             }
         };
@@ -315,6 +325,8 @@ impl LspHost for UnicaLspHost {
             return;
         };
         let session = read(&session);
+        self.analysis
+            .forget(&session_waiter(session.documents.session()), None);
         // An open buffer keeps its actor from eviction: every actor of the
         // session lets go of this session's buffers.
         for actor in session
@@ -715,7 +727,7 @@ fn analysis_within(
         }
         let _ = analysis.findings(
             key.clone(),
-            &format!("session-{}", asked.session),
+            &session_waiter(&asked.session),
             |_| LspAnalysis::default(),
             Arc::clone(&refresh),
         );
@@ -726,6 +738,8 @@ fn analysis_within(
         loop {
             let left = until.saturating_duration_since(Instant::now());
             if cancelled(context) || left.is_zero() {
+                // The session still waits while its document stays open.
+                analysis.forget(&waiter, None);
                 return None;
             }
             match finished.recv_timeout(left.min(ANALYSIS_WAIT_SLICE)) {
@@ -735,6 +749,11 @@ fn analysis_within(
             }
         }
     }
+}
+
+/// The name a session waits for analyses under.
+fn session_waiter(session: &str) -> String {
+    format!("session-{session}")
 }
 
 fn reasons<T>(answer: &SymbolAnswer<T>) -> String {
