@@ -8,6 +8,10 @@
 //! Актор, чей корень подменили, сессия при следующем обращении заменяет
 //! тем, которого реестр выдаёт и MCP, и переносит в него свои буферы.
 
+use crate::diagnostics::{
+    merge, wire_diagnostics, AnalysisKey, EditorAnalysis, LspAnalysis, LspDiagnosticGap,
+    LspDiagnostics,
+};
 use crate::document::ContentChange;
 use crate::documents::ModuleSourceRead;
 use crate::documents::{LspDocumentError, LspDocuments, SourceSetLayout, SpaceLayout};
@@ -18,8 +22,10 @@ use crate::symbols::{
 use crate::uri::{DocumentUri, WorkspaceFolder};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use unica_code_intelligence::symbols::{
     Incompleteness, SymbolAnswer, SymbolInfo, SymbolLocation, SymbolPosition, SymbolRequestContext,
 };
@@ -62,6 +68,8 @@ pub trait LspModuleReads: Send + Sync {
         session: &str,
         source_set: &str,
     ) -> Result<Box<dyn ModuleSourceRead>, V5LspFailure>;
+    /// Чтение сохранённых файлов набора, без буферов какой-либо сессии.
+    fn saved(&self, source_set: &str) -> Result<Box<dyn ModuleSourceRead>, V5LspFailure>;
 }
 
 /// Папка редактора, допущенная как рабочая область. Вызывающий держит актора,
@@ -71,6 +79,7 @@ pub struct AdmittedWorkspace {
     pub source_sets: Vec<SourceSetLayout>,
     pub reads: Box<dyn LspModuleReads>,
     pub symbols: Arc<dyn LspSymbols>,
+    pub diagnostics: Arc<dyn LspDiagnostics>,
 }
 
 /// Допуск папки редактора. Реализует продукт: у папки и у `workspace_hint`
@@ -83,6 +92,8 @@ pub trait LspWorkspaces: Send + Sync + 'static {
 pub struct UnicaLspHost {
     workspaces: Arc<dyn LspWorkspaces>,
     sessions: Mutex<HashMap<V5LspSessionId, Arc<RwLock<Session>>>>,
+    /// Анализы сохранённых текстов, общие для всех сессий.
+    pub(crate) analysis: Arc<EditorAnalysis>,
 }
 
 struct Session {
@@ -97,6 +108,7 @@ struct AdmittedSpace {
     source_sets: Vec<SourceSetLayout>,
     reads: Box<dyn LspModuleReads>,
     symbols: Arc<dyn LspSymbols>,
+    diagnostics: Arc<dyn LspDiagnostics>,
 }
 
 impl UnicaLspHost {
@@ -104,6 +116,7 @@ impl UnicaLspHost {
         Self {
             workspaces,
             sessions: Mutex::new(HashMap::new()),
+            analysis: Arc::new(EditorAnalysis::default()),
         }
     }
 
@@ -178,6 +191,7 @@ impl LspHost for UnicaLspHost {
                 hover: true,
                 definition: true,
                 references: true,
+                diagnostics: true,
                 text_document_content: true,
             },
             workspaces,
@@ -237,6 +251,16 @@ impl LspHost for UnicaLspHost {
             }
             V5LspNotification::DidClose { .. } => {
                 let _ = documents.close(overlay, &uri);
+                // Nobody in this session asks about the module any more.
+                if let (Some(space), Some(module)) = (
+                    session.spaces.get(&location.document.space),
+                    location.document.address.strip_suffix(BODY),
+                ) {
+                    self.analysis.forget(
+                        &session_waiter(session.documents.session()),
+                        Some((&space.folder.display().to_string(), module)),
+                    );
+                }
                 return Ok(());
             }
         };
@@ -288,6 +312,10 @@ impl LspHost for UnicaLspHost {
         if let Some(operation) = symbol_operation(&call) {
             return symbol_answer(&session, &call, operation, context).unwrap_or_else(failed);
         }
+        if let V5LspCall::Diagnostic { uri } = &call {
+            return diagnostic_answer(&self.analysis, &session, uri, context)
+                .unwrap_or_else(failed);
+        }
         let session = read(&session);
         answer(&session, call).unwrap_or_else(failed)
     }
@@ -297,6 +325,8 @@ impl LspHost for UnicaLspHost {
             return;
         };
         let session = read(&session);
+        self.analysis
+            .forget(&session_waiter(session.documents.session()), None);
         // An open buffer keeps its actor from eviction: every actor of the
         // session lets go of this session's buffers.
         for actor in session
@@ -393,9 +423,10 @@ fn answer(session: &Session, call: V5LspCall) -> Result<V5LspOutcome, V5LspFailu
         V5LspCall::TextDocumentContent { uri } => Ok(V5LspOutcome::Text {
             text: document_text(session, &uri)?,
         }),
-        V5LspCall::Hover { .. } | V5LspCall::Definition { .. } | V5LspCall::References { .. } => {
-            Err(V5LspFailure::NotSupported)
-        }
+        V5LspCall::Hover { .. }
+        | V5LspCall::Definition { .. }
+        | V5LspCall::References { .. }
+        | V5LspCall::Diagnostic { .. } => Err(V5LspFailure::NotSupported),
     }
 }
 
@@ -404,7 +435,7 @@ fn symbol_operation(call: &V5LspCall) -> Option<LspSymbolOperation> {
         V5LspCall::Hover { .. } => Some(LspSymbolOperation::Hover),
         V5LspCall::Definition { .. } => Some(LspSymbolOperation::Definition),
         V5LspCall::References { .. } => Some(LspSymbolOperation::References),
-        V5LspCall::TextDocumentContent { .. } => None,
+        V5LspCall::TextDocumentContent { .. } | V5LspCall::Diagnostic { .. } => None,
     }
 }
 
@@ -465,7 +496,9 @@ fn symbol_answer(
         V5LspCall::Hover { uri, position }
         | V5LspCall::Definition { uri, position }
         | V5LspCall::References { uri, position } => (uri, *position),
-        V5LspCall::TextDocumentContent { .. } => return Err(V5LspFailure::NotSupported),
+        V5LspCall::TextDocumentContent { .. } | V5LspCall::Diagnostic { .. } => {
+            return Err(V5LspFailure::NotSupported)
+        }
     };
     let asked = symbol_call(&read(session), uri)?;
     let cancellation = CancellationToken::observing(context.cancellation_signal());
@@ -537,6 +570,190 @@ fn symbol_answer(
         }
         _ => Err(V5LspFailure::Unavailable),
     }
+}
+
+/// What a diagnostic call takes from the session, under its lock.
+struct DiagnosticCall {
+    folder: PathBuf,
+    source_set: String,
+    module: String,
+    buffer: Option<String>,
+    /// The saved files of the set and the module's file in them, read after
+    /// the session's lock is let go.
+    saved: (
+        Box<dyn ModuleSourceRead>,
+        unica_address::source_target::MetadataAddress,
+    ),
+    diagnostics: Arc<dyn LspDiagnostics>,
+    session: String,
+    client: LspClientChannel,
+}
+
+fn diagnostic_call(session: &Session, uri: &str) -> Result<DiagnosticCall, V5LspFailure> {
+    let location = session
+        .documents
+        .locate(uri)
+        .map_err(|_| V5LspFailure::DocumentUnknown)?;
+    let space = session
+        .spaces
+        .get(&location.document.space)
+        .ok_or(V5LspFailure::DocumentUnknown)?;
+    let buffer = session
+        .documents
+        .open_document(&location.document)
+        .map(|document| document.text().to_owned());
+    let module = location
+        .document
+        .address
+        .strip_suffix(BODY)
+        .ok_or(V5LspFailure::DocumentUnknown)?
+        .to_owned();
+    let read = space.reads.saved(&location.source_set)?;
+    let target = session
+        .documents
+        .saved_target(uri, read.as_ref())
+        .map_err(|_| V5LspFailure::DocumentUnknown)?;
+    Ok(DiagnosticCall {
+        saved: (read, target),
+        session: session.documents.session().to_owned(),
+        client: session.client.clone(),
+        folder: space.folder.clone(),
+        source_set: location.source_set,
+        diagnostics: Arc::clone(&space.diagnostics),
+        module,
+        buffer,
+    })
+}
+
+/// The findings of a document: Unica's own checks over the text the session
+/// sees, and the code analysis of the saved file when the buffer is that
+/// file. The analysis runs in the background; the request waits for it no
+/// longer than its own deadline, and an answer without it says so.
+fn diagnostic_answer(
+    analysis: &Arc<EditorAnalysis>,
+    session: &RwLock<Session>,
+    uri: &str,
+    context: &LspCallContext,
+) -> Result<V5LspOutcome, V5LspFailure> {
+    let asked = diagnostic_call(&read(session), uri)?;
+    let (read, target) = &asked.saved;
+    let saved = read
+        .module_source(target)
+        .map_err(|_| V5LspFailure::Unavailable)?
+        .map(|text| text.trim_start_matches('\u{feff}').to_owned());
+    let text = asked
+        .buffer
+        .clone()
+        .or_else(|| saved.clone())
+        .ok_or(V5LspFailure::DocumentUnknown)?;
+    let own = asked.diagnostics.own_findings(&text);
+    let analysed = match saved {
+        // A module without a file is judged by no analysis.
+        None => LspAnalysis::default(),
+        Some(saved)
+            if asked
+                .buffer
+                .as_deref()
+                .is_some_and(|buffer| buffer.trim_start_matches('\u{feff}') != saved) =>
+        {
+            LspAnalysis {
+                findings: Vec::new(),
+                gaps: vec![LspDiagnosticGap::UnsavedBuffer],
+            }
+        }
+        Some(saved) => match analysis_within(analysis, &asked, &saved, context) {
+            Some(analysed) => analysed,
+            None if cancelled(context) => return Ok(V5LspOutcome::Cancelled {}),
+            None => LspAnalysis {
+                findings: Vec::new(),
+                gaps: vec![LspDiagnosticGap::AnalysisNotReady],
+            },
+        },
+    };
+    if cancelled(context) {
+        return Ok(V5LspOutcome::Cancelled {});
+    }
+    Ok(V5LspOutcome::Diagnostics {
+        items: wire_diagnostics(&text, &merge(own, analysed)),
+    })
+}
+
+/// How often a request waiting for an analysis looks at its cancellation.
+const ANALYSIS_WAIT_SLICE: Duration = Duration::from_millis(50);
+/// How long before its deadline a request stops waiting for the analysis,
+/// so that the answer without it still reaches the editor in time.
+const ANALYSIS_ANSWER_RESERVE: Duration = Duration::from_millis(250);
+
+/// The request was cancelled by its editor, as opposed to running out of
+/// time: an answer is still owed until the deadline.
+fn cancelled(context: &LspCallContext) -> bool {
+    context.cancellation_signal().load(Ordering::Acquire)
+}
+
+/// The analysis of the saved text, waited for until shortly before the
+/// request's deadline or its cancellation; `None` when it is not ready by
+/// then.
+fn analysis_within(
+    analysis: &Arc<EditorAnalysis>,
+    asked: &DiagnosticCall,
+    saved: &str,
+    context: &LspCallContext,
+) -> Option<LspAnalysis> {
+    static REQUESTS: AtomicU64 = AtomicU64::new(0);
+    let waiter = format!("request-{}", REQUESTS.fetch_add(1, Ordering::Relaxed));
+    let key = AnalysisKey::new(asked.folder.display().to_string(), &asked.module, saved);
+    let (ready, finished) = mpsc::channel::<()>();
+    let ready = Mutex::new(ready);
+    let ready: crate::diagnostics::AnalysisWaiter = Arc::new(move || {
+        let _ = lock(&ready).send(());
+    });
+    // The session hears of the analysis too, after this request is gone: its
+    // editor is offered to ask again.
+    let client = asked.client.clone();
+    let refresh: crate::diagnostics::AnalysisWaiter = Arc::new(move || {
+        let _ = client.push(V5LspServerNotification::DiagnosticsRefresh {});
+    });
+    loop {
+        let port = Arc::clone(&asked.diagnostics);
+        let (set, module) = (asked.source_set.clone(), asked.module.clone());
+        let text = saved.to_owned();
+        if let Some(done) = analysis.findings(
+            key.clone(),
+            &waiter,
+            move |cancellation| port.analyse(&set, &module, &text, cancellation),
+            Arc::clone(&ready),
+        ) {
+            return Some(done);
+        }
+        let _ = analysis.findings(
+            key.clone(),
+            &session_waiter(&asked.session),
+            |_| LspAnalysis::default(),
+            Arc::clone(&refresh),
+        );
+        let until = context
+            .deadline()
+            .checked_sub(ANALYSIS_ANSWER_RESERVE)
+            .unwrap_or_else(Instant::now);
+        loop {
+            let left = until.saturating_duration_since(Instant::now());
+            if cancelled(context) || left.is_zero() {
+                // The session still waits while its document stays open.
+                analysis.forget(&waiter, None);
+                return None;
+            }
+            match finished.recv_timeout(left.min(ANALYSIS_WAIT_SLICE)) {
+                Ok(()) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+    }
+}
+
+/// The name a session waits for analyses under.
+fn session_waiter(session: &str) -> String {
+    format!("session-{session}")
 }
 
 fn reasons<T>(answer: &SymbolAnswer<T>) -> String {
@@ -631,6 +848,7 @@ fn admit(
             source_sets: admitted.source_sets,
             reads: admitted.reads,
             symbols: admitted.symbols,
+            diagnostics: admitted.diagnostics,
         },
         admitted.actor,
     ))

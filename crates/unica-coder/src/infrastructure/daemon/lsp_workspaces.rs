@@ -15,14 +15,18 @@ use std::time::Instant;
 use unica_address::address::QualifiedAddress;
 use unica_address::source_target::MetadataAddress;
 use unica_code_intelligence::symbols::SymbolRequestContext;
+use unica_diagnostics::model::DiagnosticProviderRegistry;
 use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_execution_contract::view_error::ViewError;
 use unica_lsp::{
-    AdmittedWorkspace, LspModuleReads, LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest,
-    LspSymbols, LspWorkspaces, ModuleSourceRead, SourceSetLayout,
+    AdmittedWorkspace, LspAnalysis, LspDiagnosticGap, LspDiagnostics, LspFinding, LspModuleReads,
+    LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols, LspWorkspaces,
+    ModuleSourceRead, SourceSetLayout,
 };
 use unica_lsp_contract::protocol::V5LspFailure;
 use unica_refusal::RefusalCode;
+use unica_work_control::cancellation::CancellationToken;
+use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::actor::ProviderRootBinding;
 
 pub(super) struct ProductLspWorkspaces {
@@ -61,6 +65,12 @@ impl LspWorkspaces for ProductLspWorkspaces {
         });
         Some(AdmittedWorkspace {
             reads: Box::new(ProductModuleReads(Arc::clone(&space))),
+            diagnostics: Arc::new(ProductDiagnostics {
+                space: Arc::clone(&space),
+                registry: Arc::new(super::lsp_diagnostics::registry_for(Arc::clone(
+                    &self.service,
+                ))),
+            }),
             symbols: Arc::new(ProductSymbols {
                 space,
                 service: Arc::clone(&self.service),
@@ -125,6 +135,13 @@ impl ProductSpace {
 struct ProductModuleReads(Arc<ProductSpace>);
 
 impl LspModuleReads for ProductModuleReads {
+    fn saved(&self, source_set: &str) -> Result<Box<dyn ModuleSourceRead>, V5LspFailure> {
+        let (_, binding, artifacts) = self.0.bound(source_set)?;
+        Ok(Box::new(
+            self.0.saved_read(binding).with_artifacts(artifacts),
+        ))
+    }
+
     fn read(
         &self,
         session: &str,
@@ -141,6 +158,72 @@ impl LspModuleReads for ProductModuleReads {
                 .with_artifacts(artifacts)
                 .with_documents(documents),
         ))
+    }
+}
+
+type Registry = dyn Fn() -> Result<DiagnosticProviderRegistry, String> + Send + Sync;
+
+/// The checks and the analysis provider `check` uses, in Unica's words.
+struct ProductDiagnostics {
+    space: Arc<ProductSpace>,
+    registry: Arc<Registry>,
+}
+
+impl LspDiagnostics for ProductDiagnostics {
+    fn own_findings(&self, text: &str) -> Vec<LspFinding> {
+        super::lsp_diagnostics::own_findings(text)
+    }
+
+    fn analyse(
+        &self,
+        source_set: &str,
+        module: &str,
+        saved: &str,
+        cancellation: &CancellationToken,
+    ) -> LspAnalysis {
+        let unavailable = || LspAnalysis {
+            findings: Vec::new(),
+            gaps: vec![LspDiagnosticGap::AnalysisUnavailable],
+        };
+        let Ok((actor, binding, artifacts)) = self.space.bound(source_set) else {
+            return unavailable();
+        };
+        let (Some(profile), Ok(body), Ok(module)) = (
+            bsl_profile_for_source(binding.source_profile()),
+            QualifiedAddress::parse(&format!("{module}.Body")),
+            QualifiedAddress::parse(module),
+        ) else {
+            return unavailable();
+        };
+        let authority = |artifacts| {
+            LogicalViewReadAuthority::with_read_authority_and_registration_cache(
+                cancellation,
+                self.space.saved_read(binding),
+                profile,
+                ProviderDeadline::no_deadline(),
+                artifacts,
+            )
+        };
+        let analysed = super::lsp_diagnostics::analyse(
+            self.registry.as_ref(),
+            &authority(Arc::clone(&artifacts)),
+            actor.context(),
+            &body,
+            cancellation,
+        );
+        // The analyzer reads the file when it runs: findings of a file saved
+        // anew meanwhile stand on another text's lines.
+        let unchanged = authority(artifacts)
+            .module_text(&module)
+            .is_ok_and(|text| text.trim_start_matches('\u{feff}') == saved);
+        if unchanged {
+            analysed
+        } else {
+            LspAnalysis {
+                findings: Vec::new(),
+                gaps: vec![LspDiagnosticGap::AnalysisNotReady],
+            }
+        }
     }
 }
 

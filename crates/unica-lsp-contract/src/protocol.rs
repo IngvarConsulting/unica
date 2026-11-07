@@ -96,6 +96,9 @@ pub enum V5LspCall {
         uri: String,
         position: V5LspPosition,
     },
+    /// Находки документа по запросу редактора.
+    #[serde(rename = "textDocument/diagnostic")]
+    Diagnostic { uri: String },
     /// Текст документа по адресу `unica://`, который редактор открывает
     /// без файла на диске.
     #[serde(rename = "workspace/textDocumentContent")]
@@ -109,6 +112,7 @@ impl V5LspCall {
             Self::Hover { uri, .. }
             | Self::Definition { uri, .. }
             | Self::References { uri, .. }
+            | Self::Diagnostic { uri }
             | Self::TextDocumentContent { uri } => Some(uri),
         }
     }
@@ -210,6 +214,9 @@ pub struct V5LspCapabilities {
     pub definition: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub references: bool,
+    /// `textDocument/diagnostic` по запросу редактора.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub diagnostics: bool,
     /// `workspace/textDocumentContent` для адресов `unica://`.
     pub text_document_content: bool,
 }
@@ -224,6 +231,7 @@ impl V5LspCapabilities {
         hover: false,
         definition: false,
         references: false,
+        diagnostics: false,
         text_document_content: false,
     };
 }
@@ -309,6 +317,26 @@ pub struct V5LspLocation {
     pub range: V5LspRange,
 }
 
+/// Уровень находки, как его различает редактор.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum V5LspSeverity {
+    Error,
+    Warning,
+    Information,
+    Hint,
+}
+
+/// Находка в документе: код и текст Unica, без слов поставщика анализа.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct V5LspDiagnostic {
+    pub range: V5LspRange,
+    pub severity: V5LspSeverity,
+    pub code: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "result",
@@ -329,6 +357,11 @@ pub enum V5LspOutcome {
     /// Места в документах соединения, которые редактор может открыть.
     Locations {
         locations: Vec<V5LspLocation>,
+    },
+    /// Все находки документа. Неполный ответ несёт находку-отметку
+    /// `unica.diagnostics_incomplete`, которая называет, чего в нём нет.
+    Diagnostics {
+        items: Vec<V5LspDiagnostic>,
     },
     /// Запрос отменён до ответа; его результат не выдаётся.
     Cancelled {},
@@ -358,6 +391,9 @@ pub enum V5LspServerNotification {
         level: V5LspMessageLevel,
         message: String,
     },
+    /// Источник находок стал готов или его стоит спросить заново: редактору
+    /// предлагают запросить находки открытых документов.
+    DiagnosticsRefresh {},
 }
 
 impl V5LspServerNotification {
@@ -366,7 +402,7 @@ impl V5LspServerNotification {
             Self::LogMessage { message, .. } if message.len() > MAX_LSP_LOG_MESSAGE_BYTES => {
                 Err("v5 lsp log message exceeds its limit".to_string())
             }
-            Self::LogMessage { .. } => Ok(()),
+            Self::LogMessage { .. } | Self::DiagnosticsRefresh {} => Ok(()),
         }
     }
 }

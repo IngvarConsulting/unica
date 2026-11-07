@@ -473,3 +473,96 @@ fn symbols_answer_from_the_buffer_at_the_documents_address() {
         }
     );
 }
+
+/// A workspace whose saved module declares a variable after its method, as
+/// the platform does not compile it; its objects have full descriptors.
+fn diagnosed_workspace() -> tempfile::TempDir {
+    let workspace = workspace();
+    let source = workspace.path().join("src");
+    fs::write(
+        source.join("CommonModules/Main.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Main</Name><Synonym/><Comment/><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+    )
+    .unwrap();
+    fs::write(
+        workspace.path().join(MODULE),
+        "Procedure Disk() EndProcedure\nVar Late;\n",
+    )
+    .unwrap();
+    workspace
+}
+
+fn report(host: &UnicaLspHost, session: &V5LspSessionId) -> Vec<String> {
+    match ask(
+        host,
+        session,
+        V5LspCall::Diagnostic {
+            uri: BODY_URI.into(),
+        },
+    ) {
+        V5LspOutcome::Diagnostics { items } => items
+            .into_iter()
+            .map(|item| format!("{}: {}", item.code, item.message))
+            .collect(),
+        other => panic!("not a diagnostic report: {other:?}"),
+    }
+}
+
+struct ResetDiagnosticOverride;
+
+impl Drop for ResetDiagnosticOverride {
+    fn drop(&mut self) {
+        crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+            .with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
+/// The editor's document gets `check`'s own finding and the analysis of its
+/// saved module by `check`'s coordinator, with no deadline put on it; an
+/// analysis that fails is named, never an empty complete report.
+#[test]
+fn diagnostics_run_checks_own_findings_and_its_analysis_of_the_saved_module() {
+    let _reset = ResetDiagnosticOverride;
+    let (provider, analyzer) =
+        unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::recording_provider();
+    crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+        .with(|slot| *slot.borrow_mut() = Some(provider));
+    let workspace = diagnosed_workspace();
+    let (host, _workspaces) = service();
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+
+    let found = report(&host, &editor);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].starts_with("VariableDeclarationPlacement: "),
+        "{found:?}"
+    );
+    assert_eq!(analyzer.timeouts(), [None], "no deadline, as `check`");
+
+    crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| {
+        *slot.borrow_mut() = Some(
+            unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::failing_provider(
+                unica_adapter_bsl_analyzer::adapter::AnalyzerRunFailureKind::Exited,
+            ),
+        )
+    });
+    let failing = diagnosed_workspace();
+    let (host, _workspaces) = service();
+    host.open(&editor, &[folder(failing.path(), "Work")], client(), soon())
+        .unwrap();
+    let found = report(&host, &editor);
+    assert!(
+        found.last().is_some_and(
+            |marker| marker.starts_with("unica.diagnostics_incomplete: ")
+                && marker.contains("analysis_unavailable")
+        ),
+        "{found:?}"
+    );
+}

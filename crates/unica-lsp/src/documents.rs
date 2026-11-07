@@ -245,6 +245,24 @@ impl LspDocuments {
         read.module_source(&target).map_err(LspDocumentError::Read)
     }
 
+    /// The module file of a document in `read`, a read of the saved files of
+    /// its source set; the caller reads it, whatever buffer is open.
+    pub(crate) fn saved_target(
+        &self,
+        uri: &str,
+        read: &dyn ModuleSourceRead,
+    ) -> Result<MetadataAddress, LspDocumentError> {
+        let location = self.locate(uri)?;
+        let layout = self.source_set(&location.document.space, &location.source_set)?;
+        if read.source_set() != location.source_set
+            || !same_host_path(&canonical(read.root_path()), &layout.root)
+        {
+            return Err(LspDocumentError::UnknownSourceSet(location.source_set));
+        }
+        let at = module_of_body(&location.document)?;
+        module_target(&at, layout).ok_or(LspDocumentError::NotAModule)
+    }
+
     /// The `unica://` URIs to refresh after `apply` published `relatives`
     /// of a source set in a space: every module this connection opened
     /// there whose file changed. After an epoch change pass `None`: every

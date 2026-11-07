@@ -6776,6 +6776,126 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "lsp.editor-diagnostics",
+      "class": "result",
+      "resource": "Находки одного ответа `textDocument/diagnostic`.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-lsp/src/diagnostics.rs",
+        "symbol": "MAX_EDITOR_DIAGNOSTICS"
+      },
+      "expr": "1000",
+      "value": 1000,
+      "applied": [
+        "crates/unica-lsp/src/diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2578",
+      "problem": null,
+      "onReach": "ответ несёт первые находки по тексту и отметку `unica.diagnostics_incomplete` с причиной `capped`",
+      "issue": "#2578",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.editor-analysis-entries",
+      "class": "retention",
+      "resource": "Сохранённые тексты, для которых служба LSP помнит анализ кода, ждущий или готовый.",
+      "unit": "count",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-lsp/src/diagnostics.rs",
+        "symbol": "MAX_EDITOR_ANALYSIS_ENTRIES"
+      },
+      "expr": "256",
+      "value": 256,
+      "applied": [
+        "crates/unica-lsp/src/diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2578",
+      "problem": null,
+      "onReach": "уходит самый старый готовый анализ, затем самый старый в очереди; о его тексте спрашивают заново",
+      "issue": "#2578",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.editor-analysis-concurrency",
+      "class": "concurrency",
+      "resource": "Одновременные анализы кода сохранённых модулей для редактора.",
+      "unit": "count",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-lsp/src/diagnostics.rs",
+        "symbol": "MAX_CONCURRENT_EDITOR_ANALYSES"
+      },
+      "expr": "2",
+      "value": 2,
+      "applied": [
+        "crates/unica-lsp/src/diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2578",
+      "problem": null,
+      "onReach": "следующие анализы ждут очереди; запрос, не дождавшийся анализа, отвечает отметкой `analysis_not_ready`",
+      "issue": "#2578",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.editor-analysis-retry",
+      "class": "retry",
+      "resource": "Время, которое неполный анализ кода отвечает за свой сохранённый текст.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-lsp/src/diagnostics.rs",
+        "symbol": "EDITOR_ANALYSIS_RETRY_DELAY"
+      },
+      "expr": "Duration::from_secs(30)",
+      "value": 30000,
+      "applied": [
+        "crates/unica-lsp/src/diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2578",
+      "problem": null,
+      "onReach": "следующий запрос о тексте запускает анализ заново",
+      "issue": "#2578",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.editor-analysis-retention",
+      "class": "retention",
+      "resource": "Время, которое полный анализ кода отвечает за свой сохранённый текст.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-lsp/src/diagnostics.rs",
+        "symbol": "EDITOR_ANALYSIS_RETENTION"
+      },
+      "expr": "Duration::from_secs(60)",
+      "value": 60000,
+      "applied": [
+        "crates/unica-lsp/src/diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2578",
+      "problem": null,
+      "onReach": "следующий запрос о тексте запускает анализ заново: находки модуля зависят и от других модулей",
+      "issue": "#2578",
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [
