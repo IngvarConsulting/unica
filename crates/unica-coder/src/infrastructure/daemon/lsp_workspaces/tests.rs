@@ -50,9 +50,10 @@ fn folder(path: &Path, name: &str) -> V5LspWorkspaceFolder {
 
 /// The daemon's composition: one actor registry behind MCP and the service.
 fn service() -> (UnicaLspHost, Arc<ProductLspWorkspaces>) {
-    let workspaces = Arc::new(ProductLspWorkspaces::new(Arc::new(
-        crate::infrastructure::source_workspace::actor_registry(),
-    )));
+    let workspaces = Arc::new(ProductLspWorkspaces::new(
+        Arc::new(crate::infrastructure::source_workspace::actor_registry()),
+        Arc::new(super::super::v13_service::CanonicalV13ReadService::default()),
+    ));
     (UnicaLspHost::new(workspaces.clone()), workspaces)
 }
 
@@ -303,4 +304,172 @@ fn product_admission_gives_a_new_actor_for_a_replaced_or_moved_root() {
         .expect("the moved root is admitted");
     assert!(!Arc::ptr_eq(&replaced.actor, &moved.actor));
     assert!(moved.source_sets[0].root.ends_with("moved"));
+}
+
+/// A provider still indexing: it answers nothing yet.
+struct NotReady;
+
+impl unica_code_intelligence::symbols::SymbolProvider for NotReady {
+    fn symbol(
+        &self,
+        _: &unica_code_intelligence::symbols::SymbolQuery,
+        _: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
+    ) -> Result<
+        Option<unica_code_intelligence::symbols::ProviderSymbol>,
+        unica_code_intelligence::symbols::ProviderFailure,
+    > {
+        Err(unica_code_intelligence::symbols::ProviderFailure::NotReady)
+    }
+
+    fn references(
+        &self,
+        _: &unica_code_intelligence::symbols::SymbolQuery,
+        _: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
+    ) -> Result<
+        unica_code_intelligence::symbols::ProviderPlaces,
+        unica_code_intelligence::symbols::ProviderFailure,
+    > {
+        Err(unica_code_intelligence::symbols::ProviderFailure::NotReady)
+    }
+
+    fn calls(
+        &self,
+        _: &unica_code_intelligence::symbols::SymbolQuery,
+        _: unica_code_intelligence::symbols::CallDirection,
+        _: &unica_code_intelligence::symbols::SymbolRequestContext<'_>,
+    ) -> Result<
+        unica_code_intelligence::symbols::ProviderPlaces,
+        unica_code_intelligence::symbols::ProviderFailure,
+    > {
+        Err(unica_code_intelligence::symbols::ProviderFailure::NotReady)
+    }
+}
+
+/// The product's symbol service answers the editor from its buffer, at the
+/// document's own address; a name only the provider knows, while it is not
+/// ready, is refused as incomplete rather than answered as absent.
+#[test]
+fn symbols_answer_from_the_buffer_at_the_documents_address() {
+    struct ResetOverride;
+    impl Drop for ResetOverride {
+        fn drop(&mut self) {
+            crate::infrastructure::application_ports::SYMBOL_PROVIDER_OVERRIDE
+                .with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+    let _reset = ResetOverride;
+    crate::infrastructure::application_ports::SYMBOL_PROVIDER_OVERRIDE
+        .with(|slot| *slot.borrow_mut() = Some(Arc::new(NotReady)));
+    let workspace = workspace();
+    // The symbol service reads modules as MCP does: through their objects.
+    let source = workspace.path().join("src");
+    fs::write(
+        source.join("Configuration.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><CommonModule>Main</CommonModule><CommonModule>Other</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+    )
+    .unwrap();
+    for (name, uuid) in [
+        ("Main", "11111111-1111-4111-8111-111111111111"),
+        ("Other", "22222222-2222-4222-8222-222222222222"),
+    ] {
+        fs::write(
+            source.join(format!("CommonModules/{name}.xml")),
+            format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="{uuid}"><Properties><Name>{name}</Name><Synonym/><Comment/><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#),
+        )
+        .unwrap();
+    }
+    fs::create_dir_all(source.join("CommonModules/Other/Ext")).unwrap();
+    fs::write(
+        source.join("CommonModules/Other/Ext/Module.bsl"),
+        "Procedure Shared() Export EndProcedure
+",
+    )
+    .unwrap();
+    let (host, _workspaces) = service();
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+    let buffer =
+        "Procedure Callee() EndProcedure\nProcedure Caller() Callee(); Unknown(); Other.Shared(); EndProcedure\n";
+    host.notify(
+        &editor,
+        V5LspNotification::DidOpen {
+            uri: BODY_URI.into(),
+            language_id: "bsl".into(),
+            version: 1,
+            text: buffer.into(),
+        },
+        soon(),
+    )
+    .unwrap();
+    let at = |line, character| unica_lsp_contract::protocol::V5LspPosition { line, character };
+
+    assert_eq!(
+        ask(
+            &host,
+            &editor,
+            V5LspCall::Definition {
+                uri: BODY_URI.into(),
+                position: at(1, 20),
+            },
+        ),
+        V5LspOutcome::Locations {
+            locations: vec![unica_lsp_contract::protocol::V5LspLocation {
+                uri: BODY_URI.into(),
+                range: unica_lsp_contract::protocol::V5LspRange {
+                    start: at(0, 10),
+                    end: at(0, 16),
+                },
+            }],
+        }
+    );
+    assert!(matches!(
+        ask(
+            &host,
+            &editor,
+            V5LspCall::Hover {
+                uri: BODY_URI.into(),
+                position: at(1, 20),
+            },
+        ),
+        V5LspOutcome::Hover { contents: Some(text) } if text.contains("Callee")
+    ));
+    assert_eq!(
+        ask(
+            &host,
+            &editor,
+            V5LspCall::Definition {
+                uri: BODY_URI.into(),
+                position: at(1, 30),
+            },
+        ),
+        V5LspOutcome::Failed {
+            failure: V5LspFailure::Incomplete
+        }
+    );
+    // A method of another common module: the document of that module's body.
+    assert_eq!(
+        ask(
+            &host,
+            &editor,
+            V5LspCall::Definition {
+                uri: BODY_URI.into(),
+                position: at(1, 47),
+            },
+        ),
+        V5LspOutcome::Locations {
+            locations: vec![unica_lsp_contract::protocol::V5LspLocation {
+                uri: "unica://work/main/CommonModule.Other.Body".into(),
+                range: unica_lsp_contract::protocol::V5LspRange {
+                    start: at(0, 10),
+                    end: at(0, 16),
+                },
+            }],
+        }
+    );
 }

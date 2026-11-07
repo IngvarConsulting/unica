@@ -62,6 +62,18 @@ impl CancellationToken {
             .any(|signal| signal.load(Ordering::Acquire))
     }
 
+    /// A token that also reads as cancelled once its owner sets `signal`: a
+    /// transport's own flag for one request.
+    pub fn observing(signal: Arc<AtomicBool>) -> Self {
+        let token = Self::new();
+        let mut observed_signals = token.observed_signals.to_vec();
+        observed_signals.push(signal);
+        Self {
+            observed_signals: Arc::from(observed_signals),
+            ..token
+        }
+    }
+
     pub fn linked_child(&self) -> Self {
         let own_signal = Arc::new(AtomicBool::new(false));
         let mut observed_signals = self.observed_signals.to_vec();
@@ -160,6 +172,19 @@ mod tests {
         assert!(!second.is_cancelled());
         first.cancel();
         assert!(second.is_cancelled());
+    }
+
+    #[test]
+    fn an_observing_token_reads_its_owners_signal() {
+        let signal = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let token = CancellationToken::observing(std::sync::Arc::clone(&signal));
+        assert!(!token.is_cancelled());
+        signal.store(true, std::sync::atomic::Ordering::Release);
+        assert!(token.is_cancelled());
+
+        let own = CancellationToken::observing(std::sync::Arc::default());
+        own.cancel();
+        assert!(own.is_cancelled());
     }
 
     #[test]

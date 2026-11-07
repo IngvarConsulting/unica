@@ -76,9 +76,10 @@ fn content(host: &UnicaLspHost, session: &V5LspSessionId, uri: &str) -> V5LspOut
 /// rule: CTR.LSP.SEPARATE-DOOR
 #[test]
 fn an_editor_folder_opens_an_extension_only_with_its_parent_configuration() {
-    let host = UnicaLspHost::new(Arc::new(ProductLspWorkspaces::new(Arc::new(
-        crate::infrastructure::source_workspace::actor_registry(),
-    ))));
+    let host = UnicaLspHost::new(Arc::new(ProductLspWorkspaces::new(
+        Arc::new(crate::infrastructure::source_workspace::actor_registry()),
+        Arc::new(crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default()),
+    )));
     let session = V5LspSessionId::new();
     let healthy = configuration_with_extension();
     let orphan = extension_without_parent();

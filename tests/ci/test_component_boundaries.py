@@ -161,6 +161,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-lsp", "unica-coder"),
             ("unica-lsp", "unica-execution"),
             ("unica-lsp", "unica-forms"),
+            ("unica-lsp", "unica-adapter-bsl-analyzer"),
             ("unica-lsp-contract", "unica-daemon"),
             ("unica-lsp-contract", "unica-workspace"),
             ("unica-lsp-contract", "unica-address"),
@@ -176,6 +177,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-lsp", "unica-bsl"),
             ("unica-lsp", "unica-source-designer"),
             ("unica-lsp", "unica-address"),
+            ("unica-lsp", "unica-code-intelligence"),
             ("unica-coder", "unica-lsp-contract"),
         ):
             with self.subTest(owner=owner, target=target):

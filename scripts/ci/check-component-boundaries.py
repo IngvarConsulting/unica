@@ -152,7 +152,9 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
     if name == "lsp-contract" and dependency.startswith("unica-"):
         reasons.append("the LSP contract is a leaf shared by the transport and the service")
     if name == "lsp" and dependency.startswith("unica-"):
-        allowed = ABSTRACTIONS | frozenset({"lsp-contract", "workspace", "bsl", "source-designer"})
+        # `code-intelligence` gives the symbol answers the service turns into
+        # the editor's places; the product composes their provider.
+        allowed = ABSTRACTIONS | frozenset({"lsp-contract", "workspace", "bsl", "source-designer", "code-intelligence"})
         if target not in allowed:
             reasons.append("the LSP service reaches its transport only through the LSP contract")
     if name == "bsl-parser" and dependency.startswith("unica-") and target not in {"work-control"}:
