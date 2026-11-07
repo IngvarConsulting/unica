@@ -14,10 +14,10 @@ use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
-pub(crate) struct MetadataOperations;
+pub struct MetadataOperations;
 
 impl MetadataOperations {
-    pub(crate) fn read_local(
+    pub fn read_local(
         request: &unica_metadata::request::MetaInfoRequest,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,
@@ -121,7 +121,7 @@ impl MetadataOperations {
         }
     }
 
-    pub(crate) fn validate(
+    pub fn validate(
         subject: &unica_metadata::validation_subject::MetadataValidationSubject,
         context: &WorkspaceContext,
         _cancellation: &CancellationToken,
@@ -153,7 +153,7 @@ impl MetadataOperations {
         .validate_complete_read(subject, context)
     }
 
-    pub(crate) fn prepare_mutation(
+    pub fn prepare_mutation(
         request: &unica_metadata::request::MetadataRequest,
         context: &WorkspaceContext,
         cancellation: &CancellationToken,

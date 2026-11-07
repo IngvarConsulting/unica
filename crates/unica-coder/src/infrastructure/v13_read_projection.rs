@@ -12,8 +12,8 @@ mod form_appearance;
 mod member_properties;
 mod metadata;
 mod role;
-pub(crate) mod structured_properties;
-pub(crate) use metadata::borrowing_props;
+pub mod structured_properties;
+pub use metadata::borrowing_props;
 use role::project_role;
 
 const MAX_PROJECTED_BRANCHES: usize = 256;
@@ -2033,7 +2033,7 @@ thread_local! {
 }
 
 /// Проецирует узел на время `read`, снимая предел размера со свойства `key`.
-pub(crate) fn with_whole_prop<T>(key: &str, read: impl FnOnce() -> T) -> T {
+pub fn with_whole_prop<T>(key: &str, read: impl FnOnce() -> T) -> T {
     struct Restore(Option<String>);
     impl Drop for Restore {
         fn drop(&mut self) {

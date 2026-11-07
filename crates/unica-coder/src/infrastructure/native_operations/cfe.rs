@@ -945,7 +945,7 @@ impl unica_source_contract::proposal::TrackedSourceProposal for CfeBorrowWritePl
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod borrowed_form_binding_regressions {
     use super::*;
 

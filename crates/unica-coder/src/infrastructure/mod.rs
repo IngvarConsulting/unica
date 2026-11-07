@@ -1,82 +1,82 @@
-pub(crate) mod application_ports;
+pub mod application_ports;
 
-pub(crate) mod bundled_tools;
-pub(crate) mod capacity_observation;
+pub mod bundled_tools;
+pub mod capacity_observation;
 #[cfg(test)]
 #[path = "../../tests/platform/code_intelligence_integration.rs"]
 pub(crate) mod code_intelligence;
 pub(crate) mod daemon;
-pub(crate) mod diagnostics;
+pub mod diagnostics;
 #[cfg(feature = "receipt-ledger-test-support")]
 #[path = "../../tests/support/receipt_scenario.rs"]
 pub(crate) mod receipt_scenario;
 
-pub(crate) mod engine_delivery;
+pub mod engine_delivery;
 #[allow(dead_code)]
 pub(crate) mod event_views;
 pub(crate) mod family_codecs;
-pub(crate) mod format_guard;
+pub mod format_guard;
 pub mod internal_adapters;
 // Hidden v0.13 routing remains unreachable from the package-selected v0.12 surface.
 #[allow(dead_code)]
-pub(crate) mod event_sources;
+pub mod event_sources;
 #[allow(dead_code)]
-pub(crate) mod logical_tree;
+pub mod logical_tree;
 pub(crate) mod metadata_kinds;
-pub(crate) mod metadata_operations;
+pub mod metadata_operations;
 pub mod native_operations;
-pub(crate) mod operational_config;
-pub(crate) mod platform;
-pub(crate) mod platform_xml_owner;
+pub mod operational_config;
+pub mod platform;
+pub mod platform_xml_owner;
 // This foundational provider is consumed by the public migration in the next slice.
 #[allow(dead_code)]
 pub(crate) mod platform_xml_source_targets;
 pub mod plugin_runtime;
 #[allow(dead_code)]
-pub(crate) mod project_sources;
+pub mod project_sources;
 mod revision_artifact_policy;
 
-pub(crate) mod runtime_composition;
-#[cfg(test)]
+pub mod runtime_composition;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod runtime_jobs_integration;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod runtime_preflight_integration;
-pub(crate) mod source_roots;
+pub mod source_roots;
 // The topology provider is introduced before both public consumers migrate to it.
-pub(crate) mod name_index;
+pub mod name_index;
 #[allow(dead_code)]
 pub(crate) mod support_guard;
 #[allow(dead_code)]
 // Hidden v0.13 typed read adapter remains unreachable from the v0.12 tool ledger.
-pub(crate) mod support_state;
-pub(crate) mod symbol_environment;
-#[cfg(test)]
+pub mod support_state;
+pub mod symbol_environment;
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_fixtures;
 pub(crate) mod tool_context;
-mod v13_large_configuration;
+pub mod v13_large_configuration;
 #[allow(dead_code)]
-pub(crate) mod v13_read;
-pub(crate) mod v13_read_port;
-mod v13_read_projection;
+pub mod v13_read;
+pub mod v13_read_port;
+pub mod v13_read_projection;
 // Production v0.12 routing stays unchanged until the atomic v0.13 cutover.
 #[allow(dead_code)]
-pub(crate) mod v13_find;
-pub(crate) mod workspace;
+pub mod v13_find;
+pub mod workspace;
 // Publication and Invocation routing consume the remaining actor seams in Task 7.
 #[allow(dead_code)]
 #[cfg(test)]
 #[path = "../../tests/platform/workspace_services_integration.rs"]
 pub mod workspace_services;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) static V8TR_CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod documentation_policy_integration;
 
-mod source_diff;
+pub mod source_diff;
 
-pub(crate) mod source_workspace;
+pub mod source_workspace;
 
 #[cfg(test)]
 mod workspace_state_integration_tests;
@@ -94,7 +94,7 @@ mod full_dump_integration;
 #[path = "source_discovery_integration_tests.rs"]
 mod medium_source_discovery_integration_tests;
 
-pub(crate) mod analysis_composition;
+pub mod analysis_composition;
 
 pub(crate) mod form_composition;
 
@@ -112,4 +112,4 @@ mod medium_meta_add_surface_tests;
 mod medium_meta_info_surface_tests;
 mod source_ids;
 
-pub(crate) mod external_artifact_inventory;
+pub mod external_artifact_inventory;

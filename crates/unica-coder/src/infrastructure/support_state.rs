@@ -18,11 +18,11 @@ use unica_metadata::support_state::{
 use unica_metadata_designer::support::{support_root_uuid_from_bytes, SupportState};
 use unica_source_contract::workspace::WorkspaceContext;
 
-pub(crate) trait SupportStateReaderFactory: Send + Sync {
+pub trait SupportStateReaderFactory: Send + Sync {
     fn create<'a>(&'a self, context: &'a WorkspaceContext) -> Box<dyn SupportStateReader + 'a>;
 }
 
-pub(crate) struct WorkspaceSupportStateReaderFactory;
+pub struct WorkspaceSupportStateReaderFactory;
 
 impl SupportStateReaderFactory for WorkspaceSupportStateReaderFactory {
     fn create<'a>(&'a self, context: &'a WorkspaceContext) -> Box<dyn SupportStateReader + 'a> {

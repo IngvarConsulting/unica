@@ -6,6 +6,7 @@ use super::*;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
+use unica_address::source_target::MetadataAddress;
 use unica_lsp::UnicaLspHost;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{

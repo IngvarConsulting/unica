@@ -9,7 +9,7 @@ use unica_source_contract::proposal::{
     ApplyPlanError, IndexedPlanOperation, ProvisionalApplyEffect,
 };
 use unica_workspace::actor::ProviderRootBinding;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn parse_metadata_plan_operation_in(
     descriptor: Option<OperationDescriptor>,
     operation: &str,
@@ -31,7 +31,7 @@ fn parse_metadata_plan_operation_in(
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn parse_metadata_plan_operation(
     operation: &str,
     args: &Value,
@@ -46,7 +46,7 @@ pub(crate) fn parse_metadata_plan_operation(
     parse_metadata_plan_operation_in(descriptor, operation, args, op_index, binding)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plan_metadata_batch_owned_for_test(
     mut staged: unica_workspace::apply::ApplyStagedState,
     authority: unica_workspace::actor::MetadataApplyAuthority<'_>,

@@ -8,7 +8,7 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
     ) -> Result<Option<String>, ViewError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             *self
                 .module_source_reads
@@ -189,7 +189,7 @@ impl ProviderReadAuthority {
         Ok(Some(len))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn module_source_read_count(&self, target: &str) -> usize {
         self.module_source_reads
             .lock()

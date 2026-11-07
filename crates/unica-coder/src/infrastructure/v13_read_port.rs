@@ -7,7 +7,7 @@ use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_designer::module_layout::module_relative as shared_module_relative;
 
 use crate::infrastructure::v13_large_configuration::{RegistrationCache, RetainedSupportState};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::cell::RefCell;
 use std::path::Path;
 use std::path::PathBuf;
@@ -27,14 +27,14 @@ use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::documents::{DocumentText, SessionDocuments};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static REVIEW_BEFORE_REVISION_IDENTITY: RefCell<Option<Box<dyn FnMut()>>> = RefCell::new(None);
     static REVIEW_AFTER_REVISION_IDENTITY: RefCell<Option<Box<dyn FnMut()>>> = RefCell::new(None);
 }
 
-#[cfg(test)]
-pub(crate) fn review_set_revision_identity_hooks(
+#[cfg(any(test, feature = "test-support"))]
+pub fn review_set_revision_identity_hooks(
     before: impl FnMut() + 'static,
     after: impl FnMut() + 'static,
 ) {
@@ -42,22 +42,22 @@ pub(crate) fn review_set_revision_identity_hooks(
     REVIEW_AFTER_REVISION_IDENTITY.with(|slot| *slot.borrow_mut() = Some(Box::new(after)));
 }
 
-#[cfg(test)]
-pub(crate) fn review_clear_revision_identity_hooks() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn review_clear_revision_identity_hooks() {
     REVIEW_BEFORE_REVISION_IDENTITY.with(|slot| *slot.borrow_mut() = None);
     REVIEW_AFTER_REVISION_IDENTITY.with(|slot| *slot.borrow_mut() = None);
 }
 
 /// One captured template body and its read-only format verdict. Validation consumes
 /// this value and does not use display paths as filesystem authority.
-pub(crate) struct TemplateValidationInput {
+pub struct TemplateValidationInput {
     pub(crate) artifact: PathBuf,
     pub(crate) text: String,
     pub(crate) format_guard: crate::application::ports::FormatGuardCheck,
 }
 
 /// Сохранённые входы проверки формы; пути не дают права повторного чтения.
-pub(crate) struct FormValidationInput {
+pub struct FormValidationInput {
     pub(crate) artifact: PathBuf,
     pub(crate) text: String,
     pub(crate) module: Option<String>,
@@ -94,7 +94,7 @@ pub(crate) fn descriptor_uuid(descriptor: &[u8]) -> Option<uuid::Uuid> {
 /// One actor-issued read authority for one admitted source set. Reads are
 /// descriptor-relative to this retained directory; the snapshot identity is
 /// issued at admission and never derived from a scan of the source tree.
-pub(crate) struct ProviderReadAuthority {
+pub struct ProviderReadAuthority {
     source_set: String,
     source_set_identity: String,
     source_set_kind: SourceSetKind,
@@ -117,18 +117,18 @@ pub(crate) struct ProviderReadAuthority {
     /// Open editor buffers of the session this read serves; a module with a
     /// buffer is read from it, never from its file.
     documents: Option<SessionDocuments>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     module_source_reads: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     metadata_descriptor_reads: std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     configuration_payload_reads: std::sync::atomic::AtomicUsize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     support_state_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl ProviderReadAuthority {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn new(
         source_set: impl Into<String>,
         source_set_identity: impl Into<String>,
@@ -144,7 +144,7 @@ impl ProviderReadAuthority {
         )
     }
 
-    pub(crate) fn new_local_snapshot(
+    pub fn new_local_snapshot(
         source_set: impl Into<String>,
         source_set_identity: impl Into<String>,
         source_set_kind: SourceSetKind,
@@ -162,13 +162,13 @@ impl ProviderReadAuthority {
             support_state: std::sync::Mutex::new(None),
             external_artifacts: std::sync::Mutex::new(None),
             documents: None,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             module_source_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             metadata_descriptor_reads: std::sync::Mutex::new(std::collections::BTreeMap::new()),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             configuration_payload_reads: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             support_state_reads: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -187,13 +187,13 @@ impl ProviderReadAuthority {
     }
 
     /// Shares the actor-retained root artifacts of this source set.
-    pub(crate) fn with_artifacts(mut self, artifacts: Arc<RegistrationCache>) -> Self {
+    pub fn with_artifacts(mut self, artifacts: Arc<RegistrationCache>) -> Self {
         self.artifacts = artifacts;
         self
     }
 
     /// Reads modules of `documents` from their open buffers.
-    pub(crate) fn with_documents(mut self, documents: SessionDocuments) -> Self {
+    pub fn with_documents(mut self, documents: SessionDocuments) -> Self {
         self.documents = (!documents.is_empty()).then_some(documents);
         self
     }
@@ -203,12 +203,12 @@ impl ProviderReadAuthority {
     }
 
     /// The retained source root every read of this authority is relative to.
-    pub(crate) fn retained_root(&self) -> &SourceDirectory {
+    pub fn retained_root(&self) -> &SourceDirectory {
         &self.root
     }
 
     /// The set's artifacts retained by the workspace actor across calls.
-    pub(crate) fn artifacts(&self) -> &Arc<RegistrationCache> {
+    pub fn artifacts(&self) -> &Arc<RegistrationCache> {
         &self.artifacts
     }
 
@@ -229,7 +229,7 @@ impl ProviderReadAuthority {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> Result<String, ViewError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         REVIEW_BEFORE_REVISION_IDENTITY.with(|slot| {
             if let Some(hook) = slot.borrow_mut().as_mut() {
                 hook();
@@ -238,7 +238,7 @@ impl ProviderReadAuthority {
         self.root.validate_named_identity().map_err(|error| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
         })?;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         REVIEW_AFTER_REVISION_IDENTITY.with(|slot| {
             if let Some(hook) = slot.borrow_mut().as_mut() {
                 hook();
@@ -356,10 +356,7 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
-    pub(crate) fn metadata_descriptor(
-        &self,
-        target: &MetadataAddress,
-    ) -> Result<Vec<u8>, ViewError> {
+    pub fn metadata_descriptor(&self, target: &MetadataAddress) -> Result<Vec<u8>, ViewError> {
         self.metadata_descriptor_with_checkpoint(target, &mut || Ok(()))
     }
 
@@ -368,7 +365,7 @@ impl ProviderReadAuthority {
         target: &MetadataAddress,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Vec<u8>, ViewError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             *self
                 .metadata_descriptor_reads
@@ -495,7 +492,7 @@ impl ProviderReadAuthority {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn metadata_descriptor_read_count(&self, target: &str) -> usize {
         self.metadata_descriptor_reads
             .lock()
@@ -505,7 +502,7 @@ impl ProviderReadAuthority {
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn configuration_payload_read_count(&self) -> usize {
         self.configuration_payload_reads
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -699,6 +696,21 @@ fn encode_export_path_components<'a>(
         encoded.push_str(component);
     }
     Ok(encoded)
+}
+
+/// Read access of the LSP host to one admitted source set.
+impl unica_lsp::ModuleSourceRead for ProviderReadAuthority {
+    fn source_set(&self) -> &str {
+        ProviderReadAuthority::source_set(self)
+    }
+
+    fn root_path(&self) -> &Path {
+        ProviderReadAuthority::root_path(self)
+    }
+
+    fn module_source(&self, target: &MetadataAddress) -> Result<Option<String>, ViewError> {
+        ProviderReadAuthority::module_source(self, target)
+    }
 }
 
 #[cfg(test)]

@@ -11,6 +11,39 @@ path = "src/lib.rs"
 
 [features]
 default = []
+test-support = [
+    "unica-application/test-support",
+    "unica-daemon/test-support",
+    "unica-lsp-contract/test-support",
+    "unica-project-health/test-support",
+    "unica-roles-designer/test-support",
+    "unica-templates-designer/test-support",
+    "unica-xdto-designer/test-support",
+    "unica-bsl/test-support",
+    "unica-forms-designer/test-support",
+    "unica-metadata-designer/test-support",
+    "unica-adapter-lexical/test-support",
+    "unica-adapter-bsl-analyzer/test-support",
+    "unica-analysis-services/test-support",
+    "unica-artifact-delivery/test-support",
+    "unica-adapter-v8-runner/test-support",
+    "unica-workspace/test-support",
+    "unica-redaction/test-support",
+    "unica-forms/test-support",
+    "unica-xdto/test-support",
+    "unica-dcs/test-support",
+    "unica-templates/test-support",
+    "unica-diagnostics/test-support",
+    "unica-navigation/test-support",
+    "unica-code-intelligence/test-support",
+    "unica-execution/test-support",
+    "unica-metadata/test-support",
+    "unica-source-contract/test-support",
+    "unica-execution-contract/test-support",
+    "unica-process/test-support",
+    "unica-work-control/test-support",
+    "unica-network/test-support",
+]
 receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "unica-daemon/receipt-ledger-test-support"]
 
 [dependencies]

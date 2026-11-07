@@ -38,7 +38,7 @@ use url::Url;
 /// root every other resource is located like any diagnostic: a logical target,
 /// or an unaddressable path with its proven owner when there is one. A module
 /// keeps only its own file; other resources stay explicitly unproved.
-pub(crate) struct CanonicalDiagnosticMapping {
+pub struct CanonicalDiagnosticMapping {
     context: DiagnosticContext,
     /// The file a module target was proved by; `None` for an object or root.
     module_relative: Option<PathBuf>,
@@ -74,12 +74,12 @@ impl CanonicalDiagnosticMapping {
         })
     }
 
-    pub(crate) fn target(&self) -> &unica_address::source_target::ResolvedTarget {
+    pub fn target(&self) -> &unica_address::source_target::ResolvedTarget {
         &self.context.target
     }
 
     /// The analysis scope of a module target; an object or root has none.
-    pub(crate) fn module_scope(&self) -> Option<unica_diagnostics::model::DiagnosticModuleScope> {
+    pub fn module_scope(&self) -> Option<unica_diagnostics::model::DiagnosticModuleScope> {
         self.module_relative.as_ref().map(|relative| {
             unica_diagnostics::model::DiagnosticModuleScope {
                 source_set: self.context.target.source_set.clone(),

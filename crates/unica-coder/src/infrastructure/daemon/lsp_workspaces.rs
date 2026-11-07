@@ -14,12 +14,10 @@ use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 use unica_address::address::QualifiedAddress;
-use unica_address::source_target::MetadataAddress;
 use unica_code_intelligence::completion::{CompletionMethod, PlatformMember};
 use unica_code_intelligence::symbols::SymbolRequestContext;
 use unica_diagnostics::model::DiagnosticProviderRegistry;
 use unica_execution_contract::invocation::SafeIdentityHash;
-use unica_execution_contract::view_error::ViewError;
 use unica_lsp::{
     AdmittedWorkspace, LspAnalysis, LspDiagnosticGap, LspDiagnostics, LspFinding, LspModuleReads,
     LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols, LspWorkspaces,
@@ -435,20 +433,6 @@ impl LspSymbols for ProductSymbols {
             SymbolOutcome::Places(places) => LspSymbolAnswer::Places(places),
             SymbolOutcome::Info(info) => LspSymbolAnswer::Info(info),
         })
-    }
-}
-
-impl ModuleSourceRead for ProviderReadAuthority {
-    fn source_set(&self) -> &str {
-        ProviderReadAuthority::source_set(self)
-    }
-
-    fn root_path(&self) -> &Path {
-        ProviderReadAuthority::root_path(self)
-    }
-
-    fn module_source(&self, target: &MetadataAddress) -> Result<Option<String>, ViewError> {
-        ProviderReadAuthority::module_source(self, target)
     }
 }
 

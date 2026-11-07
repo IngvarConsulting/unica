@@ -24,7 +24,7 @@ const CODE_INTELLIGENCE_FIELDS: &[&str] = &[
 ];
 const CODE_DIAGNOSTICS_FIELDS: &[&str] = &["analyze_timeout_seconds"];
 
-pub(crate) fn load_operational_config(
+pub fn load_operational_config(
     workspace_root: &Path,
 ) -> Result<OperationalConfig, OperationalConfigDiagnostic> {
     let shared = read_layer(

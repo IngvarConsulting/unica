@@ -100,12 +100,12 @@ impl Default for CapacitySnapshot {
 }
 
 #[derive(Default)]
-pub(crate) struct CapacityObserver {
+pub struct CapacityObserver {
     data: Mutex<CapacitySnapshot>,
 }
 
 impl CapacityObserver {
-    pub(crate) fn record_find(&self, fact_bytes: u64, entries: u64, complete: bool) {
+    pub fn record_find(&self, fact_bytes: u64, entries: u64, complete: bool) {
         let mut data = self
             .data
             .lock()
@@ -245,9 +245,7 @@ pub(crate) fn read_existing_snapshot(
     read_snapshot(&directory)
 }
 
-pub(crate) fn read_existing_snapshot_json(
-    daemon_identity_path: &Path,
-) -> io::Result<Option<String>> {
+pub fn read_existing_snapshot_json(daemon_identity_path: &Path) -> io::Result<Option<String>> {
     read_existing_snapshot(daemon_identity_path)?
         .map(|snapshot| {
             let bytes = encode_snapshot(&snapshot)?;
@@ -300,7 +298,7 @@ enum CapacityFlushResult {
     Unauthorized,
 }
 
-pub(crate) struct CapacityWriterGuard {
+pub struct CapacityWriterGuard {
     stop: mpsc::Sender<()>,
     flushed: mpsc::Receiver<CapacityFlushResult>,
 }
@@ -319,7 +317,7 @@ impl Drop for CapacityWriterGuard {
     }
 }
 
-pub(crate) fn start_background_writer(
+pub fn start_background_writer(
     state: &DaemonStateDirectory,
     observer: Arc<CapacityObserver>,
     authority_valid: Arc<dyn Fn() -> bool + Send + Sync>,
@@ -328,7 +326,7 @@ pub(crate) fn start_background_writer(
         state,
         observer,
         authority_valid,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         None,
     )
     .map(|(guard, _worker)| guard)
@@ -338,7 +336,9 @@ fn start_background_writer_inner(
     state: &DaemonStateDirectory,
     observer: Arc<CapacityObserver>,
     authority_valid: Arc<dyn Fn() -> bool + Send + Sync>,
-    #[cfg(test)] after_ack: Option<Box<dyn FnOnce(CapacityFlushResult) + Send>>,
+    #[cfg(any(test, feature = "test-support"))] after_ack: Option<
+        Box<dyn FnOnce(CapacityFlushResult) + Send>,
+    >,
 ) -> io::Result<(CapacityWriterGuard, thread::JoinHandle<()>)> {
     let retained = state
         .create_private_retained_subdirectory(DIRECTORY_NAME)
@@ -367,7 +367,7 @@ fn start_background_writer_inner(
                 writer_lock,
                 receiver,
                 flushed,
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 after_ack,
             )
         })?;
@@ -387,7 +387,9 @@ fn background_flush_loop(
     writer_lock: File,
     receiver: mpsc::Receiver<()>,
     flushed: mpsc::Sender<CapacityFlushResult>,
-    #[cfg(test)] after_ack: Option<Box<dyn FnOnce(CapacityFlushResult) + Send>>,
+    #[cfg(any(test, feature = "test-support"))] after_ack: Option<
+        Box<dyn FnOnce(CapacityFlushResult) + Send>,
+    >,
 ) {
     let mut write_failure_reported = false;
     loop {
@@ -417,7 +419,7 @@ fn background_flush_loop(
             drop(retained);
             drop(writer_lock);
             let _ = flushed.send(result);
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             if let Some(after_ack) = after_ack {
                 after_ack(result);
             }
