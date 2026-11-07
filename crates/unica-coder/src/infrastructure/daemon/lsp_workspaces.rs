@@ -2,6 +2,7 @@
 //! допуском, что `workspace_hint` вызова MCP, модуль читается той же
 //! авторизацией чтения, а символы отвечает та же служба символов.
 
+use super::lsp_completion::{PlatformContexts, SessionSources};
 use super::server::admit_editor_folder;
 use super::v13_service::{CanonicalV13ReadService, SymbolOperation, SymbolOutcome, SymbolRequest};
 use crate::domain::source_capabilities::bsl_profile_for_source;
@@ -14,6 +15,7 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 use unica_address::address::QualifiedAddress;
 use unica_address::source_target::MetadataAddress;
+use unica_code_intelligence::completion::{CompletionMethod, PlatformMember};
 use unica_code_intelligence::symbols::SymbolRequestContext;
 use unica_diagnostics::model::DiagnosticProviderRegistry;
 use unica_execution_contract::invocation::SafeIdentityHash;
@@ -23,15 +25,23 @@ use unica_lsp::{
     LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols, LspWorkspaces,
     ModuleSourceRead, SourceSetLayout,
 };
+use unica_lsp::{LspCompletion, LspCompletionAnswer, LspCompletionRequest};
 use unica_lsp_contract::protocol::V5LspFailure;
 use unica_refusal::RefusalCode;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::actor::ProviderRootBinding;
 
+type Installation = dyn Fn(&unica_source_contract::workspace::WorkspaceContext) -> Option<std::path::PathBuf>
+    + Send
+    + Sync;
+
 pub(super) struct ProductLspWorkspaces {
     actors: Arc<WorkspaceActorRegistry>,
     service: Arc<CanonicalV13ReadService>,
+    platform: Arc<PlatformContexts>,
+    /// The platform installation whose global context a workspace sees.
+    installation: Arc<Installation>,
 }
 
 impl ProductLspWorkspaces {
@@ -39,7 +49,34 @@ impl ProductLspWorkspaces {
         actors: Arc<WorkspaceActorRegistry>,
         service: Arc<CanonicalV13ReadService>,
     ) -> Self {
-        Self { actors, service }
+        Self {
+            actors,
+            service,
+            platform: Arc::default(),
+            installation: Arc::new(
+                crate::infrastructure::application_ports::platform_installation_root,
+            ),
+        }
+    }
+
+    /// A fixed installation, whose global context the test has loaded.
+    #[cfg(test)]
+    pub(super) fn with_platform_for_test(
+        mut self,
+        root: std::path::PathBuf,
+        members: Vec<PlatformMember>,
+    ) -> Self {
+        self.platform.ready_for_test(root.clone(), members);
+        self.installation = Arc::new(move |_| Some(root.clone()));
+        self
+    }
+
+    /// A fixed installation whose global context is still loading.
+    #[cfg(test)]
+    pub(super) fn with_platform_loading_for_test(mut self, root: std::path::PathBuf) -> Self {
+        self.platform.loading_for_test(root.clone());
+        self.installation = Arc::new(move |_| Some(root.clone()));
+        self
     }
 }
 
@@ -63,8 +100,19 @@ impl LspWorkspaces for ProductLspWorkspaces {
             bindings,
             identity,
         });
+        // The global context loads from the session's start, not with its
+        // first completion: a cold help index takes longer than a request.
+        let installation = (self.installation)(actor.context());
+        if let Some(root) = &installation {
+            let _ = self.platform.members(root);
+        }
         Some(AdmittedWorkspace {
             reads: Box::new(ProductModuleReads(Arc::clone(&space))),
+            completion: Arc::new(ProductCompletion {
+                space: Arc::clone(&space),
+                platform: Arc::clone(&self.platform),
+                installation,
+            }),
             diagnostics: Arc::new(ProductDiagnostics {
                 space: Arc::clone(&space),
                 registry: Arc::new(super::lsp_diagnostics::registry_for(Arc::clone(
@@ -158,6 +206,114 @@ impl LspModuleReads for ProductModuleReads {
                 .with_artifacts(artifacts)
                 .with_documents(documents),
         ))
+    }
+}
+
+/// Completion over the session's view of a source set and the global
+/// context of the project's platform installation.
+struct ProductCompletion {
+    space: Arc<ProductSpace>,
+    platform: Arc<PlatformContexts>,
+    /// `None`: the project has no installation, so nothing is to wait for.
+    installation: Option<std::path::PathBuf>,
+}
+
+impl ProductCompletion {
+    /// The members of the global context, or `None` while they load.
+    fn platform(&self) -> Option<Arc<[PlatformMember]>> {
+        match &self.installation {
+            None => Some(Arc::from(Vec::new())),
+            Some(root) => self.platform.members(root),
+        }
+    }
+
+    fn sources<'a>(
+        &self,
+        session: &str,
+        source_set: &'a str,
+        module: &'a str,
+        platform: Arc<[PlatformMember]>,
+        cancellation: &'a CancellationToken,
+    ) -> Result<SessionSources<'a>, V5LspFailure> {
+        let (actor, binding, artifacts) = self.space.bound(source_set)?;
+        let profile = bsl_profile_for_source(binding.source_profile())
+            .ok_or(V5LspFailure::WorkspaceUnavailable)?;
+        let documents = actor
+            .documents()
+            .session_documents(session, source_set)
+            .map_err(|_| V5LspFailure::Unavailable)?;
+        let descriptors = self
+            .space
+            .saved_read(binding)
+            .with_artifacts(Arc::clone(&artifacts));
+        let view = LogicalViewReadAuthority::with_read_authority_and_registration_cache(
+            cancellation,
+            self.space.saved_read(binding).with_documents(documents),
+            profile,
+            ProviderDeadline::no_deadline(),
+            artifacts,
+        );
+        Ok(SessionSources {
+            source_set,
+            module,
+            registrations: std::cell::OnceCell::new(),
+            descriptors,
+            view,
+            platform,
+            cancellation,
+            missed: std::cell::Cell::new(false),
+        })
+    }
+}
+
+impl LspCompletion for ProductCompletion {
+    fn complete(
+        &self,
+        request: LspCompletionRequest<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<LspCompletionAnswer, V5LspFailure> {
+        let platform = self.platform();
+        let sources = self.sources(
+            request.session,
+            request.source_set,
+            request.module,
+            platform.clone().unwrap_or_else(|| Arc::from(Vec::new())),
+            cancellation,
+        )?;
+        let completion =
+            unica_code_intelligence::completion::completion(request.text, request.offset, &sources);
+        Ok(LspCompletionAnswer {
+            complete: platform.is_some() && !sources.missed(),
+            completion,
+        })
+    }
+
+    fn describe(
+        &self,
+        session: &str,
+        source_set: &str,
+        module: &str,
+        method: &CompletionMethod,
+        cancellation: &CancellationToken,
+    ) -> Option<String> {
+        use unica_code_intelligence::completion::CompletionSources;
+        let sources = self
+            .sources(
+                session,
+                source_set,
+                module,
+                Arc::from(Vec::new()),
+                cancellation,
+            )
+            .ok()?;
+        let text = match &method.common_module {
+            Some(common) => sources.common_module_text(common)?,
+            None => sources
+                .view
+                .module_text(&QualifiedAddress::parse(module).ok()?)
+                .ok()?,
+        };
+        unica_code_intelligence::completion::method_description(&text, method)
     }
 }
 

@@ -37,6 +37,7 @@ const BODY_URI: &str = "unica://work/main/CommonModule.Main.Body";
 
 type Actor = WorkspaceActor<(), ()>;
 
+mod completion;
 mod diagnostics;
 mod symbols;
 
@@ -46,6 +47,7 @@ struct DiskWorkspaces {
     actors: WorkspaceActorRegistry<()>,
     symbols: Arc<symbols::ScriptedSymbols>,
     diagnostics: Arc<diagnostics::ScriptedDiagnostics>,
+    completion: Arc<completion::ScriptedCompletion>,
 }
 
 impl DiskWorkspaces {
@@ -101,6 +103,7 @@ impl LspWorkspaces for DiskWorkspaces {
             }),
             symbols: self.symbols.clone(),
             diagnostics: self.diagnostics.clone(),
+            completion: self.completion.clone(),
             actor: actor as Arc<dyn LspActor>,
         })
     }

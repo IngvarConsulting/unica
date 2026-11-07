@@ -6896,6 +6896,78 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "lsp.completion-inference-depth",
+      "class": "step",
+      "resource": "Шаги, на которые дополнение прослеживает тип переменной через циклы и присваивания.",
+      "unit": "count",
+      "scope": "request",
+      "source": {
+        "file": "crates/unica-code-intelligence/src/completion.rs",
+        "symbol": "MAX_INFERENCE_DEPTH"
+      },
+      "expr": "4",
+      "value": 4,
+      "applied": [
+        "crates/unica-code-intelligence/src/completion.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2578",
+      "problem": null,
+      "onReach": "тип не выводится, и членов объекта в списке нет",
+      "issue": "#2578",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.platform-context-retry",
+      "class": "retry",
+      "resource": "Ожидание перед новой загрузкой глобального контекста платформы после неудачной.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-coder/src/infrastructure/daemon/lsp_completion.rs",
+        "symbol": "PLATFORM_CONTEXT_RETRY_DELAY"
+      },
+      "expr": "Duration::from_secs(60)",
+      "value": 60000,
+      "applied": [
+        "crates/unica-coder/src/infrastructure/daemon/lsp_completion.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2578",
+      "problem": null,
+      "onReach": "до следующей попытки списки дополнения без членов платформы помечены неполными",
+      "issue": "#2578",
+      "evidence": [],
+      "decision": null,
+      "review": null
+    },
+    {
+      "id": "lsp.wire-completion-label-bytes",
+      "class": "format",
+      "resource": "Подпись элемента дополнения, который редактор возвращает в `completionItem/resolve`.",
+      "unit": "count",
+      "scope": "frame",
+      "source": {
+        "file": "crates/unica-lsp-contract/src/protocol.rs",
+        "symbol": "MAX_LSP_COMPLETION_TEXT_BYTES"
+      },
+      "expr": "4 * 1024",
+      "value": 4096,
+      "applied": [
+        "crates/unica-lsp-contract/src/protocol.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2578",
+      "problem": null,
+      "onReach": "фронтенд возвращает элемент как пришёл, без описания",
+      "issue": "#2578",
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [

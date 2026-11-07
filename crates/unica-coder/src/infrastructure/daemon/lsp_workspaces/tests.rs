@@ -566,3 +566,149 @@ fn diagnostics_run_checks_own_findings_and_its_analysis_of_the_saved_module() {
         "{found:?}"
     );
 }
+
+/// Completion over the product's sources: an exported method of another
+/// common module, its description on resolve, and a member of the project's
+/// platform global context; the list is whole once that context is loaded.
+#[test]
+fn completion_offers_common_module_exports_and_the_platform_context() {
+    let workspace = diagnosed_workspace();
+    let source = workspace.path().join("src");
+    fs::write(
+        source.join("Configuration.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><CommonModule>Main</CommonModule><CommonModule>Other</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+    )
+    .unwrap();
+    fs::write(
+        source.join("CommonModules/Other.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="22222222-2222-4222-8222-222222222222"><Properties><Name>Other</Name><Synonym/><Comment/><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+    )
+    .unwrap();
+    fs::create_dir_all(source.join("CommonModules/Other/Ext")).unwrap();
+    fs::write(
+        source.join("CommonModules/Other/Ext/Module.bsl"),
+        "// Shares a value.\nProcedure Shared() Export EndProcedure\nProcedure Hidden() EndProcedure\n",
+    )
+    .unwrap();
+    let workspaces = Arc::new(
+        ProductLspWorkspaces::new(
+            Arc::new(crate::infrastructure::source_workspace::actor_registry()),
+            Arc::new(super::super::v13_service::CanonicalV13ReadService::default()),
+        )
+        .with_platform_for_test(
+            workspace.path().join("platform"),
+            vec![unica_code_intelligence::completion::PlatformMember {
+                name: "Сообщить".into(),
+                method: true,
+                parameters: vec!["ТекстСообщения".into()],
+            }],
+        ),
+    );
+    let host = UnicaLspHost::new(workspaces);
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+    let buffer = "Procedure P()\n\tOther.\n\tСо\nEndProcedure\n";
+    host.notify(
+        &editor,
+        V5LspNotification::DidOpen {
+            uri: BODY_URI.into(),
+            language_id: "bsl".into(),
+            version: 1,
+            text: buffer.into(),
+        },
+        soon(),
+    )
+    .unwrap();
+    let at = |line, character| unica_lsp_contract::protocol::V5LspPosition { line, character };
+    let complete = |line, character| match ask(
+        &host,
+        &editor,
+        V5LspCall::Completion {
+            uri: BODY_URI.into(),
+            position: at(line, character),
+        },
+    ) {
+        V5LspOutcome::CompletionList { incomplete, items } => (incomplete, items),
+        other => panic!("not a completion list: {other:?}"),
+    };
+
+    let (incomplete, exports) = complete(1, 7);
+    assert!(!incomplete);
+    assert_eq!(
+        exports
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        ["Shared"]
+    );
+    match ask(
+        &host,
+        &editor,
+        V5LspCall::CompletionResolve {
+            item: Box::new(exports[0].clone()),
+        },
+    ) {
+        V5LspOutcome::CompletionItem { item } => {
+            assert_eq!(item.documentation.as_deref(), Some("Shares a value."))
+        }
+        other => panic!("not an item: {other:?}"),
+    }
+
+    let (_, names) = complete(2, 3);
+    assert!(
+        names.iter().any(|item| item.label == "Сообщить"),
+        "{names:?}"
+    );
+    assert!(names.iter().any(|item| item.label == "Other"), "{names:?}");
+}
+
+/// rule: INV.LSP.PARTIAL-ANSWERS
+#[test]
+fn completion_is_incomplete_while_the_platform_context_loads() {
+    let workspace = diagnosed_workspace();
+    let workspaces = Arc::new(
+        ProductLspWorkspaces::new(
+            Arc::new(crate::infrastructure::source_workspace::actor_registry()),
+            Arc::new(super::super::v13_service::CanonicalV13ReadService::default()),
+        )
+        .with_platform_loading_for_test(workspace.path().join("platform")),
+    );
+    let host = UnicaLspHost::new(workspaces);
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+
+    let outcome = ask(
+        &host,
+        &editor,
+        V5LspCall::Completion {
+            uri: BODY_URI.into(),
+            position: unica_lsp_contract::protocol::V5LspPosition {
+                line: 0,
+                character: 0,
+            },
+        },
+    );
+
+    assert!(
+        matches!(
+            outcome,
+            V5LspOutcome::CompletionList {
+                incomplete: true,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+}

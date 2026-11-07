@@ -555,6 +555,14 @@ pub fn metadata_address_kind_matches(canonical: &str, raw: &str) -> bool {
         .is_some_and(|kind| kind.canonical == raw || kind.russian_aliases.contains(&raw))
 }
 
+/// The collection names of a canonical kind: English first, then Russian.
+pub fn metadata_collection_names(canonical: &str) -> Option<&'static [&'static str]> {
+    ADDRESS_KINDS
+        .iter()
+        .find(|kind| kind.canonical == canonical)
+        .map(|kind| kind.collection_aliases)
+}
+
 pub fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static str>> {
     ADDRESS_KINDS
         .iter()

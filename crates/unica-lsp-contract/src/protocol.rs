@@ -18,6 +18,8 @@ const MAX_LSP_FOLDER_NAME_BYTES: usize = 1024;
 const MAX_LSP_LANGUAGE_ID_BYTES: usize = 64;
 /// Сообщение уведомления редактору.
 const MAX_LSP_LOG_MESSAGE_BYTES: usize = 4 * 1024;
+/// Подпись элемента дополнения, который редактор возвращает на описание.
+const MAX_LSP_COMPLETION_TEXT_BYTES: usize = 4 * 1024;
 
 /// Сессия LSP: выдаётся демоном на `lsp_open` и живёт, пока открыто
 /// соединение, на котором она открыта.
@@ -99,6 +101,14 @@ pub enum V5LspCall {
     /// Находки документа по запросу редактора.
     #[serde(rename = "textDocument/diagnostic")]
     Diagnostic { uri: String },
+    #[serde(rename = "textDocument/completion")]
+    Completion {
+        uri: String,
+        position: V5LspPosition,
+    },
+    /// Описание элемента, который служба выдала в `Completion`.
+    #[serde(rename = "completionItem/resolve")]
+    CompletionResolve { item: Box<V5LspCompletionItem> },
     /// Текст документа по адресу `unica://`, который редактор открывает
     /// без файла на диске.
     #[serde(rename = "workspace/textDocumentContent")]
@@ -113,12 +123,28 @@ impl V5LspCall {
             | Self::Definition { uri, .. }
             | Self::References { uri, .. }
             | Self::Diagnostic { uri }
+            | Self::Completion { uri, .. }
             | Self::TextDocumentContent { uri } => Some(uri),
+            Self::CompletionResolve { item } => item.data.as_ref().map(|data| data.uri.as_str()),
         }
     }
 
     fn validate(&self) -> Result<(), String> {
-        validate_uri(self.document_uri().unwrap_or_default())
+        match self {
+            // An item without a document is answered as it came.
+            Self::CompletionResolve { item } => {
+                validate_short_text(
+                    &item.label,
+                    MAX_LSP_COMPLETION_TEXT_BYTES,
+                    "v5 lsp item label",
+                )?;
+                match &item.data {
+                    Some(data) => validate_uri(&data.uri),
+                    None => Ok(()),
+                }
+            }
+            _ => validate_uri(self.document_uri().unwrap_or_default()),
+        }
     }
 }
 
@@ -217,6 +243,9 @@ pub struct V5LspCapabilities {
     /// `textDocument/diagnostic` по запросу редактора.
     #[serde(default, skip_serializing_if = "is_false")]
     pub diagnostics: bool,
+    /// `textDocument/completion` и `completionItem/resolve`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub completion: bool,
     /// `workspace/textDocumentContent` для адресов `unica://`.
     pub text_document_content: bool,
 }
@@ -232,6 +261,7 @@ impl V5LspCapabilities {
         definition: false,
         references: false,
         diagnostics: false,
+        completion: false,
         text_document_content: false,
     };
 }
@@ -317,6 +347,56 @@ pub struct V5LspLocation {
     pub range: V5LspRange,
 }
 
+/// Что предлагает элемент дополнения.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum V5LspCompletionKind {
+    Method,
+    Function,
+    Field,
+    Variable,
+    Class,
+    Module,
+    Property,
+    Struct,
+}
+
+/// Замена текста, которую делает выбранный элемент.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct V5LspTextEdit {
+    pub range: V5LspRange,
+    pub new_text: String,
+}
+
+/// Документ и метод элемента: по ним служба находит описание метода.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct V5LspCompletionData {
+    pub uri: String,
+    pub method: String,
+    /// Общий модуль, который экспортирует метод; иначе метод самого модуля.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub common_module: Option<String>,
+}
+
+/// Элемент дополнения.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct V5LspCompletionItem {
+    pub label: String,
+    pub kind: V5LspCompletionKind,
+    pub sort_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_edit: Option<V5LspTextEdit>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<V5LspCompletionData>,
+}
+
 /// Уровень находки, как его различает редактор.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -357,6 +437,16 @@ pub enum V5LspOutcome {
     /// Места в документах соединения, которые редактор может открыть.
     Locations {
         locations: Vec<V5LspLocation>,
+    },
+    /// Элементы дополнения. `incomplete` — источник ещё не готов: редактор
+    /// переспросит на следующем вводе.
+    CompletionList {
+        incomplete: bool,
+        items: Vec<V5LspCompletionItem>,
+    },
+    /// Элемент с описанием.
+    CompletionItem {
+        item: Box<V5LspCompletionItem>,
     },
     /// Все находки документа. Неполный ответ несёт находку-отметку
     /// `unica.diagnostics_incomplete`, которая называет, чего в нём нет.

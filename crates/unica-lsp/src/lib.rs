@@ -5,6 +5,7 @@
 //! Допуск папки, чтение модуля, службы символов и диагностик приходят от
 //! продукта через [`LspWorkspaces`].
 
+mod completion;
 mod diagnostics;
 #[allow(dead_code)]
 mod document;
@@ -17,6 +18,7 @@ mod symbols;
 #[allow(dead_code)]
 mod uri;
 
+pub use completion::{LspCompletion, LspCompletionAnswer, LspCompletionRequest};
 pub use diagnostics::{LspAnalysis, LspDiagnosticGap, LspDiagnostics, LspFinding, LspSeverity};
 pub use documents::{ModuleSourceRead, SourceSetLayout};
 pub use host::{AdmittedWorkspace, LspActor, LspModuleReads, LspWorkspaces, UnicaLspHost};
