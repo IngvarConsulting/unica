@@ -1,14 +1,14 @@
 //! Isolated sole-writer TaskStore for the private protocol-v5 daemon.
 
 use crate::invocation_store_v5::{
-    InvocationStoreV5, NewV5InvocationRecord, RecoveryTerminalReason, TaskStoreRecoveryCatalog,
-    V5CommitOperation, V5DeleteTerminalOutcome, V5StartWorkingOutcome, V5StoredInvocationRecord,
-    V5StoredTask, V5TaskIdentity, V5TaskMismatch, V5TaskRecoveryEntry, V5TaskRetirement,
-    V5TaskStatus, V5TaskStoreError, V5TerminalPublication,
+    InvocationStoreV5, IsolatedTaskRecordReason, NewV5InvocationRecord, RecoveryTerminalReason,
+    TaskStoreRecoveryCatalog, V5CommitOperation, V5DeleteTerminalOutcome, V5StartWorkingOutcome,
+    V5StoredInvocationRecord, V5StoredTask, V5TaskIdentity, V5TaskMismatch, V5TaskRecoveryEntry,
+    V5TaskRetirement, V5TaskStatus, V5TaskStoreError, V5TerminalPublication,
 };
 use crate::receipt_ledger::ReceiptTerminalOutcome;
 use crate::receipt_ledger_actor::observation;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io::{self, Read, Write};
 #[cfg(test)]
@@ -69,6 +69,7 @@ pub struct FileInvocationStoreV5 {
     clock: Arc<dyn EpochMillisClock>,
     writer: Mutex<StoreCatalog>,
     limits: StoreLimits,
+    isolated_records: HashMap<TaskId, IsolatedTaskRecordReason>,
     next_publication_failure: Mutex<Option<PublicationFailure>>,
 }
 
@@ -219,26 +220,35 @@ impl FileInvocationStoreV5 {
             }
         }
 
-        let store = Self {
+        let mut store = Self {
             root,
             root_file,
             _ownership_lock: ownership_lock,
             clock,
             writer: Mutex::new(StoreCatalog::default()),
             limits,
+            isolated_records: HashMap::new(),
             next_publication_failure: Mutex::new(None),
         };
-        let catalog = store.inspect_only(deadline)?;
+        let (catalog, isolated_records) = store.inspect_only(deadline)?;
+        store.isolated_records = isolated_records;
         Ok((store, catalog))
     }
 
     fn inspect_only(
         &self,
         deadline: ProviderDeadline,
-    ) -> Result<TaskStoreRecoveryCatalog, V5TaskStoreError> {
+    ) -> Result<
+        (
+            TaskStoreRecoveryCatalog,
+            HashMap<TaskId, IsolatedTaskRecordReason>,
+        ),
+        V5TaskStoreError,
+    > {
         let mut writer = self.lock_writer(deadline)?;
         self.verify_root_authority()?;
         let mut recovery_entries = Vec::new();
+        let mut isolated_records = HashMap::new();
         let mut abandoned_staging = Vec::new();
         self.root
             .visit_immediate_names(|entry_name| -> Result<(), V5TaskStoreError> {
@@ -272,12 +282,22 @@ impl FileInvocationStoreV5 {
                 let task_id = encoded_task_id
                     .parse::<TaskId>()
                     .map_err(|_| V5TaskStoreError::Corrupt("task file name is not a TaskId"))?;
-                let record = Self::read_committed_from(
-                    &self.root_file,
-                    task_id,
-                    self.limits.max_record_bytes,
-                )?;
-                recovery_entries.push(V5TaskRecoveryEntry::from_record(&record));
+                // Only the payload may be isolated: opening a canonical regular
+                // owner-only file remains a store-authority operation.
+                let file = Self::open_committed_file(&self.root_file, task_id)?;
+                match Self::read_committed_payload(file, task_id, self.limits.max_record_bytes) {
+                    Ok(record) => recovery_entries.push(V5TaskRecoveryEntry::from_record(&record)),
+                    Err(V5TaskStoreError::Corrupt(_)) => {
+                        isolated_records.insert(task_id, IsolatedTaskRecordReason::Corrupt);
+                    }
+                    Err(V5TaskStoreError::RecordTooLarge { max_bytes }) => {
+                        isolated_records.insert(
+                            task_id,
+                            IsolatedTaskRecordReason::RecordTooLarge { max_bytes },
+                        );
+                    }
+                    Err(error) => return Err(error),
+                }
                 writer.records.insert(task_id);
                 Ok(())
             })?;
@@ -287,7 +307,10 @@ impl FileInvocationStoreV5 {
         sync_state_directory(&self.root_file)
             .map_err(|error| storage_error("sync protocol-v5 task staging cleanup", error))?;
         self.verify_root_authority()?;
-        Ok(TaskStoreRecoveryCatalog::new(recovery_entries))
+        Ok((
+            TaskStoreRecoveryCatalog::new(recovery_entries),
+            isolated_records,
+        ))
     }
 
     fn remove_verified_staging(
@@ -355,10 +378,21 @@ impl FileInvocationStoreV5 {
         check_deadline(deadline)?;
         self.verify_root_authority()?;
         let record =
-            Self::read_committed_from(&self.root_file, task_id, self.limits.max_record_bytes)?;
+            Self::read_committed_from(&self.root_file, task_id, self.limits.max_record_bytes);
         check_deadline(deadline)?;
         self.verify_root_authority()?;
-        Ok(record)
+        if let Some(reason) = self.isolated_records.get(&task_id) {
+            if matches!(
+                &record,
+                Ok(_) | Err(V5TaskStoreError::Corrupt(_) | V5TaskStoreError::RecordTooLarge { .. })
+            ) {
+                return Err(V5TaskStoreError::IsolatedRecord {
+                    task_id,
+                    reason: *reason,
+                });
+            }
+        }
+        record
     }
 
     fn read_committed_from(
@@ -366,6 +400,11 @@ impl FileInvocationStoreV5 {
         task_id: TaskId,
         max_record_bytes: usize,
     ) -> Result<V5StoredInvocationRecord, V5TaskStoreError> {
+        let file = Self::open_committed_file(root, task_id)?;
+        Self::read_committed_payload(file, task_id, max_record_bytes)
+    }
+
+    fn open_committed_file(root: &File, task_id: TaskId) -> Result<File, V5TaskStoreError> {
         let file_name = format!("{task_id}.json");
         let file = match open_state_regular_child(root, OsStr::new(&file_name)) {
             Ok(file) => file,
@@ -376,6 +415,14 @@ impl FileInvocationStoreV5 {
         };
         verify_state_owner_only(&file)
             .map_err(|error| storage_error("verify protocol-v5 task record ownership", error))?;
+        Ok(file)
+    }
+
+    fn read_committed_payload(
+        file: File,
+        task_id: TaskId,
+        max_record_bytes: usize,
+    ) -> Result<V5StoredInvocationRecord, V5TaskStoreError> {
         let limit = u64::try_from(max_record_bytes)
             .unwrap_or(u64::MAX)
             .saturating_add(1);
@@ -397,6 +444,19 @@ impl FileInvocationStoreV5 {
             ));
         }
         Ok(record)
+    }
+
+    /// A startup quarantine never hides a later I/O or authority refusal.
+    pub(crate) fn check_isolated_record(
+        &self,
+        task_id: TaskId,
+        deadline: ProviderDeadline,
+    ) -> Result<(), V5TaskStoreError> {
+        if self.isolated_records.contains_key(&task_id) {
+            self.read_record(task_id, deadline).map(|_| ())
+        } else {
+            Ok(())
+        }
     }
 
     fn publish_record(
@@ -1342,9 +1402,9 @@ mod tests {
         );
     }
 
-    /// rule: INV.APP.DAEMON-TASK-CAPACITY
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
     #[test]
-    fn corrupt_committed_task_preserves_orphan_before_cleanup() {
+    fn corrupt_committed_task_is_isolated_before_verified_staging_cleanup() {
         let root = tempfile::tempdir().unwrap();
         let root_path = physical_root(&root);
         let directory = open_state_directory_nofollow(&root_path).unwrap();
@@ -1355,22 +1415,25 @@ mod tests {
             let mut file = create_state_file_child(&directory, OsStr::new(name)).unwrap();
             std::io::Write::write_all(&mut file, b"{malformed").unwrap();
         }
+        let (store, catalog) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(9_000)),
+            deadline(),
+        )
+        .unwrap();
+        assert!(catalog.entries().is_empty());
         assert!(matches!(
-            FileInvocationStoreV5::open_inspect_only(
-                &root_path,
-                Arc::new(ManualEpochClock::at(9_000)),
-                deadline()
-            ),
-            Err(V5TaskStoreError::Corrupt(_))
+            store.get(task_id("11111111-1111-4111-8111-111111111111"), deadline()),
+            Err(V5TaskStoreError::IsolatedRecord {
+                reason: super::IsolatedTaskRecordReason::Corrupt,
+                ..
+            })
         ));
         assert_eq!(
             fs::read(root_path.join("11111111-1111-4111-8111-111111111111.json")).unwrap(),
             b"{malformed"
         );
-        assert_eq!(
-            fs::read(root_path.join(".abandoned.tmp")).unwrap(),
-            b"{malformed"
-        );
+        assert!(!root_path.join(".abandoned.tmp").exists());
     }
 
     /// rule: INV.APP.DAEMON-TASK-CAPACITY
@@ -1530,6 +1593,232 @@ mod tests {
         .map(|(store, _)| store)
     }
 
+    fn assert_payload_is_isolated(oversized: bool) {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let good = stored_record(
+            TaskId::new(),
+            InvocationId::new(),
+            0x20,
+            1,
+            false,
+            V5StoredTask::Queued,
+        );
+        let bad = stored_record(
+            TaskId::new(),
+            InvocationId::new(),
+            0x21,
+            1,
+            false,
+            V5StoredTask::Queued,
+        );
+        let good_bytes = write_record(&root_path, &good);
+        write_record(&root_path, &bad);
+        let bad_bytes = if oversized {
+            vec![b'x'; super::MAX_TASK_RECORD_BYTES + 1]
+        } else {
+            b"{invalid JSON without any invocation proof".to_vec()
+        };
+        let bad_path = root_path.join(format!("{}.json", bad.task_id));
+        fs::write(&bad_path, &bad_bytes).unwrap();
+        let (store, catalog) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(9_000)),
+            deadline(),
+        )
+        .expect("one invalid payload must not prevent healthy Task recovery");
+        assert_eq!(catalog.entries().len(), 1);
+        assert!(catalog.entry(good.task_id).is_some());
+        assert!(catalog.entry(bad.task_id).is_none());
+        assert_eq!(store.get(good.task_id, deadline()).unwrap(), good);
+        let invalid = store.get(bad.task_id, deadline()).unwrap_err();
+        assert!(
+            matches!(invalid,
+            V5TaskStoreError::IsolatedRecord { task_id, reason }
+                if task_id == bad.task_id && reason == if oversized {
+                    super::IsolatedTaskRecordReason::RecordTooLarge { max_bytes: super::MAX_TASK_RECORD_BYTES }
+                } else { super::IsolatedTaskRecordReason::Corrupt }),
+            "the rejected payload must retain its closed reason: {invalid:?}"
+        );
+        for invocation in [bad.invocation_id, InvocationId::new()] {
+            assert!(store
+                .create_exact(new_record(bad.task_id, invocation, 0x21), deadline())
+                .is_err());
+        }
+        assert_eq!(fs::read(&bad_path).unwrap(), bad_bytes);
+        assert_eq!(
+            fs::read(root_path.join(format!("{}.json", good.task_id))).unwrap(),
+            good_bytes
+        );
+        fs::write(&bad_path, serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(
+            matches!(
+                store.get(bad.task_id, deadline()),
+                Err(V5TaskStoreError::IsolatedRecord { .. })
+            ),
+            "external payload repair cannot grant a quarantined ID new authority in this writer"
+        );
+        fs::write(&bad_path, &bad_bytes).unwrap();
+        let new = new_record(TaskId::new(), InvocationId::new(), 0x22);
+        let created = store
+            .create_exact(new, deadline())
+            .expect("healthy new Tasks still work");
+        assert_eq!(store.get(created.task_id, deadline()).unwrap(), created);
+        fs::remove_file(&bad_path).unwrap();
+        assert!(
+            store
+                .create_exact(
+                    new_record(bad.task_id, InvocationId::new(), 0x23),
+                    deadline()
+                )
+                .is_err(),
+            "an isolated TaskId remains reserved for this writer even after external deletion"
+        );
+    }
+
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
+    #[test]
+    fn oversized_payload_is_isolated_and_healthy_tasks_remain_available() {
+        assert_payload_is_isolated(true);
+    }
+
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
+    #[test]
+    fn corrupt_payload_is_isolated_and_healthy_tasks_remain_available() {
+        assert_payload_is_isolated(false);
+    }
+
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
+    #[test]
+    fn invalid_task_file_name_and_nonregular_entry_are_not_payload_isolation() {
+        for name in [
+            "not-a-TaskId.json".to_owned(),
+            format!("{}.json", TaskId::new()),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let root_path = physical_root(&root);
+            let directory = open_state_directory_nofollow(&root_path).unwrap();
+            let mut staging =
+                create_state_file_child(&directory, OsStr::new(".abandoned.tmp")).unwrap();
+            std::io::Write::write_all(&mut staging, b"retained").unwrap();
+            drop(staging);
+            if name.starts_with("not-") {
+                let mut file = create_state_file_child(&directory, OsStr::new(&name)).unwrap();
+                std::io::Write::write_all(&mut file, b"{invalid").unwrap();
+            } else {
+                create_state_directory_child(&directory, OsStr::new(&name)).unwrap();
+            }
+            let opened = FileInvocationStoreV5::open_inspect_only(
+                &root_path,
+                Arc::new(ManualEpochClock::at(9_000)),
+                deadline(),
+            );
+            assert!(if name.starts_with("not-") {
+                matches!(
+                    opened,
+                    Err(V5TaskStoreError::Corrupt("task file name is not a TaskId"))
+                )
+            } else {
+                matches!(
+                    opened,
+                    Err(V5TaskStoreError::Storage {
+                        operation: "open protocol-v5 task record",
+                        ..
+                    })
+                )
+            });
+            assert_eq!(
+                fs::read(root_path.join(".abandoned.tmp")).unwrap(),
+                b"retained",
+                "failed root inspection cannot clean staging"
+            );
+        }
+    }
+
+    /// rule: INV.APP.DAEMON-TASK-PERSISTENCE
+    #[test]
+    fn isolated_payload_does_not_hide_deadline_or_root_authority() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = physical_root(&root);
+        let record = stored_record(
+            TaskId::new(),
+            InvocationId::new(),
+            0x24,
+            1,
+            false,
+            V5StoredTask::Queued,
+        );
+        write_record(&root_path, &record);
+        let good = stored_record(
+            TaskId::new(),
+            InvocationId::new(),
+            0x25,
+            1,
+            false,
+            V5StoredTask::Queued,
+        );
+        let good_bytes = write_record(&root_path, &good);
+        let name = format!("{}.json", record.task_id);
+        fs::write(root_path.join(&name), b"{invalid").unwrap();
+        let (store, _) = FileInvocationStoreV5::open_inspect_only(
+            &root_path,
+            Arc::new(ManualEpochClock::at(9_000)),
+            deadline(),
+        )
+        .unwrap();
+        assert!(matches!(
+            store.get(
+                record.task_id,
+                ProviderDeadline::from_budget(Duration::ZERO)
+            ),
+            Err(V5TaskStoreError::DeadlineExceeded)
+        ));
+        let root_identity = super::state_file_identity(&store.root_file).unwrap();
+        match fs::rename(&root_path, root.path().join("detached-v5")) {
+            Ok(()) => {
+                let parent =
+                    open_state_directory_nofollow(&fs::canonicalize(root.path()).unwrap()).unwrap();
+                create_state_directory_child(&parent, OsStr::new("v5")).unwrap();
+                assert!(
+                    matches!(
+                        store.get(record.task_id, deadline()),
+                        Err(V5TaskStoreError::Storage {
+                            operation: "validate protocol-v5 task root",
+                            ..
+                        })
+                    ),
+                    "an isolated reason cannot mask loss of retained root authority"
+                );
+                assert!(matches!(
+                    store.get(good.task_id, deadline()),
+                    Err(V5TaskStoreError::Storage {
+                        operation: "validate protocol-v5 task root",
+                        ..
+                    })
+                ));
+            }
+            Err(error) => {
+                // Native retained descendants can prevent the substitution itself.
+                assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+                assert!(root_path.join(&name).is_file());
+                assert!(!root.path().join("detached-v5").exists());
+                assert!(matches!(
+                    store.get(record.task_id, deadline()),
+                    Err(V5TaskStoreError::IsolatedRecord { .. })
+                ));
+                let named = open_state_directory_nofollow(&root_path).unwrap();
+                assert_eq!(super::state_file_identity(&named).unwrap(), root_identity);
+                assert_eq!(fs::read(root_path.join(&name)).unwrap(), b"{invalid");
+                assert_eq!(
+                    fs::read(root_path.join(format!("{}.json", good.task_id))).unwrap(),
+                    good_bytes
+                );
+                assert_eq!(store.get(good.task_id, deadline()).unwrap(), good);
+                eprintln!("root substitution refused by retained native handles");
+            }
+        }
+    }
+
     /// Creates the fixed Task and moves it to Working.
     fn working_task(store: &FileInvocationStoreV5) -> V5StoredInvocationRecord {
         let created = store
@@ -1611,12 +1900,12 @@ mod tests {
             published
         );
         drop(reopened);
-        // Current behaviour, not an obligation: the catalog reads every
-        // record when the store opens, so an over-limit record refuses it.
-        assert!(matches!(
-            open_with_record_limit(&exact_path, clock.clone(), limit - 1),
-            Err(V5TaskStoreError::RecordTooLarge { .. })
-        ));
+        let isolated = open_with_record_limit(&exact_path, clock.clone(), limit - 1).unwrap();
+        assert!(matches!(isolated.get(published.task_id, deadline()),
+            Err(V5TaskStoreError::IsolatedRecord {
+                reason: super::IsolatedTaskRecordReason::RecordTooLarge { max_bytes }, ..
+            }) if max_bytes == limit - 1));
+        drop(isolated);
 
         let over = tempfile::tempdir().expect("over root");
         let over_path = physical_root(&over);
