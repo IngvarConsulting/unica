@@ -14,6 +14,7 @@ receipt-ledger-test-support = ["test-support", "unica-execution/receipt-ledger-t
 unica-execution = { path = "../unica-execution" }
 unica-execution-contract = { path = "../unica-execution-contract" }
 unica-lsp-contract = { path = "../unica-lsp-contract" }
+unica-work-control = { path = "../unica-work-control" }
 unica-workspace = { path = "../unica-workspace" }
 unica-bootstrap = { path = "../unica-bootstrap" }
 unica-artifact-delivery = { path = "../unica-artifact-delivery" }
@@ -27,7 +28,6 @@ uuid.workspace = true
 tempfile.workspace = true
 unica-process = { path = "../unica-process", features = ["test-support"] }
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
-unica-work-control = { path = "../unica-work-control" }
 
 [package.metadata.unica]
 component = "service"

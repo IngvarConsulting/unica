@@ -319,11 +319,8 @@ fn canonical(path: &Path) -> PathBuf {
 
 /// The module whose `Body` a document address names.
 fn module_of_body(document: &DocumentUri) -> Result<QualifiedAddress, LspDocumentError> {
-    let module = document
-        .address
-        .strip_suffix(".Body")
-        .ok_or(LspDocumentError::NotAModule)?;
-    QualifiedAddress::parse(module)
+    let module = document.module().ok_or(LspDocumentError::NotAModule)?;
+    QualifiedAddress::parse(module.module())
         .map_err(|error| LspDocumentError::Uri(UriError::Address(error.to_string())))
 }
 

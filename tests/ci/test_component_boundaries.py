@@ -179,6 +179,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-lsp", "unica-address"),
             ("unica-lsp", "unica-code-intelligence"),
             ("unica-coder", "unica-lsp-contract"),
+            ("unica-lsp-contract", "unica-work-control"),
         ):
             with self.subTest(owner=owner, target=target):
                 self.assertEqual(checker.edge_errors(owner, target, "dependencies"), [])

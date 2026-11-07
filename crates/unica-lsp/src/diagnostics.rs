@@ -98,7 +98,7 @@ pub trait LspDiagnostics: Send + Sync {
     fn analyse(
         &self,
         source_set: &str,
-        module: &str,
+        module: &crate::ModuleDocument,
         saved: &str,
         cancellation: &CancellationToken,
     ) -> LspAnalysis;
