@@ -19,7 +19,7 @@ use limits::{
     metadata_limits, task_addressing_applies, task_addressing_issue, unreadable_collection,
     unreadable_entries, wsdl_limits,
 };
-pub(crate) use props::borrowing_props;
+pub use props::borrowing_props;
 use props::{metadata_detail_props, metadata_property_props};
 use relations::{metadata_missing_relation_limits, metadata_relation_limits, metadata_relations};
 

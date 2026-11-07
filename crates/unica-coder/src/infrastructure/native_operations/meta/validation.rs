@@ -1,13 +1,13 @@
 use unica_metadata_designer::validation::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata::{MetaDiagnostic, MetaDiagnosticSeverity, MetadataKind};
 use unica_source_contract::workspace::WorkspaceContext;
 
@@ -15,7 +15,7 @@ use super::super::cf::validate_cf_owner_path;
 use super::super::common::read_utf8_sig;
 use crate::infrastructure::subsystem_composition::validate_subsystem_owner_path;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
 pub(crate) fn validate_metadata_owner_shape_8_3_27(

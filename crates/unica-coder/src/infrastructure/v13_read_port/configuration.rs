@@ -21,7 +21,7 @@ impl ProviderReadAuthority {
             self.source_set_kind,
             SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport
         ) {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             self.configuration_payload_reads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return self.external_inventory_payload(checkpoint).map(Arc::new);
@@ -34,7 +34,7 @@ impl ProviderReadAuthority {
         &self,
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.configuration_payload_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Объявленный, но пустой набор — законное состояние, а не сбой. Без

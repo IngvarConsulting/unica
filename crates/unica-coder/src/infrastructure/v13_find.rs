@@ -158,20 +158,20 @@ impl AttachedPathResource {
 
 /// One admitted source-set root. The directory is read through the retained
 /// no-follow capability the actor owns; no path is reopened by name.
-pub(crate) struct LayoutFindSource<'a> {
+pub struct LayoutFindSource<'a> {
     name: &'a str,
     kind: SourceSetKind,
     root: &'a SourceDirectory,
 }
 
 impl<'a> LayoutFindSource<'a> {
-    pub(crate) const fn new(name: &'a str, kind: SourceSetKind, root: &'a SourceDirectory) -> Self {
+    pub const fn new(name: &'a str, kind: SourceSetKind, root: &'a SourceDirectory) -> Self {
         Self { name, kind, root }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct FindBuildError {
+pub struct FindBuildError {
     code: RefusalCode,
     detail: Option<RefusalDetail>,
     message: String,
@@ -194,11 +194,11 @@ impl FindBuildError {
         }
     }
 
-    pub(crate) const fn code(&self) -> RefusalCode {
+    pub const fn code(&self) -> RefusalCode {
         self.code
     }
 
-    pub(crate) const fn detail(&self) -> Option<RefusalDetail> {
+    pub const fn detail(&self) -> Option<RefusalDetail> {
         self.detail
     }
 
@@ -225,7 +225,7 @@ impl From<io::Error> for FindBuildError {
 /// Builds the two-way directory between qualified logical addresses and where
 /// objects live in the source layout. It reads that layout only: no typed
 /// projection, no module source, no revision lease.
-pub(crate) struct WorkspaceFindDirectoryBuilder {
+pub struct WorkspaceFindDirectoryBuilder {
     max_documents: usize,
     max_total_fact_bytes: usize,
     max_collection_entries: usize,
@@ -246,11 +246,11 @@ enum DescriptorHeadReadError {
 }
 
 /// The ranked names of one search and what its layout walk could not read.
-pub(crate) struct NameSearchOutcome {
-    pub(crate) names: RankedNames,
-    pub(crate) omissions: FindOmissions,
+pub struct NameSearchOutcome {
+    pub names: RankedNames,
+    pub omissions: FindOmissions,
     /// The watched addresses, such as the search scope, that exist.
-    pub(crate) present: HashSet<String>,
+    pub present: HashSet<String>,
 }
 
 #[derive(Debug)]
@@ -260,15 +260,15 @@ pub(crate) struct FindBuildOutcome {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct FindOmissions {
-    pub(crate) total: usize,
-    pub(crate) details: Vec<FindOmission>,
+pub struct FindOmissions {
+    pub total: usize,
+    pub details: Vec<FindOmission>,
 }
 
 #[derive(Debug)]
-pub(crate) struct FindOmission {
-    pub(crate) source_set: String,
-    pub(crate) reason: &'static str,
+pub struct FindOmission {
+    pub source_set: String,
+    pub reason: &'static str,
 }
 
 impl Default for WorkspaceFindDirectoryBuilder {
@@ -316,19 +316,19 @@ impl WorkspaceFindDirectoryBuilder {
         }
     }
 
-    pub(crate) fn with_capacity_observer(mut self, observer: Arc<CapacityObserver>) -> Self {
+    pub fn with_capacity_observer(mut self, observer: Arc<CapacityObserver>) -> Self {
         self.capacity_observer = Some(observer);
         self
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn with_head_reader(mut self, reader: Arc<HeadReader>) -> Self {
         self.read_head = reader;
         self
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_local_read_fault_for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_local_read_fault_for_test(
         self,
         relative: &'static str,
         kind: io::ErrorKind,
@@ -342,23 +342,23 @@ impl WorkspaceFindDirectoryBuilder {
         }))
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_document_limit(max_documents: usize) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_document_limit(max_documents: usize) -> Self {
         Self::with_limits(max_documents, DEFAULT_MAX_FACT_BYTES)
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_fact_byte_limit_for_test(max_fact_bytes: usize) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_fact_byte_limit_for_test(max_fact_bytes: usize) -> Self {
         Self::with_limits(DEFAULT_MAX_DOCUMENTS, max_fact_bytes)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn with_collection_limit_for_test(mut self, max_collection_entries: usize) -> Self {
         self.max_collection_entries = max_collection_entries;
         self
     }
 
-    pub(crate) fn build(
+    pub fn build(
         &self,
         sources: &[LayoutFindSource<'_>],
         deadline: ProviderDeadline,
@@ -402,7 +402,7 @@ impl WorkspaceFindDirectoryBuilder {
         Ok(outcome.index)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn build_for_search(
         &self,
         sources: &[LayoutFindSource<'_>],
@@ -419,7 +419,7 @@ impl WorkspaceFindDirectoryBuilder {
     /// count nor its facts are budgeted. Nearest names take a second walk,
     /// only when nothing matched directly. Each page walks the layout again
     /// (#2106).
-    pub(crate) fn search_names(
+    pub fn search_names(
         &self,
         sources: &[LayoutFindSource<'_>],
         ranker: NameRanker,
@@ -514,7 +514,7 @@ impl WorkspaceFindDirectoryBuilder {
     /// Resolve only paths that could be the requested object. The name-search
     /// directory still owns its aggregate fact budget; a point lookup must not
     /// read unrelated descriptors or charge their facts before answering.
-    pub(crate) fn locate_path(
+    pub fn locate_path(
         &self,
         sources: &[LayoutFindSource<'_>],
         path: &str,

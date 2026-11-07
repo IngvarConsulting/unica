@@ -1,12 +1,12 @@
-#[cfg(test)]
-pub(crate) mod testing {
+#[cfg(any(test, feature = "test-support"))]
+pub mod testing {
     use crate::application::UnicaApplication;
     use crate::infrastructure::application_ports::InfrastructureApplicationPorts;
     use std::sync::Arc;
 
     /// Приложение на портах инфраструктуры. Продукт его не собирает: он вызывает
     /// порты через демон, а этим входом его поверхность проверяют тесты.
-    pub(crate) fn application() -> UnicaApplication {
+    pub fn application() -> UnicaApplication {
         UnicaApplication::with_ports(Arc::new(InfrastructureApplicationPorts::new()))
     }
 

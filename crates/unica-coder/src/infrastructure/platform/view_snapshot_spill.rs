@@ -27,11 +27,11 @@ use unica_navigation::result_store::{
 // on-reach: новый снимок отказывает result_too_large до выдачи курсора; выданные продолжения остаются
 // issue: #1119
 // review: временное число без замеров; пересмотр по замерам #1119 PR8
-pub(crate) const VIEW_SNAPSHOT_MAX_RETAINED_BYTES: usize = 4 * 1024 * 1024 * 1024;
+pub const VIEW_SNAPSHOT_MAX_RETAINED_BYTES: usize = 4 * 1024 * 1024 * 1024;
 
 /// Общий файл снимков процесса; открывается при первом снимке.
 #[derive(Default)]
-pub(crate) struct TempFileSpill {
+pub struct TempFileSpill {
     spool: Mutex<Option<Arc<Spool>>>,
 }
 
@@ -60,7 +60,7 @@ impl TempFileSpill {
         Ok(Arc::clone(spool.as_ref().expect("spool was just opened")))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn spool_len_for_test(&self) -> u64 {
         self.spool().unwrap().file.lock().unwrap().len
     }

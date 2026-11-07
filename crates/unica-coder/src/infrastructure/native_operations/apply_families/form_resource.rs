@@ -1,7 +1,7 @@
 //! Typed family dispatch and batch ownership; codec-owned plans have no publication authority.
 use super::validate_platform_xml_binding;
 use serde_json::Value;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_address::address::QualifiedAddress;
 
 use unica_metadata_designer::resource_planner::{self, MetadataResourcePlan};
@@ -35,7 +35,7 @@ impl FormResourcePlanOperation {
 
 /// Разбор без семейства, выбранного вызывающим: общее имя (`attribute.add`
 /// формы и объекта, #1465) выбирает запись реестра по адресу вызова.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn parse_form_resource_plan_operation(
     operation: &str,
     args: &Value,
@@ -208,7 +208,7 @@ pub(crate) fn plan_form_resource_batch(
     Ok(provisional)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plan_form_resource_batch_owned_for_test(
     mut staged: unica_workspace::apply::ApplyStagedState,
     authority: unica_workspace::actor::FormResourceApplyAuthority<'_>,

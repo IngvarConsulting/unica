@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 use unica_source_contract::proposal::{DirectoryMembershipSelector, DirectoryMembershipSnapshot};
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_source_contract::SourceSetKind;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_source_designer::owner::MD_CLASSES_NS;
 use unica_source_designer::owner::{
     invalid_owner, parse_platform_xml_owner, OwnerExpectation, PlatformXmlOwner,
     PlatformXmlOwnerError, PlatformXmlRootExpectation,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_source_designer::owner::{PlatformXmlOwnerKind, DCS_ROOT, MXL_ROOT};
 use unica_source_designer::probe::{
     classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind,
@@ -117,7 +117,7 @@ pub(crate) struct PlatformXmlOwnerResolution {
     pub provenance: PlatformXmlOwnerProvenance,
 }
 
-pub(crate) fn resolve_platform_xml_owners(
+pub fn resolve_platform_xml_owners(
     target: &Path,
     context: &WorkspaceContext,
 ) -> Result<Vec<PlatformXmlOwner>, PlatformXmlOwnerError> {
@@ -277,7 +277,7 @@ fn resolve_platform_xml_owners_with_optional_exact_root(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn resolve_existing_platform_xml_owners_for_new_output(
     target: &Path,
     context: &WorkspaceContext,
@@ -606,7 +606,7 @@ fn read_required_platform_xml_owner(
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn require_regular_owner(path: &Path) -> Result<(), PlatformXmlOwnerError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata_is_link_or_reparse_point(&metadata) => Err(link_owner_error(path)),

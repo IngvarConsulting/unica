@@ -12,10 +12,10 @@ pub(super) fn template_seed_emitters(
         content_xml: unica_templates_designer::descriptor::template_content_xml,
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata_designer::edit::*;
 use unica_metadata_designer::resource_plan::TypedOperationPostImage;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata_designer::resource_plan::{TypedChildObservation, TypedChildResourcePlan};
 
 use crate::application::ports::PreparedMetadataMutation;
@@ -26,14 +26,14 @@ use crate::infrastructure::platform_xml_source_targets::{
 use crate::infrastructure::support_guard::{
     evaluate_resolved_support_guard, ResolvedSupportGuardCheck,
 };
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use roxmltree::Document;
 use std::fs;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::path::{Path, PathBuf};
 use unica_address::source_target::{MetadataAddress, SourceTarget, TargetKind};
 use unica_metadata::MetaDiagnosticCode;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata::{
     MetaDiagnostic, MetaElementDefinition, MetaFillValue, MetaPublicationAction, MetadataKind,
     MetadataType,
@@ -254,7 +254,7 @@ pub(crate) fn prepare_typed_edit(
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn parse_typed_fill_value(
     properties_text: &str,
 ) -> Result<Option<MetaFillValue>, MetaDiagnostic> {
@@ -270,7 +270,7 @@ pub(super) fn parse_typed_fill_value(
     unica_metadata_designer::edit::parse_typed_fill_value_node(document.root_element())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn parse_typed_metadata_type(
     properties_text: &str,
 ) -> Result<MetadataType, MetaDiagnostic> {
