@@ -226,7 +226,7 @@ S396 исполняет драйвер `fault-injection/analyzer-delivery-failur
 воспроизводит: для этого нужен управляемый медленный источник выпуска. Его
 проверяет Rust-тест
 `call_graph_branch_answers_working_while_the_analyzer_is_being_delivered`
-в `crates/unica-coder/src/infrastructure/daemon/server.rs`.
+в `crates/unica-coder-daemon/src/infrastructure/daemon/server.rs`.
 
 S347–S348 используют синтетическое `workspace-metadata-warning/`:
 публичный журнал документов с пустыми RegisteredDocuments возвращает

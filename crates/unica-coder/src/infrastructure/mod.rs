@@ -5,11 +5,7 @@ pub mod capacity_observation;
 #[cfg(test)]
 #[path = "../../tests/platform/code_intelligence_integration.rs"]
 pub(crate) mod code_intelligence;
-pub(crate) mod daemon;
 pub mod diagnostics;
-#[cfg(feature = "receipt-ledger-test-support")]
-#[path = "../../tests/support/receipt_scenario.rs"]
-pub(crate) mod receipt_scenario;
 
 pub mod engine_delivery;
 #[allow(dead_code)]
@@ -29,6 +25,8 @@ pub mod operational_config;
 pub(crate) mod platform;
 // Модуль `platform` закрыт: крейтам выше нужны только эти имена.
 pub use platform::{current_target_id, TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_BYTES};
+#[cfg(any(test, feature = "test-support"))]
+pub use platform::{inject_unix_waitid_error_for_test, reap_runtime_authority_test_child};
 pub mod platform_xml_owner;
 // This foundational provider is consumed by the public migration in the next slice.
 #[allow(dead_code)]
@@ -65,6 +63,9 @@ pub mod v13_read_projection;
 pub mod v13_find;
 pub mod workspace;
 // Publication and Invocation routing consume the remaining actor seams in Task 7.
+#[cfg(any(test, feature = "test-support"))]
+#[path = "../../tests/platform/workspace_service_fixture.rs"]
+pub mod workspace_service_fixture;
 #[allow(dead_code)]
 #[cfg(test)]
 #[path = "../../tests/platform/workspace_services_integration.rs"]

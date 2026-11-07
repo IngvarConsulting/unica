@@ -23,9 +23,9 @@ import tree_sitter_rust
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-RMCP_OWNER = "crates/unica-coder/src/interfaces/mcp.rs"
+RMCP_OWNER = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
 RELATIVE_TOOL_CONTRACT_TIMEOUT_SECONDS = 15
-RMCP_INTERFACE_ROOT = "crates/unica-coder/src/interfaces/"
+RMCP_INTERFACE_ROOT = "crates/unica-coder-daemon/src/interfaces/"
 RMCP_CRATES_IO_SOURCE = "registry+https://github.com/rust-lang/crates.io-index"
 RMCP_ALLOWED_FEATURES = ["server", "transport-io"]
 
@@ -327,34 +327,34 @@ def rmcp_dependency_contract_errors(metadata: dict) -> list[str]:
             for dependency in package["dependencies"]
             if dependency["name"] == "rmcp"
         ]
-        if package["name"] == "unica-coder":
+        if package["name"] == "unica-coder-daemon":
             coder_dependencies.extend(dependencies)
             continue
         for dependency in dependencies:
             alias = dependency.get("rename") or "rmcp"
             errors.append(
-                f"{package['name']}: rmcp dependency is outside unica-coder "
+                f"{package['name']}: rmcp dependency is outside unica-coder-daemon "
                 f"(alias {alias})"
             )
 
     if len(coder_dependencies) != 1:
         errors.append(
-            "unica-coder: expected exactly one direct rmcp dependency, "
+            "unica-coder-daemon: expected exactly one direct rmcp dependency, "
             f"found {len(coder_dependencies)}"
         )
         return errors
 
     dependency = coder_dependencies[0]
     if dependency.get("rename") is not None:
-        errors.append("unica-coder: rmcp dependency must use its canonical name")
+        errors.append("unica-coder-daemon: rmcp dependency must use its canonical name")
     if dependency.get("source") != RMCP_CRATES_IO_SOURCE:
-        errors.append("unica-coder: rmcp dependency must come from crates.io")
+        errors.append("unica-coder-daemon: rmcp dependency must come from crates.io")
     if dependency.get("uses_default_features") is not False:
-        errors.append("unica-coder: rmcp default features must be disabled")
+        errors.append("unica-coder-daemon: rmcp default features must be disabled")
     features = sorted(dependency.get("features", []))
     if features != RMCP_ALLOWED_FEATURES:
         errors.append(
-            f"unica-coder: rmcp features {features!r} differ from "
+            f"unica-coder-daemon: rmcp features {features!r} differ from "
             f"{RMCP_ALLOWED_FEATURES!r}"
         )
     return errors
@@ -366,8 +366,8 @@ def workspace_rmcp_dependency_errors(repo_root: Path) -> list[str]:
 
 RMCP_HANDLER_ASSERTION = "assert_unica_server_implements_official_rmcp_server_handler"
 RMCP_HANDLER_MODULE_CHAIN = (
-    ("crates/unica-coder/src/lib.rs", "interfaces"),
-    ("crates/unica-coder/src/interfaces/mod.rs", "mcp"),
+    ("crates/unica-coder-daemon/src/lib.rs", "interfaces"),
+    ("crates/unica-coder-daemon/src/interfaces/mod.rs", "mcp"),
 )
 
 
@@ -452,15 +452,15 @@ class ProductContractTests(unittest.TestCase):
     def test_rmcp_confinement_scans_other_tracked_workspace_crates(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            owner = root / "crates" / "unica-coder" / "src" / "interfaces" / "mcp.rs"
+            owner = root / "crates" / "unica-coder-daemon" / "src" / "interfaces" / "mcp.rs"
             sibling = root / "crates" / "unica-bootstrap" / "src" / "lib.rs"
             owner.parent.mkdir(parents=True)
             sibling.parent.mkdir(parents=True)
             (root / "Cargo.toml").write_text(
-                '[workspace]\nmembers = ["crates/unica-bootstrap", "crates/unica-coder"]\n',
+                '[workspace]\nmembers = ["crates/unica-bootstrap", "crates/unica-coder-daemon"]\n',
                 encoding="utf-8",
             )
-            for package_name in ("unica-bootstrap", "unica-coder"):
+            for package_name in ("unica-bootstrap", "unica-coder-daemon"):
                 (root / "crates" / package_name / "Cargo.toml").write_text(
                     f'[package]\nname = "{package_name}"\nversion = "0.1.0"\n'
                     'edition = "2021"\n',
@@ -571,7 +571,7 @@ class ProductContractTests(unittest.TestCase):
     def test_rmcp_dependency_contract_rejects_alias_in_sibling_package(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            coder = root / "unica-coder"
+            coder = root / "unica-coder-daemon"
             sibling = root / "sibling"
             vendor = root / "vendor" / "rmcp"
             for package in (coder, sibling, vendor):
@@ -579,7 +579,7 @@ class ProductContractTests(unittest.TestCase):
                 (package / "src" / "lib.rs").write_text("", encoding="utf-8")
             (root / "Cargo.toml").write_text(
                 '[workspace]\nresolver = "2"\n'
-                'members = ["unica-coder", "sibling"]\n'
+                'members = ["unica-coder-daemon", "sibling"]\n'
                 '[workspace.dependencies]\n'
                 'rmcp = { version = "3.1.2", default-features = false, '
                 'features = ["server", "transport-io"] }\n'
@@ -589,7 +589,7 @@ class ProductContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (coder / "Cargo.toml").write_text(
-                '[package]\nname = "unica-coder"\nversion = "0.1.0"\n'
+                '[package]\nname = "unica-coder-daemon"\nversion = "0.1.0"\n'
                 'edition = "2021"\n[dependencies]\nrmcp.workspace = true\n',
                 encoding="utf-8",
             )
@@ -608,7 +608,7 @@ class ProductContractTests(unittest.TestCase):
 
             self.assertEqual(
                 workspace_rmcp_dependency_errors(root),
-                ["sibling: rmcp dependency is outside unica-coder (alias sdk_alias)"],
+                ["sibling: rmcp dependency is outside unica-coder-daemon (alias sdk_alias)"],
             )
 
     def test_rmcp_dependency_contract_rejects_renamed_local_macro_dependency(
@@ -616,17 +616,17 @@ class ProductContractTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            coder = root / "unica-coder"
+            coder = root / "unica-coder-daemon"
             vendor = root / "vendor" / "rmcp"
             for package in (coder, vendor):
                 (package / "src").mkdir(parents=True)
                 (package / "src" / "lib.rs").write_text("", encoding="utf-8")
             (root / "Cargo.toml").write_text(
-                '[workspace]\nresolver = "2"\nmembers = ["unica-coder"]\n',
+                '[workspace]\nresolver = "2"\nmembers = ["unica-coder-daemon"]\n',
                 encoding="utf-8",
             )
             (coder / "Cargo.toml").write_text(
-                '[package]\nname = "unica-coder"\nversion = "0.1.0"\n'
+                '[package]\nname = "unica-coder-daemon"\nversion = "0.1.0"\n'
                 'edition = "2021"\n[dependencies]\n'
                 'sdk_alias = { package = "rmcp", path = "../vendor/rmcp", '
                 'features = ["server", "transport-io", "macros"] }\n',
@@ -643,16 +643,16 @@ class ProductContractTests(unittest.TestCase):
             self.assertEqual(
                 workspace_rmcp_dependency_errors(root),
                 [
-                    "unica-coder: rmcp dependency must use its canonical name",
-                    "unica-coder: rmcp dependency must come from crates.io",
-                    "unica-coder: rmcp default features must be disabled",
-                    "unica-coder: rmcp features ['macros', 'server', "
+                    "unica-coder-daemon: rmcp dependency must use its canonical name",
+                    "unica-coder-daemon: rmcp dependency must come from crates.io",
+                    "unica-coder-daemon: rmcp default features must be disabled",
+                    "unica-coder-daemon: rmcp features ['macros', 'server', "
                     "'transport-io'] differ from ['server', 'transport-io']",
                 ],
             )
 
     def test_rmcp_owner_rejects_public_reexport_and_type_alias(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
         errors = rmcp_owner_export_boundary_errors(
             b"""
                 pub fn run_stdio() {}
@@ -671,7 +671,7 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_rejects_other_public_items_members_and_macros(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
         errors = rmcp_owner_export_boundary_errors(
             b"""
                 pub(crate) const LIMIT: usize = 1;
@@ -701,7 +701,7 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_ignores_exports_inside_exact_cfg_test_item(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
         errors = rmcp_owner_export_boundary_errors(
             b"""
                 pub fn run_stdio() {}
@@ -717,7 +717,7 @@ class ProductContractTests(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_rmcp_owner_export_guard_fails_closed_on_invalid_rust(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(b"pub fn run_stdio(", owner),
@@ -725,7 +725,7 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_rejects_parameterized_macro_export(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(
@@ -740,7 +740,7 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_rejects_conditional_macro_export(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(
@@ -755,7 +755,7 @@ class ProductContractTests(unittest.TestCase):
         )
 
     def test_rmcp_owner_requires_exactly_one_root_run_stdio(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
         fixtures = {
             "missing": (
                 b"struct Internal;",
@@ -781,7 +781,7 @@ class ProductContractTests(unittest.TestCase):
                 )
 
     def test_rmcp_owner_rejects_sdk_bound_on_generic_run_stdio(self) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
 
         self.assertEqual(
             rmcp_owner_export_boundary_errors(
@@ -810,8 +810,8 @@ class ProductContractTests(unittest.TestCase):
             b"where\n    UnicaServer: ::rmcp::ServerHandler,\n{\n}\n"
         )
         chain = {
-            "crates/unica-coder/src/lib.rs": b"pub mod interfaces;\n",
-            "crates/unica-coder/src/interfaces/mod.rs": b"pub mod mcp;\n",
+            "crates/unica-coder-daemon/src/lib.rs": b"pub mod interfaces;\n",
+            "crates/unica-coder-daemon/src/interfaces/mod.rs": b"pub mod mcp;\n",
         }
         owner_error = [
             f"{RMCP_OWNER}: production code must assert UnicaServer: rmcp::ServerHandler "
@@ -837,24 +837,24 @@ class ProductContractTests(unittest.TestCase):
             "gated_interfaces": (
                 {
                     RMCP_OWNER: bound,
-                    "crates/unica-coder/src/lib.rs": cfg + b"pub mod interfaces;\n",
+                    "crates/unica-coder-daemon/src/lib.rs": cfg + b"pub mod interfaces;\n",
                 },
-                ["crates/unica-coder/src/lib.rs: module interfaces must be declared once as a plain file module"],
+                ["crates/unica-coder-daemon/src/lib.rs: module interfaces must be declared once as a plain file module"],
             ),
             "redirected_mcp_module": (
                 {
                     RMCP_OWNER: bound,
-                    "crates/unica-coder/src/interfaces/mod.rs": b'#[path = "other.rs"]\npub mod mcp;\n',
+                    "crates/unica-coder-daemon/src/interfaces/mod.rs": b'#[path = "other.rs"]\npub mod mcp;\n',
                 },
-                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
+                ["crates/unica-coder-daemon/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
             ),
             "inline_mcp_module": (
-                {RMCP_OWNER: bound, "crates/unica-coder/src/interfaces/mod.rs": b"pub mod mcp {}\n"},
-                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
+                {RMCP_OWNER: bound, "crates/unica-coder-daemon/src/interfaces/mod.rs": b"pub mod mcp {}\n"},
+                ["crates/unica-coder-daemon/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
             ),
             "missing_mcp_module": (
-                {RMCP_OWNER: bound, "crates/unica-coder/src/interfaces/mod.rs": b"pub mod other;\n"},
-                ["crates/unica-coder/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
+                {RMCP_OWNER: bound, "crates/unica-coder-daemon/src/interfaces/mod.rs": b"pub mod other;\n"},
+                ["crates/unica-coder-daemon/src/interfaces/mod.rs: module mcp must be declared once as a plain file module"],
             ),
         }
         for name, (sources, expected) in fixtures.items():
@@ -905,7 +905,7 @@ class ProductContractTests(unittest.TestCase):
     def test_rmcp_confinement_ignores_comments_literals_and_exact_cfg_test(
         self,
     ) -> None:
-        owner = "crates/unica-coder/src/interfaces/mcp.rs"
+        owner = "crates/unica-coder-daemon/src/interfaces/mcp.rs"
         outside = "crates/other/src/lib.rs"
         errors = rmcp_reference_confinement_errors(
             {
@@ -935,9 +935,9 @@ class ProductContractTests(unittest.TestCase):
         self,
     ) -> None:
         repo_root = Path(__file__).resolve().parents[2]
-        rust_root = repo_root / "crates" / "unica-coder" / "src"
         offenders = []
-        for path in sorted(rust_root.rglob("*.rs")):
+        roots = [repo_root / "crates" / crate / "src" for crate in ("unica-coder", "unica-coder-daemon")]
+        for path in sorted(path for root in roots for path in root.rglob("*.rs")):
             text = path.read_text(encoding="utf-8")
             for marker in ("InternalLocalOwnerOnly", "internalLocalOwnerOnly"):
                 if marker in text:

@@ -32,7 +32,7 @@ Windows, ночь и выпуск остаются на GitHub-hosted.
 
 Очередь всегда исполняет Clippy всего workspace на Linux и Windows, весь Rust `small`,
 Python small, смоук продукта и снимки контрактов (`[queue] keep-medium`). К ним `queue-tests.py`
-добавляет `medium` изменённых крейтов, включая `unica-coder`. Изменённым считается и крейт,
+добавляет `medium` изменённых крейтов, включая `unica-coder` и `unica-coder-daemon`. Изменённым считается и крейт,
 в исходниках которого упомянут правленый путь из `tests/fixtures` или `scripts`, кроме
 `scripts/ci` и `scripts/research`. Запись только из `docs/pages`, `docs/visual-kit`,
 `arch/rules`, `.agents`, `scripts/research` и `.md` корня Rust не запускает. Прямые зависимые изменённого кода исполняют интеграционные цели

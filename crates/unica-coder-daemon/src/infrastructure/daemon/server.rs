@@ -4746,7 +4746,7 @@ pub(crate) mod medium_actor_capacity_tests {
             "Процедура Ping() Экспорт\nКонецПроцедуры\n",
         )
         .unwrap();
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let exe = std::env::consts::EXE_SUFFIX;
         std::fs::write(
             plugin.join("third-party/manifest.json"),
@@ -4801,7 +4801,7 @@ pub(crate) mod medium_actor_capacity_tests {
     fn every_route_refuses_a_missing_engine_with_one_typed_refusal() {
         const CHILD: &str = "UNICA_MISSING_ENGINE_ROUTES_CHILD";
         const ROOT: &str = "UNICA_MISSING_ENGINE_ROUTES_ROOT";
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let exe = std::env::consts::EXE_SUFFIX;
         if std::env::var_os(CHILD).is_some() {
             let root = std::path::PathBuf::from(std::env::var_os(ROOT).unwrap());
@@ -5310,7 +5310,7 @@ fn main() {
             });
             let release_path = root.join("runtime-manifest.json");
             std::fs::write(&release_path, release.to_string()).unwrap();
-            let target = crate::infrastructure::platform::current_target_id().unwrap();
+            let target = crate::infrastructure::current_target_id().unwrap();
             let suffix = std::env::consts::EXE_SUFFIX;
             std::fs::write(plugin.join("third-party/manifest.json"), serde_json::json!({
                 "schemaVersion": 2,
@@ -15091,7 +15091,7 @@ struct ActorLogicalReadLease {"#,
         let root = tempfile::tempdir().unwrap();
         let plugin = root.path().join("plugin");
         std::fs::create_dir_all(plugin.join("third-party")).unwrap();
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let exe = std::env::consts::EXE_SUFFIX;
         std::fs::write(
             plugin.join("third-party/manifest.json"),
@@ -15641,7 +15641,7 @@ struct ActorLogicalReadLease {"#,
         let root = tempfile::tempdir().unwrap();
         let plugin = root.path().join("plugin");
         std::fs::create_dir_all(plugin.join("third-party")).unwrap();
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let exe = std::env::consts::EXE_SUFFIX;
         std::fs::write(
             plugin.join("third-party/manifest.json"),
@@ -17377,7 +17377,7 @@ fn main() {
         }
 
         let plugin = root.join("plugins/unica");
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let binary_name = format!("v8-runner{}", std::env::consts::EXE_SUFFIX);
         let relative = format!("bin/{target}/{binary_name}");
         let binary = plugin.join(&relative);
@@ -19759,7 +19759,7 @@ mod medium_finite_deadline_guard {
             "a symbol call carries the editor request's own cutoff, set by the LSP lane, to the provider; a_symbol_call_gives_the_provider_the_requests_own_deadline rejects rearming",
         ),
         (
-            "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs",
+            "crates/unica-coder-daemon/src/infrastructure/daemon/invocation_service.rs",
             1,
             "saved apply adapts the existing caller cutoff; saved_apply_adapter_preserves_the_existing_cutoff_and_absence rejects rearming",
         ),

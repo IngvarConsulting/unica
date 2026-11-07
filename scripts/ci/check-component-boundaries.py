@@ -26,6 +26,9 @@ CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
 # selects the implementation in one module; everyone else calls the trait.
 PORTED_FAMILIES = frozenset({"dcs"})
 CODEC_SELECTION = "crates/unica-coder/src/infrastructure/family_codecs.rs"
+# The product composition: the lower layer, the daemon with its doors over it,
+# and the package of the product binary. Only these depend on one another.
+PRODUCT_COMPOSITION = frozenset({"unica-coder", "unica-coder-daemon", "unica-product"})
 # Metadata read code of the composition parses descriptors only through the
 # family port `MetadataReadCodec`. Write code still names the codec, so
 # `metadata` is not in PORTED_FAMILIES.
@@ -42,7 +45,7 @@ COMPONENT_KINDS = {
     "codec": "`unica-<family>-designer` representation codec",
     "adapter": "`unica-adapter-*` implementation of a port",
     "integration-tests": "`unica-*-integration-tests` cross-component checks",
-    "product": "the product composition: unica-coder and unica-product",
+    "product": "the product composition: unica-coder, unica-coder-daemon and unica-product",
     "service": "any other runtime component; a closed dependency rule is added to edge_errors by name",
 }
 
@@ -62,7 +65,7 @@ def required_component(package: str) -> str:
         return "codec"
     if name.startswith("adapter-"):
         return "adapter"
-    if name in {"coder", "product"}:
+    if f"unica-{name}" in PRODUCT_COMPOSITION:
         return "product"
     return "service"
 
@@ -87,11 +90,11 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
     target = dependency.removeprefix("unica-")
     prefix = f"{owner} {kind} -> {dependency}: "
     reasons: list[str] = []
-    if dependency == "rmcp" and owner != "unica-coder":
+    if dependency == "rmcp" and owner != "unica-coder-daemon":
         reasons.append("the MCP SDK belongs to the product composition")
     if dependency in {"bsl-parser", "bsl-syntax", "parser", "syntax"} and owner != "unica-bsl-parser":
         reasons.append("upstream parser types belong to the parser boundary")
-    if dependency == "unica-coder" and owner not in {"unica-coder", "unica-product"}:
+    if dependency in PRODUCT_COMPOSITION - {"unica-product"} and owner not in PRODUCT_COMPOSITION:
         reasons.append("a component or its unit target must not depend on the product composition")
     if dependency == "unica-product":
         reasons.append("nothing depends on the package that declares the product binary")

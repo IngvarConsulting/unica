@@ -31,7 +31,7 @@ pub(crate) fn create_runtime_directory_link_for_test(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub(crate) use unica_process::test_support::{
+pub use unica_process::test_support::{
     inject_unix_waitid_error_for_test, reap_runtime_authority_test_child,
 };
 

@@ -75,6 +75,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-bsl-parser", "unica-bsl"),
             ("unica-roles", "unica-coder"),
             ("unica-bootstrap", "rmcp"),
+            ("unica-coder", "rmcp"),
             ("unica-coder", "bsl-syntax"),
             ("unica-code-intelligence", "syntax"),
         )
@@ -113,7 +114,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-daemon", "unica-process"),
             ("unica-daemon", "unica-lsp-contract"),
             ("unica-adapter-v8-runner", "unica-execution"),
-            ("unica-coder", "rmcp"),
+            ("unica-coder-daemon", "rmcp"),
             ("unica-bsl-parser", "bsl-syntax"),
         ):
             with self.subTest(owner=owner, target=target):
@@ -159,6 +160,7 @@ class ComponentBoundaryTests(unittest.TestCase):
         refused = (
             ("unica-lsp", "unica-daemon"),
             ("unica-lsp", "unica-coder"),
+            ("unica-lsp", "unica-coder-daemon"),
             ("unica-lsp", "unica-execution"),
             ("unica-lsp", "unica-forms"),
             ("unica-lsp", "unica-adapter-bsl-analyzer"),
@@ -184,10 +186,12 @@ class ComponentBoundaryTests(unittest.TestCase):
             with self.subTest(owner=owner, target=target):
                 self.assertEqual(checker.edge_errors(owner, target, "dependencies"), [])
 
-    def test_only_the_product_package_depends_on_the_composition(self) -> None:
+    def test_only_the_product_composition_depends_on_the_composition(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         for kind in ("dependencies", "dev-dependencies"):
-            self.assertEqual(checker.edge_errors("unica-product", "unica-coder", kind), [])
+            for owner, target in (("unica-product", "unica-coder-daemon"), ("unica-coder-daemon", "unica-coder")):
+                with self.subTest(kind=kind, owner=owner, target=target):
+                    self.assertEqual(checker.edge_errors(owner, target, kind), [])
 
     def test_composition_selects_the_dcs_codec_in_one_place(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
