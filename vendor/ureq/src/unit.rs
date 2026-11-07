@@ -182,7 +182,10 @@ pub(crate) fn connect(
         // join location header to current url in case it is relative
         let new_url = url.join(location).map_err(|e| {
             ErrorKind::InvalidUrl
-                .msg(format!("Bad redirection: {}", location))
+                .msg(format!(
+                    "Bad redirection: {}",
+                    crate::diagnostics::url(location)
+                ))
                 .src(e)
         })?;
 
@@ -209,7 +212,12 @@ pub(crate) fn connect(
             &new_url,
         );
 
-        debug!("redirect {} {} -> {}", resp.status(), url, new_url);
+        debug!(
+            "redirect {} {} -> {}",
+            resp.status(),
+            crate::diagnostics::url(url.as_str()),
+            crate::diagnostics::url(new_url.as_str())
+        );
         history.push(unit.url);
         body = Payload::Empty.into_read();
 
@@ -256,16 +264,29 @@ fn connect_inner(
     let (mut stream, is_recycled) = connect_socket(unit, host, use_pooled)?;
 
     if is_recycled {
-        debug!("sending request (reused connection) {} {}", method, url);
+        debug!(
+            "sending request (reused connection) {} {}",
+            method,
+            crate::diagnostics::url(url.as_str())
+        );
     } else {
-        debug!("sending request {} {}", method, url);
+        debug!(
+            "sending request {} {}",
+            method,
+            crate::diagnostics::url(url.as_str())
+        );
     }
 
     let send_result = send_prelude(unit, &mut stream);
 
     if let Err(err) = send_result {
         if is_recycled {
-            debug!("retrying request early {} {}: {}", method, url, err);
+            debug!(
+                "retrying request early {} {}: {}",
+                method,
+                crate::diagnostics::url(url.as_str()),
+                err
+            );
             // we try open a new connection, this time there will be
             // no connection in the pool. don't use it.
             // NOTE: this recurses at most once because `use_pooled` is `false`.
@@ -298,7 +319,12 @@ fn connect_inner(
     // up to N+1 total tries, where N is max_idle_connections_per_host.
     let resp = match result {
         Err(err) if err.connection_closed() && retryable && is_recycled => {
-            debug!("retrying request {} {}: {}", method, url, err);
+            debug!(
+                "retrying request {} {}: {}",
+                method,
+                crate::diagnostics::url(url.as_str()),
+                err
+            );
             let empty = Payload::Empty.into_read();
             // NOTE: this recurses at most once because `use_pooled` is `false`.
             return connect_inner(unit, false, empty, history);
@@ -311,7 +337,12 @@ fn connect_inner(
     #[cfg(feature = "cookies")]
     save_cookies(unit, &resp);
 
-    debug!("response {} to {} {}", resp.status(), method, url);
+    debug!(
+        "response {} to {} {}",
+        resp.status(),
+        method,
+        crate::diagnostics::url(url.as_str())
+    );
 
     // release the response
     Ok(resp)
@@ -466,7 +497,7 @@ fn send_prelude(unit: &Unit, stream: &mut Stream) -> io::Result<()> {
     // other headers
     for header in &unit.headers {
         if let Some(v) = header.value() {
-            if is_header_sensitive(header) {
+            if header.is_sensitive() {
                 prelude.write_sensitive_header(header.name(), v)?;
             } else {
                 prelude.write_header(header.name(), v)?;
@@ -482,10 +513,6 @@ fn send_prelude(unit: &Unit, stream: &mut Stream) -> io::Result<()> {
     stream.write_all(prelude.as_slice())?;
 
     Ok(())
-}
-
-fn is_header_sensitive(header: &Header) -> bool {
-    header.is_name("Authorization") || header.is_name("Cookie")
 }
 
 struct PreludeBuilder {

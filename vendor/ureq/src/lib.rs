@@ -382,6 +382,7 @@ pub use native_tls;
 mod agent;
 mod body;
 mod chunked;
+mod diagnostics;
 mod error;
 mod header;
 mod middleware;
@@ -439,9 +440,9 @@ pub use serde_json::json;
 use url::Url;
 
 #[cfg(test)]
-mod test;
-#[cfg(test)]
 mod completed_response_recycling;
+#[cfg(test)]
+mod test;
 #[doc(hidden)]
 mod testserver;
 
