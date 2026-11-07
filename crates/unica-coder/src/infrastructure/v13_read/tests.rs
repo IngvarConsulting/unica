@@ -3527,16 +3527,14 @@ fn replaced_support_marker_never_reaches_a_retained_root_with_the_old_state() {
 #[test]
 fn large_support_marker_reads_late_rules_once_for_multiple_owners() {
     use unica_metadata::support_state::ObjectSupportState;
-    use unica_metadata_designer::support::support_root_uuid_from_bytes;
 
     let fixture = RealReaderFixture::new();
-    let catalog_uuid =
-        support_root_uuid_from_bytes(&fs::read(fixture.source.join("Catalogs/Items.xml")).unwrap())
-            .unwrap();
-    let report_uuid = support_root_uuid_from_bytes(
-        &fs::read(fixture.source.join("Reports/ParityReport.xml")).unwrap(),
-    )
-    .unwrap();
+    let catalog_uuid = crate::infrastructure::family_codecs::metadata_read_codec()
+        .support_root_uuid(&fs::read(fixture.source.join("Catalogs/Items.xml")).unwrap())
+        .unwrap();
+    let report_uuid = crate::infrastructure::family_codecs::metadata_read_codec()
+        .support_root_uuid(&fs::read(fixture.source.join("Reports/ParityReport.xml")).unwrap())
+        .unwrap();
     assert_ne!(catalog_uuid, report_uuid);
     let mut marker = format!("{{6,0,1,0,0,{catalog_uuid},").into_bytes();
     // The final rule straddles a 64 KiB window after the former 8 MiB ceiling.

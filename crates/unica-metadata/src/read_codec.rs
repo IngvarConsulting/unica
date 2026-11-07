@@ -10,7 +10,9 @@ use crate::style_color::StyleItemPropertiesObservation;
 use crate::subsystem::{
     SubsystemCommandInterfaceData, SubsystemInfoData, SubsystemInfoResult, SubsystemTreeNode,
 };
-use crate::support_state::{ConfigurationSupportData, ObjectSupportData};
+use crate::support_state::{
+    ConfigurationSupportData, ObjectSupportData, SupportReadError, SupportState,
+};
 use crate::wsdl::Definition;
 use crate::{MetaExchangeContentItem, MetaObservedProperty};
 use serde_json::{Map, Value};
@@ -133,6 +135,22 @@ pub trait MetadataReadCodec: Send + Sync {
         exists: &mut dyn FnMut(&Path) -> Result<bool, String>,
         read_optional: &mut dyn FnMut(&Path) -> Result<Option<String>, String>,
     ) -> Result<(bool, String, PathBuf), String>;
+
+    /// UUID корневого объекта в дескрипторе: по нему ищется правило поддержки.
+    fn support_root_uuid(&self, descriptor: &[u8]) -> Option<String>;
+
+    /// Потоковый разбор `Ext/ParentConfigurations.bin`. Файл читает
+    /// вызывающий и отдаёт его частями.
+    fn support_stream(&self) -> Box<dyn SupportStateStream>;
+}
+
+/// Разбор состояния поддержки по частям файла.
+pub trait SupportStateStream: Send {
+    /// Следующая часть файла.
+    fn feed(&mut self, chunk: &[u8]) -> Result<(), SupportReadError>;
+
+    /// Итог после последней части.
+    fn finish(self: Box<Self>) -> Result<SupportState, SupportReadError>;
 }
 
 /// Чтение остановлено вызывающим через `checkpoint`. Причину остановки

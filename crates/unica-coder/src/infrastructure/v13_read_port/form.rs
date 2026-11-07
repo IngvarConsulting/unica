@@ -9,8 +9,8 @@ use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2
 use unica_forms::facts::{FormInfoData, FormSupportDetails, FormSupportRuleReason};
 use unica_forms_designer::codec::parse_form_info_xml;
 use unica_metadata::support_state::ObjectSupportState;
+use unica_metadata::support_state::SupportState;
 use unica_metadata::validation_subject::MetadataChildProfile;
-use unica_metadata_designer::support::{support_root_uuid_from_bytes, SupportState};
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::SourceSetKind;
 
@@ -214,11 +214,13 @@ fn form_support_rule(
     descriptor: &[u8],
 ) -> Result<Option<ObjectSupportState>, ViewError> {
     let Some(state) = state else { return Ok(None) };
-    let uuid = support_root_uuid_from_bytes(descriptor).ok_or_else(|| {
-        ViewError::detailed(
-            RefusalDetail::SourceUnreadable,
-            "metadata descriptor has no support-state UUID evidence",
-        )
-    })?;
+    let uuid = crate::infrastructure::family_codecs::metadata_read_codec()
+        .support_root_uuid(descriptor)
+        .ok_or_else(|| {
+            ViewError::detailed(
+                RefusalDetail::SourceUnreadable,
+                "metadata descriptor has no support-state UUID evidence",
+            )
+        })?;
     Ok(object_support_rule(state.object_rule(&uuid)))
 }

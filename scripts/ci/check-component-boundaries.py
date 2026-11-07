@@ -34,12 +34,9 @@ CODEC_SELECTION = "crates/unica-coder/src/infrastructure/family_codecs.rs"
 METADATA_READ_SOURCES = "crates/unica-coder/src/infrastructure/v13_read"
 METADATA_READ_CODEC_ALLOWANCE = frozenset({
     "crates/unica-coder/src/infrastructure/v13_read.rs",
-    "crates/unica-coder/src/infrastructure/v13_read/tests.rs",
-    "crates/unica-coder/src/infrastructure/v13_read/tests/form_support.rs",
     "crates/unica-coder/src/infrastructure/v13_read_port.rs",
     "crates/unica-coder/src/infrastructure/v13_read_port/form.rs",
     "crates/unica-coder/src/infrastructure/v13_read_port/metadata.rs",
-    "crates/unica-coder/src/infrastructure/v13_read_port/support.rs",
     "crates/unica-coder/src/infrastructure/v13_read_projection/metadata/props.rs",
 })
 

@@ -6,13 +6,15 @@ use unica_address::source_target::MetadataAddress;
 use unica_metadata::configuration::{CfHomePageData, CfInfoData, CfInterfaceData};
 use unica_metadata::read_codec::{
     ExchangeContentFacts, FunctionalOptionFacts, MetadataReadCodec, NumeratorFacts, ReadFinding,
-    ReadStopped,
+    ReadStopped, SupportStateStream,
 };
 use unica_metadata::style_color::StyleItemPropertiesObservation;
 use unica_metadata::subsystem::{
     SubsystemCommandInterfaceData, SubsystemInfoData, SubsystemInfoResult, SubsystemTreeNode,
 };
-use unica_metadata::support_state::{ConfigurationSupportData, ObjectSupportData};
+use unica_metadata::support_state::{
+    ConfigurationSupportData, ObjectSupportData, SupportReadError, SupportState,
+};
 use unica_metadata::wsdl::Definition;
 
 pub struct DesignerMetadataReadCodec;
@@ -173,6 +175,24 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
             exists,
             read_optional,
         )
+    }
+
+    fn support_root_uuid(&self, descriptor: &[u8]) -> Option<String> {
+        crate::support::support_root_uuid_from_bytes(descriptor)
+    }
+
+    fn support_stream(&self) -> Box<dyn SupportStateStream> {
+        Box::<crate::support::SupportStateStreamParser>::default()
+    }
+}
+
+impl SupportStateStream for crate::support::SupportStateStreamParser {
+    fn feed(&mut self, chunk: &[u8]) -> Result<(), SupportReadError> {
+        crate::support::SupportStateStreamParser::feed(self, chunk)
+    }
+
+    fn finish(self: Box<Self>) -> Result<SupportState, SupportReadError> {
+        crate::support::SupportStateStreamParser::finish(*self)
     }
 }
 
