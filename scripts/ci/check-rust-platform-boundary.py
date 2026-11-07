@@ -90,7 +90,7 @@ DOMAIN_COMPONENTS = frozenset({
 # named by package, never by file: every `unica-*-designer` package is a codec.
 FILE_IO_COMPONENTS = frozenset({
     "unica-operations", "unica-navigation", "unica-diagnostics",
-    "unica-code-intelligence", "unica-xml-format", "unica-work-control",
+    "unica-code-intelligence", "unica-code-model", "unica-xml-format", "unica-work-control",
 })
 DESIGNER_CODEC_PACKAGE = re.compile(r"unica-[a-z0-9-]+-designer")
 
