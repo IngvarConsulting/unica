@@ -16,9 +16,6 @@ use unica_address::address::NodeKind;
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use unica_metadata::support_state::ObjectSupportState;
 use unica_metadata::validation_subject::MetadataChildProfile;
-use unica_metadata_designer::validation::{
-    parse_child_profile_from_bytes, parse_common_template_descriptor_from_bytes,
-};
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::read::SourceDirectory;
 use unica_source_contract::SourceSetKind;
@@ -418,9 +415,10 @@ impl ProviderReadAuthority {
     pub(crate) fn common_template_facts(
         &self,
         target: &MetadataAddress,
-    ) -> Result<unica_metadata_designer::validation::CommonTemplateDescriptorFacts, ViewError> {
+    ) -> Result<unica_metadata::validation_subject::CommonTemplateDescriptorFacts, ViewError> {
         let bytes = self.metadata_descriptor(target)?;
-        parse_common_template_descriptor_from_bytes(&bytes, target)
+        crate::infrastructure::family_codecs::metadata_read_codec()
+            .common_template(&bytes, target)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
@@ -443,12 +441,10 @@ impl ProviderReadAuthority {
         let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner_text).map_err(
             |error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string()),
         )?;
-        let Some((parsed_target, profile)) = parse_child_profile_from_bytes(
-            &descriptor,
-            &owner,
-            unica_metadata_designer::validation::MetadataAdmission::Read,
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
+        let Some((parsed_target, profile)) =
+            crate::infrastructure::family_codecs::metadata_read_codec()
+                .child_profile(&descriptor, &owner)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?
         else {
             return Err(ViewError::detailed(
                 RefusalDetail::SourceUnreadable,

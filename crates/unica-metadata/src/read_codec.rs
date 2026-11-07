@@ -7,6 +7,7 @@
 //! или текст: файлы и снимок источника остаются у композиции.
 use crate::borrowing::MetaBorrowing;
 use crate::configuration::{CfHomePageData, CfInfoData, CfInterfaceData};
+use crate::request::MetaFailure;
 use crate::style_color::StyleItemPropertiesObservation;
 use crate::subsystem::{
     SubsystemCommandInterfaceData, SubsystemInfoData, SubsystemInfoResult, SubsystemTreeNode,
@@ -14,11 +15,18 @@ use crate::subsystem::{
 use crate::support_state::{
     ConfigurationSupportData, ObjectSupportData, SupportReadError, SupportState,
 };
+use crate::validation_subject::{
+    CommonTemplateDescriptorFacts, MetaLocalInfo, MetadataChildProfile,
+};
 use crate::wsdl::Definition;
-use crate::{MetaExchangeContentItem, MetaInfoPropertyValue, MetaObservedProperty};
+use crate::{
+    MetaExchangeContentItem, MetaInfoPropertyValue, MetaObservedProperty, MetaPredefinedItemsData,
+    MetaSupportStatus, MetadataKind,
+};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
+use unica_source_contract::SourceSetKind;
 
 /// Разбор дескрипторов метаданных для чтения.
 pub trait MetadataReadCodec: Send + Sync {
@@ -157,6 +165,47 @@ pub trait MetadataReadCodec: Send + Sync {
         &self,
         descriptor: &'a str,
     ) -> Result<Box<dyn MetaPropertySource + 'a>, String>;
+
+    /// Локальные свойства объекта из его дескриптора.
+    fn local_info(
+        &self,
+        descriptor: &[u8],
+        target: &MetadataAddress,
+        support: MetaSupportStatus,
+        source_kind: SourceSetKind,
+    ) -> Result<MetaLocalInfo, MetaFailure>;
+
+    /// Каталог объектов вида `kind` от корня источника.
+    fn metadata_directory(&self, kind: MetadataKind) -> &'static str;
+
+    /// Все предопределённые элементы из `Ext/Predefined.xml`. `code_type` —
+    /// `CodeType` владельца как он записан; без него коды не проверить, и
+    /// чтение отказывает. `checkpoint` может остановить разбор.
+    fn predefined_items(
+        &self,
+        bytes: &[u8],
+        kind: MetadataKind,
+        code_type: Option<&str>,
+        checkpoint: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<MetaPredefinedItemsData, String>;
+
+    /// Факты общего макета из его дескриптора.
+    fn common_template(
+        &self,
+        descriptor: &[u8],
+        target: &MetadataAddress,
+    ) -> Result<CommonTemplateDescriptorFacts, String>;
+
+    /// Адрес и профиль подчинённого объекта по дескриптору. Дескриптор
+    /// другого вида — `None`.
+    fn child_profile(
+        &self,
+        descriptor: &[u8],
+        owner: &MetadataAddress,
+    ) -> Result<Option<(MetadataAddress, MetadataChildProfile)>, String>;
+
+    /// Профиль содержимого формы по её дескриптору.
+    fn form_profile(&self, descriptor: &[u8]) -> Result<MetadataChildProfile, String>;
 }
 
 /// Прямые свойства одного разобранного дескриптора.

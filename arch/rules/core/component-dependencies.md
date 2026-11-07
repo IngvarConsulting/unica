@@ -31,12 +31,10 @@ execution, а не транспортному слою.
 
 Метаданные переносятся по частям: запись пока называет кодек напрямую, поэтому
 `metadata` не входит в `PORTED_FAMILIES`. Код чтения метаданных в composition
-(`crates/unica-coder/src/infrastructure/v13_read*`) разбирает дескрипторы через
-порт `MetadataReadCodec` из `unica-metadata`. Файлы чтения, которые ещё
-называют `unica_metadata_designer`, перечислены в
-`METADATA_READ_CODEC_ALLOWANCE`. Этот список только сокращается: новый файл
-чтения с кодеком, файл из списка, который перестал называть кодек, и
-несуществующий файл из списка — ошибки стража.
+(`crates/unica-coder/src/infrastructure/v13_read*`, включая тесты) разбирает
+дескрипторы только через порт `MetadataReadCodec` из `unica-metadata` и не
+называет `unica_metadata_designer`. Типы, которые передаёт порт, принадлежат
+семейству; кодек переэкспортирует их по прежним путям.
 
 ProjectHealth наблюдает исходники и ресурсы через source contracts, общий
 Designer layout, workspace и process. Он не импортирует исполнение,
