@@ -1,0 +1,33 @@
+{
+  "id": "S-2566-docs-userinfo-error",
+  "issue": 2566,
+  "area": "Справка",
+  "task": "Получить диагностический отказ поставщика стандартов с неверным адресом без раскрытия userinfo",
+  "workspace": "tests/fixtures/acceptance/workspace-docs-userinfo-error",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "SyntheticUserinfoDiagnostic",
+        "source": "development-standard"
+      },
+      "expect": [
+        "provider"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "provider_unavailable"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "contains": "v8std/public-standards — failed: сервер стандартов недоступен: invalid URL <invalid URL>: invalid port number."
+        }
+      ]
+    }
+  ]
+}
