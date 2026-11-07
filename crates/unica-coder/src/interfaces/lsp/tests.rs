@@ -229,7 +229,10 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
     let capabilities = &initialized["result"]["capabilities"];
     assert_eq!(capabilities["positionEncoding"], "utf-16");
     for served in ["hoverProvider", "definitionProvider", "referencesProvider"] {
-        assert_eq!(capabilities[served], true, "{served} is served, so declared");
+        assert_eq!(
+            capabilities[served], true,
+            "{served} is served, so declared"
+        );
     }
     assert!(
         capabilities.get("completionProvider").is_none(),
@@ -319,7 +322,10 @@ fn capabilities_follow_what_the_lsp_service_declares() {
         hover["result"],
         json!({"contents": {"kind": "markdown", "value": "answer"}})
     );
-    let definition = editor.request("textDocument/definition", hover_params("file:///work/a.bsl"));
+    let definition = editor.request(
+        "textDocument/definition",
+        hover_params("file:///work/a.bsl"),
+    );
     assert_eq!(
         definition["result"],
         json!([{
@@ -328,8 +334,14 @@ fn capabilities_follow_what_the_lsp_service_declares() {
         }])
     );
     // Nothing found while a source is not ready is no empty list.
-    let references = editor.request("textDocument/references", hover_params("file:///work/a.bsl"));
-    assert_eq!(references["error"]["message"], "unica: lsp_answer_incomplete");
+    let references = editor.request(
+        "textDocument/references",
+        hover_params("file:///work/a.bsl"),
+    );
+    assert_eq!(
+        references["error"]["message"],
+        "unica: lsp_answer_incomplete"
+    );
 }
 
 #[test]

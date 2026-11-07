@@ -221,7 +221,11 @@ impl Frontend {
                 "textDocument/hover" | "textDocument/definition" | "textDocument/references",
             ) => match position_call(method, &params) {
                 Some(call) => self.dispatch(id, call),
-                None => self.send(error_response(id, INVALID_PARAMS, "invalid position params")),
+                None => self.send(error_response(
+                    id,
+                    INVALID_PARAMS,
+                    "invalid position params",
+                )),
             },
             (Phase::Running(_), "workspace/textDocumentContent") => {
                 match params.get("uri").and_then(Value::as_str) {
