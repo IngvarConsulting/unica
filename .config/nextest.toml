@@ -469,7 +469,7 @@ test-group = "receipt-runtime"
 platform = 'cfg(windows)'
 filter = '''
 binary(v13_workspace_bootstrap)
-| (binary(v13_search_integration) & test(/^(text_search_enumerates_wide_and_aggregate_corpora_without_an_entry_quota|resolve_resources::resolve_form_and_module_paths_preserve_the_exact_resource_on_public_mcp)$/))
+| (binary(v13_search_integration) & test(/^(text_search_enumerates_wide_and_aggregate_corpora_without_an_entry_quota|resolve_resources::resolve_form_and_module_paths_preserve_the_exact_resource_of_(a_configuration|an_extension)_on_public_mcp)$/))
 '''
 test-group = "workspace-stdio"
 
