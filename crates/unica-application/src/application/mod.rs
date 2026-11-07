@@ -2667,3 +2667,7 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
 
 #[cfg(test)]
 mod execution_catalog_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod application_tests;
