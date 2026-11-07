@@ -3,10 +3,11 @@
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
+use unica_metadata::borrowing::MetaBorrowing;
 use unica_metadata::configuration::{CfHomePageData, CfInfoData, CfInterfaceData};
 use unica_metadata::read_codec::{
-    ExchangeContentFacts, FunctionalOptionFacts, MetadataReadCodec, NumeratorFacts, ReadFinding,
-    ReadStopped, SupportStateStream,
+    ExchangeContentFacts, FunctionalOptionFacts, MetaPropertySource, MetadataReadCodec,
+    NumeratorFacts, ReadFinding, ReadStopped, SupportStateStream,
 };
 use unica_metadata::style_color::StyleItemPropertiesObservation;
 use unica_metadata::subsystem::{
@@ -183,6 +184,22 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
 
     fn support_stream(&self) -> Box<dyn SupportStateStream> {
         Box::<crate::support::SupportStateStreamParser>::default()
+    }
+
+    fn borrowing(&self, descriptor: &[u8]) -> Result<MetaBorrowing, String> {
+        crate::xml_model::parse_meta_borrowing(descriptor)
+    }
+
+    fn extends_parent(&self, descriptor: &[u8]) -> bool {
+        crate::xml_model::descriptor_extends_parent(descriptor)
+    }
+
+    fn common_module_properties<'a>(
+        &self,
+        descriptor: &'a str,
+    ) -> Result<Box<dyn MetaPropertySource + 'a>, String> {
+        crate::common_module_read::CommonModuleProperties::parse(descriptor)
+            .map(|properties| Box::new(properties) as Box<dyn MetaPropertySource + 'a>)
     }
 }
 

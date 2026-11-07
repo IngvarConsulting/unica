@@ -5,6 +5,7 @@
 //!
 //! Порт растёт по видам чтения. Каждый метод получает уже прочитанные байты
 //! или текст: файлы и снимок источника остаются у композиции.
+use crate::borrowing::MetaBorrowing;
 use crate::configuration::{CfHomePageData, CfInfoData, CfInterfaceData};
 use crate::style_color::StyleItemPropertiesObservation;
 use crate::subsystem::{
@@ -14,7 +15,7 @@ use crate::support_state::{
     ConfigurationSupportData, ObjectSupportData, SupportReadError, SupportState,
 };
 use crate::wsdl::Definition;
-use crate::{MetaExchangeContentItem, MetaObservedProperty};
+use crate::{MetaExchangeContentItem, MetaInfoPropertyValue, MetaObservedProperty};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
@@ -142,6 +143,29 @@ pub trait MetadataReadCodec: Send + Sync {
     /// Потоковый разбор `Ext/ParentConfigurations.bin`. Файл читает
     /// вызывающий и отдаёт его частями.
     fn support_stream(&self) -> Box<dyn SupportStateStream>;
+
+    /// Заимствование объекта расширением по его дескриптору.
+    fn borrowing(&self, descriptor: &[u8]) -> Result<MetaBorrowing, String>;
+
+    /// Дескриптор заимствует объект родителя. Нечитаемый дескриптор —
+    /// не заимствование.
+    fn extends_parent(&self, descriptor: &[u8]) -> bool;
+
+    /// Свойства общего модуля. Повреждённая структура дескриптора —
+    /// ошибка здесь, а не отсутствие свойства потом.
+    fn common_module_properties<'a>(
+        &self,
+        descriptor: &'a str,
+    ) -> Result<Box<dyn MetaPropertySource + 'a>, String>;
+}
+
+/// Прямые свойства одного разобранного дескриптора.
+pub trait MetaPropertySource {
+    /// Свойство из профиля `META_INFO_PROPERTY_PROFILE`. Нет свойства — `None`.
+    fn info(&self, name: &str) -> Result<Option<MetaInfoPropertyValue>, ReadFinding>;
+
+    /// `ObjectBelonging` или `ExtendedConfigurationObject`. Нет свойства — `None`.
+    fn borrowing(&self, name: &str) -> Result<Option<String>, ReadFinding>;
 }
 
 /// Разбор состояния поддержки по частям файла.

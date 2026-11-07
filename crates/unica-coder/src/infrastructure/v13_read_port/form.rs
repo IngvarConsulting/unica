@@ -25,7 +25,8 @@ impl ProviderReadAuthority {
             .form_metadata(&bytes, target)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         if self.source_set_kind == SourceSetKind::Extension {
-            let borrowing = unica_metadata_designer::xml_model::parse_meta_borrowing(&bytes)
+            let borrowing = crate::infrastructure::family_codecs::metadata_read_codec()
+                .borrowing(&bytes)
                 .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
             properties.extend(crate::infrastructure::v13_read_projection::borrowing_props(
                 &borrowing,

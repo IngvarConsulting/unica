@@ -77,7 +77,7 @@ const CONFIGURATION_STREAMING_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) struct MetadataLocalRead {
     pub(crate) info: unica_metadata::validation_subject::MetaLocalInfo,
     /// `None` — набор не вида `extension`: заимствования там не бывает.
-    pub(crate) borrowing: Option<unica_metadata_designer::xml_model::MetaBorrowing>,
+    pub(crate) borrowing: Option<unica_metadata::borrowing::MetaBorrowing>,
     /// Точное состояние поддержки объекта: его отдаёт `view` (#2158), а
     /// `info.support` остаётся грубым статусом для проверок.
     pub(crate) support_state: ObjectSupportState,
@@ -354,7 +354,7 @@ impl ProviderReadAuthority {
         &self,
         target: &MetadataAddress,
         resource: &str,
-    ) -> Result<Option<unica_metadata_designer::xml_model::MetaBorrowing>, ViewError> {
+    ) -> Result<Option<unica_metadata::borrowing::MetaBorrowing>, ViewError> {
         inherited_companion(&self.root, self.source_set_kind, target, resource)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
@@ -631,7 +631,7 @@ pub(crate) fn inherited_companion(
     source_kind: SourceSetKind,
     target: &MetadataAddress,
     resource: &str,
-) -> Result<Option<unica_metadata_designer::xml_model::MetaBorrowing>, String> {
+) -> Result<Option<unica_metadata::borrowing::MetaBorrowing>, String> {
     if source_kind != SourceSetKind::Extension {
         return Ok(None);
     }
@@ -646,18 +646,22 @@ pub(crate) fn inherited_companion(
         read_whole_relative(root, &relative).map_err(|error| error.to_string())
     };
     let descriptor = descriptor_of(target)?;
-    if !unica_metadata_designer::xml_model::descriptor_extends_parent(&descriptor) {
+    if !crate::infrastructure::family_codecs::metadata_read_codec().extends_parent(&descriptor) {
         return Ok(None);
     }
     let parts = target.as_str().split('.').collect::<Vec<_>>();
     if parts.len() > 2 {
         let owner = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &parts[..2].join("."))
             .map_err(|error| error.to_string())?;
-        if !unica_metadata_designer::xml_model::descriptor_extends_parent(&descriptor_of(&owner)?) {
+        if !crate::infrastructure::family_codecs::metadata_read_codec()
+            .extends_parent(&descriptor_of(&owner)?)
+        {
             return Ok(None);
         }
     }
-    unica_metadata_designer::xml_model::parse_meta_borrowing(&descriptor).map(Some)
+    crate::infrastructure::family_codecs::metadata_read_codec()
+        .borrowing(&descriptor)
+        .map(Some)
 }
 
 fn path_text(path: PathBuf) -> Result<String, ViewError> {

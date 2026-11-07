@@ -52,6 +52,8 @@ pub mod interface_operations;
 
 pub mod site;
 
+pub mod borrowing;
+
 pub mod read_codec;
 
 pub mod recovery;

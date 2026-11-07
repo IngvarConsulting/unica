@@ -35,7 +35,8 @@ impl ProviderReadAuthority {
         // каждого объекта незачем.
         let borrowing = if self.source_set_kind == SourceSetKind::Extension {
             Some(
-                unica_metadata_designer::xml_model::parse_meta_borrowing(&descriptor)
+                crate::infrastructure::family_codecs::metadata_read_codec()
+                    .borrowing(&descriptor)
                     .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?,
             )
         } else {
