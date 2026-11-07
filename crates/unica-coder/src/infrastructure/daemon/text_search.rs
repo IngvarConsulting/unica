@@ -1247,6 +1247,40 @@ fn digest(parts: &[&[u8]]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// The serialized hit of one line around its column: the bytes before the
+/// column's value and after it.
+struct HitBytes {
+    before: Vec<u8>,
+    after: Vec<u8>,
+}
+
+impl HitBytes {
+    /// Splits a hit serialized with column `0`. Every string value is
+    /// escaped, so the unescaped key `"column"` occurs once, as the key.
+    fn new(item: &Map<String, Value>) -> Self {
+        const KEY: &[u8] = b"\"column\":0";
+        let bytes = serde_json::to_vec(item).expect("a text hit serializes");
+        let at = bytes
+            .windows(KEY.len())
+            .position(|part| part == KEY)
+            .expect("a text hit names its column");
+        let value = at + KEY.len() - 1;
+        Self {
+            before: bytes[..value].to_vec(),
+            after: bytes[value + 1..].to_vec(),
+        }
+    }
+
+    fn with_column(&self, column: usize) -> Vec<u8> {
+        let column = column.to_string();
+        let mut bytes = Vec::with_capacity(self.before.len() + column.len() + self.after.len());
+        bytes.extend_from_slice(&self.before);
+        bytes.extend_from_slice(column.as_bytes());
+        bytes.extend_from_slice(&self.after);
+        bytes
+    }
+}
+
 fn hex(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -1619,32 +1653,34 @@ impl<'a> Collector<'a> {
             return LineStep::Continue;
         }
         let snippet = text.chars().take(512).collect::<String>();
+        let mut item = Map::new();
+        item.insert("scope".to_owned(), self.scope.clone().into());
+        match &module {
+            Ok(module) => {
+                item.insert("at".to_owned(), module.at.clone().into());
+            }
+            Err(reason) => {
+                // No proven module owns this file: name it by its
+                // identifier, never by path.
+                item.insert("fileId".to_owned(), current.file_id.clone().into());
+                item.insert("unaddressed".to_owned(), (*reason).into());
+            }
+        }
+        item.insert("line".to_owned(), number.into());
+        item.insert("column".to_owned(), 0.into());
+        item.insert("snippet".to_owned(), snippet.into());
+        // The hits of one line differ only in their column: the line is
+        // serialized once and each hit's bytes take its column in place.
+        // A resumed page passes every match it already delivered, so this
+        // keeps passing a long line from building a value per match.
+        let serialized = HitBytes::new(&item);
         let mut previous = 0;
         let mut column = 1;
         let mut step = LineStep::Continue;
         for start in starts {
             column += text[previous..start].chars().count();
             previous = start;
-            let mut item = Map::new();
-            item.insert("scope".to_owned(), self.scope.clone().into());
-            match &module {
-                Ok(module) => {
-                    item.insert("at".to_owned(), module.at.clone().into());
-                }
-                Err(reason) => {
-                    // No proven module owns this file: name it by its
-                    // identifier, never by path.
-                    item.insert("fileId".to_owned(), current.file_id.clone().into());
-                    item.insert("unaddressed".to_owned(), (*reason).into());
-                }
-            }
-            item.insert("line".to_owned(), number.into());
-            item.insert("column".to_owned(), column.into());
-            item.insert("snippet".to_owned(), snippet.clone().into());
-            let value = Value::Object(item);
-            let hit_digest = digest(&[serde_json::to_vec(&value)
-                .expect("a text hit serializes")
-                .as_slice()]);
+            let hit_digest = digest(&[serialized.with_column(column).as_slice()]);
             current.matches += 1;
             current.chain = digest(&[&current.chain, &hit_digest]);
             if current.passing > 0 {
@@ -1659,6 +1695,14 @@ impl<'a> Collector<'a> {
                 // re-enters: the cursor never names such a traversal.
                 continue;
             }
+            let mut item = item.clone();
+            item.insert("column".to_owned(), column.into());
+            let value = Value::Object(item);
+            debug_assert_eq!(
+                serde_json::to_vec(&value).expect("a text hit serializes"),
+                serialized.with_column(column),
+                "a delivered hit digests the bytes it is serialized to"
+            );
             // Either engine names the same place: the walk resumes there.
             let next = (
                 TextContinuation::Resume(SearchResume {
@@ -1799,5 +1843,43 @@ mod proof_context_tests {
             .external_module(&source, relative, None, &cancellation)
             .unwrap()
             .is_some());
+    }
+}
+
+#[cfg(test)]
+mod hit_bytes_tests {
+    use super::*;
+
+    #[test]
+    fn a_hit_takes_its_column_in_the_bytes_serde_writes() {
+        let snippets = [
+            "Needle Needle",
+            r#"Сообщить("column":0, "\"column\":0");"#,
+            "tab\tand \u{1}control \\ \u{feff}",
+        ];
+        for snippet in snippets {
+            for owner in [
+                json!({"at": "main:CommonModule.Main"}),
+                json!({"fileId": "bsl-0123456789abcdef", "unaddressed": "owner_unproven"}),
+            ] {
+                let mut item = Map::new();
+                item.insert("scope".to_owned(), r#"main:"column":0"#.into());
+                for (key, value) in owner.as_object().unwrap() {
+                    item.insert(key.clone(), value.clone());
+                }
+                item.insert("line".to_owned(), 1.into());
+                item.insert("column".to_owned(), 0.into());
+                item.insert("snippet".to_owned(), snippet.into());
+                let serialized = HitBytes::new(&item);
+                for column in [1, 9, 10, 512, 14_287] {
+                    item.insert("column".to_owned(), column.into());
+                    assert_eq!(
+                        serialized.with_column(column),
+                        serde_json::to_vec(&item).unwrap(),
+                        "{snippet:?} at {column}"
+                    );
+                }
+            }
+        }
     }
 }

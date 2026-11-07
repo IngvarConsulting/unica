@@ -16,8 +16,8 @@ pub struct LspCompletionRequest<'a> {
     /// Сессия, буферы которой видны чтению модулей.
     pub session: &'a str,
     pub source_set: &'a str,
-    /// Адрес модуля, тело которого — документ.
-    pub module: &'a str,
+    /// Модуль, тело которого — документ.
+    pub module: &'a crate::ModuleDocument,
     /// Текст, который видит соединение.
     pub text: &'a str,
     /// Байт текста, на котором стоит курсор.
@@ -50,7 +50,7 @@ pub trait LspCompletion: Send + Sync {
         &self,
         session: &str,
         source_set: &str,
-        module: &str,
+        module: &crate::ModuleDocument,
         method: &CompletionMethod,
         cancellation: &CancellationToken,
     ) -> Option<String>;
