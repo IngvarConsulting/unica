@@ -195,6 +195,24 @@ class ResourceLimitRegistryTests(unittest.TestCase):
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("demo.view-page: applied files", errors[0])
 
+    def test_a_crate_reexported_under_a_name_uses_the_limit_through_the_module_path(self) -> None:
+        self.write("crates/core/src/lib.rs", "pub mod view;\n")
+        self.write("crates/core/src/view.rs", "pub const DEFAULT_LIMIT: usize = 20;\nfn page() -> usize { DEFAULT_LIMIT }\n")
+        self.write("crates/top/src/lib.rs", "pub use core as layer;\n")
+        self.write("crates/top/src/user.rs", "use crate::layer::view::DEFAULT_LIMIT;\nfn page() -> usize { DEFAULT_LIMIT }\n")
+        view = entry(
+            id="core.view-page",
+            **{"class": "step", "unit": "count", "scope": "request", "issue": None},
+            source={"file": "crates/core/src/view.rs", "symbol": "DEFAULT_LIMIT"},
+            expr="20",
+            value=20,
+            applied=["crates/core/src/view.rs"],
+        )
+        self.registry([entry(), self.timeout, self.literal, view])
+        errors = limits.check(self.root)
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("crates/top/src/user.rs", errors[0])
+
     def test_a_reexporting_crate_uses_the_limit_through_the_module_path(self) -> None:
         self.write("crates/core/src/lib.rs", "pub mod view;\n")
         self.write("crates/core/src/view.rs", "pub const DEFAULT_LIMIT: usize = 20;\nfn page() -> usize { DEFAULT_LIMIT }\n")

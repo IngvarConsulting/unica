@@ -32,7 +32,7 @@ mod tests {
             },
         ));
         for site in sites {
-            for descriptor in crate::domain::apply::operation_registry()
+            for descriptor in crate::apply::operation_registry()
                 .descriptors()
                 .iter()
                 .filter(|descriptor| descriptor.family() == OperationFamily::Metadata)
@@ -51,7 +51,7 @@ mod tests {
 
     #[test]
     fn mxl_and_template_contracts_cover_examples_and_keep_legacy_value_grammar() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         for name in ["mxl.set", "area.add", "template.add"] {
             let descriptor = registry
                 .descriptors()
@@ -69,7 +69,7 @@ mod tests {
     /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn role_contracts_publish_the_entry_shape() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         for descriptor in registry
             .descriptors()
             .iter()
@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn every_implemented_dcs_operation_has_a_valid_example_and_small_contract() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let mut count = 0;
         for descriptor in registry
             .descriptors()

@@ -20,7 +20,7 @@ ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "w
 WORKSPACE_DEPENDENCIES = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
 COORDINATORS = frozenset({"operations", "bindings", "navigation", "code-intelligence", "diagnostics", "documentation"})
 # Everything the rule against importing a port implementation applies to.
-PORT_CALLERS = COORDINATORS | frozenset({"analysis-services", "application"})
+PORT_CALLERS = COORDINATORS | frozenset({"analysis-services", "application", "domain"})
 CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
 # Families whose codec sits behind the family port (#1826). Product composition
 # selects the implementation in one module; everyone else calls the trait.

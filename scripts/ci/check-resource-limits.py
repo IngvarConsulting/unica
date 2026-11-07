@@ -264,7 +264,7 @@ def literal_count(root: Path, file: str, literal: str) -> int:
 
 def _reexports(parsed: dict, crate: str, owner_crate: str) -> bool:
     root = parsed.get(f"crates/{crate}/src/lib.rs")
-    return root is not None and f"pub use {owner_crate}::" in root.text
+    return root is not None and (f"pub use {owner_crate}::" in root.text or f"pub use {owner_crate} as " in root.text)
 
 
 def users(root: Path, constant: Constant) -> list[str]:
@@ -273,7 +273,7 @@ def users(root: Path, constant: Constant) -> list[str]:
     Файл со своим одноимённым пределом относится к своему. В крейте с несколькими
     одноимёнными пределами чужой файл засчитывается по пути модуля, в другом
     крейте — по имени крейта-владельца либо, если его крейт переэкспортирует
-    модули владельца (`pub use owner::{...}`), по пути модуля.
+    модули владельца (`pub use owner::{...}`, `pub use owner as name`), по пути модуля.
     """
     parsed = sources(root)
     owner = parsed[constant.file]

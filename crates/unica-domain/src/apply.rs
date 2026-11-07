@@ -1,4 +1,4 @@
-use crate::domain::logical_route::classify_route;
+use crate::logical_route::classify_route;
 use unica_bsl::operations::CodeOperation;
 use unica_bsl::profile::PlatformProfile;
 use unica_dcs::operations::Primitive;
@@ -338,7 +338,7 @@ pub fn source_set_traits_of_source(
     profile: SourceProfile,
 ) -> SourceSetTraits {
     let exact = (format == SourceFormat::PlatformXml && profile.serialization_format().is_some())
-        .then(|| crate::domain::source_capabilities::bsl_profile_for_source(profile))
+        .then(|| crate::source_capabilities::bsl_profile_for_source(profile))
         .flatten()
         .map(|_| profile);
     SourceSetTraits::from_profiles(
@@ -355,14 +355,14 @@ pub fn source_set_traits_for_read(
 ) -> SourceSetTraits {
     let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
     debug_assert_eq!(
-        crate::domain::source_capabilities::bsl_profile_for_source(profile),
+        crate::source_capabilities::bsl_profile_for_source(profile),
         Some(platform)
     );
     SourceSetTraits::from_profiles(kind, Some(profile), profile)
 }
 
 pub fn source_classification_profile(source: SourceSetTraits) -> PlatformProfile {
-    crate::domain::source_capabilities::bsl_profile_for_source(source.classification_profile())
+    crate::source_capabilities::bsl_profile_for_source(source.classification_profile())
         .unwrap_or_else(PlatformProfile::v8_3_27)
 }
 
@@ -788,7 +788,7 @@ mod tests {
             source_set_traits_for_read(source, PlatformProfile::v8_3_27()),
         )
         .unwrap_or_else(|| panic!("{raw} has no route"));
-        crate::domain::apply::operation_registry()
+        crate::apply::operation_registry()
             .lookup_at(op, &site)
             .unwrap_or_else(|| panic!("{op} is registered"))
             .applies_at(&site)
@@ -796,7 +796,7 @@ mod tests {
 
     #[test]
     fn form_metadata_does_not_advertise_or_accept_owner_and_content_writers() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         for raw in [
@@ -859,7 +859,7 @@ mod tests {
     /// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
     #[test]
     fn content_writers_name_the_companion_file_they_write() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let resource = |op: &str| registry.lookup(op).unwrap().content_resource();
         for (op, expected) in [
             ("right.set", Some("Rights.xml")),
@@ -906,7 +906,7 @@ mod tests {
 
     #[test]
     fn object_borrow_is_available_only_at_the_configuration_root() {
-        let descriptor = crate::domain::apply::operation_registry()
+        let descriptor = crate::apply::operation_registry()
             .lookup("object.borrow")
             .expect("canonical top-level borrowing must be registered");
         assert_eq!(descriptor.name(), "object.borrow");
@@ -1214,7 +1214,7 @@ mod tests {
             );
             assert!(valid.argument_contract().is_some());
             assert_eq!(
-                crate::domain::apply::operation_registry()
+                crate::apply::operation_registry()
                     .descriptors()
                     .iter()
                     .filter(|descriptor| descriptor.operation::<XdtoOperation>() == Some(operation))
@@ -1224,7 +1224,7 @@ mod tests {
             assert_ne!(valid, RoleOperation::Create.descriptor());
         }
         assert_eq!(
-            crate::domain::apply::operation_registry()
+            crate::apply::operation_registry()
                 .descriptors()
                 .iter()
                 .filter(|descriptor| descriptor.family() == OperationFamily::Xdto)
@@ -1313,7 +1313,7 @@ mod tests {
 
     #[test]
     fn contextual_member_contracts_keep_owner_and_section_discriminators() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         for (at, allows_fill) in [
@@ -1439,7 +1439,7 @@ mod tests {
             metadata_attribute.address_shape(),
             form_attribute.address_shape()
         );
-        let descriptor = crate::domain::apply::operation_registry()
+        let descriptor = crate::apply::operation_registry()
             .named("template.set")
             .find(|d| d.family() == OperationFamily::Metadata)
             .unwrap();
@@ -1584,7 +1584,7 @@ mod tests {
             "code.replace",
             "event.implement",
         ];
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         assert_eq!(expected.len(), 130);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
@@ -2108,7 +2108,7 @@ mod tests {
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27()),
         )
         .unwrap();
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         for (op, format, expected) in [
             ("area.add", Some(TemplateFormat::SpreadsheetDocument), true),
             (
@@ -2146,7 +2146,7 @@ mod tests {
     /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn a_misplaced_operation_names_the_nearest_node_where_it_applies() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let format_of = |at: &QualifiedAddress| match at.segments().last()?.name()? {
             "Print" => Some(TemplateFormat::SpreadsheetDocument),
             "Schema" => Some(TemplateFormat::DataCompositionSchema),
@@ -2212,7 +2212,7 @@ mod tests {
 
     #[test]
     fn recovery_reclassifies_dcs_and_form_ancestors_in_the_canonical_classifier() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         for (raw, initial_route, op, expected, expected_route) in [
@@ -2271,7 +2271,7 @@ mod tests {
         fn reject_candidate(_: &QualifiedAddress, _: SourceSetTraits) -> Option<OperationSite<'_>> {
             None
         }
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let blocked = operation_registry().with_context(RegistryContext::new(reject_candidate));
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
@@ -2319,7 +2319,7 @@ mod tests {
 
         let form_child = address("main:Document.Order.Form.Main.Item.Header.Event.OnChange");
         let form_site = operation_site(&form_child, traits).unwrap();
-        let retired = crate::domain::apply::retired_operation("element.add").unwrap();
+        let retired = crate::apply::retired_operation("element.add").unwrap();
         assert!(retired
             .replacement_target(&form_site, registry.context(), &|_| None, &|_| Some(
                 super::FormItemRole::Container
@@ -2338,7 +2338,7 @@ mod tests {
         use super::source_set_traits_of_source;
         use unica_source_contract::{SourceFormat, SourceProfile};
         let active = SourceProfile::platform_xml_8_3_27_format_2_20();
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let root = address("main:Configuration");
         for (format, profile) in [
             (SourceFormat::Unknown, active),
@@ -2402,7 +2402,7 @@ mod tests {
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn every_retired_argument_entry_builds_a_routable_member_address() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let duplicates = [
             DUPLICATE_ARGUMENT_OPERATIONS,
             SUBNODE_OPERATIONS,
@@ -2516,7 +2516,7 @@ mod tests {
                 entry.op
             );
         }
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let owner = address("main:Catalog.Items");
         let site = operation_site(
             &owner,
@@ -2548,7 +2548,7 @@ mod tests {
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_form_item_or_event_named_by_an_argument_is_refused_with_its_address() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let form = "main:Catalog.Items.Form.Item";
@@ -2700,7 +2700,7 @@ mod tests {
     /// rule: INV.SOURCE.FORM-OPERATION-TARGETS
     #[test]
     fn a_form_item_role_narrows_element_operations() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let at = address("main:Catalog.Items.Form.Item.Item.Header");
         let site = operation_site(
             &at,
@@ -2756,7 +2756,7 @@ mod tests {
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_subnode_named_by_an_argument_is_refused_with_its_address() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let schema = "main:Report.Sales.Template.Schema";
@@ -2951,7 +2951,7 @@ mod tests {
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn dcs_schema_nodes_and_structure_items_take_their_subject_from_the_address() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let schema = "main:Report.Sales.Template.Schema";
@@ -3179,7 +3179,7 @@ mod tests {
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_repeated_schema_name_routes_next_to_the_branch_and_every_match() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let schema = "main:Report.Sales.Template.Schema";
@@ -3278,7 +3278,7 @@ mod tests {
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_renamed_operation_target_respects_the_item_role() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         use super::FormItemRole;
         let form = "main:Catalog.Items.Form.List";
         let bar = format!("{form}.Item.List.Item.ListCommandBar");
@@ -3307,7 +3307,7 @@ mod tests {
         ] {
             let at = address(&raw);
             let site = operation_site(&at, traits).unwrap();
-            let target = crate::domain::apply::retired_operation(op)
+            let target = crate::apply::retired_operation(op)
                 .unwrap()
                 .replacement_target(&site, registry.context(), &|_| None, &role);
             assert_eq!(
@@ -3325,9 +3325,9 @@ mod tests {
     #[test]
     fn a_retired_creation_names_the_parent_operation() {
         let retired =
-            crate::domain::apply::retired_operation("form.create").expect("form.create is retired");
+            crate::apply::retired_operation("form.create").expect("form.create is retired");
         assert_eq!(retired.replacement(), "form.add");
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         assert!(registry.lookup("form.create").is_none());
         assert!(registry.lookup(retired.replacement()).is_some());
         for (raw, expected) in [
@@ -3349,7 +3349,7 @@ mod tests {
                 "{raw}"
             );
         }
-        assert!(crate::domain::apply::retired_operation("form.add").is_none());
+        assert!(crate::apply::retired_operation("form.add").is_none());
         // Операции элемента, реквизита и команды формы переименованы по
         // своему узлу (#1465): заменившая формы исполнима на том же адресе,
         // снятого имени в реестре нет.
@@ -3376,8 +3376,7 @@ mod tests {
                 "main:Catalog.Items.Form.Choice",
             ),
         ] {
-            let retired =
-                crate::domain::apply::retired_operation(op).expect("the old name is retired");
+            let retired = crate::apply::retired_operation(op).expect("the old name is retired");
             assert_eq!(retired.replacement(), replacement, "{op}");
             assert!(registry.lookup(op).is_none(), "{op}");
             let at = address(raw);
@@ -3424,7 +3423,7 @@ mod tests {
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn a_duplicate_argument_is_refused_with_the_node_its_value_named() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let template = "main:Report.Sales.Template.Schema";
@@ -3639,7 +3638,7 @@ mod tests {
     /// rule: INV.SOURCE.XDTO-PROPERTY-PATH
     #[test]
     fn retired_names_with_a_dot_route_to_escaped_addresses() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         let redirect = |op: &str, raw: &str, args: Value| {
@@ -3714,7 +3713,7 @@ mod tests {
     /// адреса.
     #[test]
     fn the_nearest_ancestor_never_invents_a_query_name_under_a_named_kind() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let traits =
             source_set_traits_for_read(SourceSetKind::Configuration, PlatformProfile::v8_3_27());
         for (op, raw) in [
@@ -3743,7 +3742,7 @@ mod tests {
     /// построенному адресу не исполнима, не срабатывает.
     #[test]
     fn a_retired_argument_redirects_once_the_operation_has_moved() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let owner = address("main:Report.Sales");
         let site = operation_site(
             &owner,
@@ -3942,7 +3941,7 @@ mod tests {
 
     #[test]
     fn registry_skeletons_are_bounded_useful_and_copyable_operation_objects() {
-        let registry = crate::domain::apply::operation_registry();
+        let registry = crate::apply::operation_registry();
         let cases = [
             (
                 "props.set",

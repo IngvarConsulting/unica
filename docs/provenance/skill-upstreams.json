@@ -585,7 +585,7 @@
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-compile",
             "plugins/unica/references/specs/1c-spreadsheet-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
-            "crates/unica-application/src/domain/operation_contract.rs"
+            "crates/unica-domain/src/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -610,7 +610,7 @@
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-decompile",
             "plugins/unica/references/specs/1c-spreadsheet-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
-            "crates/unica-application/src/domain/operation_contract.rs"
+            "crates/unica-domain/src/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -635,7 +635,7 @@
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/mxl-info",
             "plugins/unica/references/specs/1c-spreadsheet-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
-            "crates/unica-application/src/domain/operation_contract.rs"
+            "crates/unica-domain/src/operation_contract.rs"
           ],
           "contractPaths": [
             "tests/ci/test_unica_skills.py",
@@ -687,15 +687,15 @@
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/dcs-compile",
             "plugins/unica/references/specs/1c-dcs-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
-            "crates/unica-application/src/domain/operation_contract.rs",
+            "crates/unica-domain/src/operation_contract.rs",
             "crates/unica-dcs-designer/src/primitives.rs",
             "crates/unica-dcs-designer/src/xml.rs"
           ],
           "contractPaths": [
             "tests/ci/test_dcs_naming_contract.py",
             "tests/fixtures/acceptance/scenario-corpus.json",
-            "crates/unica-application/src/domain/apply.rs",
-            "crates/unica-application/src/domain/operation_contract.rs",
+            "crates/unica-domain/src/apply.rs",
+            "crates/unica-domain/src/operation_contract.rs",
             "crates/unica-dcs-designer/src/primitives/tests.rs"
           ],
           "decision": "ignored-with-reason",
@@ -718,15 +718,15 @@
             "tests/fixtures/unica_mcp_script_parity/unica_reference_models/dcs-edit",
             "plugins/unica/references/specs/1c-dcs-spec.md",
             "plugins/unica/references/use-cases/reports-printing.md",
-            "crates/unica-application/src/domain/operation_contract.rs",
+            "crates/unica-domain/src/operation_contract.rs",
             "crates/unica-dcs-designer/src/primitives.rs",
             "crates/unica-dcs-designer/src/xml.rs"
           ],
           "contractPaths": [
             "tests/ci/test_dcs_naming_contract.py",
             "tests/fixtures/acceptance/scenario-corpus.json",
-            "crates/unica-application/src/domain/apply.rs",
-            "crates/unica-application/src/domain/operation_contract.rs",
+            "crates/unica-domain/src/apply.rs",
+            "crates/unica-domain/src/operation_contract.rs",
             "crates/unica-dcs-designer/src/primitives/tests.rs"
           ],
           "decision": "ported",

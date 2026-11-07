@@ -9,11 +9,12 @@ gap: https://github.com/IngvarConsulting/unica/issues/983
 или `interfaces`. Слой `application` не ссылается на `infrastructure`
 или `interfaces`. Инфраструктурный код не обращается к `interfaces`.
 
-Слои `domain` и `application` находятся в пакете `unica-application`,
-`infrastructure` и `interfaces` — в `unica-coder`. Пакет `unica-application`
-не зависит от `unica-coder`, поэтому наружу направление задают зависимости
-пакетов. Внутри каждого пакета группировка импортов и псевдонимы не меняют
-направление зависимости, и граница проверяется по Rust-коду.
+Слой `domain` находится в пакете `unica-domain`, `application` — в
+`unica-application`, `infrastructure` и `interfaces` — в `unica-coder`. Пакет
+`unica-domain` не зависит от `unica-application`, а тот — от `unica-coder`,
+поэтому между ними направление задают зависимости пакетов. Внутри
+`unica-coder` группировка импортов и псевдонимы не меняют направление
+зависимости, и граница проверяется по Rust-коду.
 
 Продуктивный `application` получает состояние Git через инфраструктуру
 и не запускает процесс Git самостоятельно. Проверка прямого запуска пока

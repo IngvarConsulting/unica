@@ -1,0 +1,41 @@
+[package]
+name = "unica-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.unica]
+component = "coordinator"
+file-io = "none"
+
+[lib]
+name = "unica_domain"
+path = "src/lib.rs"
+
+[dependencies]
+unica-address = { path = "../unica-address" }
+unica-artifact-delivery = { path = "../unica-artifact-delivery" }
+unica-bsl = { path = "../unica-bsl" }
+unica-dcs = { path = "../unica-dcs" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-forms = { path = "../unica-forms" }
+unica-metadata = { path = "../unica-metadata" }
+unica-operation-contract = { path = "../unica-operation-contract" }
+unica-operations = { path = "../unica-operations" }
+unica-refusal = { path = "../unica-refusal" }
+unica-roles = { path = "../unica-roles" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-templates = { path = "../unica-templates" }
+unica-xdto = { path = "../unica-xdto" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+unica-dcs = { path = "../unica-dcs", features = ["test-support"] }
+unica-forms = { path = "../unica-forms", features = ["test-support"] }
+unica-metadata = { path = "../unica-metadata", features = ["test-support"] }
+unica-source-contract = { path = "../unica-source-contract", features = ["test-support"] }
+unica-templates = { path = "../unica-templates", features = ["test-support"] }
+unica-xdto = { path = "../unica-xdto", features = ["test-support"] }
+jsonschema.workspace = true
