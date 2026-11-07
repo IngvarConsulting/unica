@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Instant;
 use unica_code_intelligence::symbols::{
-    SymbolAnswer, SymbolInfo, SymbolLocation, SymbolPosition, SymbolRequestContext,
+    Incompleteness, SymbolAnswer, SymbolInfo, SymbolLocation, SymbolPosition, SymbolRequestContext,
 };
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
@@ -408,6 +408,10 @@ fn symbol_operation(call: &V5LspCall) -> Option<LspSymbolOperation> {
     }
 }
 
+/// A document is the body of a module: its address is the module's with
+/// this segment after it.
+const BODY: &str = ".Body";
+
 /// What a symbol call takes from the session, under its lock.
 struct SymbolCall {
     space: String,
@@ -431,10 +435,17 @@ fn symbol_call(session: &Session, uri: &str) -> Result<SymbolCall, V5LspFailure>
         .documents
         .open_document(&location.document)
         .map(|document| document.text().to_owned());
+    // The symbol service names modules, not their bodies.
+    let module = location
+        .document
+        .address
+        .strip_suffix(BODY)
+        .ok_or(V5LspFailure::DocumentUnknown)?
+        .to_owned();
     Ok(SymbolCall {
         symbols: Arc::clone(&space.symbols),
         client: session.client.clone(),
-        module: location.document.address,
+        module,
         space: location.document.space,
         source_set: location.source_set,
         buffer,
@@ -473,10 +484,13 @@ fn symbol_answer(
             deadline: ProviderDeadline::new(context.deadline()),
             cancellation: &cancellation,
         },
-    )?;
+    );
+    // A read stopped by the request's own cancellation is a cancellation,
+    // not a failure of the service.
     if context.is_cancelled() {
         return Ok(V5LspOutcome::Cancelled {});
     }
+    let answer = answer?;
     match (operation, answer) {
         (LspSymbolOperation::Hover, LspSymbolAnswer::Info(info)) => Ok(V5LspOutcome::Hover {
             contents: hover_markdown(&info),
@@ -485,14 +499,30 @@ fn symbol_answer(
             LspSymbolOperation::Definition | LspSymbolOperation::References,
             LspSymbolAnswer::Places(places),
         ) => {
-            let locations = {
+            let mut places = places;
+            let mut locations = Vec::with_capacity(places.value.len());
+            let mut unaddressable = 0;
+            {
                 let session = read(session);
+                for place in &places.value {
+                    // A metadata node has no range: no document opens it.
+                    if place.range.is_none() {
+                        continue;
+                    }
+                    match lsp_location(&session, &asked.space, place) {
+                        Some(location) => locations.push(location),
+                        None => unaddressable += 1,
+                    }
+                }
+            }
+            // A place in code the session cannot name is left out, and the
+            // answer no longer says it is whole.
+            if unaddressable > 0 {
+                places.complete = false;
                 places
-                    .value
-                    .iter()
-                    .filter_map(|place| lsp_location(&session, &asked.space, place))
-                    .collect::<Vec<_>>()
-            };
+                    .reasons
+                    .push(Incompleteness::Unaddressable(unaddressable));
+            }
             if !places.complete {
                 // Nothing found while a source was not ready is not "none".
                 if locations.is_empty() {
@@ -518,9 +548,8 @@ fn reasons<T>(answer: &SymbolAnswer<T>) -> String {
         .join(", ")
 }
 
-/// A place of the symbol service in this session's space, if the editor can
-/// open it: a metadata node, or a module of no admitted source set, is no
-/// document.
+/// A place in a module as the document of its body in this session's space,
+/// if the session has it: a module of no admitted source set is no document.
 fn lsp_location(session: &Session, space: &str, place: &SymbolLocation) -> Option<V5LspLocation> {
     let range = place.range?;
     let uri = session
@@ -528,7 +557,7 @@ fn lsp_location(session: &Session, space: &str, place: &SymbolLocation) -> Optio
         .spaces()
         .format(&DocumentUri {
             space: space.to_owned(),
-            address: place.at.clone(),
+            address: format!("{}{BODY}", place.at),
         })
         .ok()?;
     session.documents.locate(&uri).ok()?;

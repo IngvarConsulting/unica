@@ -23,7 +23,8 @@ pub enum LspSymbolOperation {
 #[derive(Debug, Clone, Copy)]
 pub struct LspSymbolRequest<'a> {
     pub source_set: &'a str,
-    /// Адрес тела модуля, как его называет документ: `main:CommonModule.X.Body`.
+    /// Адрес модуля, тело которого — документ: `main:CommonModule.X`,
+    /// `main:Catalog.X.Module.Object`. Места ответа называют модули так же.
     pub module: &'a str,
     /// Открытый буфер сессии; `None` — модуль читается сохранённым.
     pub buffer: Option<&'a str>,

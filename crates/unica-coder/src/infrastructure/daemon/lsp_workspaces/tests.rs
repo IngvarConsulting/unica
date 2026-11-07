@@ -361,10 +361,28 @@ fn symbols_answer_from_the_buffer_at_the_documents_address() {
     crate::infrastructure::application_ports::SYMBOL_PROVIDER_OVERRIDE
         .with(|slot| *slot.borrow_mut() = Some(Arc::new(NotReady)));
     let workspace = workspace();
-    // The symbol service reads the module as MCP does: through its object.
+    // The symbol service reads modules as MCP does: through their objects.
+    let source = workspace.path().join("src");
     fs::write(
-        workspace.path().join("src/CommonModules/Main.xml"),
-        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="11111111-1111-4111-8111-111111111111"><Properties><Name>Main</Name><Synonym/><Comment/><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#,
+        source.join("Configuration.xml"),
+        r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><Name>Store</Name></Properties><ChildObjects><CommonModule>Main</CommonModule><CommonModule>Other</CommonModule></ChildObjects></Configuration></MetaDataObject>"#,
+    )
+    .unwrap();
+    for (name, uuid) in [
+        ("Main", "11111111-1111-4111-8111-111111111111"),
+        ("Other", "22222222-2222-4222-8222-222222222222"),
+    ] {
+        fs::write(
+            source.join(format!("CommonModules/{name}.xml")),
+            format!(r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><CommonModule uuid="{uuid}"><Properties><Name>{name}</Name><Synonym/><Comment/><Global>false</Global><ClientManagedApplication>false</ClientManagedApplication><Server>true</Server><ExternalConnection>false</ExternalConnection><ClientOrdinaryApplication>false</ClientOrdinaryApplication><ServerCall>true</ServerCall><Privileged>false</Privileged><ReturnValuesReuse>DontUse</ReturnValuesReuse></Properties></CommonModule></MetaDataObject>"#),
+        )
+        .unwrap();
+    }
+    fs::create_dir_all(source.join("CommonModules/Other/Ext")).unwrap();
+    fs::write(
+        source.join("CommonModules/Other/Ext/Module.bsl"),
+        "Procedure Shared() Export EndProcedure
+",
     )
     .unwrap();
     let (host, _workspaces) = service();
@@ -377,7 +395,7 @@ fn symbols_answer_from_the_buffer_at_the_documents_address() {
     )
     .unwrap();
     let buffer =
-        "Procedure Callee() EndProcedure\nProcedure Caller() Callee(); Unknown(); EndProcedure\n";
+        "Procedure Callee() EndProcedure\nProcedure Caller() Callee(); Unknown(); Other.Shared(); EndProcedure\n";
     host.notify(
         &editor,
         V5LspNotification::DidOpen {
@@ -432,6 +450,26 @@ fn symbols_answer_from_the_buffer_at_the_documents_address() {
         ),
         V5LspOutcome::Failed {
             failure: V5LspFailure::Incomplete
+        }
+    );
+    // A method of another common module: the document of that module's body.
+    assert_eq!(
+        ask(
+            &host,
+            &editor,
+            V5LspCall::Definition {
+                uri: BODY_URI.into(),
+                position: at(1, 47),
+            },
+        ),
+        V5LspOutcome::Locations {
+            locations: vec![unica_lsp_contract::protocol::V5LspLocation {
+                uri: "unica://work/main/CommonModule.Other.Body".into(),
+                range: unica_lsp_contract::protocol::V5LspRange {
+                    start: at(0, 10),
+                    end: at(0, 16),
+                },
+            }],
         }
     );
 }

@@ -104,8 +104,9 @@ fn definition() -> V5LspCall {
     }
 }
 
-/// Places in this module come back as its document; a metadata node, and a
-/// module of no source set the session has, are no document the editor opens.
+/// The service asks about the module whose body the document is, and a
+/// place in a module comes back as the document of its body; a metadata node
+/// is no document the editor opens.
 #[test]
 fn symbol_places_reach_the_editor_as_documents_of_the_sessions_space() {
     let workspace = workspace();
@@ -115,9 +116,8 @@ fn symbol_places_reach_the_editor_as_documents_of_the_sessions_space() {
     open_buffer(&host, &session, BODY_URI, buffer);
     workspaces.symbols.answer(places(
         vec![
-            place("main:CommonModule.Main.Body", Some(at(0, 10, 16))),
+            place("main:CommonModule.Main", Some(at(0, 10, 16))),
             place("main:Catalog.Items", None),
-            place("other:CommonModule.Main.Body", Some(at(0, 0, 1))),
         ],
         Vec::new(),
     ));
@@ -144,7 +144,7 @@ fn symbol_places_reach_the_editor_as_documents_of_the_sessions_space() {
         workspaces.symbols.asked(),
         vec![Asked {
             source_set: "main".into(),
-            module: "main:CommonModule.Main.Body".into(),
+            module: "main:CommonModule.Main".into(),
             buffer: Some(buffer.into()),
             position: SymbolPosition {
                 line: 0,
@@ -187,8 +187,13 @@ fn nothing_found_while_a_source_is_not_ready_is_refused_and_a_partial_list_is_an
         }
     );
 
+    // A place in code no document of the session names is left out, and
+    // the answer says so.
     workspaces.symbols.answer(places(
-        vec![place("main:CommonModule.Main.Body", Some(at(0, 10, 14)))],
+        vec![
+            place("main:CommonModule.Main", Some(at(0, 10, 14))),
+            place("other:CommonModule.Main", Some(at(0, 0, 1))),
+        ],
         vec![Incompleteness::NamesNotIndexed],
     ));
     assert!(matches!(
@@ -199,7 +204,7 @@ fn nothing_found_while_a_source_is_not_ready_is_refused_and_a_partial_list_is_an
         inbox.take_before(soon()).unwrap(),
         vec![V5LspServerNotification::LogMessage {
             level: V5LspMessageLevel::Info,
-            message: "unica: the answer is incomplete: names_not_indexed".into(),
+            message: "unica: the answer is incomplete: names_not_indexed, unaddressable".into(),
         }]
     );
 }
@@ -262,7 +267,7 @@ fn a_request_cancelled_while_the_provider_works_cancels_it_and_gives_no_answer()
     let cancelled = Arc::new(AtomicBool::new(false));
     *workspaces.symbols.cancel_while_asked.lock().unwrap() = Some(Arc::clone(&cancelled));
     workspaces.symbols.answer(places(
-        vec![place("main:CommonModule.Main.Body", Some(at(0, 10, 14)))],
+        vec![place("main:CommonModule.Main", Some(at(0, 10, 14)))],
         Vec::new(),
     ));
 
@@ -273,5 +278,24 @@ fn a_request_cancelled_while_the_provider_works_cancels_it_and_gives_no_answer()
     );
 
     assert!(workspaces.symbols.saw_cancellation.load(Ordering::Acquire));
+    assert_eq!(outcome, V5LspOutcome::Cancelled {});
+}
+
+/// A read the request's cancellation stopped is a cancellation, not a
+/// failure of the service.
+#[test]
+fn a_port_failing_because_the_request_was_cancelled_gives_a_cancellation() {
+    let workspace = workspace();
+    let (host, workspaces) = service();
+    let session = open(&host, workspace.path(), "Work");
+    let cancelled = Arc::new(AtomicBool::new(false));
+    *workspaces.symbols.cancel_while_asked.lock().unwrap() = Some(Arc::clone(&cancelled));
+
+    let outcome = host.call(
+        &session,
+        definition(),
+        &LspCallContext::new(Arc::clone(&cancelled), soon()),
+    );
+
     assert_eq!(outcome, V5LspOutcome::Cancelled {});
 }
