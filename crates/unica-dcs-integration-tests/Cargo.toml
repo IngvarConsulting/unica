@@ -23,4 +23,6 @@ unica-work-control = { path = "../unica-work-control", features = ["test-support
 unica-workspace = { path = "../unica-workspace" }
 
 [package.metadata.unica]
+component = "integration-tests"
+file-io = "owned"
 inputs = ["tests/fixtures/acceptance/workspace"]

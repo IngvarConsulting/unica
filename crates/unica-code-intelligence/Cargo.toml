@@ -24,3 +24,7 @@ serde_json.workspace = true
 [dev-dependencies]
 uuid.workspace = true
 unica-address = { path = "../unica-address" }
+
+[package.metadata.unica]
+component = "coordinator"
+file-io = "none"

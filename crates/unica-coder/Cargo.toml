@@ -140,6 +140,8 @@ syn.workspace = true
 tar.workspace = true
 
 [package.metadata.unica]
+component = "product"
+file-io = "owned"
 # `crates`: production_operation_paths_start_no_new_finite_deadline walks every crate's src.
 inputs = ["crates", "plugins/unica/skills", "plugins/unica/third-party/tools.lock.json", "tests/fixtures/acceptance", "tests/fixtures/analyzer", "tests/fixtures/bsl_analyzer", "tests/fixtures/platform_8_3_27", "tests/fixtures/styleitem_values", "tests/fixtures/unica_mcp_script_parity", "tests/fixtures/v013", "tests/fixtures/xdto"]
 read-outside-baseline = 1

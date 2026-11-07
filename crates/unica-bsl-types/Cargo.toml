@@ -13,3 +13,7 @@ flate2.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+
+[package.metadata.unica]
+component = "service"
+file-io = "owned"

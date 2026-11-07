@@ -19,3 +19,7 @@ unica-xml-format = { path = "../unica-xml-format" }
 unica-address = { path = "../unica-address" }
 roxmltree.workspace = true
 unica-source-contract = { path = "../unica-source-contract" }
+
+[package.metadata.unica]
+component = "service"
+file-io = "none"

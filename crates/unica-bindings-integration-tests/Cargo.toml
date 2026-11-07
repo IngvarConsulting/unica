@@ -27,3 +27,7 @@ unica-source-contract = { path = "../unica-source-contract" }
 serde.workspace = true
 serde_json.workspace = true
 roxmltree.workspace = true
+
+[package.metadata.unica]
+component = "integration-tests"
+file-io = "owned"

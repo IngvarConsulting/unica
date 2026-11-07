@@ -15,6 +15,28 @@ class ComponentBoundaryTests(unittest.TestCase):
     def test_real_workspace_retains_component_direction(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         self.assertEqual(checker.check(ROOT), [])
+        self.assertEqual(checker.declaration_errors(checker.manifests(ROOT)), [])
+
+    def test_a_crate_that_declares_no_known_component_is_refused_with_a_hint(self) -> None:
+        def members(**unica):
+            return {"unica-new": (Path("crates/unica-new"), {"package": {"name": "unica-new", "metadata": {"unica": unica}}})}
+
+        for undeclared in (members(), members(component="whatever")):
+            errors = checker.declaration_errors(undeclared)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("unica-new: declare component under [package.metadata.unica]", errors[0])
+            for kind in checker.COMPONENT_KINDS:
+                self.assertIn(kind, errors[0])
+        self.assertEqual(checker.declaration_errors(members(component="service")), [])
+
+    def test_a_declared_kind_must_be_the_one_the_rules_apply(self) -> None:
+        def members(name, component):
+            return {name: (Path("x"), {"package": {"name": name, "metadata": {"unica": {"component": component}}}})}
+
+        # Объявить координатора, не внеся его в правила, значит остаться без проверки.
+        self.assertIn("treat it as service", checker.declaration_errors(members("unica-new", "coordinator"))[0])
+        self.assertIn("treat it as coordinator", checker.declaration_errors(members("unica-navigation", "service"))[0])
+        self.assertEqual(checker.declaration_errors(members("unica-navigation", "coordinator")), [])
 
     def test_owner_edges_reject_hidden_concrete_dependencies(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
