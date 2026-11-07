@@ -2579,7 +2579,6 @@ dependencies = [
  "jsonschema",
  "libc",
  "objc2-core-foundation",
- "percent-encoding",
  "proc-macro2",
  "quote",
  "regex",
