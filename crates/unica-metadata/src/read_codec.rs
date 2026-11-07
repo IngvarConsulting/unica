@@ -5,11 +5,16 @@
 //!
 //! Порт растёт по видам чтения. Каждый метод получает уже прочитанные байты
 //! или текст: файлы и снимок источника остаются у композиции.
+use crate::configuration::{CfHomePageData, CfInfoData, CfInterfaceData};
 use crate::style_color::StyleItemPropertiesObservation;
+use crate::subsystem::{
+    SubsystemCommandInterfaceData, SubsystemInfoData, SubsystemInfoResult, SubsystemTreeNode,
+};
+use crate::support_state::{ConfigurationSupportData, ObjectSupportData};
 use crate::wsdl::Definition;
 use crate::{MetaExchangeContentItem, MetaObservedProperty};
 use serde_json::{Map, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
 
 /// Разбор дескрипторов метаданных для чтения.
@@ -67,6 +72,67 @@ pub trait MetadataReadCodec: Send + Sync {
         bytes: &[u8],
         checkpoint: &mut dyn FnMut() -> Result<(), ReadStopped>,
     ) -> Result<Definition, ReadStopped>;
+
+    /// Свойства корня из `Configuration.xml` вместе с уже прочитанными
+    /// сопутствующими документами.
+    fn configuration_info(
+        &self,
+        text: &str,
+        support: ConfigurationSupportData,
+        home_page: Option<CfHomePageData>,
+        command_interface: Option<CfInterfaceData>,
+        panels: Option<Value>,
+    ) -> Result<CfInfoData, String>;
+
+    /// Домашняя страница конфигурации из `Ext/HomePageWorkArea.xml`.
+    fn configuration_home_page(&self, text: &str) -> Result<CfHomePageData, String>;
+
+    /// Командный интерфейс конфигурации из `Ext/CommandInterface.xml`.
+    fn configuration_command_interface(&self, text: &str) -> Result<CfInterfaceData, String>;
+
+    /// Путь документа панелей клиентского приложения от корня конфигурации.
+    fn client_interface_relative(&self) -> &'static str;
+
+    /// Раскладка панелей в форме, которую принимает `panels.set`.
+    fn client_panels(&self, text: &str) -> Result<Value, String>;
+
+    /// Дескриптор подсистемы. `path` называет его в сообщениях;
+    /// `has_command_interface` — есть ли у подсистемы командный интерфейс.
+    /// Второй элемент — предупреждения разбора.
+    fn subsystem_info(
+        &self,
+        path: &Path,
+        text: &str,
+        has_command_interface: bool,
+    ) -> Result<(SubsystemInfoData, Vec<String>), String>;
+
+    /// Командный интерфейс подсистемы. `path` называет его в сообщениях.
+    fn subsystem_command_interface(
+        &self,
+        path: &Path,
+        text: &str,
+    ) -> Result<SubsystemCommandInterfaceData, String>;
+
+    /// Ответ чтения подсистемы из разобранных частей.
+    fn subsystem_result(
+        &self,
+        data: SubsystemInfoData,
+        tree: Option<Vec<SubsystemTreeNode>>,
+        command_interface: Option<SubsystemCommandInterfaceData>,
+        support: ObjectSupportData,
+    ) -> SubsystemInfoResult;
+
+    /// Проверка содержимого подсистемы. Файлы открывает вызывающий через
+    /// `exists` и `read_optional`. Итог: прошла ли проверка, отчёт и путь
+    /// проверенного дескриптора.
+    fn check_subsystem_content(
+        &self,
+        text: &str,
+        xml_path: PathBuf,
+        detailed: bool,
+        exists: &mut dyn FnMut(&Path) -> Result<bool, String>,
+        read_optional: &mut dyn FnMut(&Path) -> Result<Option<String>, String>,
+    ) -> Result<(bool, String, PathBuf), String>;
 }
 
 /// Чтение остановлено вызывающим через `checkpoint`. Причину остановки

@@ -1,13 +1,18 @@
 //! Designer-кодек за портом чтения метаданных: разбор дескрипторов выгрузки
 //! Designer для [`MetadataReadCodec`].
 use serde_json::{Map, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
+use unica_metadata::configuration::{CfHomePageData, CfInfoData, CfInterfaceData};
 use unica_metadata::read_codec::{
     ExchangeContentFacts, FunctionalOptionFacts, MetadataReadCodec, NumeratorFacts, ReadFinding,
     ReadStopped,
 };
 use unica_metadata::style_color::StyleItemPropertiesObservation;
+use unica_metadata::subsystem::{
+    SubsystemCommandInterfaceData, SubsystemInfoData, SubsystemInfoResult, SubsystemTreeNode,
+};
+use unica_metadata::support_state::{ConfigurationSupportData, ObjectSupportData};
 use unica_metadata::wsdl::Definition;
 
 pub struct DesignerMetadataReadCodec;
@@ -91,6 +96,83 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
         checkpoint: &mut dyn FnMut() -> Result<(), ReadStopped>,
     ) -> Result<Definition, ReadStopped> {
         crate::wsdl_read::read(bytes, checkpoint)
+    }
+
+    fn configuration_info(
+        &self,
+        text: &str,
+        support: ConfigurationSupportData,
+        home_page: Option<CfHomePageData>,
+        command_interface: Option<CfInterfaceData>,
+        panels: Option<Value>,
+    ) -> Result<CfInfoData, String> {
+        crate::configuration::parse_cf_info_xml(text, support, home_page, command_interface, panels)
+            .map(|parsed| parsed.data)
+    }
+
+    fn configuration_home_page(&self, text: &str) -> Result<CfHomePageData, String> {
+        let layout = crate::configuration::parse_cf_home_page_xml_strict(text)?;
+        Ok(CfHomePageData {
+            template: layout.template,
+            left: crate::configuration::cf_home_page_item_data(&layout.left),
+            right: crate::configuration::cf_home_page_item_data(&layout.right),
+        })
+    }
+
+    fn configuration_command_interface(&self, text: &str) -> Result<CfInterfaceData, String> {
+        crate::configuration::parse_cf_command_interface_xml(text)
+    }
+
+    fn client_interface_relative(&self) -> &'static str {
+        crate::client_interface::CLIENT_INTERFACE_RELATIVE
+    }
+
+    fn client_panels(&self, text: &str) -> Result<Value, String> {
+        crate::client_interface::parse_panels(text).map(|stored| stored.to_json())
+    }
+
+    fn subsystem_info(
+        &self,
+        path: &Path,
+        text: &str,
+        has_command_interface: bool,
+    ) -> Result<(SubsystemInfoData, Vec<String>), String> {
+        crate::subsystem::parse_subsystem_info_xml(path, text, has_command_interface)
+    }
+
+    fn subsystem_command_interface(
+        &self,
+        path: &Path,
+        text: &str,
+    ) -> Result<SubsystemCommandInterfaceData, String> {
+        crate::subsystem::parse_subsystem_command_interface_data(path, text)
+    }
+
+    fn subsystem_result(
+        &self,
+        data: SubsystemInfoData,
+        tree: Option<Vec<SubsystemTreeNode>>,
+        command_interface: Option<SubsystemCommandInterfaceData>,
+        support: ObjectSupportData,
+    ) -> SubsystemInfoResult {
+        crate::subsystem::build_subsystem_info_result(data, tree, command_interface, support)
+    }
+
+    fn check_subsystem_content(
+        &self,
+        text: &str,
+        xml_path: PathBuf,
+        detailed: bool,
+        exists: &mut dyn FnMut(&Path) -> Result<bool, String>,
+        read_optional: &mut dyn FnMut(&Path) -> Result<Option<String>, String>,
+    ) -> Result<(bool, String, PathBuf), String> {
+        crate::subsystem::validate_subsystem_content(
+            text,
+            xml_path,
+            detailed,
+            exists,
+            read_optional,
+        )
     }
 }
 
