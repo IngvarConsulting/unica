@@ -78,7 +78,7 @@ HOST_MARKER_KINDS = {
 }
 # Semantic packages retain the former domain boundary after physical relocation.
 DOMAIN_COMPONENTS = frozenset({
-    "unica-address", "unica-source-contract", "unica-operation-contract",
+    "unica-domain", "unica-address", "unica-source-contract", "unica-operation-contract",
     "unica-metadata", "unica-forms", "unica-roles", "unica-dcs", "unica-xdto",
     "unica-templates", "unica-bsl", "unica-bsl-applied", "unica-bindings", "unica-documentation",
 })
@@ -135,7 +135,7 @@ def _is_file_io_free_source(path: PurePosixPath) -> bool:
 
 def _is_domain_source(path: PurePosixPath) -> bool:
     parts = path.parts
-    return path.as_posix().startswith("crates/unica-application/src/domain/") or (
+    return (
         len(parts) >= 4 and parts[0] == "crates"
         and parts[2] == "src" and (parts[1] in DOMAIN_COMPONENTS or parts[3] == "model")
     )

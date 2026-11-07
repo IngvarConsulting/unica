@@ -15,6 +15,7 @@ receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "u
 
 [dependencies]
 unica-application = { path = "../unica-application" }
+unica-domain = { path = "../unica-domain" }
 unica-daemon = { path = "../unica-daemon" }
 unica-lsp-contract = { path = "../unica-lsp-contract" }
 unica-lsp = { path = "../unica-lsp" }

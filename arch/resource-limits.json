@@ -2413,13 +2413,13 @@
       "unit": "bytes",
       "scope": "record",
       "source": {
-        "file": "crates/unica-application/src/domain/node_view.rs",
+        "file": "crates/unica-domain/src/node_view.rs",
         "symbol": "MAX_TITLE_BYTES"
       },
       "expr": "2_048",
       "value": 2048,
       "applied": [
-        "crates/unica-application/src/domain/node_view.rs",
+        "crates/unica-domain/src/node_view.rs",
         "crates/unica-coder/src/infrastructure/v13_read_projection.rs"
       ],
       "status": "unproven",

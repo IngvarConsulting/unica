@@ -2423,6 +2423,7 @@ dependencies = [
  "unica-configuration",
  "unica-dcs",
  "unica-diagnostics",
+ "unica-domain",
  "unica-execution",
  "unica-execution-contract",
  "unica-forms",
@@ -2614,6 +2615,7 @@ dependencies = [
  "unica-diagnostics",
  "unica-documentation",
  "unica-documentation-sources",
+ "unica-domain",
  "unica-execution",
  "unica-execution-contract",
  "unica-forms",
@@ -2766,6 +2768,29 @@ dependencies = [
  "unica-network",
  "unica-work-control",
  "zip",
+]
+
+[[package]]
+name = "unica-domain"
+version = "0.15.0-rc.1"
+dependencies = [
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "unica-address",
+ "unica-artifact-delivery",
+ "unica-bsl",
+ "unica-dcs",
+ "unica-execution-contract",
+ "unica-forms",
+ "unica-metadata",
+ "unica-operation-contract",
+ "unica-operations",
+ "unica-refusal",
+ "unica-roles",
+ "unica-source-contract",
+ "unica-templates",
+ "unica-xdto",
 ]
 
 [[package]]

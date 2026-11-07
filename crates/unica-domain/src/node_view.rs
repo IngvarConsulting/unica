@@ -27,7 +27,7 @@ pub const MAX_TITLE_BYTES: usize = 2_048;
 
 /// Заголовок длиннее предела усекается по границе символа и помечается
 /// многоточием.
-pub(crate) fn compact_title(title: String) -> String {
+pub fn compact_title(title: String) -> String {
     if title.len() <= MAX_TITLE_BYTES {
         return title;
     }
@@ -220,7 +220,7 @@ impl NodeViewData {
     }
 
     /// Отделяет исходный текст: узел остаётся без него.
-    pub(crate) fn take_text(&mut self) -> Option<SourceText> {
+    pub fn take_text(&mut self) -> Option<SourceText> {
         match self {
             Self::Text(text) => Some(std::mem::replace(
                 &mut text.text,

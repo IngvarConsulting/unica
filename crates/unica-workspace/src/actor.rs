@@ -3026,13 +3026,14 @@ impl<C> WorkspaceActorRegistry<C> {
                 Err(_) => return Err(WorkspaceActorRegistryError::NamedRootUnavailable),
                 Ok(false) => {}
             }
-            // The named root was replaced while the actor idled. Forget the
-            // warm copy; an actor still held by a live invocation keeps its
-            // existing fail-closed behaviour.
+            // The named root was replaced. Forget the warm copy. While a live
+            // invocation still holds the actor, a second actor of the same
+            // identity is not created: the root is temporarily unavailable
+            // until that invocation ends, and the caller may retry as is.
             self.forget_warm(&identity)?;
             drop(actor);
-            if let Some(active) = actors.get(&identity).and_then(Weak::upgrade) {
-                return Ok(active);
+            if actors.get(&identity).and_then(Weak::upgrade).is_some() {
+                return Err(WorkspaceActorRegistryError::NamedRootUnavailable);
             }
             actors.remove(&identity);
         }

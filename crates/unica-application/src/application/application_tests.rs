@@ -1,5 +1,11 @@
+//! Снимки схем изменяющих инструментов и их отпечатки. Проверку снимков
+//! зовёт и реентерабельная проверка формата в `unica-coder`, поэтому она
+//! открыта под `test-support`.
+
 use crate::application::*;
-use serde_json::{json, Value};
+#[cfg(test)]
+use serde_json::json;
+use serde_json::Value;
 
 // Call on a cloned schema before existing write_canonical. Only schema nodes
 // lose annotations; const/default/enum values and property names are data.
@@ -100,6 +106,7 @@ fn native_schema_fingerprint_ignores_annotations_but_keeps_description_fields() 
     );
 }
 
+#[cfg(test)]
 /// The compared form of a mutating tool's input schema: annotations
 /// removed, keys sorted, one value per indented line. Snapshot files use
 /// it so independent additions to one schema merge as separate lines.
@@ -183,7 +190,13 @@ fn native_mutation_snapshot(operation: &str, schema: &Value) -> String {
 }
 
 #[test]
-pub(crate) fn native_mutation_surface_has_exact_operations_and_schemas() {
+fn native_mutation_surface_has_exact_operations_and_schemas() {
+    check_native_mutation_surface();
+}
+
+/// Изменяющие инструменты и их схемы совпадают со снимками
+/// `tests/fixtures/mutation-schemas` этого пакета.
+pub fn check_native_mutation_surface() {
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
 
@@ -290,7 +303,7 @@ pub(crate) fn native_mutation_surface_has_exact_operations_and_schemas() {
     assert!(
         problems.is_empty(),
         "mutating tool contract differs from tests/fixtures/mutation-schemas:\n{}\n\
-         If the change is intended, run `{UPDATE}=1 cargo test -p unica-coder --lib \
+         If the change is intended, run `{UPDATE}=1 cargo test -p unica-application --lib \
          native_mutation_surface_has_exact_operations_and_schemas` and review the snapshot diff.",
         problems.join("\n")
     );

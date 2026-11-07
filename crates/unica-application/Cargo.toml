@@ -21,6 +21,7 @@ unica-bsl = { path = "../unica-bsl" }
 unica-code-intelligence = { path = "../unica-code-intelligence" }
 unica-configuration = { path = "../unica-configuration" }
 unica-dcs = { path = "../unica-dcs" }
+unica-domain = { path = "../unica-domain" }
 unica-diagnostics = { path = "../unica-diagnostics" }
 unica-execution = { path = "../unica-execution" }
 unica-execution-contract = { path = "../unica-execution-contract" }

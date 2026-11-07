@@ -382,7 +382,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-application/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "// #[cfg(windows)] std::os::unix\n"
             "#[cfg(feature = \"windows\")]\n"
             "let text = \"cfg(unix) windows_sys\nstd::os::linux\";\n"
@@ -395,13 +395,13 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             diagnostics,
             [
-                "crates/unica-application/src/domain/project.rs:5: "
+                "crates/unica-domain/src/project.rs:5: "
                 "OS-specific cfg condition is outside a platform facade",
-                "crates/unica-application/src/domain/project.rs:6: "
+                "crates/unica-domain/src/project.rs:6: "
                 "OS-specific cfg condition is outside a platform facade",
-                "crates/unica-application/src/domain/project.rs:7: "
+                "crates/unica-domain/src/project.rs:7: "
                 "OS-specific cfg condition is outside a platform facade",
-                "crates/unica-application/src/domain/project.rs:8: "
+                "crates/unica-domain/src/project.rs:8: "
                 "OS-specific cfg condition is outside a platform facade",
             ],
         )
@@ -411,7 +411,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-application/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             r"fn inspect<'a>() { std::fs::read(path); rule.exists(); "
             r"let _ = crate::infrastructure::Store; #[cfg(windows)] let _ = 1; "
             r"let _: Option<&'a str> = None; let _ = ('x', '\n', '\u{41}', '\''); "
@@ -422,11 +422,11 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             diagnostics,
             [
-                "crates/unica-application/src/domain/project.rs:1: "
+                "crates/unica-domain/src/project.rs:1: "
                 "OS-specific cfg condition is outside a platform facade",
-                "crates/unica-application/src/domain/project.rs:1: "
+                "crates/unica-domain/src/project.rs:1: "
                 "domain must not reference crate::infrastructure",
-                "crates/unica-application/src/domain/project.rs:1: "
+                "crates/unica-domain/src/project.rs:1: "
                 "domain must not access std::fs directly",
             ],
         )
@@ -436,7 +436,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         domain_diagnostics = checker.check_source(
-            "crates/unica-application/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "use crate::application::Port;\n"
             "use crate::infrastructure::Store;\n"
             "use crate::interfaces::Cli;\n",
@@ -519,7 +519,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-application/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "let text = ::std::fs::read_to_string(path)?;\n"
             "use std::{env as environment, process};\n"
             "use std as rust_std;\n"
@@ -531,15 +531,15 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             diagnostics,
             [
-                "crates/unica-application/src/domain/project.rs:1: "
+                "crates/unica-domain/src/project.rs:1: "
                 "domain must not access std::fs directly",
-                "crates/unica-application/src/domain/project.rs:2: "
+                "crates/unica-domain/src/project.rs:2: "
                 "domain must not access std::env directly",
-                "crates/unica-application/src/domain/project.rs:2: "
+                "crates/unica-domain/src/project.rs:2: "
                 "domain must not access std::process directly",
-                "crates/unica-application/src/domain/project.rs:4: "
+                "crates/unica-domain/src/project.rs:4: "
                 "domain must not access std::fs directly",
-                "crates/unica-application/src/domain/project.rs:6: "
+                "crates/unica-domain/src/project.rs:6: "
                 "domain must not access std::env directly",
             ],
         )
@@ -549,7 +549,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-application/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "use std::path::Path as P;\n"
             "P::exists(path);\n"
             "use std::path::{Path as Q, PathBuf as PB};\n"
@@ -563,7 +563,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             diagnostics,
             [
-                f"crates/unica-application/src/domain/project.rs:{line}: "
+                f"crates/unica-domain/src/project.rs:{line}: "
                 f"domain must not call filesystem method .{method} directly"
                 for line, method in (
                     (2, "exists"),
@@ -580,7 +580,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-application/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "use std::path::{Path, PathBuf};\n"
             "rule.exists();\n"
             "aggregate.metadata();\n"
@@ -598,7 +598,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         diagnostics = checker.check_source(
-            "crates/unica-application/src/domain/project.rs",
+            "crates/unica-domain/src/project.rs",
             "// use std::fs; Path::exists(path);\n"
             "let text = \"std::env::current_dir Path::canonicalize(path)\";\n"
             "let raw = r#\"crate::infrastructure std::process::Command\"#;\n"
@@ -799,7 +799,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
     def test_cli_returns_nonzero_and_prints_diagnostics(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo_root = Path(temporary_directory)
-            source_path = repo_root / "crates/unica-application/src/domain/project.rs"
+            source_path = repo_root / "crates/unica-domain/src/project.rs"
             source_path.parent.mkdir(parents=True)
             source_path.write_text("let _ = std::fs::read(path);\n", encoding="utf-8")
             subprocess.run(["git", "init", "-q", str(repo_root)], check=True)
@@ -818,7 +818,7 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         self.assertEqual(
             result.stdout.splitlines(),
             [
-                "crates/unica-application/src/domain/project.rs:1: "
+                "crates/unica-domain/src/project.rs:1: "
                 "domain must not access std::fs directly"
             ],
         )

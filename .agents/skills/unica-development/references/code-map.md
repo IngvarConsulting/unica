@@ -9,7 +9,7 @@
 
 | Задача | Что читать сначала | Где менять код |
 | --- | --- | --- |
-| Слои `domain` и `application` | `crates/unica-application/src/`; `crate::application` и `crate::domain` в `unica-coder` — их переэкспорт |
+| Слои `domain` и `application` | `crates/unica-domain/src/`, `crates/unica-application/src/`; `crate::application` и `crate::domain` в `unica-coder` — их переэкспорт |
 | Публичный инструмент `unica.*` | `docs/tool-surface.md`, `crates/unica-coder/src/interfaces/mcp.rs`, `tests/fixtures/acceptance/` | Каталог `crates/unica-application/src/application/v13/tool_catalog.rs`, связывание `crates/unica-coder/src/infrastructure/daemon/v13_service.rs`, затронутый навык `plugins/unica/skills/<имя>/SKILL.md` |
 | Грамматика и возможности семейства операций | Дескрипторы и тесты своего семейства: `crates/unica-metadata/`, `unica-forms/`, `unica-roles/`, `unica-dcs/`, `unica-xdto/`, `unica-templates/`, `unica-bsl/` | Семейство владеет типизированным контрактом; общая регистрация — `crates/unica-operations/`, проверка схемы — `crates/unica-operation-contract/`, контекст адреса — `crates/unica-source-contract/src/context.rs` |
 | XML 1С, чтение или изменение представления | Нужная спецификация в `plugins/unica/references/specs/`, фикстуры и пакет своего семейства | Кодек `crates/unica-<семейство>-designer/`; общие layout и регистрация — `crates/unica-source-designer/`, XML-примитивы — `crates/unica-xml-format/` |
