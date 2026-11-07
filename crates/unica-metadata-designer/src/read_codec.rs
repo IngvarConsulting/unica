@@ -1,9 +1,14 @@
 //! Designer-кодек за портом чтения метаданных: разбор дескрипторов выгрузки
 //! Designer для [`MetadataReadCodec`].
-use serde_json::Value;
+use serde_json::{Map, Value};
+use std::path::Path;
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::read_codec::{
-    FunctionalOptionFacts, MetadataReadCodec, NumeratorFacts, ReadFinding,
+    ExchangeContentFacts, FunctionalOptionFacts, MetadataReadCodec, NumeratorFacts, ReadFinding,
+    ReadStopped,
 };
+use unica_metadata::style_color::StyleItemPropertiesObservation;
+use unica_metadata::wsdl::Definition;
 
 pub struct DesignerMetadataReadCodec;
 
@@ -50,6 +55,43 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
                 .collect(),
         })
     }
+
+    fn style_item(&self, descriptor: &[u8], payload: &mut Value) -> Result<(), String> {
+        crate::style_item_read::enrich_style_item(descriptor, payload)
+    }
+
+    fn style_properties(
+        &self,
+        descriptor: &str,
+        name: &str,
+        relative: &Path,
+    ) -> Result<StyleItemPropertiesObservation, String> {
+        crate::style_color::observe_properties(descriptor, name, relative)
+            .map_err(|issue| issue.to_string())
+    }
+
+    fn form_metadata(
+        &self,
+        descriptor: &[u8],
+        target: &MetadataAddress,
+    ) -> Result<(Map<String, Value>, Vec<String>), String> {
+        crate::form_metadata::parse_form_metadata_properties(descriptor, target)
+    }
+
+    fn exchange_content(&self, text: &str) -> Result<ExchangeContentFacts, String> {
+        crate::exchange_content::read_content(text).map(|observation| ExchangeContentFacts {
+            items: observation.items,
+            errors: observation.errors,
+        })
+    }
+
+    fn wsdl(
+        &self,
+        bytes: &[u8],
+        checkpoint: &mut dyn FnMut() -> Result<(), ReadStopped>,
+    ) -> Result<Definition, ReadStopped> {
+        crate::wsdl_read::read(bytes, checkpoint)
+    }
 }
 
 #[cfg(test)]
@@ -81,5 +123,25 @@ mod tests {
         assert_eq!(facts.unreadable.len(), 1);
         assert_eq!(facts.unreadable[0].field, "properties.NumberType");
         assert!(!facts.unreadable[0].message.is_empty());
+    }
+
+    #[test]
+    fn wsdl_read_stops_when_the_caller_stops_it() {
+        let mut calls = 0;
+        let read = DesignerMetadataReadCodec.wsdl(b"<definitions/>", &mut || {
+            calls += 1;
+            Err(ReadStopped)
+        });
+        assert!(matches!(read, Err(ReadStopped)));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn wsdl_read_describes_an_unreadable_document_instead_of_failing() {
+        let read = DesignerMetadataReadCodec.wsdl(b"not xml", &mut || Ok(()));
+        assert!(!read
+            .expect("an unreadable document is a fact")
+            .limits
+            .is_empty());
     }
 }

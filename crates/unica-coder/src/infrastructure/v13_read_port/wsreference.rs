@@ -21,7 +21,30 @@ impl ProviderReadAuthority {
             )
         } else {
             match self.read_optional_relative_with_checkpoint(&relative, checkpoint)? {
-                Some(bytes) => unica_metadata_designer::wsdl_read::read(&bytes, checkpoint)?,
+                Some(bytes) => {
+                    // Порт знает только сам факт остановки; её причину
+                    // `ViewError` хранит этот вызов.
+                    let mut stopped = None;
+                    let read = crate::infrastructure::family_codecs::metadata_read_codec().wsdl(
+                        &bytes,
+                        &mut || {
+                            checkpoint().map_err(|error| {
+                                stopped = Some(error);
+                                unica_metadata::read_codec::ReadStopped
+                            })
+                        },
+                    );
+                    match (read, stopped) {
+                        (Ok(definition), None) => definition,
+                        (_, Some(error)) => return Err(error),
+                        (Err(_), None) => {
+                            return Err(ViewError::new(
+                                RefusalCode::InvalidResult,
+                                "local WSDL read stopped without a checkpoint refusal",
+                            ))
+                        }
+                    }
+                }
                 None => unica_metadata::wsdl::Definition::unavailable(
                     "local WSDL companion WSDefinition.xml is absent; its declarations are unknown",
                 ),

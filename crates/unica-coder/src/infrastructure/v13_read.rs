@@ -283,11 +283,9 @@ impl<'a> LogicalViewReadAuthority<'a> {
             self.read.source_set_kind(),
         )
         .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
-        let observed =
-            unica_metadata_designer::style_color::observe_properties(text, name, &relative)
-                .map_err(|error| {
-                    ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
-                })?;
+        let observed = crate::infrastructure::family_codecs::metadata_read_codec()
+            .style_properties(text, name, &relative)
+            .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
         self.read_checkpoint()?;
         Ok(Some(observed))
     }
