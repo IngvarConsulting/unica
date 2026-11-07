@@ -84,16 +84,16 @@ def mentions(text: str, root: Path = ROOT) -> list[str]:
     return completed.stdout.split()
 
 
-def external_packages(lock: str) -> list[dict]:
-    """Записи `Cargo.lock` о внешних пакетах: у крейта рабочей области нет `source`."""
+def external_packages(lock: str, members: set[str]) -> list[dict]:
+    """Записи `Cargo.lock` обо всём, кроме членов рабочей области: путевой патч тоже внешний."""
     packages = tomllib.loads(lock).get("package", [])
-    return sorted((package for package in packages if "source" in package), key=lambda package: (package["name"], package["version"], package["source"]))
+    return sorted((package for package in packages if package["name"] not in members), key=lambda package: (package["name"], package["version"], package.get("source", "")))
 
 
-def lock_keeps_external(base: str, head: str, root: Path = ROOT) -> bool:
+def lock_keeps_external(base: str, head: str, members: set[str], root: Path = ROOT) -> bool:
     """Остались ли внешние зависимости прежними между двумя ревизиями."""
     locks = [subprocess.check_output(["git", "show", f"{revision}:Cargo.lock"], cwd=root, text=True, encoding="utf-8") for revision in (base, head)]
-    return external_packages(locks[0]) == external_packages(locks[1])
+    return external_packages(locks[0], members) == external_packages(locks[1], members)
 
 
 def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, set[str]] | None = None, *,
@@ -156,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         paths = subprocess.check_output(["git", "diff", "--name-only", "--no-renames", args.base, args.head, "--"], cwd=ROOT, text=True, encoding="utf-8", errors="replace").split("\n")
         directories, dependents = workspace()
         paths = [path for path in paths if path]
-        lock_is_internal = "Cargo.lock" in paths and lock_keeps_external(args.base, args.head)
+        lock_is_internal = "Cargo.lock" in paths and lock_keeps_external(args.base, args.head, set(directories.values()))
         choice = choose(paths, directories, dependents, force_full=os.environ.get("QUEUE_FULL_TESTS") == "true", lock_is_internal=lock_is_internal)
     except (subprocess.CalledProcessError, OSError, ValueError) as error:
         choice = Choice(True, (), f"выбор не определён: {error}")
