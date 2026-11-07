@@ -1,18 +1,21 @@
+pub use unica_application::application;
+pub use unica_domain as domain;
+
 // Признак `test-support` собирает тестовые помощники нижнего слоя для
 // крейтов над ним. Часть помощников нужна только собственным тестам, и в
 // такой сборке они не используются; неиспользуемое ловит сборка пакета без
 // признаков и сборка его тестов.
-#![cfg_attr(
+#[doc(hidden)]
+#[cfg_attr(
     all(feature = "test-support", not(test)),
     allow(dead_code, unused_imports)
 )]
-
-pub use unica_application::application;
-pub use unica_domain as domain;
-
-#[doc(hidden)]
 pub mod composition;
 #[doc(hidden)]
+#[cfg_attr(
+    all(feature = "test-support", not(test)),
+    allow(dead_code, unused_imports)
+)]
 pub mod infrastructure;
 pub mod interfaces;
 #[cfg(test)]
