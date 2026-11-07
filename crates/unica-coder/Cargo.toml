@@ -16,6 +16,7 @@ receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "u
 [dependencies]
 unica-application = { path = "../unica-application" }
 unica-daemon = { path = "../unica-daemon" }
+unica-lsp = { path = "../unica-lsp" }
 unica-bindings = { path = "../unica-bindings" }
 unica-adapter-lexical = { path = "../unica-adapter-lexical" }
 unica-adapter-bsl-analyzer = { path = "../unica-adapter-bsl-analyzer" }
@@ -84,7 +85,6 @@ regex.workspace = true
 regex-syntax.workspace = true
 tempfile.workspace = true
 url.workspace = true
-percent-encoding.workspace = true
 uuid.workspace = true
 # `flate2` кодом крейта не вызывается: она объявлена, чтобы `zip` получил
 # чистый Rust-backend для deflate вместо системного zlib и без `zopfli`

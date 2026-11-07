@@ -1,0 +1,25 @@
+[package]
+name = "unica-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[package.metadata.unica]
+component = "service"
+file-io = "owned"
+
+[dependencies]
+percent-encoding.workspace = true
+sha2.workspace = true
+unica-address = { path = "../unica-address" }
+unica-bsl = { path = "../unica-bsl" }
+unica-daemon = { path = "../unica-daemon" }
+unica-execution-contract = { path = "../unica-execution-contract" }
+unica-source-contract = { path = "../unica-source-contract" }
+unica-source-designer = { path = "../unica-source-designer" }
+unica-workspace = { path = "../unica-workspace" }
+url.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
