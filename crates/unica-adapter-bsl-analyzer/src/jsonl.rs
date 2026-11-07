@@ -19,6 +19,19 @@ use unica_diagnostics::stream_error::MISSING_START_MESSAGE;
 use unica_redaction::redactor;
 use unica_workspace::paths::normalize_path_identity;
 
+// resource-limit: bsl-analyzer.jsonl-line-bytes
+// class: format
+// unit: bytes
+// scope: line
+// value: 8388608
+// resource: Длина одной строки JSONL-потока диагностик анализатора BSL.
+// status: unproven
+// origin: #425
+// problem: неизвестно
+// on-reach: строка отклоняется с ошибкой потока LineTooLong, результат анализа не выдаётся как полный
+// decision: закреплено правилом
+// decision-date: 2026-09-22
+// decision-source: arch/rules/analysis/analyzer-jsonl-stream.md
 pub const MAX_DIAGNOSTICS_JSONL_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

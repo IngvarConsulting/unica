@@ -11,6 +11,16 @@ use unica_source_contract::workspace::WorkspaceContext;
 
 use crate::apply::{ApplyStagedState, ApplyStagingError};
 
+// resource-limit: workspace.cache-state-conflict-retries
+// class: retry
+// unit: count
+// scope: workspace
+// value: 64
+// resource: Число повторов атомарной публикации состояния кеша Unica при конфликте с параллельной публикацией.
+// status: unproven
+// origin: #266
+// problem: неизвестно
+// on-reach: ошибка «failed to atomically publish Unica cache state»
 pub(crate) const CACHE_STATE_CONFLICT_RETRIES: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

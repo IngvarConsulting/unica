@@ -59,12 +59,32 @@ pub const BSL_ANALYZER_PROVIDER: DiagnosticProviderId =
 
 pub const LIVE_DIAGNOSTIC_PROVIDERS: &[DiagnosticProviderId] = &[BSL_ANALYZER_PROVIDER];
 
+// resource-limit: diagnostics.default-limit
+// class: step
+// unit: count
+// scope: request
+// value: 200
+// resource: Число диагностик в ответе координатора диагностики, если limit не задан.
+// status: unproven
+// origin: коммит 9214a5e20 (provider-neutral domain model)
+// problem: неизвестно
+// on-reach: список усекается до limit, ответ помечен truncated: true с полным items_total
 pub const DIAGNOSTIC_LIMIT_DEFAULT: usize = 200;
 
 /// Budget for the resident actions that never resolve an `OperationalConfig`
 /// (INV-APP-CONFIG-SNAPSHOT): `findings`, `status` and `catalog` of the
 /// retired `code.diagnostics` surface. `analyze`, the action `check` runs,
 /// does not use it: without a configured timeout it has no deadline.
+// resource-limit: diagnostics.resident-action-budget
+// class: deadline
+// unit: ms
+// scope: request
+// value: 120000
+// resource: Срок резидентных действий диагностики findings, status и catalog без снимка настроек.
+// status: unproven
+// origin: коммит 2401f0e8f (localize mapping failures)
+// problem: неизвестно
+// on-reach: действие прерывается по сроку поставщика; analyze этим сроком не ограничен
 pub const DIAGNOSTIC_BUDGET_WITHOUT_CONFIG: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -4,11 +4,33 @@ use crate::domain::apply::SourceSetWriteSupport;
 use crate::domain::engine::MissingEngineRefusal;
 use unica_work_control::provider_deadline::ProviderDeadline;
 /// Потолок страницы ветви графа: объявленный максимум поверхности.
+// resource-limit: view.call-graph-initial-page
+// class: step
+// unit: count
+// scope: request
+// value: 50
+// resource: Число соседей первого запроса ветви callGraph, по которому определяется размер полной ветви.
+// status: unproven
+// origin: 7adeabd5e (#849)
+// problem: Первый ответ только задаёт размер запроса; усечённая ветвь не отдаётся пейджеру (комментарий complete_branch).
+// on-reach: Полная ветвь запрашивается повторно с точным лимитом; если число не представимо — отказ result_too_large.
 const CALL_GRAPH_PAGE_LIMIT: usize = 50;
 /// Ranked providers (`symbol`, `semantic`) accept a top-N request, but no
 /// offset, and a larger N is another answer rather than a longer one. Keep their
 /// public bound as the fetch window and page the returned evidence
 /// separately.
+// resource-limit: search.provider-fetch-matches
+// class: corpus
+// unit: count
+// scope: request
+// value: 200
+// resource: Окно совпадений, которое ранжирующие роли symbol и semantic получают от поставщика за запрос; буквальный поиск без роли окна не имеет.
+// status: unproven
+// origin: 022636d23 (#1029)
+// problem: API провайдера принимает top-N без смещения; окно выборки сохранено от прежней публичной границы (комментарий в v13_service.rs).
+// on-reach: Неполнота: секция сообщает limitReached и нижнюю оценку, предупреждение «Search returned 200 matches. Ask the user to narrow the query…»; хвост окна недоступен, курсор его не обещает.
+// issue: #1119
+// review: #1119: окно ролей symbol и semantic без продолжения — их API принимает top-N без смещения; буквальный поиск снят с окна в PR6 (#2079, #2095)
 const PROVIDER_SEARCH_FETCH_LIMIT: usize = 200;
 
 use super::server::text_search::{

@@ -23,6 +23,17 @@ use unica_work_control::cancellation::CancellationToken;
 
 /// Сколько неудачная загрузка глобального контекста ждёт следующей попытки:
 /// установку могут ещё дописывать.
+// resource-limit: lsp.platform-context-retry
+// class: retry
+// unit: ms
+// scope: daemon
+// value: 60000
+// resource: Ожидание перед новой загрузкой глобального контекста платформы после неудачной.
+// status: unproven
+// origin: #2578
+// problem: неизвестно
+// on-reach: до следующей попытки списки дополнения без членов платформы помечены неполными
+// issue: #2578
 const PLATFORM_CONTEXT_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 /// Глобальный контекст каждой установки платформы, загруженный один раз в

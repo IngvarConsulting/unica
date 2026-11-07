@@ -60,11 +60,31 @@ pub struct V8StdDocumentationProvider {
 /// Продовый срок жизни кеша поиска стандартов — как у kb-кешей: часы держат
 /// цену повторных запросов сессии около нуля, а протухание не переживает
 /// процесс. На диск не пишется ничего.
+// resource-limit: docs.v8std-search-cache-ttl
+// class: retention
+// unit: ms
+// scope: cache
+// value: 21600000
+// resource: Срок жизни записи кеша поиска по стандартам v8std в памяти процесса.
+// status: unproven
+// origin: #416
+// problem: повторные запросы сессии не идут в сеть, а протухание не переживает процесс
+// on-reach: запись истекает и вычищается, следующий запрос идёт в сеть
 pub const V8STD_SEARCH_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(6 * 60 * 60);
 
 /// Предел числа записей кеша поиска: поток уникальных запросов долгоживущего
 /// процесса не раздувает память — при переполнении вытесняется запись с
 /// ближайшим сроком, истёкшие вычищаются при каждой записи.
+// resource-limit: docs.v8std-search-cache-entries
+// class: retention
+// unit: count
+// scope: cache
+// value: 128
+// resource: Число записей кеша поиска по стандартам v8std в памяти процесса.
+// status: unproven
+// origin: #416
+// problem: поток уникальных запросов долгоживущего процесса не раздувает память
+// on-reach: вытесняется запись с ближайшим сроком
 pub(crate) const V8STD_SEARCH_CACHE_CAP: usize = 128;
 
 /// Ключ кеша поиска: endpoint, нормализованный запрос, лимит.

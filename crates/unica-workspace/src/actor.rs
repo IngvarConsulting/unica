@@ -108,6 +108,19 @@ fn run_apply_dry_run_after_confirmation_hook() {
 
 /// Idle interval after which an unowned actor without promised state releases its
 /// retained root descriptors.
+// resource-limit: workspace.warm-actor-ttl
+// class: retention
+// unit: ms
+// scope: workspace
+// value: 600000
+// resource: Интервал простоя, после которого незанятый актор рабочего пространства освобождает удержанные дескрипторы корня.
+// status: unproven
+// origin: коммит 3a59e82fd (bounded warm set of workspace actors)
+// problem: неизвестно
+// on-reach: актор без живого вызова и обещанного состояния освобождается, следующий вызов открывает корень заново
+// decision: закреплено правилом
+// decision-date: 2026-10-21
+// decision-source: arch/rules/workspace/actor-retention.md
 pub const WARM_WORKSPACE_ACTOR_TTL: Duration = Duration::from_secs(600);
 static APPLY_WRITER_AUTHORITY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 

@@ -18,9 +18,29 @@ use std::time::{Duration, Instant};
 use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_work_control::operation_deadline::OperationDeadline;
 
+// resource-limit: receipt.ledger-actor-queue
+// class: concurrency
+// unit: count
+// scope: daemon
+// value: 64
+// resource: Ёмкость очереди команд к актору журнала квитанций.
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: отправитель ждёт места в очереди до своего срока, затем DeadlineExceeded
 const RECEIPT_LEDGER_CHANNEL_CAPACITY: usize = 64;
 const READY: u8 = 0;
 const RECOVERY_REQUIRED: u8 = 1;
+// resource-limit: receipt.ledger-enqueue-retry
+// class: step
+// unit: ms
+// scope: daemon
+// value: 1
+// resource: Пауза перед повторной постановкой команды в заполненную очередь актора журнала квитанций.
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: попытки повторяются до срока операции, затем ReceiptLedgerError::DeadlineExceeded
 const ENQUEUE_RETRY_SLICE: Duration = Duration::from_millis(1);
 
 struct HeavyResultSlot {

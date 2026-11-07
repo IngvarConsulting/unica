@@ -96,6 +96,17 @@ pub struct Completion {
 }
 
 /// How deep a variable's type is followed through loops and assignments.
+// resource-limit: lsp.completion-inference-depth
+// class: step
+// unit: count
+// scope: request
+// value: 4
+// resource: Шаги, на которые дополнение прослеживает тип переменной через циклы и присваивания.
+// status: unproven
+// origin: #2578
+// problem: неизвестно
+// on-reach: тип не выводится, и членов объекта в списке нет
+// issue: #2578
 const MAX_INFERENCE_DEPTH: usize = 4;
 
 #[derive(Default)]

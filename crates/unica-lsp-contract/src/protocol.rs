@@ -9,16 +9,93 @@ use std::fmt;
 use uuid::Uuid;
 
 /// Длиннейший адрес документа или рабочей папки.
+// resource-limit: lsp.wire-uri-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 4096
+// resource: Длина адреса документа или рабочей папки в протоколе LSP демона.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: кадр отвергается ответом invalid_request
+// issue: #2173
 const MAX_LSP_URI_BYTES: usize = 4 * 1024;
 /// Длина пространства — сегмента адреса `unica://`.
+// resource-limit: lsp.wire-space-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 64
+// resource: Длина пространства — сегмента адреса unica:// — в ответе на открытие сессии LSP.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: ответ демона отвергается как нестрогий, initialize получает RequestFailed
+// issue: #2173
 const MAX_LSP_SPACE_BYTES: usize = 64;
 /// Рабочих папок у одного соединения.
+// resource-limit: lsp.wire-workspace-folders
+// class: corpus
+// unit: count
+// scope: session
+// value: 64
+// resource: Рабочих папок одной сессии LSP.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: открытие сессии отвергается ответом invalid_request
+// issue: #2173
 const MAX_LSP_WORKSPACE_FOLDERS: usize = 64;
+// resource-limit: lsp.wire-folder-name-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 1024
+// resource: Длина имени рабочей папки в протоколе LSP демона.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: кадр отвергается ответом invalid_request
+// issue: #2173
 const MAX_LSP_FOLDER_NAME_BYTES: usize = 1024;
+// resource-limit: lsp.wire-language-id-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 64
+// resource: Длина идентификатора языка документа в протоколе LSP демона.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: кадр отвергается ответом invalid_request
+// issue: #2173
 const MAX_LSP_LANGUAGE_ID_BYTES: usize = 64;
 /// Сообщение уведомления редактору.
+// resource-limit: lsp.wire-log-message-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 4096
+// resource: Длина текста уведомления демона редактору.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: ответ демона отвергается frontend как нестрогий, опрос уведомлений прекращается
+// issue: #2173
 const MAX_LSP_LOG_MESSAGE_BYTES: usize = 4 * 1024;
 /// Подпись элемента дополнения, который редактор возвращает на описание.
+// resource-limit: lsp.wire-completion-label-bytes
+// class: format
+// unit: count
+// scope: frame
+// value: 4096
+// resource: Подпись элемента дополнения, который редактор возвращает в `completionItem/resolve`.
+// status: unproven
+// origin: #2578
+// problem: неизвестно
+// on-reach: фронтенд возвращает элемент как пришёл, без описания
+// issue: #2578
 const MAX_LSP_COMPLETION_TEXT_BYTES: usize = 4 * 1024;
 
 /// Сессия LSP: выдаётся демоном на `lsp_open` и живёт, пока открыто

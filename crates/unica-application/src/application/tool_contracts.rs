@@ -2027,6 +2027,16 @@ fn has_non_empty_array_arg(args: &Map<String, Value>, key: &str) -> bool {
 /// Most names an unknown-argument error offers as a correction. A rejected
 /// argument rarely resembles more than a couple of accepted ones, and a longer
 /// list stops reading as a suggestion.
+// resource-limit: mcp.argument-suggestion-count
+// class: format
+// unit: count
+// scope: request
+// value: 3
+// resource: Число имён, которые отказ по неизвестному аргументу предлагает как исправление.
+// status: unproven
+// origin: 9bf43f2b1 (#276, #282)
+// problem: Длинный список перестаёт читаться как подсказка (комментарий в tool_contracts.rs).
+// on-reach: тихо: в отказ попадают только первые 3 похожих имени.
 const ARGUMENT_SUGGESTION_LIMIT: usize = 3;
 
 /// Renders the ` did you mean \`x\` or \`y\`?` fragment, or an empty string when

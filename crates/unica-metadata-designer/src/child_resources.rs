@@ -1267,4 +1267,14 @@ impl TypedChildTreeError {
 
 pub type TypedChildTree = (Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>);
 
+// resource-limit: metadata.child-tree-depth
+// class: format
+// unit: depth
+// scope: traversal
+// value: 64
+// resource: Глубина обхода дерева дочерних ресурсов объекта метаданных.
+// status: unproven
+// origin: #309
+// problem: неизвестно
+// on-reach: отказ ProviderUnavailable «typed child resource topology is unavailable»
 const TYPED_CHILD_TREE_MAX_DEPTH: usize = 64;
