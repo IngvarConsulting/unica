@@ -12,7 +12,7 @@ ZCode prefers its native manifest rather than loading a second plugin.
 
 ## Public installation
 
-Prerequisites are Git and one host: Codex CLI, Claude Code 2.1.69 or newer,
+Prerequisites are Git 2.31 or newer (2.46 or newer for a partial clone) and one host: Codex CLI, Claude Code 2.1.69 or newer,
 or ZCode Desktop with native plugin support (the integration contract targets 3.14.4).
 Node.js, Python, download utilities, and archive utilities are not consumer
 dependencies.
