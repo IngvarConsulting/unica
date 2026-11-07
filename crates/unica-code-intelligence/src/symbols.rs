@@ -186,6 +186,16 @@ fn manager_method(path: &NamePath) -> Option<Target> {
 
 /// The most threads one reference search parses candidate modules on; the
 /// rest of the machine stays with the agent's calls.
+// resource-limit: symbols.reference-parse-threads
+// class: concurrency
+// unit: count
+// scope: request
+// value: 8
+// resource: Наибольшее число потоков, на которых один поиск ссылок разбирает модули-кандидаты.
+// status: unproven
+// origin: #2190
+// problem: неизвестно
+// on-reach: разбор идёт на меньшем числе потоков; остальные ядра остаются вызовам MCP
 pub const MAX_REFERENCE_PARSE_THREADS: usize = 8;
 
 /// The target's uses in each module text, the texts parsed in parallel.

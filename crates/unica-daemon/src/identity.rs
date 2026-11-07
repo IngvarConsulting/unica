@@ -33,6 +33,16 @@ const SPAWN_LOCK_NAME: &str = ".daemon-spawn.lock";
 /// its frontend learns the cause.
 const STARTUP_FAILURE_FILE_NAME: &str = "startup-failure.txt";
 /// Upper bound of the recorded reason; a longer one is cut at a character.
+// resource-limit: daemon.startup-failure-reason-bytes
+// class: retention
+// unit: bytes
+// scope: record
+// value: 2048
+// resource: Длина причины аварийного старта демона, записываемой в startup-failure.txt.
+// status: unproven
+// origin: #1360 (#1377)
+// problem: неизвестно
+// on-reach: тихо: причина обрезается по границе символа
 const MAX_STARTUP_FAILURE_REASON_BYTES: usize = 2_048;
 
 /// The one daemon wire protocol this core speaks; it names the state
@@ -635,6 +645,16 @@ impl Drop for SpawnLock {
 
 const STARTUP_FAILURE_PID_PREFIX: &str = "pid=";
 const STARTUP_FAILURE_STAGE_PREFIX: &str = ".startup-failure.";
+// resource-limit: daemon.startup-failure-record-bytes
+// class: format
+// unit: bytes
+// scope: record
+// derived: true
+// resource: Размер записи о причине аварийного старта демона: pid, перевод строки и причина.
+// status: unproven
+// origin: #1360 (#1377)
+// problem: неизвестно
+// on-reach: тихо: запись большего размера не читается, причина аварии не сообщается
 const MAX_STARTUP_FAILURE_RECORD_BYTES: usize =
     STARTUP_FAILURE_PID_PREFIX.len() + 10 + 1 + MAX_STARTUP_FAILURE_REASON_BYTES;
 

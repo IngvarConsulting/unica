@@ -5,6 +5,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use unica_execution::invocation_store::ToolIdentity;
 
+// resource-limit: daemon.task-wait-ms
+// class: deadline
+// unit: ms
+// scope: request
+// value: 7000
+// resource: Наибольшее окно ожидания прямого ответа канонического вызова (response budget) до передачи в задание.
+// status: unproven
+// origin: 88b99b0e0
+// problem: неизвестно
+// on-reach: Отказ проверки запроса «canonical invocation response budget must be within 0..=7000 ms».
+// decision: закреплено правилом
+// decision-date: 2026-10-21
+// decision-source: arch/rules/runtime/invocation-handoff.md
 pub(crate) const MAX_TASK_WAIT_MS: u64 = 7_000;
 
 /// One canonical v0.13 call submitted to the daemon. Raw arguments exist only

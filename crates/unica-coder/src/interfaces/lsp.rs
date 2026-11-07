@@ -27,18 +27,73 @@ use unica_lsp_contract::protocol::{
 use unica_lsp_contract::protocol::{V5LspCompletionData, V5LspCompletionItem, V5LspCompletionKind};
 
 /// Бюджет запроса на полосе демона.
+// resource-limit: lsp.call-budget
+// class: deadline
+// unit: ms
+// scope: request
+// value: 5000
+// resource: Бюджет одного запроса редактора на полосе LSP демона.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: редактор получает ошибку RequestFailed с кодом unica: lsp_deadline_exceeded, работа запроса отменяется
+// issue: #2173
 const LSP_CALL_BUDGET: Duration = Duration::from_secs(5);
 /// Запас на обмен поверх бюджета запроса.
 const LSP_EXCHANGE_MARGIN: Duration = Duration::from_secs(1);
 /// Срок обмена сессии: открытие, уведомление, закрытие.
 /// Above the daemon's own budget for these steps (7 s), so the daemon
 /// answers, even with a refusal, before the frontend gives up.
+// resource-limit: lsp.session-exchange-timeout
+// class: deadline
+// unit: ms
+// scope: session
+// value: 8000
+// resource: Срок обмена сессии LSP с демоном: открытие, уведомление о документе, закрытие.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: initialize отвечает RequestFailed; сбой уведомления завершает `unica lsp` с кодом 1
+// issue: #2173
 const LSP_SESSION_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(8);
 /// Ожидание уведомлений демона одним опросом.
+// resource-limit: lsp.poll-wait
+// class: deadline
+// unit: ms
+// scope: request
+// value: 2000
+// resource: Ожидание уведомлений демона одним опросом frontend LSP.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: опрос возвращает пустой список и повторяется
+// issue: #2173
 const LSP_POLL_WAIT_MS: u64 = 2_000;
 /// Подряд неудавшихся опросов, после которых сессия считается потерянной.
+// resource-limit: lsp.poll-failures
+// class: retry
+// unit: count
+// scope: session
+// value: 3
+// resource: Подряд потерянных обменов опроса уведомлений, после которых frontend LSP считает сессию потерянной.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: `unica lsp` пишет причину в stderr и завершается с кодом 1; редактор перезапускает сервер
+// issue: #2173
 const MAX_LSP_POLL_FAILURES: u32 = 3;
 /// Запросов редактора, ждущих ответа демона.
+// resource-limit: lsp.frontend-requests-in-flight
+// class: concurrency
+// unit: count
+// scope: session
+// value: 32
+// resource: Запросов редактора, одновременно ждущих ответа демона в одном соединении LSP.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: новый запрос сразу получает RequestFailed с кодом unica: lsp_busy
+// issue: #2173
 const MAX_LSP_REQUESTS_IN_FLIGHT: usize = 32;
 
 const PARSE_ERROR: i64 = -32700;

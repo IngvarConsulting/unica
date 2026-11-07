@@ -26,7 +26,27 @@ use unica_execution_contract::invocation::DomainResult;
 use unica_navigation::result_store::{SearchCursorBinding, SearchCursorStore};
 use unica_refusal::RefusalCode;
 
+// resource-limit: search.page-max-entries
+// class: step
+// unit: count
+// scope: request
+// value: 50
+// resource: Наибольшее число совпадений одной страницы search.
+// status: unproven
+// origin: 4b1576452 (#1261)
+// problem: неизвестно
+// on-reach: Отказ проверки аргумента limit до исполнения поиска.
 const MAX_SEARCH_LIMIT: usize = 50;
+// resource-limit: search.page-default-entries
+// class: step
+// unit: count
+// scope: request
+// value: 20
+// resource: Число совпадений страницы search, когда limit не задан.
+// status: unproven
+// origin: 4b1576452 (#1261)
+// problem: неизвестно
+// on-reach: Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.
 const DEFAULT_SEARCH_LIMIT: usize = 20;
 
 /// Refuses a search call that its arguments already decide, without reading

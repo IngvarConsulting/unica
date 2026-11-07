@@ -32,6 +32,16 @@ pub(crate) struct GitIndexEntry {
     pub(crate) mode: Option<String>,
 }
 
+// resource-limit: project-health.ambiguous-owner-reason-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 512
+// resource: Длина текста причины о неоднозначном владельце пути в проверке здоровья проекта.
+// status: unproven
+// origin: коммит 8f45a9c4d (bound staged repository health)
+// problem: неизвестно
+// on-reach: тихо: вместо перечня имён наборов выводится сокращённая причина
 const MAX_AMBIGUOUS_OWNER_REASON_BYTES: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

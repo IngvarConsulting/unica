@@ -2,6 +2,16 @@ use unica_xml_format::names::xml_ncname_is_valid;
 
 /// The compatibility adapter's existing bound is in UTF-8 bytes. Keeping it
 /// also keeps previously accepted ASCII names and their size limit unchanged.
+// resource-limit: run.source-set-name-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 64
+// resource: Длина имени набора исходников в байтах UTF-8 для pull, push и make.
+// status: unproven
+// origin: 4ca23b37d (#1098)
+// problem: Сохраняет прежнюю границу адаптера совместимости и уже принятые ASCII-имена (комментарий в v13_source_set_name.rs).
+// on-reach: Имя считается недопустимым; отказ с подсказкой о форме имени sourceSet.
 const MAX_SOURCE_SET_NAME_BYTES: usize = 64;
 
 pub(super) fn source_set_name_guidance(operation: &str) -> String {

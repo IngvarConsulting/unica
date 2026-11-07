@@ -68,6 +68,18 @@ pub(crate) struct FormValidationInput {
 
 /// Size from which `Configuration.xml` is parsed by the streaming route. It
 /// chooses a parser, not a refusal: every size is read (#1119).
+// resource-limit: view.configuration-streaming-threshold-bytes
+// class: step
+// unit: bytes
+// scope: file
+// value: 8388608
+// resource: Размер Configuration.xml, с которого корень разбирается потоковым путём вместо полного дерева.
+// status: unproven
+// origin: bbf0a901e
+// problem: неизвестно
+// on-reach: Выбор разборщика, а не отказ: больший файл читается потоком (#1130), меньший — полным деревом с кешем корня.
+// issue: #1119
+// evidence: Замер 25.10.2026: в выгрузке УТ 11 больше 8 МиБ только два XML — служебный ConfigDumpInfo.xml (16 480 480 байт, не узел и не в индексе Git) и табличный макет MXL (9 537 408 байт), который читается без этого предела; дескрипторов, форм и макетов СКД больше 8 МиБ нет.
 const CONFIGURATION_STREAMING_THRESHOLD_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Один разбор дескриптора объекта: свойства и заимствование из тех же байтов.

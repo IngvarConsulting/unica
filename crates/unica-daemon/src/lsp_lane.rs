@@ -19,10 +19,43 @@ use unica_lsp_contract::protocol::{
 use unica_work_control::cancellation::CancellationToken;
 
 /// Исполнителей LSP. Узкая полоса оставляет процессор вызовам MCP.
+// resource-limit: lsp.lane-workers
+// class: concurrency
+// unit: count
+// scope: daemon
+// value: 2
+// resource: Исполнителей полосы LSP в демоне.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: следующие запросы ждут в очереди полосы; вызовы MCP эту очередь не проходят
+// issue: #2173
 pub const MAX_LSP_LANE_WORKERS: usize = 2;
 /// Запросов, ждущих исполнителя, на весь демон.
+// resource-limit: lsp.lane-queue
+// class: concurrency
+// unit: count
+// scope: daemon
+// value: 64
+// resource: Запросов LSP, ждущих исполнителя, на весь демон.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: новый запрос получает отказ busy (RequestFailed unica: lsp_busy)
+// issue: #2173
 pub const LSP_LANE_QUEUE_CAPACITY: usize = 64;
 /// Отмен, пришедших раньше своего запроса, на одну сессию.
+// resource-limit: lsp.early-cancellations
+// class: retention
+// unit: count
+// scope: session
+// value: 256
+// resource: Отмен, пришедших раньше своего запроса, которые помнит сессия LSP.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: память ранних отмен очищается; запрос, отменённый раньше, исполняется, но редактор уже получил RequestCancelled
+// issue: #2173
 const MAX_EARLY_CANCELLATIONS: usize = 256;
 
 pub struct LspLane {

@@ -9,8 +9,28 @@ use unica_navigation::result_store::{ViewCursorBinding, ViewCursorError, ViewCur
 use unica_refusal::{RefusalCode, RefusalDetail};
 
 /// Diagnostics on one check page when `limit` is omitted.
+// resource-limit: check.page-default-entries
+// class: step
+// unit: count
+// scope: request
+// value: 20
+// resource: Число диагностик страницы check, когда limit не задан: находок узла или групп корневого вердикта.
+// status: unproven
+// origin: #1119 (9c)
+// problem: неизвестно
+// on-reach: Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.
 pub const DEFAULT_CHECK_LIMIT: usize = 20;
 /// The largest `limit` a check page accepts.
+// resource-limit: check.page-max-entries
+// class: step
+// unit: count
+// scope: request
+// value: 50
+// resource: Наибольшее число диагностик одной страницы check.
+// status: unproven
+// origin: #1119 (9c)
+// problem: неизвестно
+// on-reach: limit больше 50 получает bad_value; остаток доступен по cursor.
 pub const MAX_CHECK_LIMIT: usize = 50;
 
 /// Renders one page of a check result from its diagnostics, continuation

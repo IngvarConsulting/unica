@@ -3,6 +3,19 @@ use unica_execution::invocation_store_v5::V5SafeFailureReason;
 use unica_execution_contract::invocation::{DomainResult, InvocationStatus, TaskId};
 use unica_refusal::{RefusalCode, RefusalDetail};
 
+// resource-limit: task-tools.result-wait-ms
+// class: deadline
+// unit: ms
+// scope: request
+// value: 7000
+// resource: Наибольшее и стандартное ожидание waitMs в совместимом unica.task.result.
+// status: unproven
+// origin: коммит 850507d1c (feat(mcp): emulate tasks for clients without the extension)
+// problem: неизвестно
+// on-reach: waitMs больше 7000 отвергается; по истечении ожидания возвращается текущее состояние задания
+// decision: закреплено правилом CTR.WIRE.COMPATIBILITY-TASK-TOOLS
+// decision-date: 2026-09-22
+// decision-source: arch/rules/mcp/compatibility-task-observation.md
 pub(crate) const DEFAULT_TASK_RESULT_WAIT_MS: u64 = 7_000;
 
 #[derive(Debug)]
