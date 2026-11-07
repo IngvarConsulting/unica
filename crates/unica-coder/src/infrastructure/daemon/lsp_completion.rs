@@ -5,6 +5,7 @@
 use crate::infrastructure::v13_large_configuration::RegistrationIndex;
 use crate::infrastructure::v13_read::LogicalViewReadAuthority;
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
+use std::cell::{Cell, OnceCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -17,6 +18,8 @@ use unica_code_intelligence::completion::{
 use unica_documentation_sources::platform_help::provider::{
     global_context_members, GlobalContextMemberKind,
 };
+use unica_execution_contract::view_error::ViewError;
+use unica_work_control::cancellation::CancellationToken;
 
 /// Сколько неудачная загрузка глобального контекста ждёт следующей попытки:
 /// установку могут ещё дописывать.
@@ -44,10 +47,13 @@ impl PlatformContexts {
         match loaded.get(root) {
             Some(PlatformContext::Ready(members)) => return Some(Arc::clone(members)),
             Some(PlatformContext::Loading) => return None,
+            // Help that failed to load has nothing to wait for until the
+            // retry: the list is whole without it, so the editor does not ask
+            // again on every keystroke.
             Some(PlatformContext::Unavailable(at))
                 if at.elapsed() < PLATFORM_CONTEXT_RETRY_DELAY =>
             {
-                return None
+                return Some(Arc::from(Vec::new()))
             }
             Some(PlatformContext::Unavailable(_)) | None => {}
         }
@@ -84,6 +90,11 @@ impl PlatformContexts {
     pub(super) fn ready_for_test(&self, root: PathBuf, members: Vec<PlatformMember>) {
         lock(&self.loaded).insert(root, PlatformContext::Ready(Arc::from(members)));
     }
+
+    #[cfg(test)]
+    pub(super) fn loading_for_test(&self, root: PathBuf) {
+        lock(&self.loaded).insert(root, PlatformContext::Loading);
+    }
 }
 
 /// What completion of one module knows beyond its text, read as the session
@@ -92,11 +103,45 @@ pub(super) struct SessionSources<'a> {
     pub(super) source_set: &'a str,
     /// The module being edited.
     pub(super) module: &'a str,
-    pub(super) registrations: Option<Arc<RegistrationIndex>>,
+    /// Read on the first question about metadata names.
+    pub(super) registrations: OnceCell<Option<Arc<RegistrationIndex>>>,
     pub(super) descriptors: ProviderReadAuthority,
     pub(super) view: LogicalViewReadAuthority<'a>,
     pub(super) platform: Arc<[PlatformMember]>,
-    pub(super) cancelled: &'a dyn Fn() -> bool,
+    pub(super) cancellation: &'a CancellationToken,
+    /// A source failed to answer: the list lacks what it would have given.
+    pub(super) missed: Cell<bool>,
+}
+
+impl SessionSources<'_> {
+    /// Whether some source failed to answer this request.
+    pub(super) fn missed(&self) -> bool {
+        self.missed.get()
+    }
+
+    fn checkpoint(&self) -> Result<(), ViewError> {
+        if self.cancellation.is_cancelled() {
+            Err(ViewError::new(
+                unica_refusal::RefusalCode::Cancelled,
+                "completion was cancelled",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn registrations(&self) -> Option<&Arc<RegistrationIndex>> {
+        self.registrations
+            .get_or_init(|| {
+                let read = self
+                    .descriptors
+                    .artifacts()
+                    .registrations(self.descriptors.retained_root(), &|| self.checkpoint());
+                self.missed.set(self.missed.get() || read.is_err());
+                read.ok()
+            })
+            .as_ref()
+    }
 }
 
 impl CompletionSources for SessionSources<'_> {
@@ -105,24 +150,33 @@ impl CompletionSources for SessionSources<'_> {
     }
 
     fn metadata_names(&self, kind: &str) -> Vec<String> {
-        self.registrations
-            .as_ref()
-            .and_then(|index| index.names_for_kind(kind, &|| Ok(())).ok())
-            .unwrap_or_default()
+        let Some(index) = self.registrations() else {
+            return Vec::new();
+        };
+        let names = index.names_for_kind(kind, &|| self.checkpoint());
+        self.missed.set(self.missed.get() || names.is_err());
+        names.unwrap_or_default()
     }
 
     fn common_module_text(&self, name: &str) -> Option<String> {
         let module =
             QualifiedAddress::parse(&format!("{}:CommonModule.{name}", self.source_set)).ok()?;
-        self.view.module_text(&module).ok()
+        let text = self.view.module_text(&module);
+        self.missed.set(self.missed.get() || text.is_err());
+        text.ok()
     }
 
     fn object_members(&self, kind: &str, name: &str) -> Option<ObjectMembers> {
         let target =
             MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
                 .ok()?;
-        let descriptor = self.descriptors.metadata_descriptor(&target).ok()?;
-        object_members(std::str::from_utf8(&descriptor).ok()?)
+        let members = self
+            .descriptors
+            .metadata_descriptor(&target)
+            .ok()
+            .and_then(|descriptor| object_members(std::str::from_utf8(&descriptor).ok()?));
+        self.missed.set(self.missed.get() || members.is_none());
+        members
     }
 
     fn module_owner(&self) -> Option<ModuleOwner> {
@@ -130,7 +184,7 @@ impl CompletionSources for SessionSources<'_> {
     }
 
     fn cancelled(&self) -> bool {
-        (self.cancelled)()
+        self.cancellation.is_cancelled()
     }
 }
 

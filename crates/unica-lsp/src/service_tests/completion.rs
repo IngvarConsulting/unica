@@ -24,7 +24,7 @@ impl LspCompletion for ScriptedCompletion {
     fn complete(
         &self,
         request: LspCompletionRequest<'_>,
-        _: &dyn Fn() -> bool,
+        _: &unica_work_control::cancellation::CancellationToken,
     ) -> Result<LspCompletionAnswer, V5LspFailure> {
         self.asked.lock().unwrap().push((
             request.module.to_owned(),
@@ -60,7 +60,7 @@ impl LspCompletion for ScriptedCompletion {
                 ],
                 replaces: typed..request.offset,
             }),
-            platform_ready: !self.platform_loading.load(Ordering::Acquire),
+            complete: !self.platform_loading.load(Ordering::Acquire),
         })
     }
 
@@ -70,6 +70,7 @@ impl LspCompletion for ScriptedCompletion {
         _: &str,
         module: &str,
         method: &CompletionMethod,
+        _: &unica_work_control::cancellation::CancellationToken,
     ) -> Option<String> {
         (module == "main:CommonModule.Main" && method.name == "Пересчитать")
             .then(|| "Пересчитывает строки.".to_owned())

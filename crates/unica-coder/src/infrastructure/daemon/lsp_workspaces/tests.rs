@@ -667,3 +667,48 @@ fn completion_offers_common_module_exports_and_the_platform_context() {
     );
     assert!(names.iter().any(|item| item.label == "Other"), "{names:?}");
 }
+
+/// rule: INV.LSP.PARTIAL-ANSWERS
+#[test]
+fn completion_is_incomplete_while_the_platform_context_loads() {
+    let workspace = diagnosed_workspace();
+    let workspaces = Arc::new(
+        ProductLspWorkspaces::new(
+            Arc::new(crate::infrastructure::source_workspace::actor_registry()),
+            Arc::new(super::super::v13_service::CanonicalV13ReadService::default()),
+        )
+        .with_platform_loading_for_test(workspace.path().join("platform")),
+    );
+    let host = UnicaLspHost::new(workspaces);
+    let editor = V5LspSessionId::new();
+    host.open(
+        &editor,
+        &[folder(workspace.path(), "Work")],
+        client(),
+        soon(),
+    )
+    .unwrap();
+
+    let outcome = ask(
+        &host,
+        &editor,
+        V5LspCall::Completion {
+            uri: BODY_URI.into(),
+            position: unica_lsp_contract::protocol::V5LspPosition {
+                line: 0,
+                character: 0,
+            },
+        },
+    );
+
+    assert!(
+        matches!(
+            outcome,
+            V5LspOutcome::CompletionList {
+                incomplete: true,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+}

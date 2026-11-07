@@ -813,7 +813,14 @@ fn completion_item(params: &Value) -> Option<V5LspCompletionItem> {
         sort_text: text("sortText").unwrap_or_default(),
         detail: text("detail"),
         documentation: None,
-        text_edit: None,
+        // Some editors put the resolved item in place of the offered one: it
+        // keeps the range it replaces.
+        text_edit: params.get("textEdit").and_then(|edit| {
+            Some(unica_lsp_contract::protocol::V5LspTextEdit {
+                range: serde_json::from_value(edit.get("range")?.clone()).ok()?,
+                new_text: edit.get("newText")?.as_str()?.to_owned(),
+            })
+        }),
         data: Some(V5LspCompletionData {
             uri: data.get("unicaDocument")?.as_str()?.to_owned(),
             method: data.get("method")?.as_str()?.to_owned(),

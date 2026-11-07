@@ -70,6 +70,14 @@ impl ProductLspWorkspaces {
         self.installation = Arc::new(move |_| Some(root.clone()));
         self
     }
+
+    /// A fixed installation whose global context is still loading.
+    #[cfg(test)]
+    pub(super) fn with_platform_loading_for_test(mut self, root: std::path::PathBuf) -> Self {
+        self.platform.loading_for_test(root.clone());
+        self.installation = Arc::new(move |_| Some(root.clone()));
+        self
+    }
 }
 
 impl LspWorkspaces for ProductLspWorkspaces {
@@ -226,7 +234,6 @@ impl ProductCompletion {
         module: &'a str,
         platform: Arc<[PlatformMember]>,
         cancellation: &'a CancellationToken,
-        cancelled: &'a dyn Fn() -> bool,
     ) -> Result<SessionSources<'a>, V5LspFailure> {
         let (actor, binding, artifacts) = self.space.bound(source_set)?;
         let profile = bsl_profile_for_source(binding.source_profile())
@@ -239,9 +246,6 @@ impl ProductCompletion {
             .space
             .saved_read(binding)
             .with_artifacts(Arc::clone(&artifacts));
-        let registrations = artifacts
-            .registrations(descriptors.retained_root(), &|| Ok(()))
-            .ok();
         let view = LogicalViewReadAuthority::with_read_authority_and_registration_cache(
             cancellation,
             self.space.saved_read(binding).with_documents(documents),
@@ -252,11 +256,12 @@ impl ProductCompletion {
         Ok(SessionSources {
             source_set,
             module,
-            registrations,
+            registrations: std::cell::OnceCell::new(),
             descriptors,
             view,
             platform,
-            cancelled,
+            cancellation,
+            missed: std::cell::Cell::new(false),
         })
     }
 }
@@ -265,25 +270,21 @@ impl LspCompletion for ProductCompletion {
     fn complete(
         &self,
         request: LspCompletionRequest<'_>,
-        cancelled: &dyn Fn() -> bool,
+        cancellation: &CancellationToken,
     ) -> Result<LspCompletionAnswer, V5LspFailure> {
         let platform = self.platform();
-        let cancellation = CancellationToken::new();
         let sources = self.sources(
             request.session,
             request.source_set,
             request.module,
             platform.clone().unwrap_or_else(|| Arc::from(Vec::new())),
-            &cancellation,
-            cancelled,
+            cancellation,
         )?;
+        let completion =
+            unica_code_intelligence::completion::completion(request.text, request.offset, &sources);
         Ok(LspCompletionAnswer {
-            completion: unica_code_intelligence::completion::completion(
-                request.text,
-                request.offset,
-                &sources,
-            ),
-            platform_ready: platform.is_some(),
+            complete: platform.is_some() && !sources.missed(),
+            completion,
         })
     }
 
@@ -293,17 +294,16 @@ impl LspCompletion for ProductCompletion {
         source_set: &str,
         module: &str,
         method: &CompletionMethod,
+        cancellation: &CancellationToken,
     ) -> Option<String> {
         use unica_code_intelligence::completion::CompletionSources;
-        let cancellation = CancellationToken::new();
         let sources = self
             .sources(
                 session,
                 source_set,
                 module,
                 Arc::from(Vec::new()),
-                &cancellation,
-                &|| false,
+                cancellation,
             )
             .ok()?;
         let text = match &method.common_module {

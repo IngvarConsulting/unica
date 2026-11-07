@@ -8,6 +8,7 @@
 
 use unica_code_intelligence::completion::{Completion, CompletionMethod};
 use unica_lsp_contract::protocol::V5LspFailure;
+use unica_work_control::cancellation::CancellationToken;
 
 /// Вопрос о месте ввода в модуле.
 #[derive(Debug, Clone, Copy)]
@@ -23,22 +24,24 @@ pub struct LspCompletionRequest<'a> {
     pub offset: usize,
 }
 
-/// Кандидаты и то, готов ли глобальный контекст платформы.
+/// Кандидаты и полнота списка.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LspCompletionAnswer {
     /// `None` — в этом месте дополнения нет (комментарий, строка).
     pub completion: Option<Completion>,
-    /// `false`, пока члены глобального контекста ещё грузятся: список
-    /// неполон, и редактор переспросит.
-    pub platform_ready: bool,
+    /// `false`, пока источник не готов (глобальный контекст грузится) или
+    /// не ответил (метаданные не прочитались): список неполон, и редактор
+    /// переспросит.
+    pub complete: bool,
 }
 
 /// Служба дополнения допущенной рабочей области. Реализует продукт.
 pub trait LspCompletion: Send + Sync {
+    /// Чтения источников прерываются, как только `cancellation` отменён.
     fn complete(
         &self,
         request: LspCompletionRequest<'_>,
-        cancelled: &dyn Fn() -> bool,
+        cancellation: &CancellationToken,
     ) -> Result<LspCompletionAnswer, V5LspFailure>;
 
     /// Описание метода, который называет элемент: из этого модуля или из
@@ -49,5 +52,6 @@ pub trait LspCompletion: Send + Sync {
         source_set: &str,
         module: &str,
         method: &CompletionMethod,
+        cancellation: &CancellationToken,
     ) -> Option<String>;
 }

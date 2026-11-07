@@ -329,7 +329,7 @@ impl LspHost for UnicaLspHost {
                 completion_answer(&session, &uri, position, context).unwrap_or_else(failed)
             }
             V5LspCall::CompletionResolve { item } => V5LspOutcome::CompletionItem {
-                item: Box::new(resolve_item(&read(&session), *item)),
+                item: Box::new(resolve_item(&session, *item, context)),
             },
             call => {
                 let session = read(&session);
@@ -828,6 +828,7 @@ fn completion_answer(
             },
         )
         .map_err(|_| V5LspFailure::DocumentUnknown)?;
+    let cancellation = CancellationToken::observing(context.cancellation_signal());
     let answer = asked.completion.complete(
         LspCompletionRequest {
             session: &asked.session,
@@ -836,7 +837,7 @@ fn completion_answer(
             text: &asked.text,
             offset,
         },
-        &|| context.is_cancelled(),
+        &cancellation,
     )?;
     if cancelled(context) {
         return Ok(V5LspOutcome::Cancelled {});
@@ -888,37 +889,49 @@ fn completion_answer(
         })
         .collect();
     Ok(V5LspOutcome::CompletionList {
-        incomplete: !answer.platform_ready,
+        incomplete: !answer.complete,
         items,
     })
 }
 
 /// `completionItem/resolve`: the description of the method an item names,
 /// found in the document the item came from. An item the service did not
-/// give, or of a document no longer open here, comes back as it was.
-fn resolve_item(session: &Session, mut item: V5LspCompletionItem) -> V5LspCompletionItem {
+/// give, or of a document no longer open here, comes back as it was. The
+/// description is read without the session's lock.
+fn resolve_item(
+    session: &RwLock<Session>,
+    mut item: V5LspCompletionItem,
+    context: &LspCallContext,
+) -> V5LspCompletionItem {
     let Some(data) = &item.data else {
         return item;
     };
-    let Ok(location) = session.documents.locate(&data.uri) else {
-        return item;
+    let asked = {
+        let session = read(session);
+        let Ok(location) = session.documents.locate(&data.uri) else {
+            return item;
+        };
+        let (Some(space), Some(module)) = (
+            session.spaces.get(&location.document.space),
+            location.document.address.strip_suffix(BODY),
+        ) else {
+            return item;
+        };
+        (
+            Arc::clone(&space.completion),
+            session.documents.session().to_owned(),
+            location.source_set,
+            module.to_owned(),
+        )
     };
-    let (Some(space), Some(module)) = (
-        session.spaces.get(&location.document.space),
-        location.document.address.strip_suffix(BODY),
-    ) else {
-        return item;
-    };
+    let (completion, session, source_set, module) = asked;
     let method = CompletionMethod {
         name: data.method.clone(),
         common_module: data.common_module.clone(),
     };
-    item.documentation = space.completion.describe(
-        session.documents.session(),
-        &location.source_set,
-        module,
-        &method,
-    );
+    let cancellation = CancellationToken::observing(context.cancellation_signal());
+    item.documentation =
+        completion.describe(&session, &source_set, &module, &method, &cancellation);
     item
 }
 
