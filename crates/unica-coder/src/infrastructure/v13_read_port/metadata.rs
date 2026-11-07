@@ -61,7 +61,10 @@ impl ProviderReadAuthority {
             {
                 Ok(Some(bytes)) => std::str::from_utf8(&bytes)
                     .map_err(|e| e.to_string())
-                    .and_then(unica_metadata_designer::exchange_content::read_content)
+                    .and_then(|text| {
+                        crate::infrastructure::family_codecs::metadata_read_codec()
+                            .exchange_content(text)
+                    })
                     .map(Some),
                 Ok(None) => Ok(None),
                 Err(error) if matches!(error.detail(), Some(RefusalDetail::SourceUnreadable)) => {
@@ -279,7 +282,8 @@ impl ProviderReadAuthority {
             }
         }
         if evidence.artifact_kind() == "StyleItem" {
-            unica_metadata_designer::style_item_read::enrich_style_item(&descriptor, &mut payload)
+            crate::infrastructure::family_codecs::metadata_read_codec()
+                .style_item(&descriptor, &mut payload)
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
         }
         {
