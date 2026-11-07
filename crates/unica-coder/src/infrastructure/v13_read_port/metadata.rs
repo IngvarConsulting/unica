@@ -35,23 +35,20 @@ impl ProviderReadAuthority {
         // каждого объекта незачем.
         let borrowing = if self.source_set_kind == SourceSetKind::Extension {
             Some(
-                unica_metadata_designer::xml_model::parse_meta_borrowing(&descriptor)
+                crate::infrastructure::family_codecs::metadata_read_codec()
+                    .borrowing(&descriptor)
                     .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?,
             )
         } else {
             None
         };
-        let mut info = unica_metadata_designer::info::parse_typed_meta_local_info_for_source(
-            &descriptor,
-            target,
-            support,
-            self.source_set_kind,
-        )
-        .map_err(|failure| {
-            let message = serde_json::to_string(&failure.diagnostics)
-                .unwrap_or_else(|_| "metadata reader failed".to_string());
-            ViewError::detailed(RefusalDetail::SourceUnreadable, message)
-        })?;
+        let mut info = crate::infrastructure::family_codecs::metadata_read_codec()
+            .local_info(&descriptor, target, support, self.source_set_kind)
+            .map_err(|failure| {
+                let message = serde_json::to_string(&failure.diagnostics)
+                    .unwrap_or_else(|_| "metadata reader failed".to_string());
+                ViewError::detailed(RefusalDetail::SourceUnreadable, message)
+            })?;
         if info.kind == MetadataKind::ExchangePlan {
             let relative = Path::new("ExchangePlans")
                 .join(&info.name)
@@ -130,10 +127,12 @@ impl ProviderReadAuthority {
             return Ok(None);
         }
         let name = target.as_str().split('.').nth(1).unwrap_or_default();
-        let relative = Path::new(unica_metadata_designer::layout::metadata_layout(kind).directory)
-            .join(name)
-            .join("Ext")
-            .join("Predefined.xml");
+        let relative = Path::new(
+            crate::infrastructure::family_codecs::metadata_read_codec().metadata_directory(kind),
+        )
+        .join(name)
+        .join("Ext")
+        .join("Predefined.xml");
         let Some(bytes) = self.read_optional_relative_with_checkpoint(&relative, checkpoint)?
         else {
             return Ok(Some(MetaPredefinedItemsData {
@@ -143,35 +142,19 @@ impl ProviderReadAuthority {
                 items: Vec::new(),
             }));
         };
-        let code_type = match code_type.ok_or_else(|| {
-            ViewError::detailed(
-                RefusalDetail::SourceUnreadable,
-                unica_metadata_designer::predefined::MISSING_PREDEFINED_CODE_TYPE,
-            )
-        })? {
-            "String" => unica_metadata_designer::predefined::PredefinedCodeType::String,
-            "Number" => unica_metadata_designer::predefined::PredefinedCodeType::Number,
-            other => {
-                return Err(ViewError::detailed(
-                    RefusalDetail::SourceUnreadable,
-                    format!("predefined owner CodeType `{other}` is unsupported"),
-                ))
-            }
-        };
         let mut interrupted = None;
-        let result =
-            unica_metadata_designer::predefined::read_complete_predefined_items_for_code_type(
-                &bytes,
-                kind,
-                code_type,
-                &mut || {
-                    checkpoint().map_err(|error| {
-                        let message = error.to_string();
-                        interrupted = Some(error);
-                        message
-                    })
-                },
-            );
+        let result = crate::infrastructure::family_codecs::metadata_read_codec().predefined_items(
+            &bytes,
+            kind,
+            code_type,
+            &mut || {
+                checkpoint().map_err(|error| {
+                    let message = error.to_string();
+                    interrupted = Some(error);
+                    message
+                })
+            },
+        );
         if let Some(error) = interrupted {
             return Err(error);
         }

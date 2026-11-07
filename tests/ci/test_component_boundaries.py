@@ -213,13 +213,14 @@ class ComponentBoundaryTests(unittest.TestCase):
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         call = "let code = unica_metadata_designer::language_code::read_code(&descriptor)?;\n"
         port = "let code = metadata_read_codec().language_code(&descriptor)?;\n"
-        fresh = "crates/unica-coder/src/infrastructure/v13_read_port/new_kind.rs"
-        self.assertTrue(checker.metadata_read_codec_errors(fresh, call))
-        self.assertEqual(checker.metadata_read_codec_errors(fresh, port), [])
-        listed = "crates/unica-coder/src/infrastructure/v13_read_port/metadata.rs"
-        self.assertIn(listed, checker.METADATA_READ_CODEC_ALLOWANCE)
-        self.assertEqual(checker.metadata_read_codec_errors(listed, call), [])
-        self.assertTrue(checker.metadata_read_codec_errors(listed, port))
+        for path in (
+            "crates/unica-coder/src/infrastructure/v13_read.rs",
+            "crates/unica-coder/src/infrastructure/v13_read_port/new_kind.rs",
+            "crates/unica-coder/src/infrastructure/v13_read/tests.rs",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(checker.metadata_read_codec_errors(path, call))
+                self.assertEqual(checker.metadata_read_codec_errors(path, port), [])
         self.assertEqual(checker.metadata_read_codec_errors(
             "crates/unica-coder/src/infrastructure/native_operations/meta.rs", call), [])
 

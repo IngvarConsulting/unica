@@ -88,7 +88,7 @@ pub(super) fn metadata_property_props(
 }
 
 pub(crate) fn borrowing_props(
-    borrowing: &unica_metadata_designer::xml_model::MetaBorrowing,
+    borrowing: &unica_metadata::borrowing::MetaBorrowing,
 ) -> Map<String, Value> {
     let mut props = Map::new();
     props.insert(

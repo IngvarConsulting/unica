@@ -3,17 +3,26 @@
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
+use unica_metadata::borrowing::MetaBorrowing;
 use unica_metadata::configuration::{CfHomePageData, CfInfoData, CfInterfaceData};
 use unica_metadata::read_codec::{
-    ExchangeContentFacts, FunctionalOptionFacts, MetadataReadCodec, NumeratorFacts, ReadFinding,
-    ReadStopped,
+    ExchangeContentFacts, FunctionalOptionFacts, MetaPropertySource, MetadataReadCodec,
+    NumeratorFacts, ReadFinding, ReadStopped, SupportStateStream,
 };
+use unica_metadata::request::MetaFailure;
 use unica_metadata::style_color::StyleItemPropertiesObservation;
 use unica_metadata::subsystem::{
     SubsystemCommandInterfaceData, SubsystemInfoData, SubsystemInfoResult, SubsystemTreeNode,
 };
-use unica_metadata::support_state::{ConfigurationSupportData, ObjectSupportData};
+use unica_metadata::support_state::{
+    ConfigurationSupportData, ObjectSupportData, SupportReadError, SupportState,
+};
+use unica_metadata::validation_subject::{
+    CommonTemplateDescriptorFacts, MetaLocalInfo, MetadataChildProfile,
+};
 use unica_metadata::wsdl::Definition;
+use unica_metadata::{MetaPredefinedItemsData, MetaSupportStatus, MetadataKind};
+use unica_source_contract::SourceSetKind;
 
 pub struct DesignerMetadataReadCodec;
 
@@ -173,6 +182,118 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
             exists,
             read_optional,
         )
+    }
+
+    fn support_root_uuid(&self, descriptor: &[u8]) -> Option<String> {
+        crate::support::support_root_uuid_from_bytes(descriptor)
+    }
+
+    fn support_stream(&self) -> Box<dyn SupportStateStream> {
+        Box::<crate::support::SupportStateStreamParser>::default()
+    }
+
+    fn borrowing(&self, descriptor: &[u8]) -> Result<MetaBorrowing, String> {
+        crate::xml_model::parse_meta_borrowing(descriptor)
+    }
+
+    fn extends_parent(&self, descriptor: &[u8]) -> bool {
+        crate::xml_model::descriptor_extends_parent(descriptor)
+    }
+
+    fn common_module_properties<'a>(
+        &self,
+        descriptor: &'a str,
+    ) -> Result<Box<dyn MetaPropertySource + 'a>, String> {
+        crate::common_module_read::CommonModuleProperties::parse(descriptor)
+            .map(|properties| Box::new(properties) as Box<dyn MetaPropertySource + 'a>)
+    }
+
+    fn local_info(
+        &self,
+        descriptor: &[u8],
+        target: &MetadataAddress,
+        support: MetaSupportStatus,
+        source_kind: SourceSetKind,
+    ) -> Result<MetaLocalInfo, MetaFailure> {
+        crate::info::parse_typed_meta_local_info_for_source(
+            descriptor,
+            target,
+            support,
+            source_kind,
+        )
+    }
+
+    fn metadata_directory(&self, kind: MetadataKind) -> &'static str {
+        crate::layout::metadata_layout(kind).directory
+    }
+
+    fn predefined_items(
+        &self,
+        bytes: &[u8],
+        kind: MetadataKind,
+        code_type: Option<&str>,
+        checkpoint: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<MetaPredefinedItemsData, String> {
+        use crate::predefined::{PredefinedCodeType, MISSING_PREDEFINED_CODE_TYPE};
+        let code_type = match code_type.ok_or_else(|| MISSING_PREDEFINED_CODE_TYPE.to_string())? {
+            "String" => PredefinedCodeType::String,
+            "Number" => PredefinedCodeType::Number,
+            other => {
+                return Err(format!(
+                    "predefined owner CodeType `{other}` is unsupported"
+                ))
+            }
+        };
+        crate::predefined::read_complete_predefined_items_for_code_type(
+            bytes, kind, code_type, checkpoint,
+        )
+    }
+
+    fn common_template(
+        &self,
+        descriptor: &[u8],
+        target: &MetadataAddress,
+    ) -> Result<CommonTemplateDescriptorFacts, String> {
+        crate::validation::parse_common_template_descriptor_from_bytes(descriptor, target)
+    }
+
+    fn child_profile(
+        &self,
+        descriptor: &[u8],
+        owner: &MetadataAddress,
+    ) -> Result<Option<(MetadataAddress, MetadataChildProfile)>, String> {
+        crate::validation::parse_child_profile_from_bytes(
+            descriptor,
+            owner,
+            crate::validation::MetadataAdmission::Read,
+        )
+    }
+
+    /// Только доказанный признак `Ordinary` меняет читатель содержимого.
+    /// Повреждённое объявление оставляет путь `Form.xml` и его собственную
+    /// диагностику; ни посторонние свойства, ни UUID поддержки формат
+    /// содержимого не решают.
+    fn form_profile(&self, descriptor: &[u8]) -> Result<MetadataChildProfile, String> {
+        use crate::validation::{
+            exact_mdclasses_children, exact_metadata_artifact, form_profile, MetadataAdmission,
+        };
+        let (_, document) = unica_xml_format::read::parse_metadata_image(descriptor)?;
+        let artifact = exact_metadata_artifact(&document, MetadataAdmission::Read)?;
+        let properties = exact_mdclasses_children(artifact, "Properties", "Form descriptor")?;
+        let [properties] = properties.as_slice() else {
+            return Err("Form descriptor must contain one Properties element".to_string());
+        };
+        form_profile(*properties)
+    }
+}
+
+impl SupportStateStream for crate::support::SupportStateStreamParser {
+    fn feed(&mut self, chunk: &[u8]) -> Result<(), SupportReadError> {
+        crate::support::SupportStateStreamParser::feed(self, chunk)
+    }
+
+    fn finish(self: Box<Self>) -> Result<SupportState, SupportReadError> {
+        crate::support::SupportStateStreamParser::finish(*self)
     }
 }
 

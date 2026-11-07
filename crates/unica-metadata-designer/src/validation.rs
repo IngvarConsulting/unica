@@ -2099,14 +2099,7 @@ fn template_descriptor_type(
         .ok_or_else(|| "Template descriptor has unsupported TemplateType".into())
 }
 
-/// Read the top-level template through the same closed type vocabulary and
-/// descriptor admission as a physical child template. This is a read profile,
-/// not a new metadata creation kind.
-pub struct CommonTemplateDescriptorFacts {
-    pub template_type: MetadataTemplateType,
-    pub synonym: Option<String>,
-    pub unreadable_synonym: Option<String>,
-}
+pub use unica_metadata::validation_subject::CommonTemplateDescriptorFacts;
 
 pub fn parse_common_template_descriptor_from_bytes(
     bytes: &[u8],

@@ -5,17 +5,28 @@
 //!
 //! Порт растёт по видам чтения. Каждый метод получает уже прочитанные байты
 //! или текст: файлы и снимок источника остаются у композиции.
+use crate::borrowing::MetaBorrowing;
 use crate::configuration::{CfHomePageData, CfInfoData, CfInterfaceData};
+use crate::request::MetaFailure;
 use crate::style_color::StyleItemPropertiesObservation;
 use crate::subsystem::{
     SubsystemCommandInterfaceData, SubsystemInfoData, SubsystemInfoResult, SubsystemTreeNode,
 };
-use crate::support_state::{ConfigurationSupportData, ObjectSupportData};
+use crate::support_state::{
+    ConfigurationSupportData, ObjectSupportData, SupportReadError, SupportState,
+};
+use crate::validation_subject::{
+    CommonTemplateDescriptorFacts, MetaLocalInfo, MetadataChildProfile,
+};
 use crate::wsdl::Definition;
-use crate::{MetaExchangeContentItem, MetaObservedProperty};
+use crate::{
+    MetaExchangeContentItem, MetaInfoPropertyValue, MetaObservedProperty, MetaPredefinedItemsData,
+    MetaSupportStatus, MetadataKind,
+};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use unica_address::source_target::MetadataAddress;
+use unica_source_contract::SourceSetKind;
 
 /// Разбор дескрипторов метаданных для чтения.
 pub trait MetadataReadCodec: Send + Sync {
@@ -133,6 +144,86 @@ pub trait MetadataReadCodec: Send + Sync {
         exists: &mut dyn FnMut(&Path) -> Result<bool, String>,
         read_optional: &mut dyn FnMut(&Path) -> Result<Option<String>, String>,
     ) -> Result<(bool, String, PathBuf), String>;
+
+    /// UUID корневого объекта в дескрипторе: по нему ищется правило поддержки.
+    fn support_root_uuid(&self, descriptor: &[u8]) -> Option<String>;
+
+    /// Потоковый разбор `Ext/ParentConfigurations.bin`. Файл читает
+    /// вызывающий и отдаёт его частями.
+    fn support_stream(&self) -> Box<dyn SupportStateStream>;
+
+    /// Заимствование объекта расширением по его дескриптору.
+    fn borrowing(&self, descriptor: &[u8]) -> Result<MetaBorrowing, String>;
+
+    /// Дескриптор заимствует объект родителя. Нечитаемый дескриптор —
+    /// не заимствование.
+    fn extends_parent(&self, descriptor: &[u8]) -> bool;
+
+    /// Свойства общего модуля. Повреждённая структура дескриптора —
+    /// ошибка здесь, а не отсутствие свойства потом.
+    fn common_module_properties<'a>(
+        &self,
+        descriptor: &'a str,
+    ) -> Result<Box<dyn MetaPropertySource + 'a>, String>;
+
+    /// Локальные свойства объекта из его дескриптора.
+    fn local_info(
+        &self,
+        descriptor: &[u8],
+        target: &MetadataAddress,
+        support: MetaSupportStatus,
+        source_kind: SourceSetKind,
+    ) -> Result<MetaLocalInfo, MetaFailure>;
+
+    /// Каталог объектов вида `kind` от корня источника.
+    fn metadata_directory(&self, kind: MetadataKind) -> &'static str;
+
+    /// Все предопределённые элементы из `Ext/Predefined.xml`. `code_type` —
+    /// `CodeType` владельца как он записан; без него коды не проверить, и
+    /// чтение отказывает. `checkpoint` может остановить разбор.
+    fn predefined_items(
+        &self,
+        bytes: &[u8],
+        kind: MetadataKind,
+        code_type: Option<&str>,
+        checkpoint: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<MetaPredefinedItemsData, String>;
+
+    /// Факты общего макета из его дескриптора.
+    fn common_template(
+        &self,
+        descriptor: &[u8],
+        target: &MetadataAddress,
+    ) -> Result<CommonTemplateDescriptorFacts, String>;
+
+    /// Адрес и профиль подчинённого объекта по дескриптору. Дескриптор
+    /// другого вида — `None`.
+    fn child_profile(
+        &self,
+        descriptor: &[u8],
+        owner: &MetadataAddress,
+    ) -> Result<Option<(MetadataAddress, MetadataChildProfile)>, String>;
+
+    /// Профиль содержимого формы по её дескриптору.
+    fn form_profile(&self, descriptor: &[u8]) -> Result<MetadataChildProfile, String>;
+}
+
+/// Прямые свойства одного разобранного дескриптора.
+pub trait MetaPropertySource {
+    /// Свойство из профиля `META_INFO_PROPERTY_PROFILE`. Нет свойства — `None`.
+    fn info(&self, name: &str) -> Result<Option<MetaInfoPropertyValue>, ReadFinding>;
+
+    /// `ObjectBelonging` или `ExtendedConfigurationObject`. Нет свойства — `None`.
+    fn borrowing(&self, name: &str) -> Result<Option<String>, ReadFinding>;
+}
+
+/// Разбор состояния поддержки по частям файла.
+pub trait SupportStateStream: Send {
+    /// Следующая часть файла.
+    fn feed(&mut self, chunk: &[u8]) -> Result<(), SupportReadError>;
+
+    /// Итог после последней части.
+    fn finish(self: Box<Self>) -> Result<SupportState, SupportReadError>;
 }
 
 /// Чтение остановлено вызывающим через `checkpoint`. Причину остановки
