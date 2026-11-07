@@ -65,6 +65,7 @@
   "modifiedFiles": [
     "Cargo.toml",
     "Cargo.lock",
+    "src/header.rs",
     "src/lib.rs",
     "src/middleware.rs",
     "src/response.rs",
