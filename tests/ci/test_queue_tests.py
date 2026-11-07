@@ -77,19 +77,23 @@ class ChoiceTests(unittest.TestCase):
     def test_only_external_packages_of_the_lock_count(self) -> None:
         member = '[[package]]\nname = "unica-a"\nversion = "1.0.0"\ndependencies = ["serde"]\n'
         serde = '[[package]]\nname = "serde"\nversion = "1.0.0"\nsource = "registry+x"\nchecksum = "aa"\n'
-        same = queue.external_packages(serde + member)
-        self.assertEqual(same, queue.external_packages(serde))
-        self.assertEqual(same, queue.external_packages(member + '[[package]]\nname = "unica-new"\nversion = "1.0.0"\n' + serde))
+        members = {"unica-a", "unica-new"}
+        same = queue.external_packages(serde + member, members)
+        self.assertEqual(same, queue.external_packages(serde, members))
+        self.assertEqual(same, queue.external_packages(member + '[[package]]\nname = "unica-new"\nversion = "1.0.0"\n' + serde, members))
+        # Путевой патч не член рабочей области, хотя `source` у него тоже нет.
+        patched = '[[package]]\nname = "ureq"\nversion = "2.0.0"\n'
+        self.assertNotEqual(queue.external_packages(serde + patched, members), queue.external_packages(serde + patched.replace("2.0.0", "2.0.1"), members))
         for changed in (
             serde.replace('version = "1.0.0"', 'version = "1.0.1"'),
             serde.replace('checksum = "aa"', 'checksum = "bb"'),
             serde.replace('registry+x', 'git+y'),
             serde + 'dependencies = ["itoa"]\n',
             serde + '[[package]]\nname = "itoa"\nversion = "1.0.0"\nsource = "registry+x"\n',
-            member,
+            '[[package]]\nname = "other"\nversion = "1.0.0"\n',
         ):
             with self.subTest(changed=changed):
-                self.assertNotEqual(same, queue.external_packages(changed))
+                self.assertNotEqual(same, queue.external_packages(changed, members))
 
     def test_the_lock_is_compared_between_the_two_revisions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -103,8 +107,8 @@ class ChoiceTests(unittest.TestCase):
                 git("add", "Cargo.lock")
                 git("commit", "-qm", "x")
                 revisions.append(git("rev-parse", "HEAD"))
-            self.assertTrue(queue.lock_keeps_external(revisions[0], revisions[1], root))
-            self.assertFalse(queue.lock_keeps_external(revisions[1], revisions[2], root))
+            self.assertTrue(queue.lock_keeps_external(revisions[0], revisions[1], {"unica-new"}, root))
+            self.assertFalse(queue.lock_keeps_external(revisions[1], revisions[2], {"unica-new"}, root))
 
     def test_a_lock_that_cannot_be_read_runs_everything(self) -> None:
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(Path(directory) / "o")}):
