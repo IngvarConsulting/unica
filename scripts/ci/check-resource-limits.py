@@ -320,7 +320,7 @@ def schema_errors(root: Path, registry: dict) -> list[str]:
     schema = json.loads((root / SCHEMA).read_text(encoding="utf-8"))
     validator = jsonschema.Draft202012Validator(schema)
     return [
-        f"{REGISTRY}: {'/'.join(map(str, error.absolute_path)) or '<root>'}: {error.message}"
+        f"{REGISTRY.as_posix()}: {'/'.join(map(str, error.absolute_path)) or '<root>'}: {error.message}"
         for error in sorted(validator.iter_errors(registry), key=lambda item: list(map(str, item.absolute_path)))
     ]
 
@@ -391,7 +391,7 @@ def check(root: Path) -> list[str]:
         seen[item_key] = "excluded"
     for item_key, constant in sorted(constants.items(), key=lambda pair: (pair[1].file, pair[1].line)):
         if item_key not in seen:
-            errors.append(f"{constant.file}:{constant.line}: {constant.symbol} is not in {REGISTRY}; run scripts/ci/check-resource-limits.py --scaffold")
+            errors.append(f"{constant.file}:{constant.line}: {constant.symbol} is not in {REGISTRY.as_posix()}; run scripts/ci/check-resource-limits.py --scaffold")
     return errors
 
 
