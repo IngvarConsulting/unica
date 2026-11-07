@@ -7,9 +7,10 @@
 в исходниках крейта. Запись только из сайта, правил, навыков и прозы Rust не запускает:
 её проверяют Python-наборы очереди. Прямые зависимые изменённого кода
 исполняют интеграционные цели: логическая поломка доходит до них и без смены интерфейса.
-`daemon_receipt_ledger` и транзитивные зависимые остаются ночи. Полный набор идёт при правке
-`Cargo.lock`, корневого `Cargo.toml`, тулчейна, при сбое чтения diff и при
-`QUEUE_FULL_TESTS=true`. Остальное исполняет ночь; правило для красной ночи и откат —
+`daemon_receipt_ledger` и транзитивные зависимые остаются ночи. Полный набор идёт при смене
+внешних зависимостей в `Cargo.lock`, правке корневого `Cargo.toml`, тулчейна, при сбое чтения diff
+и при `QUEUE_FULL_TESTS=true`. Правка `Cargo.lock` только в записях крейтов рабочей области полного
+набора не требует: сами крейты выбраны по своим файлам. Остальное исполняет ночь; правило для красной ночи и откат —
 в `.agents/skills/unica-testing/references/ci-pipeline.md`.
 """
 
@@ -24,6 +25,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tomllib
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -82,8 +84,20 @@ def mentions(text: str, root: Path = ROOT) -> list[str]:
     return completed.stdout.split()
 
 
+def external_packages(lock: str) -> list[dict]:
+    """Записи `Cargo.lock` о внешних пакетах: у крейта рабочей области нет `source`."""
+    packages = tomllib.loads(lock).get("package", [])
+    return sorted((package for package in packages if "source" in package), key=lambda package: (package["name"], package["version"], package["source"]))
+
+
+def lock_keeps_external(base: str, head: str, root: Path = ROOT) -> bool:
+    """Остались ли внешние зависимости прежними между двумя ревизиями."""
+    locks = [subprocess.check_output(["git", "show", f"{revision}:Cargo.lock"], cwd=root, text=True, encoding="utf-8") for revision in (base, head)]
+    return external_packages(locks[0]) == external_packages(locks[1])
+
+
 def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, set[str]] | None = None, *,
-           force_full: bool = False, find: Callable[[str], list[str]] = mentions) -> Choice:
+           force_full: bool = False, find: Callable[[str], list[str]] = mentions, lock_is_internal: bool = False) -> Choice:
     if force_full:
         return Choice(True, (), "QUEUE_FULL_TESTS")
     if not paths:
@@ -92,6 +106,8 @@ def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, 
         return Choice(False, (), "Rust не нужен: сайт, правила, навыки, проза", no_rust=True)
     selected, edited = set(), set()
     for path in paths:
+        if path == "Cargo.lock" and lock_is_internal:
+            continue
         if WHOLE_BUILD.match(path):
             return Choice(True, (), f"общая сборка: {path}")
         crate = crate_of(path, directories)
@@ -139,7 +155,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         paths = subprocess.check_output(["git", "diff", "--name-only", "--no-renames", args.base, args.head, "--"], cwd=ROOT, text=True, encoding="utf-8", errors="replace").split("\n")
         directories, dependents = workspace()
-        choice = choose([path for path in paths if path], directories, dependents, force_full=os.environ.get("QUEUE_FULL_TESTS") == "true")
+        paths = [path for path in paths if path]
+        lock_is_internal = "Cargo.lock" in paths and lock_keeps_external(args.base, args.head)
+        choice = choose(paths, directories, dependents, force_full=os.environ.get("QUEUE_FULL_TESTS") == "true", lock_is_internal=lock_is_internal)
     except (subprocess.CalledProcessError, OSError, ValueError) as error:
         choice = Choice(True, (), f"выбор не определён: {error}")
     print(f"{'полный набор' if choice.full else 'выбор'}: {choice.reason}", flush=True)
