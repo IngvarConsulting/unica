@@ -21,6 +21,7 @@ type JobResult<T> = Result<T, String>;
 // resource: Хвост stdout и stderr процесса runtime-задания, удерживаемый в памяти.
 // status: unproven
 // origin: коммит 2bd211f0d (feat: добавить durable runtime job core)
+// problem: неизвестно
 // on-reach: тихо: старшая часть вывода отбрасывается, остаются последние 16 КиБ
 const OUTPUT_TAIL_BYTES: usize = 16 * 1024;
 // resource-limit: process.runtime-job-receipt-bytes
@@ -32,6 +33,7 @@ const OUTPUT_TAIL_BYTES: usize = 16 * 1024;
 // resource: Объём stdout процесса runtime-задания, удерживаемый для чтения квитанции раннера.
 // status: unproven
 // origin: #483
+// problem: неизвестно
 // on-reach: хвост сохраняется с флагом усечения; усечённая квитанция не разбирается (None, truncated)
 const FALLBACK_RECEIPT_BYTES: usize = STDOUT_CAPTURE_LIMIT;
 // resource-limit: runtime-job.stream-finish-timeout
@@ -42,6 +44,7 @@ const FALLBACK_RECEIPT_BYTES: usize = STDOUT_CAPTURE_LIMIT;
 // resource: Ожидание дочитывания потоков вывода завершившегося фонового процесса.
 // status: unproven
 // origin: #483
+// problem: неизвестно
 // on-reach: вывод помечается неполным (output_incomplete)
 const STREAM_FINISH_TIMEOUT: Duration = Duration::from_secs(10);
 // resource-limit: runtime-job.startup-cleanup-timeout
@@ -52,6 +55,7 @@ const STREAM_FINISH_TIMEOUT: Duration = Duration::from_secs(10);
 // resource: Срок уборки дерева процессов при неудачном старте фонового процесса.
 // status: unproven
 // origin: коммит cc33c46c5 (refactor(runtime): unify long work under daemon ownership)
+// problem: неизвестно
 // on-reach: владение процессом сохраняется с ошибкой «startup cleanup uncertain»
 const RUNTIME_STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 #[cfg(any(test, feature = "test-support"))]
@@ -591,6 +595,8 @@ pub fn cancel_and_reap(process: &mut dyn RuntimeJobProcess) -> JobResult<()> {
     // expr: Duration::from_secs(5)
     // resource: Срок ожидания завершения фонового задания после отмены.
     // status: unproven
+    // origin: неизвестно
+    // problem: неизвестно
     // on-reach: по истечении срока процесс задания добивается
     cancel_and_reap_with_budget(process, Duration::from_secs(5))
 }

@@ -31,6 +31,7 @@ pub struct NodeView {
 // resource: Размер заголовка узла и кандидата поиска в ответах view, search и resolve.
 // status: unproven
 // origin: 02c83648f
+// problem: неизвестно
 // on-reach: Заголовок усекается по границе символа и помечается многоточием; полное значение читается по адресу свойства <узел>.Props.<имя>, который называет предел в limits.
 // issue: #2246
 pub const MAX_TITLE_BYTES: usize = 2_048;

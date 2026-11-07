@@ -57,6 +57,7 @@ const RUNNER_COMMAND: &str = "push";
 // resource: Число шагов в ответе v8-runner push.
 // status: unproven
 // origin: bfaf9b009 (#891)
+// problem: неизвестно
 // on-reach: Отказ invalid_result «v8-runner push answered with an empty or oversized step list».
 const STEPS_MAX: usize = 64;
 

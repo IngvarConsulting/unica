@@ -35,6 +35,7 @@ static BSL_ANALYZER_DIAGNOSTIC_DESCRIPTOR: DiagnosticProviderDescriptor =
 // resource: Число находок, запрашиваемых у резидентного анализатора BSL за один вызов (max_findings).
 // status: unproven
 // origin: коммит c3a946e95 (connect bsl-analyzer provider)
+// problem: неизвестно
 // on-reach: анализатор усекает список (truncated), ответ поставщика помечен complete: false, хвост находок теряется
 // issue: #1119
 // review: #1119, вне PR1–PR9: нужен курсор

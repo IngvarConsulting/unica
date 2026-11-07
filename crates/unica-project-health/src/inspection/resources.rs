@@ -43,6 +43,7 @@ pub(crate) const LFS_AGGREGATE_THRESHOLD_BYTES: u64 = 100 * 1024 * 1024;
 // resource: Число файлов в одной порции чтения блобов при проверке окончаний строк.
 // status: unproven
 // origin: #1115
+// problem: неизвестно
 // on-reach: порция фиксируется и начинается следующая; при сбое порция уменьшается вдвое
 const MAX_INDEX_EOL_BATCH_FILES: usize = 64;
 // resource-limit: project-health.index-eol-batch-bytes
@@ -53,6 +54,7 @@ const MAX_INDEX_EOL_BATCH_FILES: usize = 64;
 // resource: Объём блобов в одной порции чтения при проверке окончаний строк.
 // status: unproven
 // origin: #1115
+// problem: неизвестно
 // on-reach: порция фиксируется и начинается следующая; блоб больше порции читается потоком git cat-file blob без ls-files --eol
 const MAX_INDEX_EOL_BATCH_BLOB_BYTES: usize = 32 * 1024 * 1024;
 /// Resources inspected together. A step of the inspection, not a bound of the
@@ -68,6 +70,7 @@ const MAX_INDEX_EOL_BATCH_BLOB_BYTES: usize = 32 * 1024 * 1024;
 // resource: Число ресурсов одной страницы проверки ресурсов репозитория: страница проходит check-attr, политику атрибутов, EOL индекса и рабочих файлов и агрегаты LFS.
 // status: unproven
 // origin: #1119
+// problem: неизвестно
 // on-reach: страница проверяется и начинается следующая; общий результат не ограничивается
 // issue: #1119
 const RESOURCE_PAGE_PATHS: usize = 4096;
@@ -79,6 +82,7 @@ const RESOURCE_PAGE_PATHS: usize = 4096;
 // resource: Длина текста причины о неоднозначном владении ресурсом в проверке здоровья проекта.
 // status: unproven
 // origin: коммит 8f45a9c4d (bound staged repository health)
+// problem: неизвестно
 // on-reach: тихо: вместо пути и перечня наборов выводится сокращённая причина
 const MAX_RESOURCE_OWNERSHIP_REASON_BYTES: usize = 512;
 // resource-limit: project-health.continuation-workspaces
@@ -89,6 +93,7 @@ const MAX_RESOURCE_OWNERSHIP_REASON_BYTES: usize = 512;
 // resource: Число рабочих пространств, для которых в памяти удерживается держатель продолжения проверки EOL.
 // status: unproven
 // origin: #1113
+// problem: неизвестно
 // on-reach: вытесняется самый давний незанятый держатель, его файл остаётся; если все заняты — новый корень проверяется без продолжения, с начала
 const MAX_CONTINUATION_WORKSPACES: usize = 4;
 // resource-limit: project-health.continuation-ttl
@@ -99,6 +104,7 @@ const MAX_CONTINUATION_WORKSPACES: usize = 4;
 // resource: Срок удержания в памяти незанятого держателя продолжения проверки EOL между вызовами check.
 // status: unproven
 // origin: #1113
+// problem: неизвестно
 // on-reach: незанятый держатель вычищается; следующий check снова открывает продолжение из файла в состоянии демона
 const CONTINUATION_TTL: Duration = Duration::from_secs(15 * 60);
 const CONTINUATION_MAGIC: &[u8] = b"unica-resource-eol-v1\0";

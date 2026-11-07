@@ -85,6 +85,7 @@ pub enum ReceiptResponse {
 // resource: Ожидание блокировки права на хранилище квитанций при старте и проверке права.
 // status: unproven
 // origin: коммит 4ed8661c6 (feat(v13): wire hidden receipt ledger shell)
+// problem: неизвестно
 // on-reach: ошибка получения права; рантайм не открывается
 const AUTHORITY_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -96,6 +97,7 @@ const AUTHORITY_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(2);
 // resource: Срок открытия и сверки проекции заданий при старте рантайма v5.
 // status: unproven
 // origin: коммит 33e880a19 (feat(d0): enforce independent receipt and task capacities)
+// problem: неизвестно
 // on-reach: старт рантайма завершается ошибкой срока
 const STARTUP_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -107,6 +109,7 @@ const STARTUP_RECONCILIATION_TIMEOUT: Duration = Duration::from_secs(30);
 // resource: Срок публикации конечного состояния задания после того, как бюджет submit уже израсходован.
 // status: unproven
 // origin: коммит 75daeb2c6 (fix(daemon): complete v5 task execution lifecycle)
+// problem: неизвестно
 // on-reach: публикация завершается ошибкой срока хранилища
 const TASK_TERMINAL_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -120,6 +123,7 @@ const TASK_TERMINAL_PUBLICATION_TIMEOUT: Duration = Duration::from_secs(30);
 // resource: Наибольший интервал, с которым обработчик сессии перечитывает cutoff inline-исполнения, пока работает исполнитель.
 // status: unproven
 // origin: #782
+// problem: неизвестно
 // on-reach: обработчик просыпается и сверяет cutoff; исполнитель может разбудить его раньше
 const INLINE_CUTOFF_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
@@ -176,6 +180,7 @@ fn committed_decision_step_deadline(deadline: Instant) -> Instant {
 // resource: Интервал опроса, объявляемый заданию, в которое перешла квитанция.
 // status: unproven
 // origin: коммит 9ca99ba80 (feat(d0): expose begun known-long handoff)
+// problem: неизвестно
 // on-reach: клиенту сообщается pollInterval 100 мс; сам предел ничего не обрывает
 const V5_TASK_POLL_INTERVAL_MS: u64 = 100;
 

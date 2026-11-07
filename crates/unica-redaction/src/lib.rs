@@ -18,6 +18,7 @@ const SUBSTRING_SECRET_KEYS: &[&str] = &["password", "token", "secret"];
 // resource: Хвост буфера потокового редактирования, удерживаемый до решения о ключе секрета: длина самого длинного точного ключа («connection»).
 // status: unproven
 // origin: 39907867c
+// problem: неизвестно
 // on-reach: Байты сверх хвоста выводятся; ключ длиннее не распознаётся на стыке порций.
 const MAX_RETAINED_KEY_BYTES: usize = "connection".len();
 

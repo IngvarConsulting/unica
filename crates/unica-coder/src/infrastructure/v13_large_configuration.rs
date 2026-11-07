@@ -28,6 +28,7 @@ use xml::reader::{ParserConfig, XmlEvent};
 // resource: Объём одной отсортированной порции регистраций при потоковом чтении большого Configuration.xml.
 // status: unproven
 // origin: #1130
+// problem: неизвестно
 // on-reach: порция сбрасывается, чтение продолжается следующей
 const REGISTRATION_RUN_BYTES: usize = 1024 * 1024;
 const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";

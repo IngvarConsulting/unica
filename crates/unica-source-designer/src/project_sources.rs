@@ -38,6 +38,7 @@ use unsafe_libyaml::{
 // resource: Размер одной порции чтения карты исходников проекта и ConfigDumpInfo.xml между проверками отмены и срока.
 // status: unproven
 // origin: коммит 6ab5b211d (fix(project): harden typed health inspection)
+// problem: неизвестно
 // on-reach: файл читается следующей порцией после проверки отмены и срока
 const PROJECT_SOURCE_MAP_READ_CHUNK_BYTES: usize = 64 * 1024;
 /// The source-set name the base configuration owns. `INV-SOURCE-SINGLE-RESOLVED-ROOT`

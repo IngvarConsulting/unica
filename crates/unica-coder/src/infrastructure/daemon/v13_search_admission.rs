@@ -34,6 +34,7 @@ use unica_refusal::RefusalCode;
 // resource: Наибольшее число совпадений одной страницы search.
 // status: unproven
 // origin: 4b1576452 (#1261)
+// problem: неизвестно
 // on-reach: Отказ проверки аргумента limit до исполнения поиска.
 const MAX_SEARCH_LIMIT: usize = 50;
 // resource-limit: search.page-default-entries
@@ -44,6 +45,7 @@ const MAX_SEARCH_LIMIT: usize = 50;
 // resource: Число совпадений страницы search, когда limit не задан.
 // status: unproven
 // origin: 4b1576452 (#1261)
+// problem: неизвестно
 // on-reach: Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.
 const DEFAULT_SEARCH_LIMIT: usize = 20;
 

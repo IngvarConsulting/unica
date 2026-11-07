@@ -13,6 +13,7 @@ use unica_execution::invocation_store::ToolIdentity;
 // resource: Наибольшее окно ожидания прямого ответа канонического вызова (response budget) до передачи в задание.
 // status: unproven
 // origin: 88b99b0e0
+// problem: неизвестно
 // on-reach: Отказ проверки запроса «canonical invocation response budget must be within 0..=7000 ms».
 // decision: закреплено правилом
 // decision-date: 2026-10-21

@@ -40,6 +40,7 @@ impl DownloadObserver for SilentDownload {
 // resource: Размер одного чтения тела ответа при загрузке артефакта.
 // status: unproven
 // origin: #604
+// problem: неизвестно
 // on-reach: тело читается следующей порцией до конца ответа
 const CHUNK: usize = 64 * 1024;
 

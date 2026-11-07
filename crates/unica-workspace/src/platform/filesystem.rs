@@ -315,6 +315,7 @@ fn ensure_short_private_runtime_dir_unix(path: &Path, uid: libc::uid_t) -> io::R
     // resource: Число попыток подготовить короткий частный каталог исполнения Unix.
     // status: unproven
     // origin: #308
+    // problem: неизвестно
     // on-reach: после попыток каталог проверяется последний раз; неготовый даёт ошибку прав или отсутствия каталога
     const SETUP_ATTEMPTS: usize = 8;
     // resource-limit: workspace.runtime-dir-retry-delay
@@ -325,6 +326,7 @@ fn ensure_short_private_runtime_dir_unix(path: &Path, uid: libc::uid_t) -> io::R
     // resource: Пауза между попытками подготовить частный каталог исполнения при гонке с другим процессом того же пользователя.
     // status: unproven
     // origin: #308
+    // problem: неизвестно
     // on-reach: после паузы следующая попытка в пределах числа попыток
     const RETRY_DELAY: Duration = Duration::from_millis(1);
 
@@ -1775,6 +1777,7 @@ fn sync_renamed_regular_child(file: &fs::File) -> io::Result<()> {
 // resource: Размер одной порции чтения или сравнения входа apply между проверками срока и отмены.
 // status: unproven
 // origin: #1119
+// problem: неизвестно
 // on-reach: файл читается следующей порцией после проверки срока и отмены
 const CHECKED_READ_CHUNK_BYTES: usize = 64 * 1024;
 
@@ -4408,6 +4411,7 @@ fn visit_directory_names<E: From<io::Error>>(
     // resource: Размер буфера одного запроса перечисления имён каталога в Windows.
     // status: unproven
     // origin: #284
+    // problem: неизвестно
     // on-reach: имена читаются следующими запросами до конца каталога
     const BUFFER_BYTES: usize = 64 * 1024;
 

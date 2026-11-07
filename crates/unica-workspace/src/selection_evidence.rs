@@ -21,6 +21,7 @@ use std::sync::Arc;
 // resource: Размер одной порции чтения и сравнения входа карты исходников при удержании свидетельства выбора.
 // status: unproven
 // origin: коммит 644c01fba (feat: retain source selection evidence for apply)
+// problem: неизвестно
 // on-reach: файл читается и сравнивается следующей порцией после проверки
 const SELECTION_READ_CHUNK_BYTES: usize = 64 * 1024;
 

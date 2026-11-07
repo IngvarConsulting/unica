@@ -27,6 +27,7 @@ use unica_workspace::paths::normalize_path_identity;
 // resource: Длина одной строки JSONL-потока диагностик анализатора BSL.
 // status: unproven
 // origin: #425
+// problem: неизвестно
 // on-reach: строка отклоняется с ошибкой потока LineTooLong, результат анализа не выдаётся как полный
 // decision: закреплено правилом
 // decision-date: 2026-09-22

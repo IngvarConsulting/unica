@@ -32,6 +32,7 @@ pub const DEFAULT_THRESHOLD_BYTES: usize = 16 * 1024;
 // resource: Число элементов одной страницы продолжения отложенного результата.
 // status: unproven
 // origin: #537
+// problem: неизвестно
 // on-reach: следующие элементы выдаются на следующей странице (page); totalInSection сообщает общий счёт
 const CONTINUATION_PAGE_SIZE: usize = 50;
 

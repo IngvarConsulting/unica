@@ -52,6 +52,7 @@ const CANONICAL_SEARCH_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 // resource: Глубина вложенных каталогов, которые обходит канонический текстовый поиск.
 // status: unproven
 // origin: b6650bc18
+// problem: неизвестно
 // on-reach: Обход без Git отказывает provider_unavailable «exceeded its retained depth limit», страницы нет; в рабочем дереве Git глубину ограничивает только Git.
 const CANONICAL_SEARCH_MAX_DEPTH: usize = 32;
 // resource-limit: search.canonical-uncovered-details
@@ -62,6 +63,7 @@ const CANONICAL_SEARCH_MAX_DEPTH: usize = 32;
 // resource: Число образцов непокрытых файлов в деталях канонического поиска.
 // status: unproven
 // origin: cd7331929 (#1106)
+// problem: неизвестно
 // on-reach: тихо: сверх 32 детали не добавляются; полное число сохраняется счётчиком uncovered.
 const CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS: usize = 32;
 

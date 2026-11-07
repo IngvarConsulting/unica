@@ -18,6 +18,7 @@ const PROTOCOL_VERSION: u32 = 1;
 // resource: Срок завершения v8-runner после ответа ready в протоколе публикации полной выгрузки.
 // status: unproven
 // origin: 001fa08f6 (#1734)
+// problem: неизвестно
 // on-reach: Процесс, не завершившийся за 120 с после защищённого ответа, считается сбоем завершения публикации.
 const FINISH_TIMEOUT: Duration = Duration::from_secs(120);
 

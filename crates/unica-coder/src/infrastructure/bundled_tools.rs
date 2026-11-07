@@ -231,6 +231,8 @@ pub(crate) fn launch_probe_failure(
         // expr: 4096
         // resource: Байты stdout и stderr, захватываемые пробным запуском поставляемого движка при разборе отказа старта.
         // status: unproven
+        // origin: неизвестно
+        // problem: неизвестно
         // on-reach: вывод сверх предела не удерживается; проба смотрит только на факт запуска
         capture_limits: Some((4096, 4096)),
         // resource-limit: bundled-tools.launch-probe-timeout
@@ -243,6 +245,8 @@ pub(crate) fn launch_probe_failure(
         // expr: std::time::Duration::from_secs(1)
         // resource: Срок пробного запуска поставляемого движка при разборе отказа старта.
         // status: unproven
+        // origin: неизвестно
+        // problem: неизвестно
         // on-reach: запущенный процесс сразу завершается; срок ограничивает зависший запуск
         timeout: Some(std::time::Duration::from_secs(1)),
         cancellation: unica_work_control::cancellation::CancellationToken::new(),

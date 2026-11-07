@@ -43,6 +43,7 @@ const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
 // resource: Срок процесса полной выгрузки исходников в режиме BuildDump.
 // status: unproven
 // origin: коммит 17ad07915 (enforce 8.3.27 export profile)
+// problem: неизвестно
 // on-reach: процесс выгрузки прерывается, сборка завершается ошибкой таймаута
 const BUILD_DUMP_TIMEOUT: Duration = Duration::from_secs(120);
 // resource-limit: v8-runner.platform-probe-timeout
@@ -53,6 +54,7 @@ const BUILD_DUMP_TIMEOUT: Duration = Duration::from_secs(120);
 // resource: Срок пробного запуска платформы для определения её версии перед выгрузкой.
 // status: unproven
 // origin: коммит 17ad07915 (enforce 8.3.27 export profile)
+// problem: неизвестно
 // on-reach: проба прерывается, выгрузка завершается ошибкой таймаута
 const PLATFORM_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

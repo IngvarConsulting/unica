@@ -67,6 +67,7 @@ pub const LIVE_DIAGNOSTIC_PROVIDERS: &[DiagnosticProviderId] = &[BSL_ANALYZER_PR
 // resource: Число диагностик в ответе координатора диагностики, если limit не задан.
 // status: unproven
 // origin: коммит 9214a5e20 (provider-neutral domain model)
+// problem: неизвестно
 // on-reach: список усекается до limit, ответ помечен truncated: true с полным items_total
 pub const DIAGNOSTIC_LIMIT_DEFAULT: usize = 200;
 
@@ -82,6 +83,7 @@ pub const DIAGNOSTIC_LIMIT_DEFAULT: usize = 200;
 // resource: Срок резидентных действий диагностики findings, status и catalog без снимка настроек.
 // status: unproven
 // origin: коммит 2401f0e8f (localize mapping failures)
+// problem: неизвестно
 // on-reach: действие прерывается по сроку поставщика; analyze этим сроком не ограничен
 pub const DIAGNOSTIC_BUDGET_WITHOUT_CONFIG: Duration = Duration::from_secs(120);
 

@@ -41,6 +41,7 @@ impl StandardsAdapter {
     // resource: Срок HTTP-запроса к сервису стандартов v8std.
     // status: unproven
     // origin: коммит aff5640a7 (v10)
+    // problem: неизвестно
     // on-reach: запрос прерывается, поиск по стандартам возвращает сетевую ошибку
     const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 

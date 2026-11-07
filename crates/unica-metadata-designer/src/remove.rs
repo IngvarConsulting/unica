@@ -31,6 +31,7 @@ pub struct MetaRemoveTextRead {
 // resource: Глубина обхода корня исходников при поиске ссылок на удаляемый объект.
 // status: unproven
 // origin: коммит 17ad07915 (enforce 8.3.27 export profile)
+// problem: неизвестно
 // on-reach: отказ плана удаления «traversal exceeded the maximum depth of 256»
 const META_REMOVE_MAX_TRAVERSAL_DEPTH: usize = 256;
 // resource-limit-excluded: usize::MAX: предел числа записей снят в #1119, константа задаёт отсутствие предела обходу ссылок

@@ -141,6 +141,7 @@ const OBJECT_KINDS: [&str; 10] = [
 // resource: Шаги, на которые дополнение прослеживает тип переменной через циклы и присваивания.
 // status: unproven
 // origin: #2578
+// problem: неизвестно
 // on-reach: тип не выводится, и членов объекта в списке нет
 // issue: #2578
 const MAX_INFERENCE_DEPTH: usize = 4;

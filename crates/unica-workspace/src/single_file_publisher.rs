@@ -39,6 +39,7 @@ use crate::platform::filesystem::{
 // resource: Число попыток создать уникальный промежуточный файл при публикации одного файла.
 // status: unproven
 // origin: #163
+// problem: неизвестно
 // on-reach: ошибка StageCollisionsExhausted с путём цели и числом попыток
 const STAGE_ATTEMPTS: usize = 16;
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);

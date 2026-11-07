@@ -60,6 +60,7 @@ pub struct DaemonServerConfig<
 // resource: Пауза между опросами слушающего сокета демона на новые соединения.
 // status: unproven
 // origin: коммит 38512f013 (feat(daemon): add one versioned user executor)
+// problem: неизвестно
 // on-reach: после паузы демон снова проверяет соединения и простой
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -71,6 +72,7 @@ const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 // resource: Срок чтения рукопожатия с момента принятия соединения.
 // status: unproven
 // origin: коммит 38512f013 (feat(daemon): add one versioned user executor)
+// problem: неизвестно
 // on-reach: соединение закрывается без ответа ready
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -82,6 +84,7 @@ const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 // resource: Интервал ожидания очередного кадра простаивающей сессии, срок записи ответа об ошибке и бюджет операции для запросов кроме submit и wait.
 // status: unproven
 // origin: коммит 4ed8661c6 (feat(v13): wire hidden receipt ledger shell)
+// problem: неизвестно
 // on-reach: простаивающая сессия продолжает ждать следующий кадр; для прочих запросов истекает срок операции
 const SESSION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -111,6 +114,7 @@ const SESSION_FRAME_READ_TIMEOUT: Duration =
 // resource: Потолок срока записи ответа демона от приёма запроса, включая аварийную доставку fail-stop.
 // status: unproven
 // origin: коммит 215497a92 (fix(invocation): bound durable result publication)
+// problem: неизвестно
 // on-reach: запись ответа прерывается ошибкой срока
 const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -123,6 +127,7 @@ const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 // resource: Срок, который служба LSP в демоне тратит на открытие сессии или приём уведомления о документе.
 // status: unproven
 // origin: #2173
+// problem: неизвестно
 // on-reach: ответ не успевает к сроку, соединение сессии закрывается вместе с сессией
 // issue: #2173
 const LSP_SESSION_STEP_BUDGET: Duration =

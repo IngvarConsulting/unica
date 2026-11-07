@@ -362,6 +362,7 @@ fn docs_page_result(
 // resource: Наибольший фрагмент длинной строки текста документа на странице документации.
 // status: unproven
 // origin: #1031
+// problem: неизвестно
 // on-reach: строка делится на фрагменты по курсору без потери байтов
 // decision: закреплено правилом INV.APP.DOCUMENTATION-TEXT-PAGES
 // decision-date: 2026-09-24

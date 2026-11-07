@@ -19,6 +19,7 @@ const POLICY_NAME: &str = ".v8-project.json";
 // resource: Размер файла политики поддержки .v8-project.json, читаемого актором.
 // status: unproven
 // origin: коммит 991a18ae8 (retain actor support policy evidence)
+// problem: неизвестно
 // on-reach: политика сверх предела не разрешает warn/off: проверка поддержки идёт как deny
 // decision: закреплено правилом
 // decision-date: 2026-10-21
@@ -32,6 +33,7 @@ const MAX_SUPPORT_POLICY_BYTES: usize = 32 * 1024 * 1024;
 // resource: Размер одной порции чтения политики поддержки .v8-project.json между проверками отмены и срока.
 // status: unproven
 // origin: коммит f7a85752f (fix(apply): checkpoint retained policy read chunks)
+// problem: неизвестно
 // on-reach: файл читается следующей порцией после проверки отмены и срока
 // decision: закреплено правилом INV.APP.SUPPORT-POLICY-READ-BOUNDS
 // decision-date: 2026-09-22

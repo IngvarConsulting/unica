@@ -30,6 +30,7 @@ const DEFAULT_IDLE_GRACE: Duration = Duration::from_secs(15 * 60);
 // resource: Наибольшая пауза бездействия демона перед выходом, принимаемая из аргумента или окружения.
 // status: unproven
 // origin: f6e7e5c05
+// problem: неизвестно
 // on-reach: Отказ запуска «daemon idle grace is outside the supported range».
 const MAX_IDLE_GRACE_MS: u128 = 60 * 60 * 1_000;
 /// Пауза, назначенная снаружи. Демон переживает процесс, который его поднял,

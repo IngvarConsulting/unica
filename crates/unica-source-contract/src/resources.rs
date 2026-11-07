@@ -10,6 +10,7 @@ use unica_address::source_target::ResolvedTarget;
 // resource: Число ресурсов в манифесте источника по контракту.
 // status: unproven
 // origin: 517463e56 (#266)
+// problem: неизвестно
 // on-reach: Не применяется: константа в рабочем коде не проверяется (используется только в тестах).
 pub const SOURCE_MANIFEST_RESOURCE_MAX: usize = 100;
 // resource-limit: source-contract.resource-page-entries
@@ -20,6 +21,7 @@ pub const SOURCE_MANIFEST_RESOURCE_MAX: usize = 100;
 // resource: Наибольшее число ресурсов одной страницы по контракту источника.
 // status: unproven
 // origin: 517463e56 (#266)
+// problem: неизвестно
 // on-reach: Не применяется: константа в рабочем коде не проверяется (используется только в тестах).
 pub const SOURCE_RESOURCE_PAGE_LIMIT_MAX: usize = 50;
 // resource-limit: source-contract.read-bytes
@@ -30,6 +32,7 @@ pub const SOURCE_RESOURCE_PAGE_LIMIT_MAX: usize = 50;
 // resource: Наибольший объём одного чтения ресурса источника по контракту.
 // status: unproven
 // origin: #266
+// problem: неизвестно
 // on-reach: Не применяется: константа в рабочем коде не проверяется (используется только в тестах).
 pub const SOURCE_READ_LIMIT_MAX: usize = 64 * 1024;
 // resource-limit: source-contract.snapshot-ttl
@@ -40,6 +43,7 @@ pub const SOURCE_READ_LIMIT_MAX: usize = 64 * 1024;
 // resource: Срок жизни снимка источника по контракту.
 // status: unproven
 // origin: #266
+// problem: неизвестно
 // on-reach: Не применяется: константа в рабочем коде не проверяется (используется только в тестах).
 pub const SOURCE_SNAPSHOT_TTL_SECONDS: u64 = 5 * 60;
 

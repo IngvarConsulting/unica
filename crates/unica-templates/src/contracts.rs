@@ -11,6 +11,7 @@ use unica_operation_contract::{object, text, OperationContract};
 // resource: Номер строки в адресе ячейки R<row>C<column> внутри области макета MXL.
 // status: unproven
 // origin: 81287e9a7
+// problem: неизвестно
 // on-reach: Отказ проверки формата «expected area-local R<row>C<column>, up to R10000C1000».
 pub const MXL_MAX_ROW: i64 = 10_000;
 // resource-limit: templates.mxl-column
@@ -21,6 +22,7 @@ pub const MXL_MAX_ROW: i64 = 10_000;
 // resource: Номер колонки в адресе ячейки R<row>C<column> внутри области макета MXL.
 // status: unproven
 // origin: 81287e9a7
+// problem: неизвестно
 // on-reach: Отказ проверки формата «expected area-local R<row>C<column>, up to R10000C1000».
 pub const MXL_MAX_COLUMN: i64 = 1_000;
 

@@ -20,6 +20,8 @@ pub(crate) const HEADER_BYTES: usize = 128;
 // derived: true
 // resource: Байты одной независимо закодированной роли записи хранилища операций: результат с закрытой обёрткой.
 // status: unproven
+// origin: неизвестно
+// problem: неизвестно
 // on-reach: запись или чтение отклоняется как превышение длины
 // issue: #1119
 // review: #1119 PR9
@@ -31,6 +33,8 @@ const BODY_BOUND: usize = MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_
 // derived: true
 // resource: Байты раздела метаданных записи хранилища операций (равно raw::MAX_METADATA_BYTES).
 // status: unproven
+// origin: неизвестно
+// problem: неизвестно
 // on-reach: запись или чтение отклоняется как превышение длины
 const METADATA_BOUND: usize = raw::MAX_METADATA_BYTES;
 

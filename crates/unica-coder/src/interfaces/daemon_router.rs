@@ -56,6 +56,7 @@ const ACKNOWLEDGEMENT_BUDGET: Duration = Duration::from_millis(500);
 // resource: Наименьший интервал опроса демона при восстановлении ещё зарезервированной квитанции.
 // status: unproven
 // origin: #774
+// problem: неизвестно
 // on-reach: frontend ждёт интервал и повторяет опрос; если до конца окна меньше интервала, отвечает закрытым отказом о потерянном вызове
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// A submit response is most often lost exactly at the frontend cutoff: the
@@ -710,6 +711,7 @@ fn epoch_ms_now() -> u64 {
 // resource: Интервал опроса, объявляемый заданию потерянного submit.
 // status: unproven
 // origin: #1376 (#1388)
+// problem: неизвестно
 // on-reach: клиенту сообщается pollInterval 100 мс; сам предел ничего не обрывает
 const LOST_SUBMIT_POLL_INTERVAL_MS: u64 = 100;
 

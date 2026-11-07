@@ -56,6 +56,7 @@ const LEDGER_LOCK_FILE_NAME: &str = ".receipt-ledger.lock";
 // resource: Размер файла поколения хранилища квитанций.
 // status: unproven
 // origin: коммит 0fd93ff31 (feat(v13): retain receipt ledger namespace)
+// problem: неизвестно
 // on-reach: файл не разбирается как поколение, открытие хранилища отказывает
 const MAX_GENERATION_FILE_BYTES: usize = 32;
 const RECEIPT_RECORD_SCHEMA_VERSION: u32 = 1;
@@ -68,6 +69,7 @@ const PERSISTENT_CANCEL_RECORD_SCHEMA_VERSION: u32 = 2;
 // resource: Размер сериализованной записи квитанции с зарезервированной отменой.
 // status: unproven
 // origin: коммит 7da8a60a3 (feat(v13): persist pre-submit cancellation lifecycle)
+// problem: неизвестно
 // on-reach: ошибка RecordTooLarge до изменения каталога
 const MAX_CANCEL_RESERVED_RECORD_BYTES: u64 = 1_024;
 // resource-limit: receipt.completed-task-handoff-witness-bytes
@@ -78,6 +80,7 @@ const MAX_CANCEL_RESERVED_RECORD_BYTES: u64 = 1_024;
 // resource: Размер сериализованного свидетельства передачи завершённого задания.
 // status: unproven
 // origin: коммит 5512d4998 (fix(d0): preserve deadlines and startup proofs)
+// problem: неизвестно
 // on-reach: ошибка RecordTooLarge до изменения каталога
 const MAX_COMPLETED_TASK_HANDOFF_WITNESS_BYTES: u64 = 2_048;
 const RECEIPT_BATCH_SCHEMA_VERSION: u32 = 1;
@@ -89,6 +92,7 @@ const RECEIPT_BATCH_SCHEMA_VERSION: u32 = 1;
 // resource: Число строк одной пакетной мутации журнала квитанций.
 // status: unproven
 // origin: коммит 943853409 (feat(d0): sustain receipt horizon and bounded retention)
+// problem: неизвестно
 // on-reach: пакет отвергается ошибкой ReceiptRowPresentUnsupported
 const MAX_RECEIPT_MUTATION_BATCH_ROWS: usize = 32;
 // resource-limit: receipt.batch-envelope-rows
@@ -99,6 +103,7 @@ const MAX_RECEIPT_MUTATION_BATCH_ROWS: usize = 32;
 // resource: Число строк в одном файле-пакете журнала квитанций.
 // status: unproven
 // origin: коммит 943853409 (feat(d0): sustain receipt horizon and bounded retention)
+// problem: неизвестно
 // on-reach: запись делится на пакеты по 256 строк; уплотнение следов пропускается, если не помещается; файл с большим числом строк считается повреждённым
 const MAX_RECEIPT_BATCH_ENVELOPE_ROWS: usize = 256;
 // resource-limit: receipt.batch-bytes
@@ -109,6 +114,7 @@ const MAX_RECEIPT_BATCH_ENVELOPE_ROWS: usize = 256;
 // resource: Размер одного файла-пакета журнала квитанций.
 // status: unproven
 // origin: коммит 943853409 (feat(d0): sustain receipt horizon and bounded retention)
+// problem: неизвестно
 // on-reach: ошибка RecordTooLarge; при чтении больший файл не принимается
 const MAX_RECEIPT_BATCH_BYTES: u64 = 1_048_576;
 

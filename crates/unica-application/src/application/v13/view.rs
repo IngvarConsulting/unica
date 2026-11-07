@@ -26,6 +26,7 @@ use unica_refusal::RefusalCode;
 // resource: Число элементов страницы view, когда limit не задан.
 // status: unproven
 // origin: cec3ddf7c
+// problem: неизвестно
 // on-reach: Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.
 const DEFAULT_LIMIT: usize = 20;
 // resource-limit: view.page-max-entries
@@ -36,6 +37,7 @@ const DEFAULT_LIMIT: usize = 20;
 // resource: Наибольшее число элементов одной страницы view.
 // status: unproven
 // origin: cec3ddf7c
+// problem: неизвестно
 // on-reach: Отказ bad_value «view limit must be between 1 and 50».
 const MAX_LIMIT: usize = 50;
 // resource-limit: view.preferred-page-bytes
@@ -46,6 +48,7 @@ const MAX_LIMIT: usize = 50;
 // resource: Целевой сериализованный объём страницы адресной коллекции view и check.
 // status: unproven
 // origin: #1003
+// problem: неизвестно
 // on-reach: страница останавливается по объёму (stoppedBy bytes) с курсором; неделимый элемент отдаётся целиком
 // decision: закреплено правилом INV.WIRE.READ-PAGE-BUDGET
 // decision-date: 2026-09-23

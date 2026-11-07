@@ -116,6 +116,7 @@ fn run_apply_dry_run_after_confirmation_hook() {
 // resource: Интервал простоя, после которого незанятый актор рабочего пространства освобождает удержанные дескрипторы корня.
 // status: unproven
 // origin: коммит 3a59e82fd (bounded warm set of workspace actors)
+// problem: неизвестно
 // on-reach: актор без живого вызова и обещанного состояния освобождается, следующий вызов открывает корень заново
 // decision: закреплено правилом
 // decision-date: 2026-10-21

@@ -301,6 +301,7 @@ fn manager_method(path: &NamePath) -> Option<Target> {
 // resource: Наибольшее число потоков, на которых один поиск ссылок разбирает модули-кандидаты.
 // status: unproven
 // origin: #2190
+// problem: неизвестно
 // on-reach: разбор идёт на меньшем числе потоков; остальные ядра остаются вызовам MCP
 pub const MAX_REFERENCE_PARSE_THREADS: usize = 8;
 

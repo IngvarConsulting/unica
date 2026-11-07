@@ -32,6 +32,7 @@ use unica_workspace::paths::normalize_path_identity;
 // resource: Срок одного запуска процесса анализатора BSL и внутренних адаптеров без явного срока.
 // status: unproven
 // origin: коммит aff5640a7 (v10)
+// problem: неизвестно
 // on-reach: процесс прерывается, ошибка «internal <label> adapter timed out after 120 seconds»
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 #[derive(Debug, Clone)]

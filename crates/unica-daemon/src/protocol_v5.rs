@@ -40,6 +40,7 @@ pub const V5_ENDPOINT_SCHEMA_VERSION: u32 = 1;
 // resource: Размер файла записи конечной точки демона v5.
 // status: unproven
 // origin: коммит 4ed8661c6 (feat(v13): wire hidden receipt ledger shell)
+// problem: неизвестно
 // on-reach: запись отвергается: «v5 daemon endpoint record exceeds the byte limit»
 pub const MAX_V5_ENDPOINT_RECORD_BYTES: usize = 16 * 1024;
 /// Bound of the first frame of a connection, `\n` included. Before the token
@@ -93,6 +94,7 @@ pub const MAX_V5_REQUEST_LINE_BYTES: usize = 64 * 1024 * 1024;
 // resource: Размер одного кадра ответа демона по протоколу v5: канонический результат плюс запас конверта.
 // status: unproven
 // origin: коммит de0ae463d (feat(daemon): add strict protocol v5 shell)
+// problem: неизвестно
 // on-reach: кадр отвергается ошибкой «v5 daemon response frame exceeds the byte limit»
 // issue: #1119
 // decision: закреплено правилом INV.WIRE.DAEMON-RESPONSE-SIZE
@@ -109,6 +111,7 @@ pub const MAX_V5_RESPONSE_LINE_BYTES: usize =
 // resource: Верхняя граница бюджета прямого ответа и ожидания задания в запросе протокола v5.
 // status: unproven
 // origin: коммит de0ae463d (feat(daemon): add strict protocol v5 shell)
+// problem: неизвестно
 // on-reach: запрос отвергается: «v5 invocation response budget exceeds 7000 ms» или «v5 task wait exceeds 7000 ms»
 // decision: закреплено правилом
 // decision-date: 2026-09-22

@@ -34,6 +34,7 @@ use unica_execution_contract::invocation::{InvocationId, TaskId};
 // resource: Число разных чтений, одновременно ожидающих возможных присоединений.
 // status: unproven
 // origin: #1376 (#1388)
+// problem: неизвестно
 // on-reach: забывается самое старое ведущее чтение: оно теряет только возможность присоединения
 pub(super) const MAX_JOINABLE_LEADERS: usize = 256;
 /// Сколько присоединившихся вызовов демон помнит одновременно. Сверх этого
@@ -46,6 +47,7 @@ pub(super) const MAX_JOINABLE_LEADERS: usize = 256;
 // resource: Число присоединившихся вызовов, которые демон помнит одновременно.
 // status: unproven
 // origin: #1376 (#1388)
+// problem: неизвестно
 // on-reach: новый вызов не присоединяется и исполняется сам
 pub(super) const MAX_JOINED_HOLDERS: usize = 1024;
 
@@ -83,6 +85,7 @@ pub(super) const JOIN_WINDOW: Duration = Duration::from_secs(30);
 // resource: Число квитанций без задания, которые демон помнит по их taskId.
 // status: unproven
 // origin: #1376 (#1388)
+// problem: неизвестно
 // on-reach: забывается самая старая; lookup её taskId далее даёт task_not_found
 pub(super) const MAX_RECEIPT_HANDLES: usize = 4096;
 
@@ -788,6 +791,7 @@ pub(super) const SUBMIT_FENCE_RETENTION: Duration = Duration::from_secs(600);
 // resource: Число одновременно стоящих преград для кадров потерянного submit.
 // status: unproven
 // origin: #1376 (#1388)
+// problem: неизвестно
 // on-reach: после чистки истёкших преграда не ставится, frontend отвечает, что вызов ещё может идти
 pub(super) const MAX_SUBMIT_FENCES: usize = 4096;
 const SUBMIT_FENCE_STRIPES: usize = 64;

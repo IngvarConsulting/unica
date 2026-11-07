@@ -16,6 +16,7 @@ use std::ffi::OsString;
 // resource: Бюджет текстового ответа с исходником для хоста с неизмеренным пределом.
 // status: unproven
 // origin: #1478 (#1458)
+// problem: неизвестно
 // on-reach: текст сверх бюджета отказывает result_too_large с подсказкой диапазона строк Body#L<a>-L<b>
 // decision: закреплено правилом
 // decision-date: 2026-10-21
@@ -102,6 +103,7 @@ const CLAUDE_RESULT_SIZE_CHARS: u64 = 100_000;
 // resource: Наибольший бюджет текстового ответа среди известных хостов: верхняя граница текста исходника и явной настройки UNICA_RESPONSE_BUDGET.
 // status: external
 // origin: #1478; = CLAUDE_RESPONSE_BUDGET
+// problem: неизвестно
 // on-reach: текст больше не отдаётся никому (result_too_large); настройка вне 1024..73728 игнорируется с сообщением в stderr
 // evidence: Выводится из бюджетов host.claude-response-budget, host.codex-response-budget, host.zcode-response-budget
 // decision: правило закрепляет принцип «наибольший бюджет среди известных хостов», а не число 72 КиБ

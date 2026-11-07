@@ -186,6 +186,8 @@ fn install_and_verify_runtime(plugin_root: &Path, provider_state_root: &Path) ->
         // expr: Duration::from_secs(20)
         // resource: Срок проверки установленного runtime и инструментов MCP при установке пакета bootstrap.
         // status: unproven
+        // origin: неизвестно
+        // problem: неизвестно
         // on-reach: установка завершается ошибкой проверки runtime
         provider_state_root,
         Duration::from_secs(20),

@@ -45,6 +45,7 @@ const RUNNER_COMMAND: &str = "launch";
 // resource: Наибольшее значение waitTimeoutMs, которое принимает launch клиента платформы.
 // status: unproven
 // origin: fdc96f905 (#886)
+// problem: неизвестно
 // on-reach: Отказ bad_value «launch waitTimeoutMs must be an integer from 1 to 86400000».
 const WAIT_TIMEOUT_MAX_MS: u64 = 86_400_000;
 const PROCESSOR_EXTENSIONS: [&str; 2] = ["epf", "erf"];

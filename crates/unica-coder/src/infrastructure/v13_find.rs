@@ -27,6 +27,7 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 // resource: Число наборов исходников, из которых строится каталог имён find.
 // status: unproven
 // origin: cec3ddf7c
+// problem: неизвестно
 // on-reach: Отказ provider_limit_exceeded «find source-set count exceeds the bounded workspace limit».
 // issue: #1119
 // review: снимается в #1119 PR2
@@ -39,6 +40,7 @@ const MAX_SOURCE_SETS: usize = 64;
 // resource: Число компонентов пути, по которому find сопоставляет точный путь ресурса.
 // status: unproven
 // origin: 4288eaccd (#1510)
+// problem: неизвестно
 // on-reach: тихо: путь глубже 7 компонентов не сопоставляется как точный ресурс.
 const MAX_POINT_PATH_DEPTH: usize = 7;
 // resource-limit: find.directory-documents
@@ -49,6 +51,7 @@ const MAX_POINT_PATH_DEPTH: usize = 7;
 // resource: Число документов каталога раскладки find (resolve по адресу, callGraph) по всему рабочему пространству. Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.
 // status: unproven
 // origin: cec3ddf7c
+// problem: неизвестно
 // on-reach: Отказ provider_limit_exceeded «find directory exceeds the bounded workspace entry limit».
 // issue: #1119
 // evidence: Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольшее число документов каталога имён — 19 607 на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (30% предела), 9 548 на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ).
@@ -62,6 +65,7 @@ const DEFAULT_MAX_DOCUMENTS: usize = 65_536;
 // resource: Оценка суммарного объёма фактов каталога раскладки find (resolve по адресу, callGraph) (с псевдонимами путей модулей). Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.
 // status: unproven
 // origin: cec3ddf7c
+// problem: неизвестно
 // on-reach: Отказ provider_limit_exceeded «find directory exceeds the bounded workspace byte budget».
 // issue: #1119
 // evidence: Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольшая оценка объёма фактов каталога имён — 8 834 518 байт на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (52,7% предела), 2 258 617 байт на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ); поиск имён завершился без неполноты.
@@ -90,6 +94,7 @@ const DESCRIPTOR_HEAD_BYTES: usize = 8 * 1024;
 // resource: Число элементов одного каталога коллекции при построении каталога раскладки find (resolve по адресу, callGraph). Поиск имён (search corpus=names) этот каталог больше не строит: он ранжирует документы во время обхода, и предел к нему не применяется. Он держит только limit + 1 кандидатов, ранжированных после последнего имени прошлой страницы (курсор sc3 несёт его оценку и адрес), счётчик и отпечаток всех совпадений, а при обходе — список одной коллекции; ближайшие имена ищутся вторым обходом, когда прямых совпадений нет. Каждая страница обходит раскладку заново — #2106. Предел остался у каталога раскладки, который держат разрешение адреса (resolve по адресу) и соседи callGraph.
 // status: unproven
 // origin: e2f60abd5 (#690)
+// problem: неизвестно
 // on-reach: Отказ provider_limit_exceeded «find source collection exceeds the bounded entry limit».
 // issue: #1119
 // evidence: Замер 25.10.2026 (Apple M3 Max, 14 ядер, macOS, git 2.54, релизная сборка ветки поверх main 07306a173, scripts/dev/measure-capacity.py, два прохода подряд, наблюдение ёмкости демона (--capacity-report)): наибольший каталог коллекции — 5 424 элемента на выгрузке УТ 11 (48 159 файлов в индексе Git, 12 290 модулей BSL на 508 МБ, 31 009 XML на 692 МБ) (общие модули; 8% предела), 5 422 на синтетическом корпусе формы УТ из scripts/dev/synthetic-configuration.py (10 757 модулей BSL на 510 МБ, 14 546 XML на 69 МБ).
@@ -103,6 +108,7 @@ const MAX_COLLECTION_ENTRIES: usize = 65_536;
 // resource: Число образцов пропущенных документов в деталях неполноты find.
 // status: unproven
 // origin: eed587b99 (#1024)
+// problem: неизвестно
 // on-reach: тихо: сверх 20 детали не добавляются; полное число сохраняется счётчиком total.
 const MAX_OMISSION_DETAILS: usize = 20;
 /// Physical child families an object owns as its own files or directories.

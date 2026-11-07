@@ -17,6 +17,7 @@ use unica_refusal::{RefusalCode, RefusalDetail};
 // resource: Число диагностик страницы check, когда limit не задан: находок узла или групп корневого вердикта.
 // status: unproven
 // origin: #1119 (9c)
+// problem: неизвестно
 // on-reach: Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.
 pub const DEFAULT_CHECK_LIMIT: usize = 20;
 /// The largest `limit` a check page accepts.
@@ -28,6 +29,7 @@ pub const DEFAULT_CHECK_LIMIT: usize = 20;
 // resource: Наибольшее число диагностик одной страницы check.
 // status: unproven
 // origin: #1119 (9c)
+// problem: неизвестно
 // on-reach: limit больше 50 получает bad_value; остаток доступен по cursor.
 pub const MAX_CHECK_LIMIT: usize = 50;
 

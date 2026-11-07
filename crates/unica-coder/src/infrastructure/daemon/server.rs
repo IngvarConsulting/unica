@@ -567,6 +567,8 @@ impl unica_execution::receipt_runtime::ports::InvocationHost for CanonicalInvoca
     // derived: true
     // resource: Наибольший размер тела прямого ответа канонического вызова, который поддерживает хост демона (наибольший бюджет ответа известных хостов).
     // status: unproven
+    // origin: неизвестно
+    // problem: неизвестно
     // on-reach: Отказ result_too_large: терминал вызова публикуется как неуспешный с причиной ResultTooLarge.
     // issue: #1119
     // review: #1119 PR9

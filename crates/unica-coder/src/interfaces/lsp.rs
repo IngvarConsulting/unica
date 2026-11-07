@@ -35,6 +35,7 @@ use unica_lsp_contract::protocol::{V5LspCompletionData, V5LspCompletionItem, V5L
 // resource: Бюджет одного запроса редактора на полосе LSP демона.
 // status: unproven
 // origin: #2173
+// problem: неизвестно
 // on-reach: редактор получает ошибку RequestFailed с кодом unica: lsp_deadline_exceeded, работа запроса отменяется
 // issue: #2173
 const LSP_CALL_BUDGET: Duration = Duration::from_secs(5);
@@ -51,6 +52,7 @@ const LSP_EXCHANGE_MARGIN: Duration = Duration::from_secs(1);
 // resource: Срок обмена сессии LSP с демоном: открытие, уведомление о документе, закрытие.
 // status: unproven
 // origin: #2173
+// problem: неизвестно
 // on-reach: initialize отвечает RequestFailed; сбой уведомления завершает `unica lsp` с кодом 1
 // issue: #2173
 const LSP_SESSION_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(8);
@@ -63,6 +65,7 @@ const LSP_SESSION_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(8);
 // resource: Ожидание уведомлений демона одним опросом frontend LSP.
 // status: unproven
 // origin: #2173
+// problem: неизвестно
 // on-reach: опрос возвращает пустой список и повторяется
 // issue: #2173
 const LSP_POLL_WAIT_MS: u64 = 2_000;
@@ -75,6 +78,7 @@ const LSP_POLL_WAIT_MS: u64 = 2_000;
 // resource: Подряд потерянных обменов опроса уведомлений, после которых frontend LSP считает сессию потерянной.
 // status: unproven
 // origin: #2173
+// problem: неизвестно
 // on-reach: `unica lsp` пишет причину в stderr и завершается с кодом 1; редактор перезапускает сервер
 // issue: #2173
 const MAX_LSP_POLL_FAILURES: u32 = 3;
@@ -87,6 +91,7 @@ const MAX_LSP_POLL_FAILURES: u32 = 3;
 // resource: Запросов редактора, одновременно ждущих ответа демона в одном соединении LSP.
 // status: unproven
 // origin: #2173
+// problem: неизвестно
 // on-reach: новый запрос сразу получает RequestFailed с кодом unica: lsp_busy
 // issue: #2173
 const MAX_LSP_REQUESTS_IN_FLIGHT: usize = 32;

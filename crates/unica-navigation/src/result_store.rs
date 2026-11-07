@@ -28,6 +28,7 @@ use serde_json::Value;
 // resource: Срок хранения отложенного результата в хранилище результатов процесса.
 // status: unproven
 // origin: #537
+// problem: неизвестно
 // on-reach: Запись удаляется; чтение ссылки отказывает result_expired.
 pub const DEFAULT_TTL: Duration = Duration::from_secs(15 * 60);
 // resource-limit: navigation.result-store-entries
@@ -38,6 +39,7 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(15 * 60);
 // resource: Число записей хранилища отложенных результатов.
 // status: unproven
 // origin: #537
+// problem: неизвестно
 // on-reach: Вытесняется запись, дольше всех не читавшаяся; её ссылка затем отказывает как недоступная.
 pub const DEFAULT_MAX_ENTRIES: usize = 32;
 // resource-limit: navigation.result-store-bytes
@@ -48,6 +50,7 @@ pub const DEFAULT_MAX_ENTRIES: usize = 32;
 // resource: Суммарный объём отложенных результатов прежнего хранилища ResultStore в памяти.
 // status: unproven
 // origin: 27a108daf (#537); в коде помечено «Temporary and unproven… see #1119»
+// problem: неизвестно
 // on-reach: вытесняются давно не читавшиеся записи хранилища результатов
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 // Temporary and unproven retained-state budget; see #1119. This does not

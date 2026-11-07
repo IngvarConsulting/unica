@@ -65,6 +65,7 @@ use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
 // resource: Срок завершения отменённых вызовов и рабочих потоков поставщиков после закрытия stdio хостом.
 // status: unproven
 // origin: коммит 5f6649325 (fix: drain accepted mcp calls on eof)
+// problem: неизвестно
 // on-reach: frontend пишет «unica mcp shutdown grace expired while tool calls or provider workers were cleaning up» и останавливает рантайм
 const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 // resource-limit: mcp.runtime-shutdown-grace
@@ -75,6 +76,7 @@ const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
 // resource: Срок остановки асинхронного рантайма MCP-frontend.
 // status: unproven
 // origin: #224
+// problem: неизвестно
 // on-reach: незавершённые задачи рантайма бросаются при выходе
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 
@@ -732,6 +734,7 @@ fn has_structured_output(spec: &ToolSpec) -> bool {
 // resource: Число инструментов на одной странице tools/list в эпохе modern.
 // status: unproven
 // origin: #545
+// problem: неизвестно
 // on-reach: остальные инструменты выдаются по nextCursor; legacy-клиенты получают весь список одной страницей
 const TOOLS_PAGE_SIZE: usize = 25;
 

@@ -39,6 +39,7 @@ pub(crate) const NAME_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 // resource: Шаг ожидания фоновой сборки индекса имён, пока исполняется вызов MCP.
 // status: unproven
 // origin: #2190
+// problem: неизвестно
 // on-reach: сборка проверяет снова; вызов MCP её не ждёт
 pub(crate) const NAME_INDEX_YIELD_POLL: Duration = Duration::from_millis(20);
 /// The largest module text the index reads; a larger module is left out.
@@ -50,6 +51,7 @@ pub(crate) const NAME_INDEX_YIELD_POLL: Duration = Duration::from_millis(20);
 // resource: Наибольший текст модуля, который индекс имён читает при сборке.
 // status: unproven
 // origin: #2190
+// problem: неизвестно
 // on-reach: модуль не попадает в индекс, ссылки в нём по индексу не находятся
 pub(crate) const NAME_INDEX_MODULE_BYTES: usize = 64 * 1024 * 1024;
 /// The heap the index may grow to; past it, modules not yet indexed are left
@@ -62,6 +64,7 @@ pub(crate) const NAME_INDEX_MODULE_BYTES: usize = 64 * 1024 * 1024;
 // resource: Память, до которой растёт индекс имён одного набора (оценка по ключам, путям и спискам модулей).
 // status: unproven
 // origin: #2190
+// problem: неизвестно
 // on-reach: ещё не учтённые модули в индекс не попадают; поиск ссылок отвечает неполным с причиной capped, не отказом
 // evidence: Замер 26.10.2026, УТ 11 (Sendbox, 12 290 модулей, 7,1 млн строк): индекс около 38 МиБ, сборка 17–48 с в зависимости от нагрузки машины.
 pub(crate) const NAME_INDEX_BUDGET_BYTES: usize = 256 * 1024 * 1024;

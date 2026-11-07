@@ -385,6 +385,8 @@ impl PreparedExtensions {
                 // expr: 4096
                 // resource: Число расширений в инвентаре информационной базы, полученном от раннера.
                 // status: unproven
+                // origin: неизвестно
+                // problem: неизвестно
                 // on-reach: отказ: ответ раннера «exceeds the result limit»
                 if items.len() > 4096 {
                     return Err(invalid("extension inventory exceeds the result limit"));
@@ -544,6 +546,8 @@ fn valid_inventory_record(item: &Value) -> bool {
             // expr: 4096
             // resource: Байты одного текстового поля записи расширения (имя, синоним, префикс и др.) в ответе раннера.
             // status: unproven
+            // origin: неизвестно
+            // problem: неизвестно
             // on-reach: запись с длинным полем считается некорректным ответом раннера
             .all(|k| item[k].as_str().is_some_and(|v| v.len() <= 4096))
         && ["version", "security_profile_name"]

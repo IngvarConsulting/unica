@@ -24,8 +24,8 @@ def block(ident: str = "demo.file-bytes", indent: str = "", **overrides: str | l
         "expr": None,
         "resource": "байты одного файла",
         "status": "unproven",
-        "origin": None,
-        "problem": None,
+        "origin": "неизвестно",
+        "problem": "неизвестно",
         "on-reach": "отказ source_unreadable",
         "issue": "#1119",
         "evidence": [],
@@ -164,6 +164,23 @@ class ResourceLimitBlockTests(unittest.TestCase):
         self.assertTrue(any("unknown field `state`" in error for error in self.errors()), self.errors())
         self.lib(block().replace("// unit: bytes\n// scope: file\n", "// scope: file\n// unit: bytes\n"))
         self.assertTrue(any("fields go in the order" in error for error in self.errors()), self.errors())
+
+    def test_an_unknown_origin_or_problem_is_said_and_not_left_out(self) -> None:
+        """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
+        self.lib(block(origin=None))
+        self.assertTrue(any("field `origin` is missing" in error for error in self.errors()), self.errors())
+        self.lib(block(problem="растёт память демона"))
+        found, errors = limits.inventory(self.root)
+        self.assertEqual(errors, [])
+        self.assertEqual((found["limits"][0]["origin"], found["limits"][0]["problem"]), (None, "растёт память демона"))
+
+    def test_lines_end_only_at_a_line_feed_as_the_parser_counts_them(self) -> None:
+        self.write("crates/demo/src/read.rs", "use crate::MAX_FILE_BYTES;\nconst NOTE: &str = \"a b\";\n")
+        self.write(
+            "crates/demo/src/read.rs",
+            "const NOTE: &str = \"a b\";\n" + block("demo.read-bytes", value="3") + "const MAX_READ_BYTES: usize = 3;\n",
+        )
+        self.assertEqual(self.errors(), [])
 
     def test_scanner_reads_past_an_early_test_module_declaration(self) -> None:
         """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""

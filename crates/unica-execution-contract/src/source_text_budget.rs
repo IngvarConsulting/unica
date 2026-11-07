@@ -18,6 +18,7 @@ use unica_refusal::RefusalCode;
 // resource: Запас на конверт ответа с текстом Body при сверке с бюджетом ответа клиента.
 // status: unproven
 // origin: #1458 (#1478)
+// problem: неизвестно
 // on-reach: текст, не помещающийся в бюджет вместе с запасом, не отдаётся: отказ или пометка overBudget в сводке модуля
 const ENVELOPE_RESERVE_BYTES: usize = 2 * 1024;
 

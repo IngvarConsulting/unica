@@ -38,6 +38,7 @@ use unica_workspace::read::read_root_relative_regular_file;
 // resource: Размер файла v8project.yaml (и локального) при начальной загрузке рабочего пространства.
 // status: unproven
 // origin: 8a85591e3 (#693)
+// problem: неизвестно
 // on-reach: Ошибка «<name> must be a bounded regular file»: конфигурация проекта не читается.
 const PROJECT_CONFIG_MAX_BYTES: usize = 8 * 1024 * 1024;
 

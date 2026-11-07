@@ -34,6 +34,7 @@ use uuid::Uuid;
 // resource: Срок подключения frontend к демону v5 с запуском при необходимости, ping и ожидания ответа на прочие запросы.
 // status: unproven
 // origin: коммит 4ed8661c6 (feat(v13): wire hidden receipt ledger shell)
+// problem: неизвестно
 // on-reach: ошибка «protocol-v5 deadline expired during …»; при сбое ping сессия владельца отравляется
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Longest socket wait of an interruptible observation read between checks
@@ -45,6 +46,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 // value: 25
 // resource: Наибольшее ожидание сокета прерываемым чтением наблюдения между проверками флага остановки.
 // status: unproven
+// origin: неизвестно
 // problem: Прерываемое наблюдение должно замечать остановку, не дожидаясь срока всего чтения.
 // on-reach: чтение продолжается следующим окном после проверки флага остановки
 const OBSERVATION_INTERRUPT_POLL: Duration = Duration::from_millis(25);
@@ -56,6 +58,7 @@ const OBSERVATION_INTERRUPT_POLL: Duration = Duration::from_millis(25);
 // resource: Внутренний потолок ожидания frontend одного ответа демона.
 // status: unproven
 // origin: коммит 136db4642 (feat(daemon): add ReceiptLedger cancellation slice)
+// problem: неизвестно
 // on-reach: чтение ответа обрывается ошибкой срока, сессия владельца отравляется и больше не используется
 // decision: закреплено правилом
 // decision-date: 2026-09-22
@@ -69,6 +72,7 @@ const OWNER_RESPONSE_SAFETY_TIMEOUT: Duration = Duration::from_secs(10);
 // resource: Ожидание блокировки запуска демона в каталоге состояния.
 // status: unproven
 // origin: коммит 38512f013 (feat(daemon): add one versioned user executor)
+// problem: неизвестно
 // on-reach: ошибка «timed out waiting for daemon spawn ownership»
 const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 // resource-limit: daemon.existing-endpoint-probe-timeout
@@ -79,6 +83,7 @@ const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 // resource: Срок проверки уже записанной конечной точки демона перед запуском нового.
 // status: unproven
 // origin: коммит f36431393 (fix(v13): preserve startup and receipt authority)
+// problem: неизвестно
 // on-reach: точка считается недоступной, frontend переходит к блокировке и запуску демона
 const EXISTING_ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 // resource-limit: daemon.startup-cleanup-timeout
@@ -89,6 +94,7 @@ const EXISTING_ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 // resource: Резерв срока на остановку и уборку дочернего демона при неудачном запуске (не больше трети оставшегося бюджета).
 // status: unproven
 // origin: коммит 38512f013 (feat(daemon): add one versioned user executor)
+// problem: неизвестно
 // on-reach: уборка прекращается, диагностика запуска дополняется ошибкой уборки
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 // resource-limit: daemon.spawn-readiness-retry
@@ -99,6 +105,7 @@ const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
 // resource: Пауза между проверками готовности только что запущенного демона.
 // status: unproven
 // origin: коммит 4ed8661c6 (feat(v13): wire hidden receipt ledger shell)
+// problem: неизвестно
 // on-reach: проверки повторяются до срока готовности запуска; по его истечении запуск завершается ошибкой
 const RETRY_INTERVAL: Duration = Duration::from_millis(20);
 

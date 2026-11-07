@@ -16,6 +16,7 @@ use unica_work_control::clock::Clock;
 // resource: Окно ожидания прямого ответа, после которого вызов передаётся в задание.
 // status: unproven
 // origin: коммит 88b99b0e0 (feat(invocation): hand long calls off after seven seconds)
+// problem: неизвестно
 // on-reach: демон возвращает задание с заранее выделенным taskId, та же попытка продолжает работу
 // decision: закреплено правилом
 // decision-date: 2026-09-22
@@ -29,6 +30,7 @@ pub const INVOCATION_HANDOFF_WINDOW: Duration = Duration::from_secs(7);
 // resource: Добавка к бюджету прямого ответа на сериализацию ответа.
 // status: unproven
 // origin: коммит 215497a92 (fix(invocation): bound durable result publication)
+// problem: неизвестно
 // on-reach: квитанция, не решённая к бюджету плюс 125 мс, считается потерянной: frontend отвечает закрытым отказом о потерянном вызове
 // decision: закреплено правилом INV.WIRE.DAEMON-RESPONSE-TIME
 // decision-date: 2026-09-22

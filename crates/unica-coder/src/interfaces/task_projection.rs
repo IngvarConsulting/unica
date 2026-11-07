@@ -28,6 +28,7 @@ use {
 // resource: Размер проекции задания MCP: канонический результат плюс запас конверта.
 // status: unproven
 // origin: коммит 424f6076c (fix(mcp): close native task projection boundaries)
+// problem: неизвестно
 // on-reach: проекция отвергается: TaskProjectionError::ResultTooLarge, код result_too_large
 // issue: #1119
 // review: #1119 PR9

@@ -54,6 +54,7 @@ use unica_process::ProcessLineReply;
 // resource: Срок процесса внутреннего адаптера анализа (и bsl-analyzer) по умолчанию.
 // status: unproven
 // origin: aff5640a7 (v10)
+// problem: неизвестно
 // on-reach: Процесс прерывается, диагностика «internal <label> adapter timed out after 120 seconds».
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 

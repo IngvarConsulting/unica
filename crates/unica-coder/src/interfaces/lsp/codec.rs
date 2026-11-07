@@ -12,6 +12,7 @@ use std::io::{self, BufRead, Read, Write};
 // resource: Тело одного сообщения редактора в потоке LSP stdio.
 // status: unproven
 // origin: #2173
+// problem: неизвестно
 // on-reach: поток считается испорченным: `unica lsp` пишет причину в stderr и завершается с кодом 1
 // issue: #2173
 pub(super) const MAX_LSP_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
@@ -23,6 +24,7 @@ pub(super) const MAX_LSP_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 // resource: Длина одной строки заголовка сообщения LSP stdio.
 // status: unproven
 // origin: #2173
+// problem: неизвестно
 // on-reach: поток считается испорченным: `unica lsp` завершается с кодом 1
 // issue: #2173
 const MAX_LSP_HEADER_LINE_BYTES: usize = 1024;

@@ -13,6 +13,7 @@ use unica_source_contract::read::SourceImage;
 // resource: Размер одного фрагмента исходника в окне сохранённого плана apply.
 // status: unproven
 // origin: #1434
+// problem: неизвестно
 // on-reach: исходник делится на следующие фрагменты той же или следующей страницы
 const CHUNK_BYTES: usize = 2048;
 // resource-limit: apply.plan-source-page-bytes
@@ -23,6 +24,7 @@ const CHUNK_BYTES: usize = 2048;
 // resource: Сериализованный объём одной страницы исходников сохранённого плана apply.
 // status: unproven
 // origin: #1434
+// problem: неизвестно
 // on-reach: страница останавливается по объёму (stoppedBy bytes) с курсором; один фрагмент больше страницы даёт ошибку «saved plan path exceeds the page byte limit»
 const PAGE_BYTES: usize = 64 * 1024;
 

@@ -1275,5 +1275,6 @@ pub type TypedChildTree = (Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>);
 // resource: Глубина обхода дерева дочерних ресурсов объекта метаданных.
 // status: unproven
 // origin: #309
+// problem: неизвестно
 // on-reach: отказ ProviderUnavailable «typed child resource topology is unavailable»
 const TYPED_CHILD_TREE_MAX_DEPTH: usize = 64;

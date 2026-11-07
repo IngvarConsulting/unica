@@ -33,6 +33,7 @@ const BUCKETS: usize = 32;
 // resource: Интервал записи снимка наблюдения ёмкости на диск.
 // status: unproven
 // origin: #1122
+// problem: неизвестно
 // on-reach: снимок записывается по интервалу и при остановке
 const FLUSH_INTERVAL: Duration = Duration::from_secs(60);
 const SHUTDOWN_FLUSH_WAIT: Duration = Duration::from_secs(2);
@@ -44,6 +45,7 @@ const SHUTDOWN_FLUSH_WAIT: Duration = Duration::from_secs(2);
 // resource: Размер файла снимка локального наблюдения ёмкости (запись и чтение).
 // status: unproven
 // origin: e4ef94156 (#1122)
+// problem: неизвестно
 // on-reach: Ошибка InvalidData «capacity snapshot is too large»: снимок не пишется и не читается.
 pub(crate) const MAX_SNAPSHOT_BYTES: usize = 16 * 1024;
 

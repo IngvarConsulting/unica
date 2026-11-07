@@ -11,6 +11,8 @@
     // value: 4
     // resource: Шаги вывода типа при дополнении.
     // status: unproven
+    // origin: неизвестно
+    // problem: неизвестно
     // on-reach: тип дальше не прослеживается
     pub const MAX_INFERENCE_DEPTH: usize = 4;
 
@@ -67,7 +69,9 @@ FIELDS = (
     "origin", "problem", "on-reach", "issue", "evidence", "decision", "decision-date",
     "decision-source", "review",
 )
-REQUIRED = ("class", "unit", "scope", "resource", "status", "on-reach")
+REQUIRED = ("class", "unit", "scope", "resource", "status", "origin", "problem", "on-reach")
+# Происхождение или проблема, которых никто не знает, названы так прямо.
+UNKNOWN = "неизвестно"
 
 
 class Item(NamedTuple):
@@ -239,13 +243,14 @@ def parse(root: Path, path: Path, test_files: set[Path]) -> Source:
             walk(child)
 
     walk(tree.root_node)
-    lines = text.splitlines(keepends=True)
-    blocks = read_blocks(rel, lines)
+    # Lines as tree-sitter counts them: only `\n` ends one.
+    lines = text.split("\n")
+    blocks = read_blocks(rel, [line.rstrip("\r") for line in lines])
     # A block names its literal: only the code counts as its occurrences.
     for block in blocks:
         for index in range(block.line - 1, block.end):
-            lines[index] = "\n"
-    return Source(rel.split("/")[1], "".join(lines), tuple(items), tuple(blocks))
+            lines[index] = ""
+    return Source(rel.split("/")[1], "\n".join(lines), tuple(items), tuple(blocks))
 
 
 @functools.lru_cache(maxsize=4)
@@ -339,7 +344,7 @@ def names_for(root: Path, item: Item) -> dict[str, int]:
 
 def literal_position(text: str, after: int, literal: str) -> tuple[int, int] | None:
     """Строка первого вхождения литерала после строки `after` и число его вхождений в файле."""
-    lines = text.splitlines(keepends=True)
+    lines = [line + "\n" for line in text.split("\n")]
     target = normalize(literal)
     tail = normalize("".join(lines[after:]))
     found = tail.find(target)
@@ -396,7 +401,7 @@ def field_errors(where: str, block: Block) -> tuple[dict, list[str]]:
         errors.append(f"{where}: decision-date `{entry['decision-date']}` is not YYYY-MM-DD")
     if entry.get("status") == "justified" and not (evidence and len(decision) == 3):
         errors.append(f"{where}: a justified limit names its evidence and decision")
-    if entry.get("status") == "external" and "origin" not in entry:
+    if entry.get("status") == "external" and entry.get("origin", UNKNOWN) == UNKNOWN:
         errors.append(f"{where}: an external limit names its origin")
     if "literal" in entry and ("count" not in entry or "expr" not in entry):
         errors.append(f"{where}: a literal limit names its count and expr")
@@ -411,8 +416,8 @@ def field_errors(where: str, block: Block) -> tuple[dict, list[str]]:
         "expr": entry.get("expr"),
         "value": int(entry["value"]) if entry.get("value", "").isdigit() else None,
         "status": entry.get("status"),
-        "origin": entry.get("origin"),
-        "problem": entry.get("problem"),
+        "origin": None if entry.get("origin") == UNKNOWN else entry.get("origin"),
+        "problem": None if entry.get("problem") == UNKNOWN else entry.get("problem"),
         "onReach": entry.get("on-reach"),
         "issue": entry.get("issue"),
         "evidence": evidence,
@@ -527,7 +532,13 @@ def scaffold(root: Path) -> list[str]:
                 lines.append(f"// value: {value}")
             if plain is None:
                 lines.append("// derived: true")
-            lines += ["// resource: <что ограничено>", "// status: unproven", "// on-reach: <что происходит у предела>"]
+            lines += [
+                "// resource: <что ограничено>",
+                "// status: unproven",
+                f"// origin: <откуда предел или {UNKNOWN}>",
+                f"// problem: <от какого отказа защищает или {UNKNOWN}>",
+                "// on-reach: <что происходит у предела>",
+            ]
             drafts.append("\n".join(lines))
     return drafts
 

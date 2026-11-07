@@ -28,6 +28,7 @@ pub(super) const MAX_APPLY_NAMESPACE_ENTRIES: usize = usize::MAX;
 // resource: Глубина перечисления пространства имён оверлея apply и удаления каталогов.
 // status: unproven
 // origin: #1772
+// problem: неизвестно
 // on-reach: ошибка staging UnsupportedProvider «directory removal exceeds namespace depth bound»
 pub(super) const MAX_APPLY_NAMESPACE_DEPTH: usize = 256;
 

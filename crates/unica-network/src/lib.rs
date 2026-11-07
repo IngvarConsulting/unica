@@ -73,6 +73,7 @@ const MAX_REDIRECTS: usize = 5;
 // resource: Срок установления сетевого соединения агента загрузки.
 // status: unproven
 // origin: #1266
+// problem: неизвестно
 // on-reach: запрос завершается ошибкой соединения по сроку
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Ожидание следующей порции данных, а не всей передачи: медленный, но живой

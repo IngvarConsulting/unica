@@ -41,6 +41,7 @@ const STARTUP_FAILURE_FILE_NAME: &str = "startup-failure.txt";
 // resource: Длина причины аварийного старта демона, записываемой в startup-failure.txt.
 // status: unproven
 // origin: #1360 (#1377)
+// problem: неизвестно
 // on-reach: тихо: причина обрезается по границе символа
 const MAX_STARTUP_FAILURE_REASON_BYTES: usize = 2_048;
 
@@ -652,6 +653,7 @@ const STARTUP_FAILURE_STAGE_PREFIX: &str = ".startup-failure.";
 // resource: Размер записи о причине аварийного старта демона: pid, перевод строки и причина.
 // status: unproven
 // origin: #1360 (#1377)
+// problem: неизвестно
 // on-reach: тихо: запись большего размера не читается, причина аварии не сообщается
 const MAX_STARTUP_FAILURE_RECORD_BYTES: usize =
     STARTUP_FAILURE_PID_PREFIX.len() + 10 + 1 + MAX_STARTUP_FAILURE_REASON_BYTES;

@@ -44,6 +44,7 @@ const RECORD_SCHEMA_VERSION: u8 = 1;
 // resource: Размер сохранённой записи runtime-задания.
 // status: unproven
 // origin: коммит 02e6b03af (fix(runtime): close quarantine authority gaps)
+// problem: неизвестно
 // on-reach: запись не пишется: «runtime job record exceeds its bounded size»; большая запись не читается
 const RUNTIME_RECORD_BYTES: usize = 256 * 1024;
 // resource-limit: runtime-job.cancel-marker-bytes
@@ -54,6 +55,7 @@ const RUNTIME_RECORD_BYTES: usize = 256 * 1024;
 // resource: Размер метки отмены runtime-задания.
 // status: unproven
 // origin: #928, #946 (#1367)
+// problem: неизвестно
 // on-reach: чтение метки отмены завершается ошибкой «read runtime job cancellation»
 const CANCEL_MARKER_BYTES: usize = 4 * 1024;
 // resource-limit: runtime-job.output-tail-bytes
@@ -64,6 +66,7 @@ const CANCEL_MARKER_BYTES: usize = 4 * 1024;
 // resource: Хвост stdout и stderr runtime-задания, сохраняемый в журналах задания и отдаваемый в его выводе.
 // status: unproven
 // origin: коммит 2bd211f0d (feat: добавить durable runtime job core)
+// problem: неизвестно
 // on-reach: тихо: сохраняются последние 16 КиБ вывода после редактирования секретов
 const OUTPUT_TAIL_BYTES: usize = 16 * 1024;
 const DEFAULT_STALE_AFTER: Duration = Duration::from_secs(5 * 60);
@@ -76,6 +79,7 @@ const LIFECYCLE_LOCK_WAIT: Duration = Duration::from_secs(30);
 // resource: Пауза между попытками взять блокировку жизненного цикла runtime-заданий рабочего пространства.
 // status: unproven
 // origin: #483
+// problem: неизвестно
 // on-reach: попытки повторяются до срока; затем ошибка «another runtime job lifecycle transition still holds the workspace guard»
 const LIFECYCLE_LOCK_RETRY: Duration = Duration::from_millis(20);
 #[cfg(any(test, feature = "test-support"))]

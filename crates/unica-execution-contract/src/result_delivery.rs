@@ -16,6 +16,7 @@ use std::io::{self, Write};
 // resource: Размер текстового блока summary и diagnostics в content ответа с isError.
 // status: unproven
 // origin: #1857
+// problem: неизвестно
 // on-reach: текст обрезается по границе символа с маркером «[truncated; full diagnostics are in structuredContent]»; полные данные остаются в structuredContent
 // decision: закреплено правилом
 // decision-date: 2026-10-03
@@ -34,6 +35,7 @@ pub const ERROR_TEXT_TRUNCATED: &str = "\n[truncated; full diagnostics are in st
 // resource: Запас на ключи, обёртки блоков содержимого и метаданные Task в ответе об ошибке сверх канонического результата.
 // status: unproven
 // origin: #1857
+// problem: неизвестно
 // on-reach: запас входит в счёт размера; превышение предела записи задания даёт DeliveryError::TooLarge
 pub const ERROR_DELIVERY_ENVELOPE_BYTES: usize = 1_024;
 

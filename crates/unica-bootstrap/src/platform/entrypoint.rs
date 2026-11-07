@@ -8,6 +8,8 @@ use std::process::ExitCode;
 // value: 8388608
 // resource: Размер стека главного потока bootstrap на Windows.
 // status: unproven
+// origin: неизвестно
+// problem: неизвестно
 // on-reach: переполнение стека аварийно завершает процесс
 const WINDOWS_MAIN_STACK_SIZE: usize = 8 * 1024 * 1024;
 

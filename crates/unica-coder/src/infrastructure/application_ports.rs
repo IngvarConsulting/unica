@@ -70,6 +70,7 @@ thread_local! {
 // resource: Срок провайдера для нативного типизированного вызова устаревшей поверхности v0.12.
 // status: unproven
 // origin: 2a3fb2cf1
+// problem: неизвестно
 // on-reach: Срок ProviderDeadline истекает: провайдер прерывает работу с отказом по сроку.
 const NATIVE_TYPED_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
 

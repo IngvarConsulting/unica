@@ -17,6 +17,7 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 // resource: Число записей страницы find, когда limit не задан.
 // status: unproven
 // origin: cec3ddf7c
+// problem: неизвестно
 // on-reach: Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.
 const DEFAULT_LIMIT: usize = 20;
 // resource-limit: find.page-max-entries
@@ -27,6 +28,7 @@ const DEFAULT_LIMIT: usize = 20;
 // resource: Наибольшее число записей одной страницы find.
 // status: unproven
 // origin: cec3ddf7c
+// problem: неизвестно
 // on-reach: тихо: больший limit сводится к 100 (min).
 const MAX_LIMIT: usize = 100;
 

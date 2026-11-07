@@ -18,6 +18,7 @@ use std::time::Instant;
 // resource: Уведомлений демона, ждущих редактора, на одну сессию LSP.
 // status: unproven
 // origin: #2173
+// problem: неизвестно
 // on-reach: служба получает false и уведомление не ставится в очередь
 // issue: #2173
 pub const LSP_OUTBOX_CAPACITY: usize = 256;

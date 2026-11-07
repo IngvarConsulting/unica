@@ -116,6 +116,7 @@ pub(crate) const INCOMPLETE_CODE: &str = "unica.diagnostics_incomplete";
 // resource: Находки одного ответа `textDocument/diagnostic`.
 // status: unproven
 // origin: #2578
+// problem: неизвестно
 // on-reach: ответ несёт первые находки по тексту и отметку `unica.diagnostics_incomplete` с причиной `capped`
 // issue: #2578
 const MAX_EDITOR_DIAGNOSTICS: usize = 1000;
@@ -129,6 +130,7 @@ const MAX_EDITOR_DIAGNOSTICS: usize = 1000;
 // resource: Сохранённые тексты, для которых служба LSP помнит анализ кода, ждущий или готовый.
 // status: unproven
 // origin: #2578
+// problem: неизвестно
 // on-reach: уходит самый старый готовый анализ, затем самый старый в очереди; о его тексте спрашивают заново
 // issue: #2578
 const MAX_EDITOR_ANALYSIS_ENTRIES: usize = 256;
@@ -143,6 +145,7 @@ const MAX_EDITOR_ANALYSIS_ENTRIES: usize = 256;
 // resource: Одновременные анализы кода сохранённых модулей для редактора.
 // status: unproven
 // origin: #2578
+// problem: неизвестно
 // on-reach: следующие анализы ждут очереди; запрос, не дождавшийся анализа, отвечает отметкой `analysis_not_ready`
 // issue: #2578
 const MAX_CONCURRENT_EDITOR_ANALYSES: usize = 2;
@@ -156,6 +159,7 @@ const MAX_CONCURRENT_EDITOR_ANALYSES: usize = 2;
 // resource: Время, которое неполный анализ кода отвечает за свой сохранённый текст.
 // status: unproven
 // origin: #2578
+// problem: неизвестно
 // on-reach: следующий запрос о тексте запускает анализ заново
 // issue: #2578
 const EDITOR_ANALYSIS_RETRY_DELAY: Duration = Duration::from_secs(30);
@@ -170,6 +174,7 @@ const EDITOR_ANALYSIS_RETRY_DELAY: Duration = Duration::from_secs(30);
 // resource: Время, которое полный анализ кода отвечает за свой сохранённый текст.
 // status: unproven
 // origin: #2578
+// problem: неизвестно
 // on-reach: следующий запрос о тексте запускает анализ заново: находки модуля зависят и от других модулей
 // issue: #2578
 const EDITOR_ANALYSIS_RETENTION: Duration = Duration::from_secs(60);

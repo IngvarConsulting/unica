@@ -15,6 +15,7 @@ use crate::protocol_v5::lsp::{
 // resource: Срок отдельного обмена отмены запроса LSP.
 // status: unproven
 // origin: #2173
+// problem: неизвестно
 // on-reach: отмена в демоне не доставлена; редактор уже получил RequestCancelled, запрос остановит его собственный срок
 // issue: #2173
 const LSP_CANCEL_TIMEOUT: Duration = Duration::from_secs(2);

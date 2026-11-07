@@ -11,6 +11,7 @@ use unica_refusal::{RefusalCode, RefusalDetail};
 // resource: Наибольшее и стандартное ожидание waitMs в совместимом unica.task.result.
 // status: unproven
 // origin: коммит 850507d1c (feat(mcp): emulate tasks for clients without the extension)
+// problem: неизвестно
 // on-reach: waitMs больше 7000 отвергается; по истечении ожидания возвращается текущее состояние задания
 // decision: закреплено правилом CTR.WIRE.COMPATIBILITY-TASK-TOOLS
 // decision-date: 2026-09-22

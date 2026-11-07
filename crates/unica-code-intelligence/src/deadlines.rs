@@ -9,6 +9,7 @@ use std::time::Duration;
 // resource: Общий срок поиска кода по умолчанию, если настройки рабочего пространства его не задают.
 // status: unproven
 // origin: #398
+// problem: неизвестно
 // on-reach: срок задаёт публичный бюджет поиска и его прогресс; заданное в настройках значение заменяет умолчание
 const SEARCH_TOTAL_DEFAULT_SECONDS: u64 = 300;
 // resource-limit: search.semantic-timeout-default
@@ -19,6 +20,7 @@ const SEARCH_TOTAL_DEFAULT_SECONDS: u64 = 300;
 // resource: Срок поставщика смыслового поиска по умолчанию.
 // status: unproven
 // origin: #398
+// problem: неизвестно
 // on-reach: поставщик отменяется, его раздел помечается timed_out, остальные разделы поиска отдаются
 const SEARCH_SEMANTIC_DEFAULT_SECONDS: u64 = 300;
 // resource-limit: search.git-grep-timeout-default
@@ -45,6 +47,7 @@ const SEARCH_GIT_GREP_DEFAULT_SECONDS: u64 = 30;
 // resource: Срок одного чтения у поставщика анализа кода (например, графа вызовов) по умолчанию.
 // status: unproven
 // origin: #398
+// problem: неизвестно
 // on-reach: чтение поставщика прерывается по сроку; ответ без его данных
 const PROVIDER_READ_DEFAULT_SECONDS: u64 = 45;
 

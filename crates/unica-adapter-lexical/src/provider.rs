@@ -144,6 +144,7 @@ impl<'a> GitGrepProvider<'a> {
             // resource: Байты одной строки вывода git grep, читаемой потоком.
             // status: unproven
             // origin: f06737f56
+            // problem: неизвестно
             // on-reach: строка длиннее предела прерывает поток лексического поиска ошибкой
             .run_streaming(&command, 1024 * 1024, &mut consume)
         {
