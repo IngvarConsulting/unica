@@ -187,7 +187,9 @@ impl ProviderReadAuthority {
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
         let mut payload = identity_metadata_payload_from_evidence(target, &evidence)?;
         if evidence.artifact_kind() == "Language" {
-            match crate::infrastructure::family_codecs::metadata_read_codec().language_code(&descriptor) {
+            match crate::infrastructure::family_codecs::metadata_read_codec()
+                .language_code(&descriptor)
+            {
                 Ok(code) => {
                     payload["properties"] = json!([{
                         "key": "LanguageCode",
@@ -203,7 +205,8 @@ impl ProviderReadAuthority {
             }
         }
         if evidence.artifact_kind() == "DocumentNumerator" {
-            match crate::infrastructure::family_codecs::metadata_read_codec().numerator(&descriptor) {
+            match crate::infrastructure::family_codecs::metadata_read_codec().numerator(&descriptor)
+            {
                 Ok(facts) => {
                     let mut properties = payload["properties"]
                         .as_array()
@@ -236,7 +239,9 @@ impl ProviderReadAuthority {
             }
         }
         if evidence.artifact_kind() == "WSReference" {
-            match crate::infrastructure::family_codecs::metadata_read_codec().ws_reference_location(&descriptor) {
+            match crate::infrastructure::family_codecs::metadata_read_codec()
+                .ws_reference_location(&descriptor)
+            {
                 Ok(Some(value)) => {
                     payload["properties"] = json!([{
                         "key": "LocationURL",
@@ -254,8 +259,10 @@ impl ProviderReadAuthority {
             let name = target.as_str().split('.').nth(1).unwrap_or_default();
             match std::str::from_utf8(&descriptor)
                 .map_err(|error| error.to_string())
-                .and_then(|source| crate::infrastructure::family_codecs::metadata_read_codec().functional_option(source, name))
-            {
+                .and_then(|source| {
+                    crate::infrastructure::family_codecs::metadata_read_codec()
+                        .functional_option(source, name)
+                }) {
                 Ok(option) => {
                     if !payload["properties"].is_array() {
                         payload["properties"] = json!([]);
@@ -276,7 +283,9 @@ impl ProviderReadAuthority {
                 .map_err(|message| ViewError::detailed(RefusalDetail::SourceUnreadable, message))?;
         }
         {
-            match crate::infrastructure::family_codecs::metadata_read_codec().descriptor_comment(&descriptor, evidence.artifact_kind()) {
+            match crate::infrastructure::family_codecs::metadata_read_codec()
+                .descriptor_comment(&descriptor, evidence.artifact_kind())
+            {
                 Ok(Some(comment)) => {
                     let property = json!({
                         "key": "Comment",

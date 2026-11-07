@@ -19,7 +19,8 @@ impl ProviderReadAuthority {
         let text =
             std::str::from_utf8(&bytes).map_err(|_| unreadable("Schedule.xml is not UTF-8"))?;
         let result = crate::infrastructure::family_codecs::metadata_read_codec()
-            .job_schedule(text).map_err(unreadable);
+            .job_schedule(text)
+            .map_err(unreadable);
         checkpoint()?;
         result
     }
