@@ -194,8 +194,13 @@ pub(super) fn admit_workspace_actor(
 }
 
 /// Папка редактора допускается тем же путём, что `workspace_hint` вызова MCP.
-/// Обход останавливается на сроке редактора. Расширение в папке открывается
-/// и при недоступной конфигурации, как его открывает `view` MCP.
+/// Обход останавливается на сроке редактора.
+///
+/// Недоступная конфигурация отказывает всей папке и при объявленном
+/// расширении, хотя `view` MCP такое расширение читает. Сессия держит актор
+/// между запросами: актор без конфигурации, допущенный на время пропажи её
+/// корня, остался бы у сессии и после возвращения корня, а открытые буферы
+/// конфигурации пропали бы при переносе на него.
 pub(in crate::infrastructure::daemon) fn admit_editor_folder(
     folder: &Path,
     actors: &WorkspaceActorRegistry,
@@ -205,11 +210,7 @@ pub(in crate::infrastructure::daemon) fn admit_editor_folder(
         folder,
         actors,
         &mut |_| Instant::now() >= deadline,
-        |declared| {
-            declared
-                .iter()
-                .any(|source| source.kind == SourceSetKind::Extension)
-        },
+        |_| false,
         |_| {},
     )
     .ok()
