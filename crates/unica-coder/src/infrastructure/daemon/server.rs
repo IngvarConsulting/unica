@@ -3750,6 +3750,10 @@ pub(crate) mod medium_actor_capacity_tests {
         );
         assert_eq!(named.data.as_ref().unwrap()["title"], "Owner255");
     }
+    mod operational_snapshot_tests {
+        include!("operational_snapshot_tests.rs");
+    }
+
     fn bootstrap_runtime() -> V5CanonicalInvocationRuntime {
         V5CanonicalInvocationRuntime::new(canonical_v13_service(), Arc::new(TokioClock))
     }

@@ -3,6 +3,15 @@ use crate::domain::apply::OperationDescriptorExt;
 use crate::domain::apply::SourceSetWriteSupport;
 use crate::domain::engine::MissingEngineRefusal;
 use unica_work_control::provider_deadline::ProviderDeadline;
+// A view may be composed into a diff. Its graph reads share the public
+// invocation's lazy snapshot, while ordinary views never load settings.
+type ViewOperationalSnapshot = std::cell::OnceCell<
+    Result<
+        unica_configuration::operational::OperationalConfig,
+        unica_configuration::operational::OperationalConfigDiagnostic,
+    >,
+>;
+
 /// Потолок страницы ветви графа: объявленный максимум поверхности.
 const CALL_GRAPH_PAGE_LIMIT: usize = 50;
 /// Ranked providers (`symbol`, `semantic`) accept a top-N request, but no
@@ -656,13 +665,19 @@ impl CanonicalV13ReadService {
         invocation: &ActorBoundExecution,
         cancellation: &CancellationToken,
     ) -> DomainResult {
-        self.execute_view_arguments(invocation, invocation.arguments(), cancellation)
+        self.execute_view_arguments(
+            invocation,
+            invocation.arguments(),
+            &ViewOperationalSnapshot::new(),
+            cancellation,
+        )
     }
 
     fn execute_view_arguments(
         &self,
         invocation: &ActorBoundExecution,
         arguments: &Map<String, Value>,
+        operational_snapshot: &ViewOperationalSnapshot,
         cancellation: &CancellationToken,
     ) -> DomainResult {
         let Some(at) = arguments.get("at").and_then(Value::as_str) else {
@@ -868,15 +883,37 @@ impl CanonicalV13ReadService {
                     return *refusal;
                 }
             }
+            let operational = match operational_snapshot.get_or_init(|| {
+                crate::infrastructure::operational_config::load_operational_config(
+                    &invocation.workspace_context().workspace_root,
+                )
+            }) {
+                Ok(config) => config,
+                Err(diagnostic) => {
+                    return error_result(
+                        Some(owner.to_string()),
+                        RefusalCode::InvalidState,
+                        format!("operational config is unreadable: {diagnostic}"),
+                    )
+                }
+            };
+            let provider_timeout = operational.code_intelligence().provider_read_timeout();
             return match self.call_graph_summary(
                 invocation,
                 &owner,
                 CALL_GRAPH_PAGE_LIMIT,
+                provider_timeout,
                 cancellation,
             ) {
                 Ok(initial) => {
                     let (summary, directory) = match complete_branch(initial, direction, |limit| {
-                        self.call_graph_summary(invocation, &owner, limit, cancellation)
+                        self.call_graph_summary(
+                            invocation,
+                            &owner,
+                            limit,
+                            provider_timeout,
+                            cancellation,
+                        )
                     }) {
                         Ok(answer) => answer,
                         Err(CompleteBranchError::CountTooLarge(message)) => {
@@ -1102,6 +1139,7 @@ impl CanonicalV13ReadService {
         invocation: &ActorBoundExecution,
         method_at: &QualifiedAddress,
         limit: usize,
+        provider_timeout: std::time::Duration,
         cancellation: &CancellationToken,
     ) -> Result<(CallGraphSummary, Option<FindIndex>), Box<DomainResult>> {
         let mut directory = None;
@@ -1152,16 +1190,6 @@ impl CanonicalV13ReadService {
             ))
         })?;
         let workspace = invocation.workspace_context();
-        let operational = crate::infrastructure::operational_config::load_operational_config(
-            &workspace.workspace_root,
-        )
-        .map_err(|diagnostic| {
-            Box::new(error_result(
-                Some(method_at.to_string()),
-                RefusalCode::InvalidState,
-                format!("operational config is unreadable: {diagnostic}"),
-            ))
-        })?;
         let summary = fetch_summary(
             self.ports.as_ref(),
             workspace,
@@ -1170,7 +1198,7 @@ impl CanonicalV13ReadService {
             // Первая попытка берёт не более 50 соседей. Ветвь с большим
             // счётом повторяет запрос для полного снимка до публикации курсора.
             limit,
-            operational.code_intelligence().provider_read_timeout(),
+            provider_timeout,
             cancellation,
         )
         .map_err(|error| {
@@ -2581,7 +2609,12 @@ impl CanonicalV13ReadService {
                     prepare_xdto_check(invocation, &address, cancellation)
                 }
                 _ => (
-                    self.execute_view_arguments(invocation, &view_arguments, cancellation),
+                    self.execute_view_arguments(
+                        invocation,
+                        &view_arguments,
+                        &ViewOperationalSnapshot::new(),
+                        cancellation,
+                    ),
                     None,
                 ),
             };
@@ -2796,9 +2829,11 @@ impl CanonicalV13ReadService {
             };
             return diff_page_result(&request, self.diff.continue_saved(&request));
         }
+        let operational_snapshot = ViewOperationalSnapshot::new();
         let left_result = self.execute_view_arguments(
             invocation,
             &Map::from_iter([("at".to_string(), Value::String(left.to_string()))]),
+            &operational_snapshot,
             cancellation,
         );
         if !left_result.ok {
@@ -2807,6 +2842,7 @@ impl CanonicalV13ReadService {
         let right_result = self.execute_view_arguments(
             invocation,
             &Map::from_iter([("at".to_string(), Value::String(right.to_string()))]),
+            &operational_snapshot,
             cancellation,
         );
         if !right_result.ok {
