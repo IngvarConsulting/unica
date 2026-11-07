@@ -206,6 +206,18 @@ pub trait MetadataReadCodec: Send + Sync {
 
     /// Профиль содержимого формы по её дескриптору.
     fn form_profile(&self, descriptor: &[u8]) -> Result<MetadataChildProfile, String>;
+
+    /// Имена реквизитов и табличных частей объекта с реквизитами каждой из
+    /// них. Член без имени пропускается.
+    fn object_member_names(&self, descriptor: &[u8]) -> Result<ObjectMemberNames, String>;
+}
+
+/// Имена членов объекта, которые видит код его модуля.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ObjectMemberNames {
+    pub attributes: Vec<String>,
+    /// Табличные части и имена их реквизитов.
+    pub tabular_sections: Vec<(String, Vec<String>)>,
 }
 
 /// Прямые свойства одного разобранного дескриптора.

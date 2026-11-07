@@ -7,7 +7,7 @@ use unica_metadata::borrowing::MetaBorrowing;
 use unica_metadata::configuration::{CfHomePageData, CfInfoData, CfInterfaceData};
 use unica_metadata::read_codec::{
     ExchangeContentFacts, FunctionalOptionFacts, MetaPropertySource, MetadataReadCodec,
-    NumeratorFacts, ReadFinding, ReadStopped, SupportStateStream,
+    NumeratorFacts, ObjectMemberNames, ReadFinding, ReadStopped, SupportStateStream,
 };
 use unica_metadata::request::MetaFailure;
 use unica_metadata::style_color::StyleItemPropertiesObservation;
@@ -284,6 +284,10 @@ impl MetadataReadCodec for DesignerMetadataReadCodec {
             return Err("Form descriptor must contain one Properties element".to_string());
         };
         form_profile(*properties)
+    }
+
+    fn object_member_names(&self, descriptor: &[u8]) -> Result<ObjectMemberNames, String> {
+        crate::object_member_names::read(descriptor)
     }
 }
 
