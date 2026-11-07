@@ -19,11 +19,62 @@ ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "w
 # what the publication owner may import without a review of this list.
 WORKSPACE_DEPENDENCIES = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
 COORDINATORS = frozenset({"operations", "bindings", "navigation", "code-intelligence", "diagnostics", "documentation"})
+# Everything the rule against importing a port implementation applies to.
+PORT_CALLERS = COORDINATORS | frozenset({"analysis-services", "application"})
 CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
 # Families whose codec sits behind the family port (#1826). Product composition
 # selects the implementation in one module; everyone else calls the trait.
 PORTED_FAMILIES = frozenset({"dcs"})
 CODEC_SELECTION = "crates/unica-coder/src/infrastructure/family_codecs.rs"
+
+
+# What a crate declares as `component` under `[package.metadata.unica]`. The
+# declaration must match what `edge_errors` applies to the crate by name, so a
+# new crate states its place instead of falling outside every list unnoticed.
+COMPONENT_KINDS = {
+    "family": "semantic family, listed in FAMILIES",
+    "abstraction": "shared contract, listed in ABSTRACTIONS",
+    "coordinator": "invokes ports without implementations, listed in PORT_CALLERS",
+    "codec": "`unica-<family>-designer` representation codec",
+    "adapter": "`unica-adapter-*` implementation of a port",
+    "integration-tests": "`unica-*-integration-tests` cross-component checks",
+    "product": "the product composition: unica-coder and unica-product",
+    "service": "any other runtime component; a closed dependency rule is added to edge_errors by name",
+}
+
+
+def required_component(package: str) -> str:
+    """The kind the rules of this guard give a package by its name."""
+    name = package.removeprefix("unica-")
+    if name in FAMILIES:
+        return "family"
+    if name in ABSTRACTIONS:
+        return "abstraction"
+    if name in PORT_CALLERS:
+        return "coordinator"
+    if name.endswith("-integration-tests"):
+        return "integration-tests"
+    if name.endswith("-designer") and name != "source-designer":
+        return "codec"
+    if name.startswith("adapter-"):
+        return "adapter"
+    if name in {"coder", "product"}:
+        return "product"
+    return "service"
+
+
+def declaration_errors(members: dict[str, tuple[Path, dict]]) -> list[str]:
+    """A crate that names no kind would pass every rule above unchecked."""
+    hint = "; ".join(f"{kind}: {meaning}" for kind, meaning in COMPONENT_KINDS.items())
+    errors: list[str] = []
+    for package, (_, document) in sorted(members.items()):
+        declared = document["package"].get("metadata", {}).get("unica", {}).get("component")
+        required = required_component(package)
+        if declared not in COMPONENT_KINDS:
+            errors.append(f'{package}: declare component under [package.metadata.unica] in its Cargo.toml; kinds are {hint}')
+        elif declared != required:
+            errors.append(f"{package}: component {declared} needs the rules of this guard to treat it so, and they treat it as {required}; update the list in check-component-boundaries.py or the declaration")
+    return errors
 
 
 def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
@@ -48,7 +99,7 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
             reasons.append("semantic families use contracts and their declared semantic dependencies")
     if name == "operations" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
         reasons.append("generic operation orchestration must not import a family or backend")
-    if name in COORDINATORS | {"analysis-services", "application"} and dependency.startswith("unica-"):
+    if name in PORT_CALLERS and dependency.startswith("unica-"):
         if target.startswith("adapter-") or target.endswith("-designer"):
             reasons.append("coordinators invoke ports without importing their concrete implementations")
     if name == "source-designer" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
@@ -175,7 +226,7 @@ def main() -> int:
     parser.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[2])
     arguments = parser.parse_args()
     try:
-        diagnostics = check(arguments.repo_root)
+        diagnostics = declaration_errors(manifests(arguments.repo_root.resolve())) + check(arguments.repo_root)
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"component boundary input error: {error}")
         return 1

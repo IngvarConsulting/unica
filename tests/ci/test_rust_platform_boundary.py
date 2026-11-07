@@ -833,6 +833,22 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         checker = load_checker_module()
 
         self.assertEqual(checker.check_repository(REPO_ROOT), [])
+        self.assertEqual(checker.file_io_declaration_errors(checker.collect_repository_manifests(REPO_ROOT)[0]), [])
+
+    def test_a_package_that_says_nothing_about_file_io_is_refused_with_a_hint(self) -> None:
+        checker = load_checker_module()
+
+        def manifest(name, unica=""):
+            return f'[package]\nname = "{name}"\n\n[package.metadata.unica]\n{unica}\n'
+
+        errors = checker.file_io_declaration_errors({"crates/new/Cargo.toml": manifest("unica-new")})
+        self.assertEqual(len(errors), 1)
+        self.assertIn("crates/new/Cargo.toml: declare file-io", errors[0])
+        self.assertIn("FILE_IO_COMPONENTS", errors[0])
+        self.assertEqual(checker.file_io_declaration_errors({"a": manifest("unica-new", 'file-io = "owned"')}), [])
+        # Заявить "none", не войдя в список стража, значит не проверяться.
+        self.assertIn("disagrees", checker.file_io_declaration_errors({"a": manifest("unica-new", 'file-io = "none"')})[0])
+        self.assertEqual(checker.file_io_declaration_errors({"a": manifest("unica-navigation", 'file-io = "none"')}), [])
 
 
 class HostNameBoundaryTests(unittest.TestCase):

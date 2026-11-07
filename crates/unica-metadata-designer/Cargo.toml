@@ -28,6 +28,8 @@ memchr.workspace = true
 chrono.workspace = true
 
 [package.metadata.unica]
+component = "codec"
+file-io = "none"
 inputs = [
     "tests/fixtures/acceptance/workspace-information-register-dimension-flags",
     "tests/fixtures/acceptance/workspace-metadata-edit-type",

@@ -43,6 +43,8 @@ unica-work-control = { path = "../unica-work-control", features = ["test-support
 tempfile.workspace = true
 
 [package.metadata.unica]
+component = "service"
+file-io = "owned"
 inputs = [
     "crates/unica-source-contract/src/events.rs",
     "crates/unica-work-control/src/shared_work.rs",

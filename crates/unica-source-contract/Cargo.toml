@@ -13,3 +13,7 @@ test-support = []
 serde_json.workspace = true
 serde.workspace = true
 unica-address = { path = "../unica-address" }
+
+[package.metadata.unica]
+component = "abstraction"
+file-io = "none"
