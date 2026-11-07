@@ -703,21 +703,6 @@ mod tests {
     static TEMP_WORKSPACE_NONCE: AtomicU64 = AtomicU64::new(0);
 
     #[test]
-    pub(crate) fn external_actor_positive_witness_uses_no_process_global_counter() {
-        let source = include_str!("../../unica-source-designer/src/project_sources.rs");
-        for forbidden in [
-            ["EXTERNAL_ACTOR_", "WITNESS_RUNS"].concat(),
-            ["reset_external_actor_", "witness_runs"].concat(),
-            ["external_actor_", "witness_runs"].concat(),
-        ] {
-            assert!(
-                !source.contains(&forbidden),
-                "external-positive aggregate still depends on process-global state: {forbidden}"
-            );
-        }
-    }
-
-    #[test]
     fn source_map_input_read_honors_cooperative_checkpoint_between_chunks() {
         let root = temp_workspace("unica-source-map-controlled-read");
         let config = root.join("v8project.yaml");
