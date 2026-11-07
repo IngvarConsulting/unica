@@ -19,6 +19,8 @@ ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "w
 # what the publication owner may import without a review of this list.
 WORKSPACE_DEPENDENCIES = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
 COORDINATORS = frozenset({"operations", "bindings", "navigation", "code-intelligence", "diagnostics", "documentation"})
+# Everything the rule against importing a port implementation applies to.
+PORT_CALLERS = COORDINATORS | frozenset({"analysis-services", "application"})
 CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
 # Families whose codec sits behind the family port (#1826). Product composition
 # selects the implementation in one module; everyone else calls the trait.
@@ -32,7 +34,7 @@ CODEC_SELECTION = "crates/unica-coder/src/infrastructure/family_codecs.rs"
 COMPONENT_KINDS = {
     "family": "semantic family, listed in FAMILIES",
     "abstraction": "shared contract, listed in ABSTRACTIONS",
-    "coordinator": "invokes ports without implementations, listed in COORDINATORS",
+    "coordinator": "invokes ports without implementations, listed in PORT_CALLERS",
     "codec": "`unica-<family>-designer` representation codec",
     "adapter": "`unica-adapter-*` implementation of a port",
     "integration-tests": "`unica-*-integration-tests` cross-component checks",
@@ -48,7 +50,7 @@ def required_component(package: str) -> str:
         return "family"
     if name in ABSTRACTIONS:
         return "abstraction"
-    if name in COORDINATORS | {"analysis-services"}:
+    if name in PORT_CALLERS:
         return "coordinator"
     if name.endswith("-integration-tests"):
         return "integration-tests"
@@ -97,7 +99,7 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
             reasons.append("semantic families use contracts and their declared semantic dependencies")
     if name == "operations" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
         reasons.append("generic operation orchestration must not import a family or backend")
-    if name in COORDINATORS | {"analysis-services", "application"} and dependency.startswith("unica-"):
+    if name in PORT_CALLERS and dependency.startswith("unica-"):
         if target.startswith("adapter-") or target.endswith("-designer"):
             reasons.append("coordinators invoke ports without importing their concrete implementations")
     if name == "source-designer" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
