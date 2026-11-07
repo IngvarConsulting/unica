@@ -1,0 +1,132 @@
+{
+  "id": "S-2211-object-remove-case",
+  "name": "object-remove-warns-about-case-insensitive-bsl-references",
+  "issue": 2211,
+  "area": "Создание и удаление объектов",
+  "task": "Предпросмотр удаления находит ссылки с другим регистром русских и английских имён, сохраняет строки и исходники, не принимает часть другого идентификатора за ссылку",
+  "workspace": "tests/fixtures/acceptance/workspace-object-remove-case",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.ПримерВ",
+        "ops": [
+          {
+            "op": "object.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executionToken",
+          "notEq": ""
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "code_references"
+        },
+        {
+          "pointer": "/warnings/0/count",
+          "eq": 4
+        },
+        {
+          "pointer": "/warnings/0/references/0/at",
+          "eq": "main:CommonModule.EventHandlers"
+        },
+        {
+          "pointer": "/warnings/0/references/0/line",
+          "eq": 5
+        },
+        {
+          "pointer": "/warnings/0/references/1/at",
+          "eq": "main:CommonModule.EventHandlers"
+        },
+        {
+          "pointer": "/warnings/0/references/1/line",
+          "eq": 6
+        },
+        {
+          "pointer": "/warnings/0/references/2/at",
+          "eq": "main:CommonModule.EventHandlers"
+        },
+        {
+          "pointer": "/warnings/0/references/2/line",
+          "eq": 7
+        },
+        {
+          "pointer": "/warnings/0/references/3/at",
+          "eq": "main:CommonModule.EventHandlers"
+        },
+        {
+          "pointer": "/warnings/0/references/3/line",
+          "eq": 11
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "README.md",
+          "eq": "69b4d358c0a3f3acd305df4320d2ca15b90c56ade3d4011f2039855663978e05"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/ПримерА.xml",
+          "eq": "f26e51844876d2c3de70bd83d5acc6569137f55247a6abc3d83647592e4f6a16"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/ПримерБ.xml",
+          "eq": "db40e98b5fdb2392ef77603baa92c627a293cce6d8d5ab750b0fc08165b760be"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/ПримерВ.xml",
+          "eq": "e441a16221cde8ce3962978b0096632bbdb56508f1539a087ad5ac3783d8accb"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers/Ext/Module.bsl",
+          "eq": "947e49421a49e536e24328d1980e8861cdbb7f3e0d871c8b14f3417b34184e33"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/EventHandlers.xml",
+          "eq": "2212ae44cd656a185b39404d6e4f7a8b87c18ab5ee63978718beaf5ec98521b1"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Configuration.xml",
+          "eq": "536e44b361658b812021ada45a7a8ff9756e7e869f0c43c1eac6a5c2b41bfab0"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/EventSubscriptions/CorpusEventSubscription.xml",
+          "eq": "b59e1fb71734340a2896c5001ecd3a2e3780abf0f6e5c2f46c5fc893814f1182"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Ext/ClientApplicationInterface.xml",
+          "eq": "3cf6a7acfb531b89b4eb4d72d2172cc14146797f56640001a656a4a2650cb069"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/Languages/Русский.xml",
+          "eq": "88209e814459d6f3a581e688b40caaea500a140c87382a0e2604f4901f3b71c0"
+        },
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "a46c93996285f20e794252620feb3b21579d5c2ea9cd74eb4530b7c8444295f4"
+        }
+      ]
+    }
+  ]
+}

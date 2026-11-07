@@ -25,6 +25,7 @@ unica-metadata = { path = "../unica-metadata" }
 unica-source-designer = { path = "../unica-source-designer" }
 roxmltree.workspace = true
 memchr.workspace = true
+regex.workspace = true
 chrono.workspace = true
 
 [package.metadata.unica]
