@@ -3,7 +3,7 @@
 //! Три теста писателя v0.12 (`call_edit`, `add_catalog`) ждут решения
 //! владельца и остаются на прежнем входе только для записи.
 
-use crate::application::{OperationResult, UnicaApplication};
+use crate::application::OperationResult;
 use crate::composition::testing::{
     with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
     with_subsystem_evidence_processing_hook,
@@ -185,7 +185,7 @@ fn call_info_path_cancellable(
 
 fn call_meta_tool(workspace: &Path, tool: &str, args: Map<String, Value>) -> OperationResult {
     let _cwd = ProcessCwdGuard::enter(workspace).unwrap();
-    UnicaApplication::new()
+    crate::composition::testing::application()
         .call_tool(tool, &args)
         .expect("private typed metadata call")
 }

@@ -1485,7 +1485,7 @@ mod medium_tests {
     use crate::application::ports::ApplicationPorts;
     use crate::application::{
         preview_strategy, tools, InvocationMode, PreviewStrategy, RuntimeJobAction, ToolHandler,
-        ToolSpec, UnicaApplication,
+        ToolSpec,
     };
     use unica_address::source_target::{
         MetadataAddress, ResolvedTarget, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
@@ -1641,7 +1641,7 @@ mod medium_tests {
         assert!(absent.iter().all(|path| !path.exists()));
         let before = recursive_storage_snapshot(&workspace);
 
-        let post_image_result = UnicaApplication::new()
+        let post_image_result = crate::composition::testing::application()
             .call_tool(
                 "unica.meta.add",
                 json!({
@@ -1660,7 +1660,7 @@ mod medium_tests {
         assert_eq!(recursive_storage_snapshot(&workspace), before);
         assert!(absent.iter().all(|path| !path.exists()));
 
-        let planned_result = UnicaApplication::new()
+        let planned_result = crate::composition::testing::application()
             .call_tool(
                 "unica.build.load",
                 json!({"cwd": workspace}).as_object().unwrap(),

@@ -43,6 +43,9 @@ class ComponentBoundaryTests(unittest.TestCase):
         invalid = (
             ("unica-operations", "unica-forms"),
             ("unica-analysis-services", "unica-adapter-bsl-analyzer"),
+            ("unica-application", "unica-adapter-lexical"),
+            ("unica-application", "unica-metadata-designer"),
+            ("unica-application", "unica-coder"),
             ("unica-analysis-services", "unica-adapter-bsl-analyzer"),
             ("unica-code-intelligence", "unica-adapter-lexical"),
             ("unica-diagnostics", "unica-adapter-bsl-analyzer"),

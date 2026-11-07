@@ -1,0 +1,1070 @@
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
+use unica_address::address::{NodeKind, QualifiedAddress};
+use unica_refusal::RefusalCode;
+#[cfg(any(test, feature = "test-support"))]
+use unica_work_control::cancellation::CancellationToken;
+#[cfg(any(test, feature = "test-support"))]
+use unica_work_control::provider_deadline::ProviderDeadline;
+
+const DEFAULT_LIMIT: usize = 20;
+const MAX_LIMIT: usize = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindRequest {
+    query: String,
+    kind: Option<String>,
+    scope: Option<QualifiedAddress>,
+    limit: usize,
+}
+
+impl FindRequest {
+    pub fn new(query: &str) -> Result<Self, FindError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Err(FindError::new(
+                RefusalCode::BadValue,
+                "find query must not be empty",
+            ));
+        }
+        Ok(Self {
+            query: query.to_string(),
+            kind: None,
+            scope: None,
+            limit: DEFAULT_LIMIT,
+        })
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    pub fn with_kind(mut self, kind: &str) -> Result<Self, FindError> {
+        let kind = NodeKind::parse(kind).map_err(|_| {
+            FindError::new(RefusalCode::BadValue, format!("unknown node kind `{kind}`"))
+        })?;
+        self.kind = Some(kind.as_str().to_string());
+        Ok(self)
+    }
+
+    pub fn with_limit(mut self, limit: usize) -> Result<Self, FindError> {
+        if limit == 0 {
+            return Err(FindError::new(
+                RefusalCode::BadValue,
+                "find limit must be positive",
+            ));
+        }
+        self.limit = limit.min(MAX_LIMIT);
+        Ok(self)
+    }
+
+    pub fn with_scope(mut self, scope: QualifiedAddress) -> Self {
+        self.scope = Some(scope);
+        self
+    }
+
+    fn contains_address(&self, at: &str) -> bool {
+        let Some(scope) = &self.scope else {
+            return true;
+        };
+        if scope.segments().len() == 1 && scope.segments()[0].kind() == NodeKind::Configuration {
+            return at.starts_with(&format!("{}:", scope.source_set()));
+        }
+        let at_scope = scope.to_string();
+        at == at_scope
+            || at
+                .strip_prefix(&at_scope)
+                .is_some_and(|tail| tail.starts_with('.'))
+    }
+}
+
+/// One searchable fact whose origin is closed to identity data. There is no
+/// content/body variant, so content search cannot leak into `find` by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FindFactKind {
+    Name,
+    Synonym,
+    ExportPath,
+    Address,
+    Kind,
+}
+
+impl FindFactKind {
+    const fn reason(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Synonym => "synonym",
+            Self::ExportPath => "exportPath",
+            Self::Address => "address",
+            Self::Kind => "kind",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindFact {
+    kind: FindFactKind,
+    value: String,
+}
+
+impl FindFact {
+    pub fn new(kind: FindFactKind, value: impl Into<String>) -> Self {
+        Self {
+            kind,
+            value: value.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindDocument {
+    at: String,
+    kind: String,
+    title: String,
+    /// Where this object lives in the source layout, relative to the
+    /// source-set root: a descriptor file, or the directory of a command.
+    path: Option<String>,
+    path_alias: Option<FindPathAlias>,
+    /// Exact root descriptor observed by point lookup. A path is not authority;
+    /// the resource reader proves this owner before accepting its contents.
+    owner_descriptor: Option<String>,
+    facts: Vec<FindFact>,
+}
+
+impl FindDocument {
+    pub fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    /// Присутствует у всякой записи, которую раскладка сумела разместить;
+    /// аварийный мост только такие и возвращает.
+    pub fn placed_path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+
+    pub fn new(
+        at: impl Into<String>,
+        kind: impl Into<String>,
+        title: impl Into<String>,
+        mut facts: Vec<FindFact>,
+    ) -> Self {
+        let at = at.into();
+        let kind = kind.into();
+        facts.push(FindFact::new(FindFactKind::Address, at.clone()));
+        facts.push(FindFact::new(FindFactKind::Kind, kind.clone()));
+        Self {
+            at,
+            kind,
+            title: title.into(),
+            path: None,
+            path_alias: None,
+            owner_descriptor: None,
+            facts,
+        }
+    }
+
+    pub fn with_owner_descriptor(mut self, path: impl Into<String>) -> Self {
+        self.owner_descriptor = Some(path.into());
+        self
+    }
+    pub fn owner_descriptor(&self) -> Option<&str> {
+        self.owner_descriptor.as_deref()
+    }
+
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub fn estimated_identity_bytes(&self) -> usize {
+        self.at
+            .len()
+            .saturating_add(self.kind.len())
+            .saturating_add(self.title.len())
+            .saturating_add(
+                self.path_alias
+                    .as_ref()
+                    .map_or(0, FindPathAlias::estimated_bytes),
+            )
+            .saturating_add(
+                self.facts
+                    .iter()
+                    .fold(0usize, |total, fact| total.saturating_add(fact.value.len())),
+            )
+    }
+
+    pub fn at(&self) -> &str {
+        &self.at
+    }
+
+    pub fn set_path_alias(&mut self, path: Option<FindPathAlias>) {
+        self.path_alias = path;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindPathAlias {
+    pub relative: String,
+    pub absolute: String,
+}
+
+impl FindPathAlias {
+    pub fn estimated_bytes(&self) -> usize {
+        self.relative.len().saturating_add(self.absolute.len())
+    }
+}
+
+pub struct FindPathMatch<'a> {
+    pub owner: &'a FindDocument,
+    pub path: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FindCandidate {
+    at: String,
+    kind: String,
+    title: String,
+    /// What to open when the caller wants to read or repair the object
+    /// outside Unica: a descriptor file, or a command's directory. Absent only
+    /// for an entry the layout cannot place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    reason: String,
+}
+
+impl FindCandidate {
+    pub fn at(&self) -> &str {
+        &self.at
+    }
+
+    pub(crate) fn kind(&self) -> &str {
+        &self.kind
+    }
+
+    pub(crate) fn title(&self) -> &str {
+        &self.title
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindResult {
+    candidates: Vec<FindCandidate>,
+    #[serde(skip_serializing_if = "is_false")]
+    nearest: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl FindResult {
+    /// Test-only probe result: `find` no longer traverses the logical tree, so
+    /// reader-coverage tests answer through the typed reader itself.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn reader_probe(at: &str, reached: bool) -> Self {
+        Self {
+            candidates: reached
+                .then(|| FindCandidate {
+                    at: at.to_string(),
+                    kind: String::new(),
+                    title: String::new(),
+                    path: None,
+                    reason: "reader".to_string(),
+                })
+                .into_iter()
+                .collect(),
+            nearest: !reached,
+        }
+    }
+
+    pub fn candidates(&self) -> &[FindCandidate] {
+        &self.candidates
+    }
+
+    pub const fn is_nearest(&self) -> bool {
+        self.nearest
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindError {
+    code: RefusalCode,
+    message: String,
+}
+
+impl FindError {
+    fn new(code: RefusalCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub const fn code(&self) -> RefusalCode {
+        self.code
+    }
+}
+
+impl std::fmt::Display for FindError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+#[derive(Debug)]
+pub struct FindIndex {
+    documents: Vec<FindDocument>,
+}
+
+impl FindIndex {
+    pub fn new(mut documents: Vec<FindDocument>) -> Self {
+        documents.sort_by(|left, right| left.at.cmp(&right.at));
+        documents.dedup_by(|left, right| left.at == right.at);
+        Self { documents }
+    }
+
+    /// Точный поиск по адресу для аварийного моста: либо этот самый адрес,
+    /// либо ничего. Ранжирование и «ближайшее» сюда не попадают — мост на
+    /// догадки не имеет права.
+    pub fn locate_address(&self, at: &str) -> Option<&FindDocument> {
+        self.documents
+            .iter()
+            .find(|document| document.at == at && document.path.is_some())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_address(&self, at: &str) -> bool {
+        self.documents
+            .binary_search_by(|document| document.at.as_str().cmp(at))
+            .is_ok()
+    }
+
+    /// Точный поиск по пути. Путь мог прийти абсолютным или относительно
+    /// корня рабочего пространства, поэтому хвост принимается тоже — но
+    /// только целиком, посегментно, а не подстрокой.
+    pub fn locate_path(&self, path: &str) -> Option<FindPathMatch<'_>> {
+        let absolute_query = std::path::Path::new(path).is_absolute();
+        let query = normalize_layout_path(path);
+        let mut best: Option<FindPathMatch<'_>> = None;
+        let mut best_is_alias = false;
+        let mut ambiguous = false;
+        for document in &self.documents {
+            for (path, absolute_alias) in document.path.iter().map(|path| (path, None)).chain(
+                document
+                    .path_alias
+                    .iter()
+                    .map(|alias| (&alias.relative, Some(&alias.absolute))),
+            ) {
+                let is_alias = absolute_alias.is_some();
+                let matches = {
+                    if let Some(absolute) = absolute_alias {
+                        let stored = normalize_layout_path(absolute);
+                        query == stored
+                            || (!absolute_query
+                                && query.len() >= normalize(path).len()
+                                && stored
+                                    .strip_suffix(&query)
+                                    .is_some_and(|head| head.ends_with('/')))
+                    } else {
+                        let stored = normalize(path);
+                        query == stored
+                            || query
+                                .strip_suffix(&stored)
+                                .is_some_and(|head| head.ends_with('/'))
+                    }
+                };
+                if !matches {
+                    continue;
+                }
+                match best.as_ref().map(|found| path.len().cmp(&found.path.len())) {
+                    None | Some(Ordering::Greater) => {
+                        best = Some(FindPathMatch {
+                            owner: document,
+                            path,
+                        });
+                        best_is_alias = is_alias;
+                        ambiguous = false;
+                    }
+                    Some(Ordering::Equal) if is_alias || best_is_alias => ambiguous = true,
+                    Some(Ordering::Equal) => {
+                        best = Some(FindPathMatch {
+                            owner: document,
+                            path,
+                        });
+                    }
+                    Some(Ordering::Less) => {}
+                }
+            }
+        }
+        best.filter(|_| !ambiguous)
+    }
+
+    pub fn find(&self, request: FindRequest) -> FindResult {
+        let limit = request.limit;
+        self.find_ranked(request, Some(limit), || Ok(()))
+            .expect("an unchecked find cannot fail")
+    }
+
+    /// The entire ranked stream of a whole directory: the oracle a name
+    /// search ([`NameRanker`]) is checked against.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn find_all_checked(
+        &self,
+        request: FindRequest,
+        deadline: ProviderDeadline,
+        cancellation: &CancellationToken,
+    ) -> Result<FindResult, FindError> {
+        self.find_ranked(request, None, || {
+            if cancellation.is_cancelled() {
+                return Err(FindError::new(
+                    RefusalCode::Cancelled,
+                    "name search was cancelled",
+                ));
+            }
+            if deadline.is_elapsed() {
+                return Err(FindError::new(
+                    RefusalCode::DeadlineExceeded,
+                    "name search deadline elapsed",
+                ));
+            }
+            Ok(())
+        })
+    }
+
+    fn find_ranked(
+        &self,
+        request: FindRequest,
+        cap: Option<usize>,
+        mut checkpoint: impl FnMut() -> Result<(), FindError>,
+    ) -> Result<FindResult, FindError> {
+        checkpoint()?;
+        let query = normalize(&request.query);
+        let eligible = self.documents.iter().filter(|document| {
+            request
+                .kind
+                .as_ref()
+                .is_none_or(|kind| kind == &document.kind)
+                && request.contains_address(&document.at)
+        });
+        let mut direct = Vec::new();
+        for (index, document) in eligible.clone().enumerate() {
+            if index % 128 == 0 {
+                checkpoint()?;
+            }
+            if let Some(candidate) = best_direct_match(document, &query) {
+                direct.push(candidate);
+            }
+        }
+        checkpoint()?;
+        direct.sort_by(scored_order);
+        direct.dedup_by(|left, right| left.document.at == right.document.at);
+        checkpoint()?;
+        if !direct.is_empty() {
+            return Ok(FindResult {
+                candidates: direct
+                    .into_iter()
+                    .take(cap.unwrap_or(usize::MAX))
+                    .map(ScoredCandidate::into_candidate)
+                    .collect(),
+                nearest: false,
+            });
+        }
+
+        let mut nearest = Vec::new();
+        for (index, document) in eligible.enumerate() {
+            if index % 128 == 0 {
+                checkpoint()?;
+            }
+            if let Some(candidate) = nearest_match(document, &query) {
+                nearest.push(candidate);
+            }
+        }
+        checkpoint()?;
+        nearest.sort_by(scored_order);
+        nearest.dedup_by(|left, right| left.document.at == right.document.at);
+        let has_nearest = !nearest.is_empty();
+        checkpoint()?;
+        Ok(FindResult {
+            candidates: nearest
+                .into_iter()
+                .take(cap.map_or(usize::MAX, |limit| limit.min(10)))
+                .map(ScoredCandidate::into_candidate)
+                .collect(),
+            nearest: has_nearest,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fact_bytes(&self) -> Vec<u8> {
+        let facts = self
+            .documents
+            .iter()
+            .map(|document| {
+                serde_json::json!({
+                    "at": document.at,
+                    "kind": document.kind,
+                    "title": document.title,
+                    "facts": document.facts.iter().map(|fact| {
+                        serde_json::json!({
+                            "reason": fact.kind.reason(),
+                            "value": fact.value,
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_vec(&facts).expect("find identity facts serialize")
+    }
+}
+
+/// One page of the ranked answer of [`FindIndex::find_all_checked`], built
+/// while the layout is walked. Each document is scored as it is read and
+/// dropped; only the `keep` best candidates ranked after the previous page's
+/// last item stay, so memory follows the page size at any depth. Every
+/// match still counts toward the total and a fingerprint that does not
+/// depend on the order it was met in.
+/// Nearest names are scored on a second walk, only when nothing matched
+/// directly.
+pub struct NameRanker {
+    request: FindRequest,
+    query: String,
+    watched: HashMap<String, bool>,
+    keep: usize,
+    /// The rank of the last item the previous page showed.
+    after: Option<(usize, String)>,
+    nearest_pass: bool,
+    best: BinaryHeap<Ranked>,
+    matched: usize,
+    fingerprint: [u64; 4],
+    largest_item_bytes: usize,
+    largest_address_bytes: usize,
+}
+
+/// The candidates of one page and what identifies the whole ranked answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RankedNames {
+    /// The `keep` best candidates after the previous page, in rank order,
+    /// with their rank scores.
+    pub candidates: Vec<(usize, FindCandidate)>,
+    pub nearest: bool,
+    pub matched: usize,
+    /// Count and order-free digest of every ranked match.
+    pub fingerprint: [u8; 32],
+    /// The largest public match, for the transport check of any page.
+    pub largest_item_bytes: usize,
+    /// The longest address, for the size of any continuation keyed by it.
+    pub largest_address_bytes: usize,
+}
+
+struct Ranked {
+    score: usize,
+    candidate: FindCandidate,
+}
+
+impl Ranked {
+    fn key(&self) -> (usize, &str) {
+        (self.score, &self.candidate.at)
+    }
+}
+
+impl PartialEq for Ranked {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for Ranked {}
+
+impl PartialOrd for Ranked {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Ranked {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.key().cmp(&other.key())
+    }
+}
+
+/// The public shape of one name match, the same on every page.
+pub fn public_name_match(candidate: &FindCandidate) -> serde_json::Value {
+    serde_json::json!({
+        "at": candidate.at,
+        "kind": candidate.kind,
+        // Заголовок кандидата — тот же синоним, что у узла: тот же предел.
+        "title": crate::domain::node_view::compact_title(candidate.title.clone()),
+        "reason": candidate.reason,
+    })
+}
+
+impl NameRanker {
+    /// `watched` are addresses whose presence the caller checks afterwards,
+    /// such as a search scope; `keep` is how many best candidates the page
+    /// needs.
+    pub fn new(
+        request: FindRequest,
+        watched: impl IntoIterator<Item = String>,
+        keep: usize,
+        after: Option<(usize, String)>,
+    ) -> Self {
+        Self {
+            query: normalize(&request.query),
+            request,
+            watched: watched.into_iter().map(|at| (at, false)).collect(),
+            keep,
+            after,
+            nearest_pass: false,
+            best: BinaryHeap::new(),
+            matched: 0,
+            fingerprint: [0; 4],
+            largest_item_bytes: 0,
+            largest_address_bytes: 0,
+        }
+    }
+
+    pub fn offer(&mut self, document: FindDocument) {
+        if !self.nearest_pass {
+            if let Some(present) = self.watched.get_mut(&document.at) {
+                *present = true;
+            }
+        }
+        let eligible = self
+            .request
+            .kind
+            .as_ref()
+            .is_none_or(|kind| kind == &document.kind)
+            && self.request.contains_address(&document.at);
+        if !eligible {
+            return;
+        }
+        let found = if self.nearest_pass {
+            nearest_match(&document, &self.query)
+        } else {
+            best_direct_match(&document, &self.query)
+        };
+        if let Some(found) = found {
+            self.admit(found.score, found.into_candidate());
+        }
+    }
+
+    /// The layout walk offers each address once (the first document of an
+    /// address wins there), so every match counts exactly once.
+    fn admit(&mut self, score: usize, candidate: FindCandidate) {
+        let public =
+            serde_json::to_vec(&public_name_match(&candidate)).expect("name match is serializable");
+        self.largest_item_bytes = self.largest_item_bytes.max(public.len());
+        let mut item = Sha256::new();
+        item.update((score as u64).to_le_bytes());
+        item.update(&public);
+        let digest = item.finalize();
+        let (chunks, _) = digest.as_chunks::<8>();
+        for (lane, chunk) in self.fingerprint.iter_mut().zip(chunks) {
+            *lane = lane.wrapping_add(u64::from_le_bytes(*chunk));
+        }
+        self.matched = self.matched.saturating_add(1);
+        self.largest_address_bytes = self.largest_address_bytes.max(candidate.at.len());
+        if self.keep == 0 {
+            return;
+        }
+        if self.after.as_ref().is_some_and(|(after_score, after_at)| {
+            (score, candidate.at.as_str()) <= (*after_score, after_at.as_str())
+        }) {
+            return;
+        }
+        let ranked = Ranked { score, candidate };
+        if self.best.len() == self.keep {
+            if self.best.peek().is_some_and(|worst| &ranked >= worst) {
+                return;
+            }
+            self.best.pop();
+        }
+        self.best.push(ranked);
+    }
+
+    /// Whether a second walk for nearest names is the answer.
+    pub fn needs_nearest_pass(&self) -> bool {
+        !self.nearest_pass && self.matched == 0
+    }
+
+    /// The same question for the second walk; watched addresses keep what
+    /// the first walk saw.
+    pub fn into_nearest_pass(self) -> Self {
+        Self {
+            nearest_pass: true,
+            best: BinaryHeap::new(),
+            matched: 0,
+            fingerprint: [0; 4],
+            largest_item_bytes: 0,
+            largest_address_bytes: 0,
+            ..self
+        }
+    }
+
+    /// The watched addresses the walk met.
+    pub fn watched_presence(&self) -> HashSet<String> {
+        self.watched
+            .iter()
+            .filter(|(_, present)| **present)
+            .map(|(at, _)| at.clone())
+            .collect()
+    }
+
+    pub fn finish(self) -> RankedNames {
+        let mut fingerprint = Sha256::new();
+        fingerprint.update(b"unica-v13-names-ranked-v2\0");
+        fingerprint.update((self.matched as u64).to_le_bytes());
+        for lane in self.fingerprint {
+            fingerprint.update(lane.to_le_bytes());
+        }
+        RankedNames {
+            candidates: self
+                .best
+                .into_sorted_vec()
+                .into_iter()
+                .map(|ranked| (ranked.score, ranked.candidate))
+                .collect(),
+            nearest: self.nearest_pass && self.matched > 0,
+            matched: self.matched,
+            fingerprint: fingerprint.finalize().into(),
+            largest_item_bytes: self.largest_item_bytes,
+            largest_address_bytes: self.largest_address_bytes,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ScoredCandidate<'a> {
+    document: &'a FindDocument,
+    score: usize,
+    reason: String,
+}
+
+impl ScoredCandidate<'_> {
+    fn into_candidate(self) -> FindCandidate {
+        FindCandidate {
+            at: self.document.at.clone(),
+            kind: self.document.kind.clone(),
+            title: self.document.title.clone(),
+            path: self.document.path.clone(),
+            reason: self.reason,
+        }
+    }
+}
+
+fn scored_order(left: &ScoredCandidate<'_>, right: &ScoredCandidate<'_>) -> Ordering {
+    left.score
+        .cmp(&right.score)
+        .then_with(|| left.document.at.cmp(&right.document.at))
+}
+
+fn best_direct_match<'a>(document: &'a FindDocument, query: &str) -> Option<ScoredCandidate<'a>> {
+    document
+        .facts
+        .iter()
+        .filter_map(|fact| {
+            let value = normalize(&fact.value);
+            let score = if value == query {
+                0
+            } else if fact.kind == FindFactKind::ExportPath && query.ends_with(&value) {
+                // The caller pasted an absolute or workspace-relative path;
+                // the stored path is its tail.
+                5
+            } else if value.starts_with(query) {
+                10 + value.len().saturating_sub(query.len())
+            } else if value.contains(query) {
+                100 + value.len().saturating_sub(query.len())
+            } else {
+                return None;
+            };
+            Some(ScoredCandidate {
+                document,
+                score,
+                reason: fact.kind.reason().to_string(),
+            })
+        })
+        .min_by(scored_order)
+}
+
+fn nearest_match<'a>(document: &'a FindDocument, query: &str) -> Option<ScoredCandidate<'a>> {
+    document
+        .facts
+        .iter()
+        .filter(|fact| matches!(fact.kind, FindFactKind::Name | FindFactKind::Address))
+        .filter_map(|fact| {
+            let value = normalize(&fact.value);
+            let score = bounded_levenshtein(query, &value, 32)?;
+            Some(ScoredCandidate {
+                document,
+                score,
+                reason: format!("nearest:{}", fact.kind.reason()),
+            })
+        })
+        .min_by(scored_order)
+}
+
+fn normalize(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+pub fn normalize_layout_path(path: &str) -> String {
+    let normalized = normalize(&path.replace('\\', "/"));
+    if let Some(unc) = normalized.strip_prefix("//?/unc/") {
+        format!("//{unc}")
+    } else {
+        normalized
+            .strip_prefix("//?/")
+            .unwrap_or(&normalized)
+            .to_string()
+    }
+}
+
+fn bounded_levenshtein(left: &str, right: &str, bound: usize) -> Option<usize> {
+    let left = left.chars().take(bound + 1).collect::<Vec<_>>();
+    let right = right.chars().take(bound + 1).collect::<Vec<_>>();
+    if left.len() > bound || right.len() > bound {
+        return None;
+    }
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    for (left_index, left_char) in left.iter().enumerate() {
+        let mut current = vec![left_index + 1];
+        for (right_index, right_char) in right.iter().enumerate() {
+            current.push(
+                (previous[right_index + 1] + 1)
+                    .min(current[right_index] + 1)
+                    .min(previous[right_index] + usize::from(left_char != right_char)),
+            );
+        }
+        previous = current;
+    }
+    previous.last().copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FindDocument, FindFact, FindFactKind, FindIndex, FindRequest};
+    use std::time::Duration;
+    use unica_address::address::QualifiedAddress;
+    use unica_refusal::RefusalCode;
+    use unica_work_control::cancellation::CancellationToken;
+    use unica_work_control::provider_deadline::ProviderDeadline;
+
+    fn index() -> FindIndex {
+        FindIndex::new(vec![
+            FindDocument::new(
+                "main:Catalog.Валюты",
+                "Catalog",
+                "Валюты — Currencies",
+                vec![
+                    FindFact::new(FindFactKind::Name, "Валюты"),
+                    FindFact::new(FindFactKind::Synonym, "Currencies"),
+                    FindFact::new(FindFactKind::ExportPath, "Catalogs/Валюты.xml"),
+                ],
+            ),
+            FindDocument::new(
+                "main:Document.Заказ",
+                "Document",
+                "Заказ",
+                vec![FindFact::new(FindFactKind::Name, "Заказ")],
+            ),
+        ])
+    }
+
+    /// rule: INV.WIRE.SEARCH-CORPUS
+    #[test]
+    fn find_returns_address_facts_and_not_content_hits() {
+        for query in ["Валюты", "Catalog", "Currencies", "Catalogs/Валюты.xml"] {
+            let result = index().find(FindRequest::new(query).unwrap());
+            assert_eq!(
+                result.candidates()[0].at(),
+                "main:Catalog.Валюты",
+                "{query}"
+            );
+            assert_eq!(result.candidates()[0].kind(), "Catalog", "{query}");
+            assert!(!result.candidates()[0].reason().contains("body"));
+            assert!(!result.candidates()[0].reason().contains("content"));
+        }
+    }
+
+    /// rule: INV.WIRE.SEARCH-CORPUS
+    #[test]
+    fn exact_kind_alias_filter_limit_and_nearest_are_deterministic() {
+        let catalog = index().find(
+            FindRequest::new("а")
+                .unwrap()
+                .with_kind("Справочник")
+                .unwrap()
+                .with_limit(1)
+                .unwrap(),
+        );
+        assert_eq!(catalog.candidates().len(), 1);
+        assert_eq!(catalog.candidates()[0].kind(), "Catalog");
+
+        let nearest = index().find(FindRequest::new("Валюта").unwrap());
+        assert!(nearest.is_nearest());
+        assert_eq!(nearest.candidates()[0].at(), "main:Catalog.Валюты");
+        assert!(nearest.candidates()[0].reason().starts_with("nearest:"));
+    }
+
+    #[test]
+    fn empty_search_has_no_approximate_match() {
+        let absent_kind = index().find(
+            FindRequest::new("Валюты")
+                .unwrap()
+                .with_kind("Role")
+                .unwrap(),
+        );
+        assert!(absent_kind.candidates().is_empty());
+        assert!(!absent_kind.is_nearest());
+
+        let distant = index().find(
+            FindRequest::new("A query longer than the nearest bound of thirty two characters")
+                .unwrap(),
+        );
+        assert!(distant.candidates().is_empty());
+        assert!(!distant.is_nearest());
+    }
+
+    #[test]
+    fn default_and_oversized_limits_are_bounded() {
+        let documents = (0..150)
+            .map(|index| {
+                FindDocument::new(
+                    format!("main:Catalog.Node{index:03}"),
+                    "Catalog",
+                    format!("Node {index:03}"),
+                    vec![FindFact::new(FindFactKind::Name, format!("Node{index:03}"))],
+                )
+            })
+            .collect();
+        let index = FindIndex::new(documents);
+
+        assert_eq!(
+            index
+                .find(FindRequest::new("Node").unwrap())
+                .candidates()
+                .len(),
+            20,
+        );
+        assert_eq!(
+            index
+                .find(
+                    FindRequest::new("Node")
+                        .unwrap()
+                        .with_limit(usize::MAX)
+                        .unwrap(),
+                )
+                .candidates()
+                .len(),
+            100,
+        );
+        assert_eq!(
+            index
+                .find_all_checked(
+                    FindRequest::new("Node").unwrap(),
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &CancellationToken::new(),
+                )
+                .unwrap()
+                .candidates()
+                .len(),
+            150,
+        );
+    }
+
+    #[test]
+    fn paged_name_ranking_keeps_all_nearest_candidates_and_checks_cancellation() {
+        let documents = (0..15)
+            .map(|index| {
+                FindDocument::new(
+                    format!("main:Catalog.Node{index:02}"),
+                    "Catalog",
+                    format!("Node{index:02}"),
+                    vec![FindFact::new(FindFactKind::Name, format!("Node{index:02}"))],
+                )
+            })
+            .collect();
+        let index = FindIndex::new(documents);
+        let request = FindRequest::new("Nade").unwrap();
+        let found = index
+            .find_all_checked(
+                request.clone(),
+                ProviderDeadline::from_budget(Duration::from_secs(5)),
+                &CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(found.is_nearest());
+        assert_eq!(found.candidates().len(), 15);
+        assert_eq!(index.find(request.clone()).candidates().len(), 10);
+
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert_eq!(
+            index
+                .find_all_checked(
+                    request.clone(),
+                    ProviderDeadline::from_budget(Duration::from_secs(5)),
+                    &cancelled,
+                )
+                .unwrap_err()
+                .code(),
+            RefusalCode::Cancelled,
+        );
+        assert_eq!(
+            index
+                .find_all_checked(
+                    request,
+                    ProviderDeadline::from_budget(Duration::ZERO),
+                    &CancellationToken::new(),
+                )
+                .unwrap_err()
+                .code(),
+            RefusalCode::DeadlineExceeded,
+        );
+    }
+
+    #[test]
+    fn name_scope_stops_at_a_logical_segment_boundary() {
+        let index = FindIndex::new(vec![
+            FindDocument::new("main:Catalog.Item", "Catalog", "Item", vec![]),
+            FindDocument::new("main:Catalog.Items", "Catalog", "Items", vec![]),
+            FindDocument::new("other:Catalog.Item", "Catalog", "Item", vec![]),
+        ]);
+        let request = FindRequest::new("Item")
+            .unwrap()
+            .with_scope(QualifiedAddress::parse("main:Catalog.Item").unwrap());
+
+        let found = index.find(request);
+        assert_eq!(found.candidates().len(), 1);
+        assert_eq!(found.candidates()[0].at(), "main:Catalog.Item");
+    }
+
+    #[test]
+    fn find_matches_an_identity_longer_than_the_former_query_ceiling() {
+        let long_name = "Я".repeat(1_025);
+        let address = format!("main:Catalog.{long_name}");
+        let index = FindIndex::new(vec![FindDocument::new(
+            &address,
+            "Catalog",
+            long_name.clone(),
+            vec![FindFact::new(FindFactKind::Name, long_name.clone())],
+        )]);
+
+        let found = index.find(FindRequest::new(&long_name).unwrap());
+        assert_eq!(found.candidates().len(), 1);
+        assert_eq!(found.candidates()[0].at(), address);
+    }
+}

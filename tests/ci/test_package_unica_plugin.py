@@ -286,7 +286,11 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         self.assertFalse((repo_root / "plugins" / "unica" / "scripts" / "legacy").exists())
 
-        rust_sources = sorted((repo_root / "crates" / "unica-coder" / "src").rglob("*.rs"))
+        rust_sources = sorted(
+            path
+            for package in ("unica-coder", "unica-application")
+            for path in (repo_root / "crates" / package / "src").rglob("*.rs")
+        )
         forbidden = (
             "ToolHandler::LegacyScript",
             "LegacyScriptAdapter",

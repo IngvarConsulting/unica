@@ -24,6 +24,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tomllib
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,11 +49,18 @@ class Choice:
     no_rust: bool = False
 
 
+def patched_crates(root: Path = ROOT) -> dict[str, str]:
+    """Каталоги путевых патчей: у них свой `[workspace]`, поэтому в `cargo metadata --no-deps` их нет."""
+    patches = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8")).get("patch", {})
+    return {entry["path"]: name for source in patches.values() for name, entry in source.items() if "path" in entry}
+
+
 def workspace(root: Path = ROOT) -> tuple[dict[str, str], dict[str, set[str]]]:
     """Каталоги крейтов и их прямые зависимые, включая dev-зависимости."""
     meta = json.loads(subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"], cwd=root, text=True, encoding="utf-8"))
     base = meta["workspace_root"].replace("\\", "/").rstrip("/")
     directories = {os.path.dirname(package["manifest_path"]).replace("\\", "/").removeprefix(base + "/"): package["name"] for package in meta["packages"]}
+    directories.update(patched_crates(root))
     names = set(directories.values())
     dependents: dict[str, set[str]] = {}
     for package in meta["packages"]:
@@ -115,10 +123,12 @@ def load_runner():
 
 def commands(packages: tuple[str, ...], runner, dependents: tuple[str, ...] = ()) -> list[list[str]]:
     """`small` остальных крейтов и `small` с `medium` выбранных: без повтора одних и тех же тестов."""
-    others = ("--workspace", *(item for package in packages for item in ("--exclude", package)))
+    # `ureq` не член рабочей области: его набор идёт из своего манифеста ниже.
+    members = tuple(package for package in packages if package != "ureq")
+    others = ("--workspace", *(item for package in members for item in ("--exclude", package)))
     planned = [[*runner.rust_command("pr", others), "--no-tests=pass"]]
-    if packages:
-        selection = tuple(item for package in packages for item in ("-p", package))
+    if members:
+        selection = tuple(item for package in members for item in ("-p", package))
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
     if dependents:
         selection = (*(item for package in dependents for item in ("-p", package)), "-E", DEPENDENT_FILTER)

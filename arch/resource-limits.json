@@ -675,8 +675,8 @@
         "crates/unica-bootstrap/src/host/mod.rs",
         "crates/unica-bootstrap/src/host/response_budget.rs",
         "crates/unica-bootstrap/src/lib.rs",
-        "crates/unica-coder/src/application/v13/source_text.rs",
-        "crates/unica-coder/src/application/v13/view.rs",
+        "crates/unica-application/src/application/v13/source_text.rs",
+        "crates/unica-application/src/application/v13/view.rs",
         "crates/unica-coder/src/infrastructure/daemon/server.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
         "crates/unica-coder/src/infrastructure/v13_read.rs",
@@ -879,13 +879,13 @@
       "unit": "ms",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/mod.rs",
+        "file": "crates/unica-application/src/application/mod.rs",
         "symbol": "PUBLIC_INVOCATION_DEADLINE"
       },
       "expr": "Duration::from_secs(5)",
       "value": 5000,
       "applied": [
-        "crates/unica-coder/src/application/mod.rs"
+        "crates/unica-application/src/application/mod.rs"
       ],
       "status": "unproven",
       "origin": "коммит 996b09d20 (fix(subsystem): переиспользовать подготовленный снимок)",
@@ -903,13 +903,13 @@
       "unit": "count",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/tool_contracts.rs",
+        "file": "crates/unica-application/src/application/tool_contracts.rs",
         "symbol": "ARGUMENT_SUGGESTION_LIMIT"
       },
       "expr": "3",
       "value": 3,
       "applied": [
-        "crates/unica-coder/src/application/tool_contracts.rs"
+        "crates/unica-application/src/application/tool_contracts.rs"
       ],
       "status": "unproven",
       "origin": "9bf43f2b1 (#276, #282)",
@@ -927,13 +927,13 @@
       "unit": "count",
       "scope": "cache",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/diff.rs",
+        "file": "crates/unica-application/src/application/v13/diff.rs",
         "symbol": "MAX_CURSOR_ENTRIES"
       },
       "expr": "64",
       "value": 64,
       "applied": [
-        "crates/unica-coder/src/application/v13/diff.rs"
+        "crates/unica-application/src/application/v13/diff.rs"
       ],
       "status": "unproven",
       "origin": "781b94962",
@@ -951,14 +951,14 @@
       "unit": "count",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/diff.rs",
+        "file": "crates/unica-application/src/application/v13/diff.rs",
         "symbol": "DEFAULT_DIFF_LIMIT"
       },
       "expr": "20",
       "value": 20,
       "applied": [
-        "crates/unica-coder/src/application/v13/diff.rs",
-        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-application/src/application/v13/diff.rs",
+        "crates/unica-application/src/application/v13/tool_catalog.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
       ],
       "status": "unproven",
@@ -977,14 +977,14 @@
       "unit": "count",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/diff.rs",
+        "file": "crates/unica-application/src/application/v13/diff.rs",
         "symbol": "MAX_DIFF_LIMIT"
       },
       "expr": "50",
       "value": 50,
       "applied": [
-        "crates/unica-coder/src/application/v13/diff.rs",
-        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-application/src/application/v13/diff.rs",
+        "crates/unica-application/src/application/v13/tool_catalog.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
       ],
       "status": "unproven",
@@ -1003,14 +1003,14 @@
       "unit": "count",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/check.rs",
+        "file": "crates/unica-application/src/application/v13/check.rs",
         "symbol": "DEFAULT_CHECK_LIMIT"
       },
       "expr": "20",
       "value": 20,
       "applied": [
-        "crates/unica-coder/src/application/v13/check.rs",
-        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-application/src/application/v13/check.rs",
+        "crates/unica-application/src/application/v13/tool_catalog.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs"
       ],
@@ -1030,14 +1030,14 @@
       "unit": "count",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/check.rs",
+        "file": "crates/unica-application/src/application/v13/check.rs",
         "symbol": "MAX_CHECK_LIMIT"
       },
       "expr": "50",
       "value": 50,
       "applied": [
-        "crates/unica-coder/src/application/v13/check.rs",
-        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-application/src/application/v13/check.rs",
+        "crates/unica-application/src/application/v13/tool_catalog.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs"
       ],
@@ -1057,13 +1057,13 @@
       "unit": "count",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/find.rs",
+        "file": "crates/unica-application/src/application/v13/find.rs",
         "symbol": "DEFAULT_LIMIT"
       },
       "expr": "20",
       "value": 20,
       "applied": [
-        "crates/unica-coder/src/application/v13/find.rs"
+        "crates/unica-application/src/application/v13/find.rs"
       ],
       "status": "unproven",
       "origin": "cec3ddf7c",
@@ -1081,13 +1081,13 @@
       "unit": "count",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/find.rs",
+        "file": "crates/unica-application/src/application/v13/find.rs",
         "symbol": "MAX_LIMIT"
       },
       "expr": "100",
       "value": 100,
       "applied": [
-        "crates/unica-coder/src/application/v13/find.rs"
+        "crates/unica-application/src/application/v13/find.rs"
       ],
       "status": "unproven",
       "origin": "cec3ddf7c",
@@ -1105,14 +1105,14 @@
       "unit": "bytes",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/source_text.rs",
+        "file": "crates/unica-application/src/application/v13/source_text.rs",
         "symbol": "MAX_SOURCE_TEXT_BYTES"
       },
       "expr": "unica_bootstrap::MAX_RESPONSE_BUDGET",
       "value": 73728,
       "derived": true,
       "applied": [
-        "crates/unica-coder/src/application/v13/source_text.rs"
+        "crates/unica-application/src/application/v13/source_text.rs"
       ],
       "status": "unproven",
       "origin": "7d6701571 (#1458, #1478); бюджет Claude по замеру 15.10.2026 в unica-bootstrap host/response_budget.rs",
@@ -1130,13 +1130,13 @@
       "unit": "ms",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/task_tools.rs",
+        "file": "crates/unica-application/src/application/v13/task_tools.rs",
         "symbol": "DEFAULT_TASK_RESULT_WAIT_MS"
       },
       "expr": "7_000",
       "value": 7000,
       "applied": [
-        "crates/unica-coder/src/application/v13/task_tools.rs"
+        "crates/unica-application/src/application/v13/task_tools.rs"
       ],
       "status": "unproven",
       "origin": "коммит 850507d1c (feat(mcp): emulate tasks for clients without the extension)",
@@ -1158,13 +1158,13 @@
       "unit": "count",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/view.rs",
+        "file": "crates/unica-application/src/application/v13/view.rs",
         "symbol": "DEFAULT_LIMIT"
       },
       "expr": "20",
       "value": 20,
       "applied": [
-        "crates/unica-coder/src/application/v13/view.rs"
+        "crates/unica-application/src/application/v13/view.rs"
       ],
       "status": "unproven",
       "origin": "cec3ddf7c",
@@ -1182,13 +1182,13 @@
       "unit": "count",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/view.rs",
+        "file": "crates/unica-application/src/application/v13/view.rs",
         "symbol": "MAX_LIMIT"
       },
       "expr": "50",
       "value": 50,
       "applied": [
-        "crates/unica-coder/src/application/v13/view.rs"
+        "crates/unica-application/src/application/v13/view.rs"
       ],
       "status": "unproven",
       "origin": "cec3ddf7c",
@@ -1206,15 +1206,15 @@
       "unit": "bytes",
       "scope": "request",
       "source": {
-        "file": "crates/unica-coder/src/application/v13/view.rs",
+        "file": "crates/unica-application/src/application/v13/view.rs",
         "symbol": "PREFERRED_PAGE_BYTES"
       },
       "expr": "64 * 1024",
       "value": 65536,
       "applied": [
-        "crates/unica-coder/src/application/v13/check.rs",
-        "crates/unica-coder/src/application/v13/diff.rs",
-        "crates/unica-coder/src/application/v13/view.rs",
+        "crates/unica-application/src/application/v13/check.rs",
+        "crates/unica-application/src/application/v13/diff.rs",
+        "crates/unica-application/src/application/v13/view.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs"
       ],
@@ -2413,13 +2413,13 @@
       "unit": "bytes",
       "scope": "record",
       "source": {
-        "file": "crates/unica-coder/src/domain/node_view.rs",
+        "file": "crates/unica-application/src/domain/node_view.rs",
         "symbol": "MAX_TITLE_BYTES"
       },
       "expr": "2_048",
       "value": 2048,
       "applied": [
-        "crates/unica-coder/src/domain/node_view.rs",
+        "crates/unica-application/src/domain/node_view.rs",
         "crates/unica-coder/src/infrastructure/v13_read_projection.rs"
       ],
       "status": "unproven",
@@ -3272,7 +3272,7 @@
       "value": 3600,
       "applied": [
         "crates/unica-adapter-bsl-analyzer/src/adapter.rs",
-        "crates/unica-coder/src/application/tool_contracts.rs",
+        "crates/unica-application/src/application/tool_contracts.rs",
         "crates/unica-diagnostics/src/deadlines.rs"
       ],
       "status": "unproven",
@@ -3302,7 +3302,7 @@
       "value": 30,
       "applied": [
         "crates/unica-adapter-bsl-analyzer/src/adapter.rs",
-        "crates/unica-coder/src/application/tool_contracts.rs",
+        "crates/unica-application/src/application/tool_contracts.rs",
         "crates/unica-diagnostics/src/deadlines.rs"
       ],
       "status": "unproven",
@@ -3509,9 +3509,9 @@
       "expr": "8 * 1024 * 1024",
       "value": 8388608,
       "applied": [
-        "crates/unica-coder/src/application/v13/check.rs",
-        "crates/unica-coder/src/application/v13/diff.rs",
-        "crates/unica-coder/src/application/v13/view.rs",
+        "crates/unica-application/src/application/v13/check.rs",
+        "crates/unica-application/src/application/v13/diff.rs",
+        "crates/unica-application/src/application/v13/view.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_documentation.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
         "crates/unica-coder/src/interfaces/task_projection.rs",
@@ -5022,7 +5022,7 @@
       "expr": "20",
       "value": 20,
       "applied": [
-        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-application/src/application/v13/tool_catalog.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
         "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
         "crates/unica-navigation/src/source_navigation.rs"
@@ -5049,8 +5049,8 @@
       "expr": "50",
       "value": 50,
       "applied": [
-        "crates/unica-coder/src/application/tool_contracts.rs",
-        "crates/unica-coder/src/application/v13/tool_catalog.rs",
+        "crates/unica-application/src/application/tool_contracts.rs",
+        "crates/unica-application/src/application/v13/tool_catalog.rs",
         "crates/unica-coder/src/infrastructure/daemon/v13_service.rs",
         "crates/unica-coder/src/infrastructure/native_operations/xdto.rs",
         "crates/unica-navigation/src/source_navigation.rs"

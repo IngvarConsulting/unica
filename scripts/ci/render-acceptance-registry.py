@@ -8,7 +8,7 @@ every added scenario, so a committed copy would make any two such changes
 conflict.  The site build publishes it as `acceptance-scenarios.html`.
 
 Besides the catalogue itself the document cross-references the closed `apply`
-registry (`crates/unica-coder/src/domain/apply.rs`) and the `check` profiles so
+registry (`crates/unica-application/src/domain/apply.rs`) and the `check` profiles so
 that a contributor can see which operations no scenario exercises yet and
 propose the missing developer task.
 
@@ -29,8 +29,8 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CORPUS_STORAGE = REPO_ROOT / "scripts/ci/acceptance_corpus.py"
-APPLY_REGISTRY = REPO_ROOT / "crates/unica-coder/src/domain/apply.rs"
-CHECK_PROFILES = REPO_ROOT / "crates/unica-coder/src/application/v13/check.rs"
+APPLY_REGISTRY = REPO_ROOT / "crates/unica-application/src/domain/apply.rs"
+CHECK_PROFILES = REPO_ROOT / "crates/unica-application/src/application/v13/check.rs"
 PAGE_NAME = "acceptance-scenarios.html"
 
 # Composition fixes registration order; each physical family owns the literal

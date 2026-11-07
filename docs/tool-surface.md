@@ -1,6 +1,6 @@
 # Ведомость публичной поверхности инструментов
 
-Порождается `scripts/ci/generate-tool-surface.py` из `tools/list` собранного бинаря. Руками правится только [`tool-surface-review.json`](../tests/fixtures/v013/tool-surface-review.json): контракт результата и сценарии. Имена, описания и аргументы принадлежат реестру v0.13 в `crates/unica-coder/src/application/v13/tool_catalog.rs`; здесь они лишь показаны рядом.
+Порождается `scripts/ci/generate-tool-surface.py` из `tools/list` собранного бинаря. Руками правится только [`tool-surface-review.json`](../tests/fixtures/v013/tool-surface-review.json): контракт результата и сценарии. Имена, описания и аргументы принадлежат реестру v0.13 в `crates/unica-application/src/application/v13/tool_catalog.rs`; здесь они лишь показаны рядом.
 
 Колонка «Результат сейчас» — наблюдение ревью, а не машинный факт: страж проверяет полноту охвата и совпадение аргументов с реестром, но не читает поведение обработчика.
 

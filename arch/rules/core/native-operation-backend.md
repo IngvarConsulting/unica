@@ -5,8 +5,8 @@ gap: https://github.com/IngvarConsulting/unica/issues/983
 
 # Операции Unica исполняются без скриптового бэкенда
 
-Продуктивный код `unica-coder` не запускает `python`, `python3`, `bash`,
-`powershell` или `pwsh` и не возвращается к файлам операций как запасному
+Продуктивный код `unica-coder` и `unica-application` не запускает `python`,
+`python3`, `bash`, `powershell` или `pwsh` и не возвращается к файлам операций как запасному
 исполнителю. Скрипты сборки и эталонные программы тестовых фикстур к этому
 runtime не относятся.
 

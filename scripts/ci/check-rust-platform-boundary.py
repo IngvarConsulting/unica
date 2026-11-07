@@ -135,7 +135,7 @@ def _is_file_io_free_source(path: PurePosixPath) -> bool:
 
 def _is_domain_source(path: PurePosixPath) -> bool:
     parts = path.parts
-    return path.as_posix().startswith("crates/unica-coder/src/domain/") or (
+    return path.as_posix().startswith("crates/unica-application/src/domain/") or (
         len(parts) >= 4 and parts[0] == "crates"
         and parts[2] == "src" and (parts[1] in DOMAIN_COMPONENTS or parts[3] == "model")
     )
@@ -414,7 +414,7 @@ def _forbidden_imports(path: PurePosixPath) -> tuple[str, ...]:
     normalized = path.as_posix()
     if _is_domain_source(path):
         return FORBIDDEN_DOMAIN_IMPORTS
-    if normalized.startswith("crates/unica-coder/src/application/"):
+    if normalized.startswith("crates/unica-application/src/application/"):
         return FORBIDDEN_APPLICATION_IMPORTS
     if normalized.startswith("crates/unica-coder/src/infrastructure/"):
         return FORBIDDEN_INFRASTRUCTURE_IMPORTS
