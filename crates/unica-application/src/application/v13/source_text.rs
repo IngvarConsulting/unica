@@ -17,7 +17,7 @@ use unica_execution_contract::source_text_budget::complete_prefix;
 // derived: true
 // resource: Наибольший текст Body модуля или метода BSL, который view отдаёт хоть какому-то клиенту (наибольший бюджет ответа известных хостов, 72 КиБ).
 // status: unproven
-// origin: 7d6701571 (#1458, #1478); бюджет Claude по замеру 15.10.2026 в unica-bootstrap host/response_budget.rs
+// origin: 7d6701571 (#1458, #1478); наибольший бюджет хоста по замеру 15.10.2026 в unica-bootstrap host/response_budget.rs
 // problem: Ответ с текстом должен целиком доходить до модели без усечения и выноса в файл (правило arch/rules/mcp/source-text-response-budget.md).
 // on-reach: Отказ result_too_large; текст на части не режется, остаётся выбор строк.
 // issue: #1119
