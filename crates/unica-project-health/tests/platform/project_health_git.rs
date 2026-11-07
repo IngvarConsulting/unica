@@ -1794,6 +1794,9 @@ fn project_health_git_ignore_file_that_git_skips_is_reported_not_trusted() {
     let probe = Command::new("git")
         .args(["check-ignore", "--no-index", "-q", "ConfigDumpInfo.xml"])
         .current_dir(&fixture.repository_root)
+        // The warning is translated; the service reads it in this locale too.
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
         .output()
         .unwrap();
     let this_git_skips_the_file =
@@ -1821,7 +1824,10 @@ fn project_health_git_ignore_file_that_git_skips_is_reported_not_trusted() {
 /// version with the size limit gives it.
 #[test]
 fn project_health_git_ignore_warning_makes_the_policy_incomplete_on_any_git() {
-    struct SkippingIgnoreFiles;
+    struct SkippingIgnoreFiles {
+        status: &'static str,
+        stdout: &'static str,
+    }
 
     impl SkippingIgnoreFiles {
         fn inner() -> &'static (dyn ProcessRunner + Send + Sync) {
@@ -1841,9 +1847,9 @@ fn project_health_git_ignore_warning_makes_the_policy_incomplete_on_any_git() {
         ) -> Result<ProcessOutput, String> {
             if command.args.iter().any(|arg| arg == "check-ignore") {
                 return Ok(ProcessOutput {
-                    status: "exit status: 1".into(),
+                    status: self.status.into(),
                     stderr: format!("warning: {IGNORED_PATTERN_FILE_WARNING}: .gitignore\n"),
-                    ..process_output(false, "")
+                    ..process_output(self.status == "exit status: 0", self.stdout)
                 });
             }
             Self::inner().run_with_input(command, input)
@@ -1878,31 +1884,45 @@ fn project_health_git_ignore_warning_makes_the_policy_incomplete_on_any_git() {
     git(&fixture.repository_root, &["add", ".gitignore"]);
     let layout = inspect_layout(&fixture.context);
 
-    let inspection = GitRepositoryInspector::with_runner(&SkippingIgnoreFiles)
-        .inspect_base(
-            &fixture.context,
-            &layout,
-            &CancellationToken::new(),
-            ProviderDeadline::no_deadline(),
-        )
-        .unwrap();
+    // Nothing matched, or another ignore file matched while one was skipped.
+    for runner in [
+        SkippingIgnoreFiles {
+            status: "exit status: 1",
+            stdout: "",
+        },
+        SkippingIgnoreFiles {
+            status: "exit status: 0",
+            stdout: ".git/info/exclude\u{0}1\u{0}ConfigDumpInfo.xml\u{0}ConfigDumpInfo.xml\u{0}",
+        },
+    ] {
+        let inspection = GitRepositoryInspector::with_runner(&runner)
+            .inspect_base(
+                &fixture.context,
+                &layout,
+                &CancellationToken::new(),
+                ProviderDeadline::no_deadline(),
+            )
+            .unwrap();
 
-    assert!(
-        inspection.facts.iter().any(|fact| matches!(
+        assert!(
+            inspection.facts.iter().any(|fact| matches!(
+                fact,
+                ProjectHealthFact::GitInspectionIncomplete {
+                    check: ProjectCheckId::RepositoryIgnore,
+                    reason,
+                    ..
+                } if reason.contains(IGNORED_PATTERN_FILE_WARNING)
+            )),
+            "{}: {:?}",
+            runner.status,
+            inspection.facts
+        );
+        assert!(!inspection.facts.iter().any(|fact| matches!(
             fact,
-            ProjectHealthFact::GitInspectionIncomplete {
-                check: ProjectCheckId::RepositoryIgnore,
-                reason,
-                ..
-            } if reason.contains(IGNORED_PATTERN_FILE_WARNING)
-        )),
-        "{:?}",
-        inspection.facts
-    );
-    assert!(!inspection.facts.iter().any(|fact| matches!(
-        fact,
-        ProjectHealthFact::IgnoreRuleMissing { .. } | ProjectHealthFact::IgnoreRuleLocalOnly { .. }
-    )));
+            ProjectHealthFact::IgnoreRuleMissing { .. }
+                | ProjectHealthFact::IgnoreRuleLocalOnly { .. }
+        )));
+    }
 }
 
 /// rule: INV.SOURCE.PORTABLE-GIT
