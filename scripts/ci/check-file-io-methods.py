@@ -61,7 +61,11 @@ def clippy_command(selection: list[str], target_dir: Path) -> list[str]:
 
 
 def diagnostics(stdout: str) -> list[tuple[str, int, str]]:
-    """(file, line, message) of every disallowed-method diagnostic."""
+    """(file, line, message) of every disallowed-method diagnostic.
+
+    The file is written with `/`: on Windows Clippy reports `src\\lib.rs`, and
+    the probe markers and the package filter compare against `/` paths.
+    """
     found = []
     for line in stdout.splitlines():
         try:
@@ -73,7 +77,7 @@ def diagnostics(stdout: str) -> list[tuple[str, int, str]]:
             continue
         span = next((span for span in compiler.get("spans", []) if span.get("is_primary")), None)
         if span:
-            found.append((span["file_name"], span["line_start"], compiler["message"]))
+            found.append((span["file_name"].replace("\\", "/"), span["line_start"], compiler["message"]))
     return found
 
 
