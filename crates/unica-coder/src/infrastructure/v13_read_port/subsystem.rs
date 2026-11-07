@@ -4,9 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use unica_address::address::QualifiedAddress;
 use unica_address::source_target::MetadataAddress;
-use unica_metadata_designer::subsystem::{
-    build_subsystem_info_result, parse_subsystem_command_interface_data,
-};
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::portable_path::PortablePathExt;
 
@@ -39,20 +36,22 @@ impl ProviderReadAuthority {
                         "CommandInterface.xml is not UTF-8",
                     )
                 })?;
-                parse_subsystem_command_interface_data(&ci_relative, text)
+                crate::infrastructure::family_codecs::metadata_read_codec()
+                    .subsystem_command_interface(&ci_relative, text)
                     .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
             })
             .transpose()?;
-        let (data, _) = unica_metadata_designer::subsystem::parse_subsystem_info_xml(
-            if nested.is_empty() {
-                Path::new(target.as_str())
-            } else {
-                descriptor_relative.as_path()
-            },
-            descriptor,
-            command_interface.is_some(),
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let (data, _) = crate::infrastructure::family_codecs::metadata_read_codec()
+            .subsystem_info(
+                if nested.is_empty() {
+                    Path::new(target.as_str())
+                } else {
+                    descriptor_relative.as_path()
+                },
+                descriptor,
+                command_interface.is_some(),
+            )
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         if let Some(expected) = nested.last() {
             if &data.name != expected {
                 return Err(ViewError::detailed(
@@ -69,7 +68,12 @@ impl ProviderReadAuthority {
         // вложенной он свой, а не корня.
         let support =
             self.object_support_with_descriptor(target, Some(&descriptor_bytes), checkpoint)?;
-        let result = build_subsystem_info_result(data, None, command_interface, support);
+        let result = crate::infrastructure::family_codecs::metadata_read_codec().subsystem_result(
+            data,
+            None,
+            command_interface,
+            support,
+        );
         serde_json::to_value(result)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))
     }
@@ -94,10 +98,9 @@ impl ProviderReadAuthority {
                     "subsystem descriptor is not UTF-8",
                 )
             })?;
-            let (parent, _) = unica_metadata_designer::subsystem::parse_subsystem_info_xml(
-                &relative, text, false,
-            )
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+            let (parent, _) = crate::infrastructure::family_codecs::metadata_read_codec()
+                .subsystem_info(&relative, text, false)
+                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
             // Промежуточный дескриптор обязан называть ту подсистему, по
             // регистрации которой к нему пришли; корень сверен владельцем.
             if let Some(expected) = depth.checked_sub(1).map(|index| &nested[index]) {
@@ -143,7 +146,6 @@ impl ProviderReadAuthority {
     ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
         use crate::infrastructure::subsystem_composition::subsystem_validation_outcome;
         use unica_metadata::subsystem::SubsystemInfoFormatDocument;
-        use unica_metadata_designer::subsystem::validate_subsystem_content;
         let route = crate::infrastructure::logical_tree::route_logical_address(
             address,
             unica_bsl::profile::PlatformProfile::v8_3_27(),
@@ -157,9 +159,9 @@ impl ProviderReadAuthority {
         let text = std::str::from_utf8(&bytes).map_err(|error| {
             ViewError::detailed(RefusalDetail::SourceUnreadable, error.to_string())
         })?;
-        let (data, _) =
-            unica_metadata_designer::subsystem::parse_subsystem_info_xml(&relative, text, false)
-                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let (data, _) = crate::infrastructure::family_codecs::metadata_read_codec()
+            .subsystem_info(&relative, text, false)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         let expected = address
             .segments()
             .last()
@@ -188,36 +190,37 @@ impl ProviderReadAuthority {
         }
         let guard = crate::infrastructure::format_guard::evaluate_prepared_subsystem_validation_format_guard(&documents);
         let mut source_error = None;
-        let result = validate_subsystem_content(
-            text,
-            relative,
-            false,
-            |path| {
-                let result = (|| {
-                    checkpoint()?;
-                    match self.root.open_relative_regular_nofollow(path) {
-                        Ok(_) => Ok(true),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-                        Err(error) => Err(ViewError::detailed(
-                            RefusalDetail::SourceUnreadable,
-                            error.to_string(),
-                        )),
-                    }
-                })();
-                result.map_err(|error| {
-                    let message = error.to_string();
-                    source_error = Some(error);
-                    message
-                })
-            },
-            |_| {
-                ci.as_ref()
-                    .map(|bytes| {
-                        String::from_utf8(bytes.clone()).map_err(|error| error.to_string())
+        let result = crate::infrastructure::family_codecs::metadata_read_codec()
+            .check_subsystem_content(
+                text,
+                relative,
+                false,
+                &mut |path| {
+                    let result = (|| {
+                        checkpoint()?;
+                        match self.root.open_relative_regular_nofollow(path) {
+                            Ok(_) => Ok(true),
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                            Err(error) => Err(ViewError::detailed(
+                                RefusalDetail::SourceUnreadable,
+                                error.to_string(),
+                            )),
+                        }
+                    })();
+                    result.map_err(|error| {
+                        let message = error.to_string();
+                        source_error = Some(error);
+                        message
                     })
-                    .transpose()
-            },
-        );
+                },
+                &mut |_| {
+                    ci.as_ref()
+                        .map(|bytes| {
+                            String::from_utf8(bytes.clone()).map_err(|error| error.to_string())
+                        })
+                        .transpose()
+                },
+            );
         if let Some(error) = source_error {
             return Err(error);
         }

@@ -25,6 +25,8 @@ pub(crate) mod operational_config;
 pub mod ports;
 pub(crate) use unica_runner::admission as runtime_admission;
 #[cfg(test)]
+mod medium_application_tests;
+#[cfg(test)]
 mod runtime_admission_integration;
 
 pub mod tool_contracts;
@@ -2667,3 +2669,7 @@ fn cache_access_for(operation: &str, event: Option<DomainEventKind>) -> CacheAcc
 
 #[cfg(test)]
 mod execution_catalog_tests;
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod application_tests;

@@ -21,9 +21,9 @@ impl ProviderReadAuthority {
         checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,
     ) -> Result<Value, ViewError> {
         let bytes = self.metadata_descriptor_with_checkpoint(target, checkpoint)?;
-        let (mut properties, limits) =
-            unica_metadata_designer::form_metadata::parse_form_metadata_properties(&bytes, target)
-                .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let (mut properties, limits) = crate::infrastructure::family_codecs::metadata_read_codec()
+            .form_metadata(&bytes, target)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         if self.source_set_kind == SourceSetKind::Extension {
             let borrowing = unica_metadata_designer::xml_model::parse_meta_borrowing(&bytes)
                 .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;

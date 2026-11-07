@@ -2502,7 +2502,7 @@ mod medium_tests {
     /// `#[test]` сделала бы из этого ещё один прогон уже сделанной работы.
     fn format_evidence_payload() {
         single_writable_platform_xml_profile_is_exact();
-        crate::application_tests::native_mutation_surface_has_exact_operations_and_schemas();
+        unica_application::application::application_tests::check_native_mutation_surface();
         public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
         staged_dcs_owner_is_outside_the_old_external_source_set_profile();
         older_extension_dump_recommends_platform_reexport();
