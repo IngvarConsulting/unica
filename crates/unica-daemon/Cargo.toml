@@ -13,6 +13,7 @@ receipt-ledger-test-support = ["test-support", "unica-execution/receipt-ledger-t
 [dependencies]
 unica-execution = { path = "../unica-execution" }
 unica-execution-contract = { path = "../unica-execution-contract" }
+unica-lsp-contract = { path = "../unica-lsp-contract" }
 unica-workspace = { path = "../unica-workspace" }
 unica-bootstrap = { path = "../unica-bootstrap" }
 unica-artifact-delivery = { path = "../unica-artifact-delivery" }

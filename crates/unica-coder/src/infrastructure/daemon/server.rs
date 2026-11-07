@@ -1433,7 +1433,7 @@ pub(crate) struct DaemonServerConfig {
     /// The workspace actors of the daemon, shared by MCP and LSP.
     workspace_actors: Arc<crate::infrastructure::source_workspace::WorkspaceActorRegistry>,
     /// The LSP service behind the daemon's LSP lane.
-    lsp_host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
+    lsp_host: Arc<dyn unica_lsp_contract::host::LspHost>,
     /// Overrides installed by tests and the contract harness. Production
     /// leaves every one of them empty; the fields exist unconditionally so
     /// the runtime reads one configuration whatever the build.
@@ -1499,7 +1499,7 @@ impl DaemonServerConfig {
     #[cfg(test)]
     pub(super) fn with_lsp_host_for_test(
         mut self,
-        host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
+        host: Arc<dyn unica_lsp_contract::host::LspHost>,
     ) -> Self {
         self.lsp_host = host;
         self
@@ -4269,7 +4269,7 @@ pub(crate) mod medium_actor_capacity_tests {
         /// The same live daemon with an LSP service the test controls.
         pub(crate) fn start_with_lsp_host(
             service: Arc<dyn CanonicalInvocationService>,
-            lsp_host: Arc<dyn unica_daemon::lsp_lane::LspHost>,
+            lsp_host: Arc<dyn unica_lsp_contract::host::LspHost>,
         ) -> Self {
             let canonical = Arc::new(V5CanonicalInvocationRuntime::new(
                 Arc::clone(&service),
@@ -4327,7 +4327,7 @@ pub(crate) mod medium_actor_capacity_tests {
             canonical: Arc<V5CanonicalInvocationRuntime>,
             service: Arc<dyn CanonicalInvocationService>,
             owned_stop: Option<Arc<AtomicBool>>,
-            lsp_host: Option<Arc<dyn unica_daemon::lsp_lane::LspHost>>,
+            lsp_host: Option<Arc<dyn unica_lsp_contract::host::LspHost>>,
         ) -> Self {
             let state = tempfile::tempdir().unwrap();
             let state_root = std::fs::canonicalize(state.path()).unwrap();

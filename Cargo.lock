@@ -2619,6 +2619,7 @@ dependencies = [
  "unica-forms",
  "unica-forms-designer",
  "unica-lsp",
+ "unica-lsp-contract",
  "unica-metadata",
  "unica-metadata-designer",
  "unica-navigation",
@@ -2673,6 +2674,7 @@ dependencies = [
  "unica-bootstrap",
  "unica-execution",
  "unica-execution-contract",
+ "unica-lsp-contract",
  "unica-process",
  "unica-work-control",
  "unica-workspace",
@@ -2858,12 +2860,21 @@ dependencies = [
  "tempfile",
  "unica-address",
  "unica-bsl",
- "unica-daemon",
  "unica-execution-contract",
+ "unica-lsp-contract",
  "unica-source-contract",
  "unica-source-designer",
  "unica-workspace",
  "url",
+]
+
+[[package]]
+name = "unica-lsp-contract"
+version = "0.15.0-rc.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

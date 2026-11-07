@@ -12,12 +12,12 @@ use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::Instant;
 use unica_address::source_target::MetadataAddress;
-use unica_daemon::protocol_v5::lsp::V5LspFailure;
 use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_execution_contract::view_error::ViewError;
 use unica_lsp::{
     AdmittedWorkspace, LspModuleReads, LspWorkspaces, ModuleSourceRead, SourceSetLayout,
 };
+use unica_lsp_contract::protocol::V5LspFailure;
 use unica_source_contract::{SourceFormat, SourceProfile};
 use unica_workspace::actor::{ProviderRootBinding, WorkspaceSourceSetInput};
 

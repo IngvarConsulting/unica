@@ -102,7 +102,7 @@ fn test_config(
         idle_grace,
         runtime,
         observation: FixtureObservation,
-        lsp: Arc::new(crate::lsp_lane::NoLspHost),
+        lsp: Arc::new(unica_lsp_contract::host::NoLspHost),
     }
 }
 
