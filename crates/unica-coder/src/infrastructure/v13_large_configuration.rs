@@ -20,6 +20,16 @@ use unica_source_contract::read::{FileStamp, ReadFile, RetainedSourceRead, Sourc
 use xml::name::OwnedName;
 use xml::reader::{ParserConfig, XmlEvent};
 
+// resource-limit: view.registration-run-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 1048576
+// resource: Объём одной отсортированной порции регистраций при потоковом чтении большого Configuration.xml.
+// status: unproven
+// origin: #1130
+// problem: неизвестно
+// on-reach: порция сбрасывается, чтение продолжается следующей
 const REGISTRATION_RUN_BYTES: usize = 1024 * 1024;
 const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -252,6 +262,16 @@ pub struct RegistrationCache {
 }
 
 /// Timestamp granularity window: a stamp younger than this is never cached.
+// resource-limit: view.registration-settle-window-ms
+// class: retention
+// unit: ms
+// scope: cache
+// value: 2000
+// resource: Окно гранулярности отметки времени: файл моложе окна не кешируется в индексе регистраций и перечитывается индексом имён при следующем обходе.
+// status: unproven
+// origin: b054c6196 (#1457, #1481)
+// problem: Отметка времени моложе окна не доказывает неизменность файла (комментарий в v13_large_configuration.rs).
+// on-reach: Запись не кешируется, корень разбирается заново при следующем вызове.
 pub(crate) const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Default for RegistrationCache {

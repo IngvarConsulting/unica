@@ -23,7 +23,7 @@ use unica_lsp::{
     LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols, LspWorkspaces,
     ModuleSourceRead, SourceSetLayout,
 };
-use unica_lsp::{LspCompletion, LspCompletionAnswer, LspCompletionRequest};
+use unica_lsp::{LspCompletion, LspCompletionAnswer, LspCompletionRequest, ModuleDocument};
 use unica_lsp_contract::protocol::V5LspFailure;
 use unica_refusal::RefusalCode;
 use unica_work_control::cancellation::CancellationToken;
@@ -274,7 +274,7 @@ impl LspCompletion for ProductCompletion {
         let sources = self.sources(
             request.session,
             request.source_set,
-            request.module,
+            request.module.module(),
             platform.clone().unwrap_or_else(|| Arc::from(Vec::new())),
             cancellation,
         )?;
@@ -290,7 +290,7 @@ impl LspCompletion for ProductCompletion {
         &self,
         session: &str,
         source_set: &str,
-        module: &str,
+        module: &ModuleDocument,
         method: &CompletionMethod,
         cancellation: &CancellationToken,
     ) -> Option<String> {
@@ -299,7 +299,7 @@ impl LspCompletion for ProductCompletion {
             .sources(
                 session,
                 source_set,
-                module,
+                module.module(),
                 Arc::from(Vec::new()),
                 cancellation,
             )
@@ -308,7 +308,7 @@ impl LspCompletion for ProductCompletion {
             Some(common) => sources.common_module_text(common)?,
             None => sources
                 .view
-                .module_text(&QualifiedAddress::parse(module).ok()?)
+                .module_text(&QualifiedAddress::parse(module.module()).ok()?)
                 .ok()?,
         };
         unica_code_intelligence::completion::method_description(&text, method)
@@ -331,7 +331,7 @@ impl LspDiagnostics for ProductDiagnostics {
     fn analyse(
         &self,
         source_set: &str,
-        module: &str,
+        module: &ModuleDocument,
         saved: &str,
         cancellation: &CancellationToken,
     ) -> LspAnalysis {
@@ -344,8 +344,8 @@ impl LspDiagnostics for ProductDiagnostics {
         };
         let (Some(profile), Ok(body), Ok(module)) = (
             bsl_profile_for_source(binding.source_profile()),
-            QualifiedAddress::parse(&format!("{module}.Body")),
-            QualifiedAddress::parse(module),
+            QualifiedAddress::parse(&module.document()),
+            QualifiedAddress::parse(module.module()),
         ) else {
             return unavailable();
         };
@@ -397,8 +397,8 @@ impl LspSymbols for ProductSymbols {
         let (actor, binding, artifacts) = self.space.bound(request.source_set)?;
         let profile = bsl_profile_for_source(binding.source_profile())
             .ok_or(V5LspFailure::WorkspaceUnavailable)?;
-        let module =
-            QualifiedAddress::parse(request.module).map_err(|_| V5LspFailure::DocumentUnknown)?;
+        let module = QualifiedAddress::parse(request.module.module())
+            .map_err(|_| V5LspFailure::DocumentUnknown)?;
         let authority = LogicalViewReadAuthority::with_read_authority_and_registration_cache(
             context.cancellation,
             self.space.saved_read(binding),

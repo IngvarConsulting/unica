@@ -9,6 +9,19 @@ use unica_execution_contract::source_text_budget::complete_prefix;
 /// получит конкретный клиент, решает его бюджет ([`unica_execution_contract::source_text_budget::apply_response_budget`]),
 /// по умолчанию 16 КиБ. Текст сверх предела не режется на части: ответ
 /// отказывает `result_too_large`.
+// resource-limit: view.source-text-bytes
+// class: result
+// unit: bytes
+// scope: request
+// value: 73728
+// derived: true
+// resource: Наибольший текст Body модуля или метода BSL, который view отдаёт хоть какому-то клиенту (наибольший бюджет ответа известных хостов, 72 КиБ).
+// status: unproven
+// origin: 7d6701571 (#1458, #1478); наибольший бюджет хоста по замеру 15.10.2026 в unica-bootstrap host/response_budget.rs
+// problem: Ответ с текстом должен целиком доходить до модели без усечения и выноса в файл (правило arch/rules/mcp/source-text-response-budget.md).
+// on-reach: Отказ result_too_large; текст на части не режется, остаётся выбор строк.
+// issue: #1119
+// review: #1119 PR9
 pub const MAX_SOURCE_TEXT_BYTES: usize = unica_bootstrap::MAX_RESPONSE_BUDGET;
 
 /// Текст модуля, прочитанный не дальше предела.

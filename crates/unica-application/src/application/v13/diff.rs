@@ -9,8 +9,38 @@ use super::saved_pages::SavedPages;
 use super::view::PREFERRED_PAGE_BYTES;
 use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
+// resource-limit: diff.page-default-entries
+// class: step
+// unit: count
+// scope: request
+// value: 20
+// resource: Число записей страницы diff, когда limit не задан.
+// status: unproven
+// origin: 781b94962
+// problem: неизвестно
+// on-reach: Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.
 pub const DEFAULT_DIFF_LIMIT: usize = 20;
+// resource-limit: diff.page-max-entries
+// class: step
+// unit: count
+// scope: request
+// value: 50
+// resource: Наибольшее число записей одной страницы diff.
+// status: unproven
+// origin: 781b94962
+// problem: неизвестно
+// on-reach: на проводе limit больше 50 получает bad_value; внутри обработчика больший limit сводится к 50, остаток доступен по cursor.
 pub const MAX_DIFF_LIMIT: usize = 50;
+// resource-limit: diff.cursor-store-entries
+// class: retention
+// unit: count
+// scope: cache
+// value: 64
+// resource: Число одновременно хранимых пар сравнения diff с продолжением в процессе.
+// status: unproven
+// origin: 781b94962
+// problem: неизвестно
+// on-reach: тихо: обход хранит одну пару на все свои страницы; при сохранении новой пары вытесняется самая старая, и её продолжение затем отказывает как неизвестный курсор.
 const MAX_CURSOR_ENTRIES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]

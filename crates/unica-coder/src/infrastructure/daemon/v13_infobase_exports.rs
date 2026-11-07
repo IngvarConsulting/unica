@@ -29,6 +29,16 @@ use unica_workspace::read::open_directory_reader;
 
 pub(super) const CONFIG_NAME: &str = "v8project.yaml";
 pub(super) const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
+// resource-limit: run.runner-output-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 1048576
+// resource: Захват stdout и stderr процесса v8-runner в операциях run.
+// status: unproven
+// origin: 8a85591e3 (#693)
+// problem: неизвестно
+// on-reach: stdout сверх предела — отказ invalid_result «v8-runner returned an unreadable or oversized JSON result»; кадр протокола публикации pull сверх предела не читается — отказ invalid_result с пределом и причиной; отказ после публикации сообщает, что исходники опубликованы, а заменённые сохранены в recovery; stderr тихо сохраняет хвост с пометкой об усечении.
 pub(super) const RUNNER_OUTPUT_LIMIT: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

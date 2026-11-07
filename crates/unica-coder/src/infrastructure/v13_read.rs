@@ -3403,6 +3403,7 @@ fn module_title(at: &QualifiedAddress, capability: ModuleCapability) -> String {
 }
 
 /// Предел ответа о модуле, чьи флаги среды неизвестны.
+// resource-limit-excluded: текст предела в ответе view о неизвестных контекстах, не ресурсный предел
 pub(crate) const UNKNOWN_CONTEXTS_LIMIT: &str =
     "compilation contexts are unknown because the borrowed common module does not state its execution environment";
 

@@ -36,14 +36,44 @@ pub(super) const TOOL_EXECUTION_ERROR: i32 = -32000;
 /// The acknowledgement travels after the transport budget of the invocation
 /// may already be spent; it gets a short budget of its own instead of racing
 /// an exhausted cutoff.
+// resource-limit: daemon.acknowledgement-budget-ms
+// class: deadline
+// unit: ms
+// scope: request
+// value: 500
+// resource: Собственный срок отправки подтверждения после того, как транспортный бюджет вызова уже мог быть исчерпан.
+// status: unproven
+// origin: dcbead88c (#774)
+// problem: Подтверждение не должно гоняться с исчерпанным cutoff (комментарий в daemon_router.rs).
+// on-reach: Подтверждение, не уложившееся в срок, не доставляется.
 const ACKNOWLEDGEMENT_BUDGET: Duration = Duration::from_millis(500);
 /// Recovery of a still-reserved receipt polls the daemon no more often than this.
+// resource-limit: daemon.recovery-poll
+// class: step
+// unit: ms
+// scope: request
+// value: 25
+// resource: Наименьший интервал опроса демона при восстановлении ещё зарезервированной квитанции.
+// status: unproven
+// origin: #774
+// problem: неизвестно
+// on-reach: frontend ждёт интервал и повторяет опрос; если до конца окна меньше интервала, отвечает закрытым отказом о потерянном вызове
 const RECOVERY_POLL_INTERVAL: Duration = Duration::from_millis(25);
 /// A submit response is most often lost exactly at the frontend cutoff: the
 /// daemon hands the work off to a Task within its own budget, and the durable
 /// promotion under load overruns the 125 ms margin. Exact recovery is a
 /// read-only reconciliation of that receipt, so it gets a bounded window of
 /// its own after the cutoff instead of failing with nothing left to spend.
+// resource-limit: daemon.recovery-budget-ms
+// class: deadline
+// unit: ms
+// scope: request
+// value: 750
+// resource: Окно точного восстановления потерянного ответа submit после cutoff фронтенда.
+// status: unproven
+// origin: 45c5825e6 (#780)
+// problem: Ответ submit чаще всего теряется на cutoff, когда продвижение в задание под нагрузкой перерастает запас 125 мс (комментарий в daemon_router.rs).
+// on-reach: Восстановление прекращается; отказ как у v3 (#780).
 const RECOVERY_BUDGET: Duration = Duration::from_millis(750);
 
 /// One absolute frontend budget per request: captured at receipt and only
@@ -673,6 +703,16 @@ fn epoch_ms_now() -> u64 {
 
 /// Poll interval the queued Task of a lost submit announces; the daemon's
 /// own receipt-backed snapshots use the same 100 ms.
+// resource-limit: mcp.lost-submit-poll-interval-ms
+// class: step
+// unit: ms
+// scope: record
+// value: 100
+// resource: Интервал опроса, объявляемый заданию потерянного submit.
+// status: unproven
+// origin: #1376 (#1388)
+// problem: неизвестно
+// on-reach: клиенту сообщается pollInterval 100 мс; сам предел ничего не обрывает
 const LOST_SUBMIT_POLL_INTERVAL_MS: u64 = 100;
 
 /// The queued Task reserved for a call whose submit answer was lost. The

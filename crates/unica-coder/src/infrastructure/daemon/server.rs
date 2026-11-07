@@ -559,6 +559,19 @@ impl CanonicalInvocationHost {
 }
 
 impl unica_execution::receipt_runtime::ports::InvocationHost for CanonicalInvocationHost {
+    // resource-limit: daemon.body-response-bytes
+    // class: result
+    // unit: bytes
+    // scope: request
+    // value: 73728
+    // derived: true
+    // resource: Наибольший размер тела прямого ответа канонического вызова, который поддерживает хост демона (наибольший бюджет ответа известных хостов).
+    // status: unproven
+    // origin: неизвестно
+    // problem: неизвестно
+    // on-reach: Отказ result_too_large: терминал вызова публикуется как неуспешный с причиной ResultTooLarge.
+    // issue: #1119
+    // review: #1119 PR9
     const MAX_SUPPORTED_BODY_RESPONSE_BYTES: usize = unica_bootstrap::MAX_RESPONSE_BUDGET;
 
     type Request = unica_daemon::protocol_v5::V5InvocationRequest;

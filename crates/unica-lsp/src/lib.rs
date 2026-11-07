@@ -12,6 +12,7 @@ mod document;
 #[allow(dead_code)]
 mod documents;
 mod host;
+mod module_document;
 #[allow(dead_code)]
 mod position;
 mod symbols;
@@ -22,6 +23,7 @@ pub use completion::{LspCompletion, LspCompletionAnswer, LspCompletionRequest};
 pub use diagnostics::{LspAnalysis, LspDiagnosticGap, LspDiagnostics, LspFinding, LspSeverity};
 pub use documents::{ModuleSourceRead, SourceSetLayout};
 pub use host::{AdmittedWorkspace, LspActor, LspModuleReads, LspWorkspaces, UnicaLspHost};
+pub use module_document::ModuleDocument;
 pub use symbols::{LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols};
 
 #[cfg(test)]

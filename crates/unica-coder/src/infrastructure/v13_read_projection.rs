@@ -16,7 +16,28 @@ pub mod structured_properties;
 pub use metadata::borrowing_props;
 use role::project_role;
 
+// resource-limit: view.projected-branches
+// class: format
+// unit: count
+// scope: record
+// value: 256
+// resource: Число ветвей видов в проекции узла view.
+// status: unproven
+// origin: cec3ddf7c
+// problem: неизвестно
+// on-reach: тихо: ветви сверх 256 отбрасываются (.take).
 const MAX_PROJECTED_BRANCHES: usize = 256;
+// resource-limit: view.compact-property-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 2048
+// resource: Размер сериализованного составного свойства в компактной проекции метаданных и XDTO.
+// status: unproven
+// origin: cec3ddf7c
+// problem: неизвестно
+// on-reach: Свойство не включается в props; limits называет предел и адрес <узел>.Props.<имя>, по которому view отдаёт свойство целиком.
+// issue: #2088
 const MAX_COMPACT_PROP_BYTES: usize = 2_048;
 // Заголовок узла ограничен тем же пределом, что и компактное свойство.
 const _: () = assert!(MAX_COMPACT_PROP_BYTES == crate::domain::node_view::MAX_TITLE_BYTES);

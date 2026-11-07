@@ -28,6 +28,16 @@ use unica_workspace::state_fs::{
 };
 use uuid::Uuid;
 
+// resource-limit: lifecycle-link-store.record-bytes
+// class: format
+// unit: bytes
+// scope: record
+// derived: true
+// resource: Размер одной записи хранилища связей жизненного цикла задания (производственный предел хранилища).
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: запись большего размера не сохраняется и не читается; ёмкость резервируется по этому пределу
 pub const MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES: usize =
     APPLICATION_MAX_TASK_LIFECYCLE_LINK_RECORD_BYTES as usize;
 

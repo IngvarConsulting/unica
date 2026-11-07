@@ -375,6 +375,19 @@ impl PreparedExtensions {
                     ));
                 }
             } else {
+                // resource-limit: extensions.inventory-items
+                // class: format
+                // unit: count
+                // scope: request
+                // value: 4096
+                // literal: items.len() > 4096
+                // count: 1
+                // expr: 4096
+                // resource: Число расширений в инвентаре информационной базы, полученном от раннера.
+                // status: unproven
+                // origin: неизвестно
+                // problem: неизвестно
+                // on-reach: отказ: ответ раннера «exceeds the result limit»
                 if items.len() > 4096 {
                     return Err(invalid("extension inventory exceeds the result limit"));
                 }
@@ -523,6 +536,19 @@ fn valid_inventory_record(item: &Value) -> bool {
     .all(|k| item[k].is_boolean())
         && ["purpose", "scope", "hash_sum"]
             .iter()
+            // resource-limit: extensions.field-bytes
+            // class: format
+            // unit: bytes
+            // scope: record
+            // value: 4096
+            // literal: len() <= 4096
+            // count: 3
+            // expr: 4096
+            // resource: Байты одного текстового поля записи расширения (имя, синоним, префикс и др.) в ответе раннера.
+            // status: unproven
+            // origin: неизвестно
+            // problem: неизвестно
+            // on-reach: запись с длинным полем считается некорректным ответом раннера
             .all(|k| item[k].as_str().is_some_and(|v| v.len() <= 4096))
         && ["version", "security_profile_name"]
             .iter()

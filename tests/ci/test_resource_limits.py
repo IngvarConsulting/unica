@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
-import json
 from pathlib import Path
-import shutil
 import tempfile
 import unittest
 
@@ -13,60 +11,59 @@ limits = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(limits)
 
 
-def entry(**overrides) -> dict:
-    value = {
-        "id": "demo.file-bytes",
+def block(ident: str = "demo.file-bytes", indent: str = "", **overrides: str | list[str] | None) -> str:
+    """A `// resource-limit:` block; a field set to `None` is left out."""
+    fields: dict[str, str | list[str] | None] = {
         "class": "corpus",
-        "resource": "байты одного файла",
         "unit": "bytes",
         "scope": "file",
-        "source": {"file": "crates/demo/src/lib.rs", "symbol": "MAX_FILE_BYTES"},
-        "expr": "8 * 1024 * 1024",
-        "value": 8 * 1024 * 1024,
-        "applied": ["crates/demo/src/lib.rs", "crates/demo/src/read.rs"],
+        "value": str(8 * 1024 * 1024),
+        "derived": None,
+        "literal": None,
+        "count": None,
+        "expr": None,
+        "resource": "байты одного файла",
         "status": "unproven",
-        "origin": None,
-        "problem": None,
-        "onReach": "отказ source_unreadable",
+        "origin": "неизвестно",
+        "problem": "неизвестно",
+        "on-reach": "отказ source_unreadable",
         "issue": "#1119",
         "evidence": [],
         "decision": None,
+        "decision-date": None,
+        "decision-source": None,
         "review": None,
     }
-    value.update(overrides)
-    return value
+    fields.update({name.replace("_", "-"): value for name, value in overrides.items()})
+    lines = [f"// resource-limit: {ident}"]
+    for name, value in fields.items():
+        for item in value if isinstance(value, list) else [value]:
+            if item is not None:
+                lines.append(f"// {name}: {item}")
+    return "".join(f"{indent}{line}\n" for line in lines)
 
 
-class ResourceLimitRegistryTests(unittest.TestCase):
+TIMEOUT = block(
+    "demo.read-timeout",
+    **{"class": "deadline", "unit": "ms", "scope": "request", "value": "30000", "issue": "#1312", "on_reach": "отказ deadline_exceeded"},
+)
+LITERAL = block(
+    "demo.literal-bytes",
+    indent="    ",
+    value=str(32 * 1024 * 1024),
+    literal="vec![0u8; 32 * 1024 * 1024]",
+    count="1",
+    expr="32 * 1024 * 1024",
+)
+
+
+class ResourceLimitBlockTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
-        (self.root / "arch").mkdir()
-        shutil.copy(ROOT / limits.SCHEMA, self.root / limits.SCHEMA)
-        self.write(
-            "crates/demo/src/lib.rs",
-            "pub const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;\n"
-            "const READ_TIMEOUT: Duration = Duration::from_secs(30);\n"
-            "fn read() { let _ = vec![0u8; 32 * 1024 * 1024]; }\n"
-            "#[cfg(test)]\nmod tests {\n    const MAX_TEST_BYTES: usize = 1;\n}\n",
-        )
+        self.lib(block())
         self.write("crates/demo/src/read.rs", "use crate::MAX_FILE_BYTES;\n")
         self.write("crates/demo/tests/large.rs", "const MAX_FIXTURE_BYTES: usize = 9;\nuse demo::MAX_FILE_BYTES;\n")
-        self.timeout = entry(
-            id="demo.read-timeout",
-            **{"class": "deadline", "unit": "ms", "scope": "request", "issue": "#1312", "onReach": "отказ deadline_exceeded"},
-            source={"file": "crates/demo/src/lib.rs", "symbol": "READ_TIMEOUT"},
-            expr="Duration::from_secs(30)",
-            value=30_000,
-            applied=["crates/demo/src/lib.rs"],
-        )
-        self.literal = entry(
-            id="demo.literal-bytes",
-            source={"file": "crates/demo/src/lib.rs", "literal": "32 * 1024 * 1024", "count": 1},
-            expr="32 * 1024 * 1024",
-            value=32 * 1024 * 1024,
-            applied=["crates/demo/src/lib.rs"],
-        )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -76,93 +73,127 @@ class ResourceLimitRegistryTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
 
-    def registry(self, items: list[dict], excluded: list[dict] | None = None) -> None:
-        payload = {"schema": 1, "limits": items, "excluded": excluded or []}
-        (self.root / limits.REGISTRY).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    def lib(self, file_block: str, timeout: str = TIMEOUT, literal: str = LITERAL) -> None:
+        self.write(
+            "crates/demo/src/lib.rs",
+            "/// The bytes of one file.\n"
+            f"{file_block}pub const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;\n"
+            f"{timeout}const READ_TIMEOUT: Duration = Duration::from_secs(30);\n"
+            f"fn read() {{\n{literal}    let _ = vec![0u8; 32 * 1024 * 1024];\n}}\n"
+            "#[cfg(test)]\nmod tests {\n    const MAX_TEST_BYTES: usize = 1;\n}\n",
+        )
 
-    def test_repository_registry_matches_product_code(self) -> None:
+    def line_of(self, text: str) -> str:
+        lines = (self.root / "crates/demo/src/lib.rs").read_text(encoding="utf-8").splitlines()
+        return f"crates/demo/src/lib.rs:{next(index for index, line in enumerate(lines, 1) if text in line)}"
+
+    def errors(self) -> list[str]:
+        return limits.check(self.root)
+
+    def test_repository_limits_match_product_code(self) -> None:
         """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
         self.assertEqual(limits.check(ROOT), [])
 
-    def test_accepts_a_complete_registry_and_ignores_test_constants(self) -> None:
-        self.registry([entry(), self.timeout, self.literal])
-        self.assertEqual(limits.check(self.root), [])
+    def test_accepts_described_limits_and_ignores_test_constants(self) -> None:
+        self.assertEqual(self.errors(), [])
+        found, _ = limits.inventory(self.root)
+        self.assertEqual([entry["id"] for entry in found["limits"]], ["demo.file-bytes", "demo.read-timeout", "demo.literal-bytes"])
+        self.assertEqual(found["limits"][0]["expr"], "8 * 1024 * 1024")
+        self.assertEqual(found["limits"][0]["at"], self.line_of("pub const MAX_FILE_BYTES"))
 
     def test_rejects_a_value_that_drifts_from_the_code(self) -> None:
         """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
-        self.registry([entry(expr="16 * 1024 * 1024", value=16 * 1024 * 1024), self.timeout, self.literal])
-        self.assertTrue(any("code has `8 * 1024 * 1024`" in error for error in limits.check(self.root)))
-        self.registry([entry(value=1), self.timeout, self.literal])
-        self.assertTrue(any("evaluates to 8388608" in error for error in limits.check(self.root)))
+        self.lib(block(value="1"))
+        self.assertTrue(any("evaluates to 8388608, the block says 1" in error for error in self.errors()), self.errors())
 
-    def test_rejects_an_unregistered_limit_constant(self) -> None:
+    def test_rejects_a_limit_constant_without_a_block(self) -> None:
         """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
-        self.registry([entry(), self.literal])
-        errors = limits.check(self.root)
-        self.assertEqual(len(errors), 1)
-        self.assertIn("READ_TIMEOUT is not in arch/resource-limits.json", errors[0])
+        self.lib(block(), timeout="")
+        errors = self.errors()
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("READ_TIMEOUT has no `// resource-limit:` block above it", errors[0])
 
-    def test_rejects_a_stale_entry_and_a_stale_exclusion(self) -> None:
-        self.registry(
-            [entry(), self.timeout, self.literal, entry(id="demo.gone", source={"file": "crates/demo/src/lib.rs", "symbol": "MAX_GONE"})],
-            [{"file": "crates/demo/src/lib.rs", "symbol": "MAX_OLD", "reason": "не предел"}],
-        )
-        errors = limits.check(self.root)
-        self.assertTrue(any("no product limit constant MAX_GONE" in error for error in errors))
-        self.assertTrue(any("excluded crates/demo/src/lib.rs::MAX_OLD no longer exists" in error for error in errors))
+    def test_rejects_a_block_that_stands_before_no_limit(self) -> None:
+        """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
+        self.lib(block() + "\n")
+        errors = self.errors()
+        self.assertTrue(any("demo.file-bytes stands before no constant" in error for error in errors), errors)
+        self.assertTrue(any("MAX_FILE_BYTES has no" in error for error in errors), errors)
 
-    def test_rejects_incomplete_application_sites(self) -> None:
-        self.registry([entry(applied=["crates/demo/src/lib.rs"]), self.timeout, self.literal])
-        self.assertTrue(any("applied files" in error for error in limits.check(self.root)))
+    def test_rejects_a_repeated_id(self) -> None:
+        self.lib(block("demo.read-timeout"))
+        self.assertTrue(any("id demo.read-timeout is already used" in error for error in self.errors()), self.errors())
 
     def test_rejects_a_moved_literal(self) -> None:
-        self.registry([entry(), self.timeout, {**self.literal, "source": {**self.literal["source"], "count": 2}}])
-        self.assertTrue(any("occurs 1 times" in error for error in limits.check(self.root)))
+        self.lib(block(), literal=LITERAL.replace("// count: 1", "// count: 2"))
+        self.assertTrue(any("occurs 1 times" in error for error in self.errors()), self.errors())
+        self.lib(block(), literal=LITERAL + "\n")
+        self.assertTrue(any("stands before no line with literal" in error for error in self.errors()), self.errors())
+
+    def test_rejects_a_literal_whose_expression_is_not_in_it(self) -> None:
+        self.lib(block(), literal=LITERAL.replace("// expr: 32 * 1024 * 1024", "// expr: 16 * 1024 * 1024"))
+        self.assertTrue(any("is not part of literal" in error for error in self.errors()), self.errors())
 
     def test_exclusion_covers_a_constant_that_is_not_a_limit(self) -> None:
-        self.registry(
-            [entry(), self.literal],
-            [{"file": "crates/demo/src/lib.rs", "symbol": "READ_TIMEOUT", "reason": "демонстрация"}],
-        )
-        self.assertEqual(limits.check(self.root), [])
+        self.lib(block(), timeout="// resource-limit-excluded: демонстрация\n")
+        self.assertEqual(self.errors(), [])
+        found, _ = limits.inventory(self.root)
+        self.assertEqual(found["excluded"], [{"at": self.line_of("const READ_TIMEOUT"), "symbol": "READ_TIMEOUT", "reason": "демонстрация"}])
 
     def test_justified_status_requires_evidence_and_decision(self) -> None:
         """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
-        self.registry([entry(status="justified"), self.timeout, self.literal])
-        errors = limits.check(self.root)
-        self.assertTrue(any("limits/0/evidence" in error for error in errors), errors)
-        self.assertTrue(any("limits/0/decision" in error for error in errors), errors)
-        self.registry([entry(status="external"), self.timeout, self.literal])
-        self.assertTrue(any("limits/0/origin" in error for error in limits.check(self.root)))
+        self.lib(block(status="justified"))
+        self.assertTrue(any("a justified limit names its evidence and decision" in error for error in self.errors()))
+        self.lib(block(status="external"))
+        self.assertTrue(any("an external limit names its origin" in error for error in self.errors()))
+        self.lib(
+            block(
+                status="justified",
+                evidence=["замер на УТ"],
+                decision="предел закреплён",
+                decision_date="2026-10-25",
+                decision_source="#1119",
+            )
+        )
+        self.assertEqual(self.errors(), [])
 
-    def test_schema_rejects_an_unknown_class(self) -> None:
-        self.registry([entry(**{"class": "misc"}), self.timeout, self.literal])
-        self.assertTrue(any("class" in error for error in limits.check(self.root)))
+    def test_rejects_an_unknown_class_field_or_order(self) -> None:
+        self.lib(block(**{"class": "misc"}))
+        self.assertTrue(any("class `misc` is not one of" in error for error in self.errors()), self.errors())
+        self.lib(block().replace("// status: unproven\n", "// state: unproven\n"))
+        self.assertTrue(any("unknown field `state`" in error for error in self.errors()), self.errors())
+        self.lib(block().replace("// unit: bytes\n// scope: file\n", "// scope: file\n// unit: bytes\n"))
+        self.assertTrue(any("fields go in the order" in error for error in self.errors()), self.errors())
+
+    def test_an_unknown_origin_or_problem_is_said_and_not_left_out(self) -> None:
+        """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
+        self.lib(block(origin=None))
+        self.assertTrue(any("field `origin` is missing" in error for error in self.errors()), self.errors())
+        self.lib(block(problem="растёт память демона"))
+        found, errors = limits.inventory(self.root)
+        self.assertEqual(errors, [])
+        self.assertEqual((found["limits"][0]["origin"], found["limits"][0]["problem"]), (None, "растёт память демона"))
+
+    def test_lines_end_only_at_a_line_feed_as_the_parser_counts_them(self) -> None:
+        self.write("crates/demo/src/read.rs", "use crate::MAX_FILE_BYTES;\nconst NOTE: &str = \"a b\";\n")
+        self.write(
+            "crates/demo/src/read.rs",
+            "const NOTE: &str = \"a b\";\n" + block("demo.read-bytes", value="3") + "const MAX_READ_BYTES: usize = 3;\n",
+        )
+        self.assertEqual(self.errors(), [])
 
     def test_scanner_reads_past_an_early_test_module_declaration(self) -> None:
         """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
         self.write(
             "crates/demo/src/lib.rs",
-            "#[cfg(test)]\nmod helpers;\nmod read;\n\npub const MAX_FILE_BYTES: usize =\n    8 * 1024 * 1024;\n"
-            "const READ_TIMEOUT: Duration = Duration::from_secs(30);\n"
-            "fn read() { let _ = vec![0u8; 32 * 1024 * 1024]; }\n"
+            f"#[cfg(test)]\nmod helpers;\nmod read;\n\n{block()}pub const MAX_FILE_BYTES: usize =\n    8 * 1024 * 1024;\n"
+            f"{TIMEOUT}const READ_TIMEOUT: Duration = Duration::from_secs(30);\n"
             "struct Store;\nimpl Store {\n    const MAX_ROWS: usize = 64;\n}\n",
         )
         self.write("crates/demo/src/helpers.rs", "pub const MAX_HELPER_BYTES: usize = 1;\n")
-        self.registry([entry(), self.timeout, self.literal])
-        errors = limits.check(self.root)
+        errors = self.errors()
         self.assertEqual(len(errors), 1, errors)
-        self.assertIn("MAX_ROWS is not in", errors[0])
-        rows = entry(
-            id="demo.store-rows",
-            **{"class": "format", "unit": "count", "scope": "record", "issue": None},
-            source={"file": "crates/demo/src/lib.rs", "symbol": "MAX_ROWS", "within": "impl Store"},
-            expr="64",
-            value=64,
-            applied=["crates/demo/src/lib.rs"],
-        )
-        self.registry([entry(), self.timeout, self.literal, rows])
-        self.assertEqual(limits.check(self.root), [])
+        self.assertIn("MAX_ROWS has no", errors[0])
 
     def test_platform_code_that_tests_also_build_stays_in_the_product(self) -> None:
         self.write(
@@ -171,87 +202,24 @@ class ResourceLimitRegistryTests(unittest.TestCase):
             "#[cfg(any(test, feature = \"test-support\"))]\nconst MAX_SUPPORT_BYTES: usize = 4;\n"
             "#[cfg(all(unix, not(test)))]\nconst MAX_UNIX_BYTES: usize = 5;\n",
         )
-        self.registry([entry(), self.timeout, self.literal])
-        errors = sorted(limits.check(self.root))
+        errors = sorted(self.errors())
         self.assertEqual(len(errors), 2, errors)
-        self.assertIn("MAX_WINDOWS_BYTES is not in", errors[0])
-        self.assertIn("MAX_UNIX_BYTES is not in", errors[1])
+        self.assertIn("MAX_WINDOWS_BYTES has no", errors[0])
+        self.assertIn("MAX_UNIX_BYTES has no", errors[1])
 
-    def test_same_named_limits_in_one_crate_keep_their_own_users(self) -> None:
-        self.write("crates/demo/src/view.rs", "const DEFAULT_LIMIT: usize = 20;\nfn page() -> usize { DEFAULT_LIMIT }\n")
-        self.write("crates/demo/src/diff.rs", "const DEFAULT_LIMIT: usize = 100;\nfn page() -> usize { DEFAULT_LIMIT }\n")
-        view = entry(
-            id="demo.view-page",
-            **{"class": "step", "unit": "count", "scope": "request", "issue": None},
-            source={"file": "crates/demo/src/view.rs", "symbol": "DEFAULT_LIMIT"},
-            expr="20",
-            value=20,
-            applied=["crates/demo/src/diff.rs", "crates/demo/src/view.rs"],
-        )
-        diff = {**view, "id": "demo.diff-page", "source": {"file": "crates/demo/src/diff.rs", "symbol": "DEFAULT_LIMIT"},
-                "expr": "100", "value": 100, "applied": ["crates/demo/src/diff.rs"]}
-        self.registry([entry(), self.timeout, self.literal, view, diff])
-        errors = limits.check(self.root)
-        self.assertEqual(len(errors), 1, errors)
-        self.assertIn("demo.view-page: applied files", errors[0])
-
-    def test_a_crate_reexported_under_a_name_uses_the_limit_through_the_module_path(self) -> None:
-        self.write("crates/core/src/lib.rs", "pub mod view;\n")
-        self.write("crates/core/src/view.rs", "pub const DEFAULT_LIMIT: usize = 20;\nfn page() -> usize { DEFAULT_LIMIT }\n")
-        self.write("crates/top/src/lib.rs", "pub use core as layer;\n")
-        self.write("crates/top/src/user.rs", "use crate::layer::view::DEFAULT_LIMIT;\nfn page() -> usize { DEFAULT_LIMIT }\n")
-        view = entry(
-            id="core.view-page",
-            **{"class": "step", "unit": "count", "scope": "request", "issue": None},
-            source={"file": "crates/core/src/view.rs", "symbol": "DEFAULT_LIMIT"},
-            expr="20",
-            value=20,
-            applied=["crates/core/src/view.rs"],
-        )
-        self.registry([entry(), self.timeout, self.literal, view])
-        errors = limits.check(self.root)
-        self.assertEqual(len(errors), 1, errors)
-        self.assertIn("crates/top/src/user.rs", errors[0])
-
-    def test_a_reexporting_crate_uses_the_limit_through_the_module_path(self) -> None:
-        self.write("crates/core/src/lib.rs", "pub mod view;\n")
-        self.write("crates/core/src/view.rs", "pub const DEFAULT_LIMIT: usize = 20;\nfn page() -> usize { DEFAULT_LIMIT }\n")
-        self.write("crates/top/src/lib.rs", "pub use core_owner::view;\n")
-        self.write("crates/top/src/user.rs", "use crate::view::DEFAULT_LIMIT;\nfn page() -> usize { DEFAULT_LIMIT }\n")
-        self.write("crates/top/src/lib.rs", "pub use core::view;\n")
-        view = entry(
-            id="core.view-page",
-            **{"class": "step", "unit": "count", "scope": "request", "issue": None},
-            source={"file": "crates/core/src/view.rs", "symbol": "DEFAULT_LIMIT"},
-            expr="20",
-            value=20,
-            applied=["crates/core/src/view.rs"],
-        )
-        self.registry([entry(), self.timeout, self.literal, view])
-        errors = limits.check(self.root)
-        self.assertEqual(len(errors), 1, errors)
-        self.assertIn("crates/top/src/user.rs", errors[0])
-
-    def test_rejects_a_literal_whose_expression_is_not_in_it(self) -> None:
-        self.registry([entry(), self.timeout, {**self.literal, "expr": "16 * 1024 * 1024", "value": 16 * 1024 * 1024}])
-        self.assertTrue(any("is not part of literal" in error for error in limits.check(self.root)))
+    def test_same_named_limits_are_told_apart_by_their_place(self) -> None:
+        view = block("demo.view-page", **{"class": "step", "unit": "count", "scope": "request", "value": "20"})
+        diff = block("demo.diff-page", **{"class": "step", "unit": "count", "scope": "request", "value": "100"})
+        self.write("crates/demo/src/view.rs", f"{view}const DEFAULT_LIMIT: usize = 20;\n")
+        self.write("crates/demo/src/diff.rs", f"{diff}const DEFAULT_LIMIT: usize = 100;\n")
+        self.assertEqual(self.errors(), [])
 
     def test_derived_value_is_checked_against_its_neighbours(self) -> None:
-        self.write(
-            "crates/demo/src/lib.rs",
-            "pub const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;\nconst MAX_TOTAL_BYTES: usize = MAX_FILE_BYTES * 2;\n"
-            "const READ_TIMEOUT: Duration = Duration::from_secs(30);\nfn read() { let _ = vec![0u8; 32 * 1024 * 1024]; }\n",
-        )
-        total = entry(
-            id="demo.total-bytes",
-            source={"file": "crates/demo/src/lib.rs", "symbol": "MAX_TOTAL_BYTES"},
-            expr="MAX_FILE_BYTES * 2",
-            value=1,
-            derived=True,
-            applied=["crates/demo/src/lib.rs"],
-        )
-        self.registry([entry(), self.timeout, self.literal, total])
-        self.assertTrue(any("evaluates to 16777216" in error for error in limits.check(self.root)))
+        total = block("demo.total-bytes", value="1", derived="true")
+        self.write("crates/demo/src/total.rs", f"{total}const MAX_TOTAL_BYTES: usize = MAX_FILE_BYTES * 2;\n")
+        self.assertTrue(any("evaluates to 16777216" in error for error in self.errors()), self.errors())
+        self.write("crates/demo/src/total.rs", f"{block('demo.total-bytes', value='16777216')}const MAX_TOTAL_BYTES: usize = MAX_FILE_BYTES * 2;\n")
+        self.assertTrue(any("mark it `derived: true`" in error for error in self.errors()), self.errors())
 
     def test_evaluates_byte_and_duration_expressions(self) -> None:
         self.assertEqual(limits.evaluate("64 * 1024 * 1024", "bytes"), 64 * 1024 * 1024)

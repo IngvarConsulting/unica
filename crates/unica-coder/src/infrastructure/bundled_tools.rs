@@ -217,7 +217,33 @@ pub fn launch_probe_failure(
         cwd: plugin_root.to_path_buf(),
         env: Vec::new(),
         env_remove: Vec::new(),
+        // resource-limit: bundled-tools.launch-probe-capture-bytes
+        // class: retention
+        // unit: bytes
+        // scope: process
+        // value: 4096
+        // literal: capture_limits: Some((4096, 4096))
+        // count: 1
+        // expr: 4096
+        // resource: Байты stdout и stderr, захватываемые пробным запуском поставляемого движка при разборе отказа старта.
+        // status: unproven
+        // origin: неизвестно
+        // problem: неизвестно
+        // on-reach: вывод сверх предела не удерживается; проба смотрит только на факт запуска
         capture_limits: Some((4096, 4096)),
+        // resource-limit: bundled-tools.launch-probe-timeout
+        // class: deadline
+        // unit: ms
+        // scope: process
+        // value: 1000
+        // literal: timeout: Some(std::time::Duration::from_secs(1))
+        // count: 1
+        // expr: std::time::Duration::from_secs(1)
+        // resource: Срок пробного запуска поставляемого движка при разборе отказа старта.
+        // status: unproven
+        // origin: неизвестно
+        // problem: неизвестно
+        // on-reach: запущенный процесс сразу завершается; срок ограничивает зависший запуск
         timeout: Some(std::time::Duration::from_secs(1)),
         cancellation: unica_work_control::cancellation::CancellationToken::new(),
     });

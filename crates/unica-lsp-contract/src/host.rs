@@ -5,11 +5,22 @@ use crate::protocol::{
     V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder, V5LspWorkspaceSpace,
 };
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
+use unica_work_control::cancellation::CancellationToken;
 
 /// Уведомлений, ждущих редактора, на одну сессию.
+// resource-limit: lsp.session-outbox
+// class: concurrency
+// unit: count
+// scope: session
+// value: 256
+// resource: Уведомлений демона, ждущих редактора, на одну сессию LSP.
+// status: unproven
+// origin: #2173
+// problem: неизвестно
+// on-reach: служба получает false и уведомление не ставится в очередь
+// issue: #2173
 pub const LSP_OUTBOX_CAPACITY: usize = 256;
 
 /// Служба LSP за транспортом. Реализуется продуктом; транспорт знает только этот порт.
@@ -85,15 +96,15 @@ impl LspHost for NoLspHost {
 /// Состояние одного запроса для службы: отменён ли он и до какого срока
 /// его ответ ещё нужен.
 pub struct LspCallContext {
-    cancelled: Arc<AtomicBool>,
+    cancellation: CancellationToken,
     deadline: Instant,
 }
 
 impl LspCallContext {
-    /// Контекст запроса, который транспорт отменяет через `cancelled`.
-    pub fn new(cancelled: Arc<AtomicBool>, deadline: Instant) -> Self {
+    /// Контекст запроса, который транспорт отменяет через `cancellation`.
+    pub fn new(cancellation: CancellationToken, deadline: Instant) -> Self {
         Self {
-            cancelled,
+            cancellation,
             deadline,
         }
     }
@@ -101,21 +112,21 @@ impl LspCallContext {
     /// A context no one cancels, for driving a service without the lane.
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_test(deadline: Instant) -> Self {
-        Self::new(Arc::new(AtomicBool::new(false)), deadline)
+        Self::new(CancellationToken::new(), deadline)
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline
+        self.cancellation.is_cancelled() || Instant::now() >= self.deadline
     }
 
     pub fn deadline(&self) -> Instant {
         self.deadline
     }
 
-    /// The flag the transport sets when it cancels the request, for work
-    /// that watches it through its own cancellation token.
-    pub fn cancellation_signal(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.cancelled)
+    /// The request's cancellation, which the transport cancels: work done
+    /// for the request watches this token itself.
+    pub fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
     }
 }
 

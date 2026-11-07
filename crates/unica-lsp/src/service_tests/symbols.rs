@@ -28,7 +28,7 @@ pub(super) struct ScriptedSymbols {
     answer: Mutex<Option<LspSymbolAnswer>>,
     asked: Mutex<Vec<Asked>>,
     /// Set while the port works: the transport cancelling the request.
-    cancel_while_asked: Mutex<Option<Arc<AtomicBool>>>,
+    cancel_while_asked: Mutex<Option<unica_work_control::cancellation::CancellationToken>>,
     saw_cancellation: AtomicBool,
     deadlines: Mutex<Vec<unica_work_control::provider_deadline::ProviderDeadline>>,
 }
@@ -51,13 +51,13 @@ impl LspSymbols for ScriptedSymbols {
     ) -> Result<LspSymbolAnswer, V5LspFailure> {
         self.asked.lock().unwrap().push(Asked {
             source_set: request.source_set.to_owned(),
-            module: request.module.to_owned(),
+            module: request.module.module().to_owned(),
             buffer: request.buffer.map(str::to_owned),
             position: request.position,
             operation: request.operation,
         });
-        if let Some(signal) = self.cancel_while_asked.lock().unwrap().as_ref() {
-            signal.store(true, Ordering::Release);
+        if let Some(cancellation) = self.cancel_while_asked.lock().unwrap().as_ref() {
+            cancellation.cancel();
         }
         self.saw_cancellation
             .store(context.cancellation.is_cancelled(), Ordering::Release);
@@ -154,6 +154,50 @@ fn symbol_places_reach_the_editor_as_documents_of_the_sessions_space() {
             },
             operation: LspSymbolOperation::Definition,
         }]
+    );
+}
+
+/// Places the service names by module address, in modules other than the
+/// one asked about, reach the editor as the documents of those modules'
+/// bodies: none is dropped for missing the body segment, and none keeps it
+/// twice.
+#[test]
+fn places_in_other_modules_come_back_as_the_documents_of_their_bodies() {
+    let workspace = workspace();
+    let (host, workspaces) = service();
+    let session = open(&host, workspace.path(), "Work");
+    let range = Some(at(2, 4, 9));
+    workspaces.symbols.answer(places(
+        vec![
+            place("main:CommonModule.Other", range),
+            place("main:Catalog.Items.Module.Object", range),
+            place("main:CommonModule.Main", range),
+        ],
+        Vec::new(),
+    ));
+
+    let V5LspOutcome::Locations { locations } = ask(&host, &session, definition()) else {
+        panic!("not locations");
+    };
+    assert_eq!(
+        locations
+            .iter()
+            .map(|location| location.uri.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "unica://work/main/CommonModule.Other.Body",
+            "unica://work/main/Catalog.Items.Module.Object.Body",
+            BODY_URI,
+        ]
+    );
+    assert_eq!(
+        workspaces
+            .symbols
+            .asked()
+            .iter()
+            .map(|asked| asked.module.as_str())
+            .collect::<Vec<_>>(),
+        ["main:CommonModule.Main"]
     );
 }
 
@@ -266,8 +310,8 @@ fn a_request_cancelled_while_the_provider_works_cancels_it_and_gives_no_answer()
     let workspace = workspace();
     let (host, workspaces) = service();
     let session = open(&host, workspace.path(), "Work");
-    let cancelled = Arc::new(AtomicBool::new(false));
-    *workspaces.symbols.cancel_while_asked.lock().unwrap() = Some(Arc::clone(&cancelled));
+    let cancellation = unica_work_control::cancellation::CancellationToken::new();
+    *workspaces.symbols.cancel_while_asked.lock().unwrap() = Some(cancellation.clone());
     workspaces.symbols.answer(places(
         vec![place("main:CommonModule.Main", Some(at(0, 10, 14)))],
         Vec::new(),
@@ -276,7 +320,7 @@ fn a_request_cancelled_while_the_provider_works_cancels_it_and_gives_no_answer()
     let outcome = host.call(
         &session,
         definition(),
-        &LspCallContext::new(Arc::clone(&cancelled), soon()),
+        &LspCallContext::new(cancellation.clone(), soon()),
     );
 
     assert!(workspaces.symbols.saw_cancellation.load(Ordering::Acquire));
@@ -290,13 +334,13 @@ fn a_port_failing_because_the_request_was_cancelled_gives_a_cancellation() {
     let workspace = workspace();
     let (host, workspaces) = service();
     let session = open(&host, workspace.path(), "Work");
-    let cancelled = Arc::new(AtomicBool::new(false));
-    *workspaces.symbols.cancel_while_asked.lock().unwrap() = Some(Arc::clone(&cancelled));
+    let cancellation = unica_work_control::cancellation::CancellationToken::new();
+    *workspaces.symbols.cancel_while_asked.lock().unwrap() = Some(cancellation.clone());
 
     let outcome = host.call(
         &session,
         definition(),
-        &LspCallContext::new(Arc::clone(&cancelled), soon()),
+        &LspCallContext::new(cancellation.clone(), soon()),
     );
 
     assert_eq!(outcome, V5LspOutcome::Cancelled {});
@@ -311,11 +355,7 @@ fn a_symbol_call_gives_the_provider_the_requests_own_deadline() {
     workspaces.symbols.answer(places(Vec::new(), Vec::new()));
     let deadline = soon();
 
-    host.call(
-        &session,
-        definition(),
-        &LspCallContext::new(Arc::default(), deadline),
-    );
+    host.call(&session, definition(), &LspCallContext::for_test(deadline));
 
     assert_eq!(
         *workspaces.symbols.deadlines.lock().unwrap(),

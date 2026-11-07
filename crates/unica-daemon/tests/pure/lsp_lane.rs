@@ -3,7 +3,7 @@ use super::*;
 use crate::protocol_v5::lsp::{
     V5LspCapabilities, V5LspMessageLevel, V5LspPosition, V5LspWorkspaceSpace,
 };
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// Служба, чей hover держит исполнителя до отмены или до `release`.

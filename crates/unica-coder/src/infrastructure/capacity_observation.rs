@@ -25,8 +25,28 @@ const STAGING_NAME: &str = ".snapshot-v1.tmp";
 const WRITER_LOCK_NAME: &str = ".capacity-writer.lock";
 const SCHEMA_VERSION: u8 = 1;
 const BUCKETS: usize = 32;
+// resource-limit: capacity.flush-interval
+// class: step
+// unit: ms
+// scope: process
+// value: 60000
+// resource: Интервал записи снимка наблюдения ёмкости на диск.
+// status: unproven
+// origin: #1122
+// problem: неизвестно
+// on-reach: снимок записывается по интервалу и при остановке
 const FLUSH_INTERVAL: Duration = Duration::from_secs(60);
 const SHUTDOWN_FLUSH_WAIT: Duration = Duration::from_secs(2);
+// resource-limit: capacity.snapshot-bytes
+// class: retention
+// unit: bytes
+// scope: file
+// value: 16384
+// resource: Размер файла снимка локального наблюдения ёмкости (запись и чтение).
+// status: unproven
+// origin: e4ef94156 (#1122)
+// problem: неизвестно
+// on-reach: Ошибка InvalidData «capacity snapshot is too large»: снимок не пишется и не читается.
 pub(crate) const MAX_SNAPSHOT_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -18,7 +18,18 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 
 // #1119: the configuration, not apply, decides file sizes and namespace
 // membership; depth still guards against cycles.
+// resource-limit-excluded: usize::MAX: предел числа записей снят в #1119, тесты подставляют свой предел через entry_limit
 pub(super) const MAX_APPLY_NAMESPACE_ENTRIES: usize = usize::MAX;
+// resource-limit: apply.namespace-depth
+// class: format
+// unit: depth
+// scope: traversal
+// value: 256
+// resource: Глубина перечисления пространства имён оверлея apply и удаления каталогов.
+// status: unproven
+// origin: #1772
+// problem: неизвестно
+// on-reach: ошибка staging UnsupportedProvider «directory removal exceeds namespace depth bound»
 pub(super) const MAX_APPLY_NAMESPACE_DEPTH: usize = 256;
 
 /// A filesystem call on the planned route failed: access denied, I/O, or
