@@ -9356,10 +9356,13 @@ fn main() {
     /// rule: CTR.WIRE.COMPATIBILITY-TASK-TOOLS
     #[tokio::test]
     async fn compatibility_long_producer_survives_7000_and_100_ms_observations_once() {
+        // The producer outlives the first read by the same margin in both
+        // cases, so `working` survives load; a 100 ms read does not need the
+        // 9500 ms producer of the 7000 ms read to observe that.
+        const MARGIN_MS: u64 = 2500;
         for wait_ms in [7000_u64, 100] {
             let service = Arc::new(ScriptedService {
-                // Long enough past a 7000 ms read that `working` survives load.
-                delay: Duration::from_millis(9500),
+                delay: Duration::from_millis(wait_ms + MARGIN_MS),
                 known_long: true,
                 outcome: Mutex::new(Some(Ok(
                     unica_execution_contract::invocation::DomainResult::success(
