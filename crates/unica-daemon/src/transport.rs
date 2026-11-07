@@ -52,20 +52,79 @@ pub struct DaemonServerConfig<
     pub lsp: Arc<dyn LspHost>,
 }
 
+// resource-limit: daemon.accept-poll
+// class: step
+// unit: ms
+// scope: daemon
+// value: 10
+// resource: Пауза между опросами слушающего сокета демона на новые соединения.
+// status: unproven
+// origin: коммит 38512f013 (feat(daemon): add one versioned user executor)
+// on-reach: после паузы демон снова проверяет соединения и простой
 const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+// resource-limit: daemon.handshake-read-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 2000
+// resource: Срок чтения рукопожатия с момента принятия соединения.
+// status: unproven
+// origin: коммит 38512f013 (feat(daemon): add one versioned user executor)
+// on-reach: соединение закрывается без ответа ready
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
+// resource-limit: daemon.session-read-poll
+// class: step
+// unit: ms
+// scope: session
+// value: 2000
+// resource: Интервал ожидания очередного кадра простаивающей сессии, срок записи ответа об ошибке и бюджет операции для запросов кроме submit и wait.
+// status: unproven
+// origin: коммит 4ed8661c6 (feat(v13): wire hidden receipt ledger shell)
+// on-reach: простаивающая сессия продолжает ждать следующий кадр; для прочих запросов истекает срок операции
 const SESSION_READ_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// A session frame must arrive whole within this long of its first byte. No
 /// frontend waits longer: its whole call budget is at most 7 s.
+// resource-limit: daemon.session-frame-read-timeout
+// class: deadline
+// unit: ms
+// scope: frame
+// derived: true
+// resource: Срок получения кадра сессии целиком от его первого байта.
+// status: unproven
+// origin: #1309 (#1402)
+// problem: Ни один frontend не ждёт дольше: весь бюджет вызова не больше 7 с (комментарий в transport.rs).
+// on-reach: недочитанный за срок кадр закрывает сессию ошибкой чтения
+// decision: закреплено правилом INV.WIRE.DAEMON-REQUEST-FRAMING
+// decision-date: 2026-10-18
+// decision-source: arch/rules/runtime/daemon-request-framing.md
 const SESSION_FRAME_READ_TIMEOUT: Duration =
     Duration::from_millis(unica_execution::receipt_ledger::MAX_ORIGINAL_RESPONSE_BUDGET_MS);
 
+// resource-limit: daemon.response-write-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 10000
+// resource: Потолок срока записи ответа демона от приёма запроса, включая аварийную доставку fail-stop.
+// status: unproven
+// origin: коммит 215497a92 (fix(invocation): bound durable result publication)
+// on-reach: запись ответа прерывается ошибкой срока
 const OWNER_RESPONSE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the LSP service may spend opening a session or taking a document.
+// resource-limit: lsp.session-step-budget
+// class: deadline
+// unit: ms
+// scope: request
+// derived: true
+// resource: Срок, который служба LSP в демоне тратит на открытие сессии или приём уведомления о документе.
+// status: unproven
+// origin: #2173
+// on-reach: ответ не успевает к сроку, соединение сессии закрывается вместе с сессией
+// issue: #2173
 const LSP_SESSION_STEP_BUDGET: Duration =
     Duration::from_millis(unica_execution::receipt_ledger::MAX_ORIGINAL_RESPONSE_BUDGET_MS);
 

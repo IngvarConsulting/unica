@@ -37,6 +37,15 @@ pub(super) const OPERATION: &str = "launch";
 /// Имя команды в конверте раннера: у `launch` оно не совпадает с именем
 /// операции словаря, в отличие от семейства `infobase`.
 const RUNNER_COMMAND: &str = "launch";
+// resource-limit: run.launch-wait-timeout-max-ms
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 86400000
+// resource: Наибольшее значение waitTimeoutMs, которое принимает launch клиента платформы.
+// status: unproven
+// origin: fdc96f905 (#886)
+// on-reach: Отказ bad_value «launch waitTimeoutMs must be an integer from 1 to 86400000».
 const WAIT_TIMEOUT_MAX_MS: u64 = 86_400_000;
 const PROCESSOR_EXTENSIONS: [&str; 2] = ["epf", "erf"];
 const CLIENT_OWNER_ENV: &str = "V8_RUNNER_CLIENT_OWNER";

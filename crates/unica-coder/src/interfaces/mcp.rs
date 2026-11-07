@@ -57,7 +57,25 @@ use unica_daemon::client_v5::{
 use unica_daemon::protocol_v5::V5DaemonErrorCode;
 use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
 
+// resource-limit: mcp.eof-cancellation-grace
+// class: deadline
+// unit: ms
+// scope: process
+// value: 2000
+// resource: Срок завершения отменённых вызовов и рабочих потоков поставщиков после закрытия stdio хостом.
+// status: unproven
+// origin: коммит 5f6649325 (fix: drain accepted mcp calls on eof)
+// on-reach: frontend пишет «unica mcp shutdown grace expired while tool calls or provider workers were cleaning up» и останавливает рантайм
 const EOF_CANCELLATION_GRACE: Duration = Duration::from_secs(2);
+// resource-limit: mcp.runtime-shutdown-grace
+// class: deadline
+// unit: ms
+// scope: process
+// value: 250
+// resource: Срок остановки асинхронного рантайма MCP-frontend.
+// status: unproven
+// origin: #224
+// on-reach: незавершённые задачи рантайма бросаются при выходе
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 
 /// Executes one tool call synchronously without leaking SDK types into the application.
@@ -706,6 +724,15 @@ fn has_structured_output(spec: &ToolSpec) -> bool {
 
 /// Page size for the modern-era `tools/list` (legacy peers get the whole
 /// registry in one page, exactly as before pagination existed).
+// resource-limit: mcp.tools-page-entries
+// class: step
+// unit: count
+// scope: request
+// value: 25
+// resource: Число инструментов на одной странице tools/list в эпохе modern.
+// status: unproven
+// origin: #545
+// on-reach: остальные инструменты выдаются по nextCursor; legacy-клиенты получают весь список одной страницей
 const TOOLS_PAGE_SIZE: usize = 25;
 
 /// Validate a client-presented cursor against the offsets this server issues:
@@ -1299,6 +1326,16 @@ impl ServerHandler for UnicaServer {
 
 /// Bound on one `roots/list` exchange. A host answers from memory; the
 /// remainder of the handoff window belongs to the daemon call.
+// resource-limit: mcp.client-roots-timeout-ms
+// class: deadline
+// unit: ms
+// scope: request
+// value: 2000
+// resource: Срок одного обмена roots/list с клиентом MCP.
+// status: unproven
+// origin: 64f07293f (#1232)
+// problem: Хост отвечает из памяти; остаток окна передачи принадлежит вызову демона (комментарий в mcp.rs).
+// on-reach: Ответ roots/list не получен, рабочая папка из roots не берётся.
 const CLIENT_ROOTS_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Roots of a client that declared them, asked for this call only.

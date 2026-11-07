@@ -35,7 +35,25 @@ const TARGET_PLATFORM_LINE: &str = ACTIVE_FORMAT_PROFILE.platform_line;
 const TARGET_EXPORT_FORMAT: &str = ACTIVE_FORMAT_PROFILE.export_format;
 const EFFECTIVE_CONFIG_NAME: &str = "v8project.yaml";
 const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
+// resource-limit: v8-runner.build-dump-timeout
+// class: deadline
+// unit: ms
+// scope: process
+// value: 120000
+// resource: Срок процесса полной выгрузки исходников в режиме BuildDump.
+// status: unproven
+// origin: коммит 17ad07915 (enforce 8.3.27 export profile)
+// on-reach: процесс выгрузки прерывается, сборка завершается ошибкой таймаута
 const BUILD_DUMP_TIMEOUT: Duration = Duration::from_secs(120);
+// resource-limit: v8-runner.platform-probe-timeout
+// class: deadline
+// unit: ms
+// scope: process
+// value: 15000
+// resource: Срок пробного запуска платформы для определения её версии перед выгрузкой.
+// status: unproven
+// origin: коммит 17ad07915 (enforce 8.3.27 export profile)
+// on-reach: проба прерывается, выгрузка завершается ошибкой таймаута
 const PLATFORM_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FullDumpInvocation {

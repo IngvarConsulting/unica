@@ -24,6 +24,15 @@ use unica_redaction::redactor;
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::paths::normalize_path_identity;
+// resource-limit: bsl-analyzer.process-timeout
+// class: deadline
+// unit: ms
+// scope: process
+// value: 120000
+// resource: Срок одного запуска процесса анализатора BSL и внутренних адаптеров без явного срока.
+// status: unproven
+// origin: коммит aff5640a7 (v10)
+// on-reach: процесс прерывается, ошибка «internal <label> adapter timed out after 120 seconds»
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 #[derive(Debug, Clone)]
 pub struct BslMcpCommand {

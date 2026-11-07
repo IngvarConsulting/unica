@@ -46,6 +46,15 @@ use unica_workspace::paths::normalize_path_identity;
 #[cfg(test)]
 use unica_process::ProcessLineReply;
 
+// resource-limit: analysis.internal-adapter-process-ms
+// class: deadline
+// unit: ms
+// scope: process
+// value: 120000
+// resource: Срок процесса внутреннего адаптера анализа (и bsl-analyzer) по умолчанию.
+// status: unproven
+// origin: aff5640a7 (v10)
+// on-reach: Процесс прерывается, диагностика «internal <label> adapter timed out after 120 seconds».
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct CliAdapter<'a> {

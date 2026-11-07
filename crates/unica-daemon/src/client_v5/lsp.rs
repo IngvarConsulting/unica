@@ -7,6 +7,16 @@ use crate::protocol_v5::lsp::{
 };
 
 /// Срок короткого обмена отмены: она не ждёт ничего, кроме записи флага.
+// resource-limit: lsp.cancel-timeout
+// class: deadline
+// unit: ms
+// scope: request
+// value: 2000
+// resource: Срок отдельного обмена отмены запроса LSP.
+// status: unproven
+// origin: #2173
+// on-reach: отмена в демоне не доставлена; редактор уже получил RequestCancelled, запрос остановит его собственный срок
+// issue: #2173
 const LSP_CANCEL_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]

@@ -10,6 +10,16 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Instant;
 
 /// Уведомлений, ждущих редактора, на одну сессию.
+// resource-limit: lsp.session-outbox
+// class: concurrency
+// unit: count
+// scope: session
+// value: 256
+// resource: Уведомлений демона, ждущих редактора, на одну сессию LSP.
+// status: unproven
+// origin: #2173
+// on-reach: служба получает false и уведомление не ставится в очередь
+// issue: #2173
 pub const LSP_OUTBOX_CAPACITY: usize = 256;
 
 /// Служба LSP за транспортом. Реализуется продуктом; транспорт знает только этот порт.

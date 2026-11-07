@@ -307,7 +307,25 @@ fn ensure_short_private_runtime_dir_unix(path: &Path, uid: libc::uid_t) -> io::R
     use std::os::unix::io::FromRawFd;
     use std::time::Duration;
 
+    // resource-limit: workspace.runtime-dir-setup-attempts
+    // class: retry
+    // unit: count
+    // scope: directory
+    // value: 8
+    // resource: Число попыток подготовить короткий частный каталог исполнения Unix.
+    // status: unproven
+    // origin: #308
+    // on-reach: после попыток каталог проверяется последний раз; неготовый даёт ошибку прав или отсутствия каталога
     const SETUP_ATTEMPTS: usize = 8;
+    // resource-limit: workspace.runtime-dir-retry-delay
+    // class: retry
+    // unit: ms
+    // scope: directory
+    // value: 1
+    // resource: Пауза между попытками подготовить частный каталог исполнения при гонке с другим процессом того же пользователя.
+    // status: unproven
+    // origin: #308
+    // on-reach: после паузы следующая попытка в пределах числа попыток
     const RETRY_DELAY: Duration = Duration::from_millis(1);
 
     for _ in 0..SETUP_ATTEMPTS {
@@ -1749,6 +1767,15 @@ fn sync_renamed_regular_child(file: &fs::File) -> io::Result<()> {
 }
 
 /// The portion a checked read takes between two checkpoints.
+// resource-limit: apply.checked-read-chunk-bytes
+// class: step
+// unit: bytes
+// scope: file
+// value: 65536
+// resource: Размер одной порции чтения или сравнения входа apply между проверками срока и отмены.
+// status: unproven
+// origin: #1119
+// on-reach: файл читается следующей порцией после проверки срока и отмены
 const CHECKED_READ_CHUNK_BYTES: usize = 64 * 1024;
 
 /// A checked read either failed on the filesystem or was stopped by its
@@ -4373,6 +4400,15 @@ fn visit_directory_names<E: From<io::Error>>(
         FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetFileInformationByHandleEx,
     };
 
+    // resource-limit: workspace.windows-directory-buffer-bytes
+    // class: step
+    // unit: bytes
+    // scope: directory
+    // value: 65536
+    // resource: Размер буфера одного запроса перечисления имён каталога в Windows.
+    // status: unproven
+    // origin: #284
+    // on-reach: имена читаются следующими запросами до конца каталога
     const BUFFER_BYTES: usize = 64 * 1024;
 
     validate_directory_handle(directory)?;

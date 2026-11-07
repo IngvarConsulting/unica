@@ -19,13 +19,51 @@ use unica_source_contract::read::{FileStamp, SourceDirectory, SourceEntry};
 use crate::infrastructure::v13_large_configuration::SETTLE_WINDOW;
 
 /// A refresh walk starts again only this long after the last one ended.
+// resource-limit: name-index.refresh-interval-ms
+// class: retention
+// unit: ms
+// scope: cache
+// value: 5000
+// resource: Сколько индекс имён набора считается свежим после обхода: раньше этого обращение не начинает новый обход по штампам файлов.
+// status: unproven
+// origin: #2190
+// problem: Правка вне Unica видна поиску ссылок не раньше следующего обхода.
+// on-reach: обращение начинает фоновый обход; ответ даёт текущий индекс, не дожидаясь обхода
 pub(crate) const NAME_INDEX_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// While an MCP call runs, the build checks again after this long.
+// resource-limit: name-index.yield-poll-ms
+// class: step
+// unit: ms
+// scope: process
+// value: 20
+// resource: Шаг ожидания фоновой сборки индекса имён, пока исполняется вызов MCP.
+// status: unproven
+// origin: #2190
+// on-reach: сборка проверяет снова; вызов MCP её не ждёт
 pub(crate) const NAME_INDEX_YIELD_POLL: Duration = Duration::from_millis(20);
 /// The largest module text the index reads; a larger module is left out.
+// resource-limit: name-index.module-bytes
+// class: format
+// unit: bytes
+// scope: file
+// value: 67108864
+// resource: Наибольший текст модуля, который индекс имён читает при сборке.
+// status: unproven
+// origin: #2190
+// on-reach: модуль не попадает в индекс, ссылки в нём по индексу не находятся
 pub(crate) const NAME_INDEX_MODULE_BYTES: usize = 64 * 1024 * 1024;
 /// The heap the index may grow to; past it, modules not yet indexed are left
 /// out and every answer says so. Measured on УТ 11: about 38 MiB.
+// resource-limit: name-index.budget-bytes
+// class: retention
+// unit: bytes
+// scope: cache
+// value: 268435456
+// resource: Память, до которой растёт индекс имён одного набора (оценка по ключам, путям и спискам модулей).
+// status: unproven
+// origin: #2190
+// on-reach: ещё не учтённые модули в индекс не попадают; поиск ссылок отвечает неполным с причиной capped, не отказом
+// evidence: Замер 26.10.2026, УТ 11 (Sendbox, 12 290 модулей, 7,1 млн строк): индекс около 38 МиБ, сборка 17–48 с в зависимости от нагрузки машины.
 pub(crate) const NAME_INDEX_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 
 static FOREGROUND_CALLS: AtomicUsize = AtomicUsize::new(0);

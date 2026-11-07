@@ -1,4 +1,12 @@
 #[cfg(windows)]
+// resource-limit: coder.windows-main-stack-bytes
+// class: format
+// unit: bytes
+// scope: process
+// value: 8388608
+// resource: Размер стека главного потока Unica на Windows.
+// status: unproven
+// on-reach: переполнение стека аварийно завершает процесс
 const WINDOWS_MAIN_STACK_SIZE: usize = 8 * 1024 * 1024;
 
 #[cfg(windows)]

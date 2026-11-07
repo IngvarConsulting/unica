@@ -108,20 +108,70 @@ pub trait LspDiagnostics: Send + Sync {
 pub(crate) const INCOMPLETE_CODE: &str = "unica.diagnostics_incomplete";
 
 /// Больше находок один ответ не несёт; остальные названы пробелом.
+// resource-limit: lsp.editor-diagnostics
+// class: result
+// unit: count
+// scope: request
+// value: 1000
+// resource: Находки одного ответа `textDocument/diagnostic`.
+// status: unproven
+// origin: #2578
+// on-reach: ответ несёт первые находки по тексту и отметку `unica.diagnostics_incomplete` с причиной `capped`
+// issue: #2578
 const MAX_EDITOR_DIAGNOSTICS: usize = 1000;
 /// Сколько сохранённых текстов помнят свой анализ, ждущий или готовый.
 /// Первым уходит самый старый готовый, затем самый старый в очереди.
+// resource-limit: lsp.editor-analysis-entries
+// class: retention
+// unit: count
+// scope: daemon
+// value: 256
+// resource: Сохранённые тексты, для которых служба LSP помнит анализ кода, ждущий или готовый.
+// status: unproven
+// origin: #2578
+// on-reach: уходит самый старый готовый анализ, затем самый старый в очереди; о его тексте спрашивают заново
+// issue: #2578
 const MAX_EDITOR_ANALYSIS_ENTRIES: usize = 256;
 /// Сколько анализов идёт одновременно; остальные ждут очереди, чтобы
 /// открытие многих документов не запускало анализатор на каждый и не
 /// отнимало машину у вызовов MCP.
+// resource-limit: lsp.editor-analysis-concurrency
+// class: concurrency
+// unit: count
+// scope: daemon
+// value: 2
+// resource: Одновременные анализы кода сохранённых модулей для редактора.
+// status: unproven
+// origin: #2578
+// on-reach: следующие анализы ждут очереди; запрос, не дождавшийся анализа, отвечает отметкой `analysis_not_ready`
+// issue: #2578
 const MAX_CONCURRENT_EDITOR_ANALYSES: usize = 2;
 /// Сколько неполный анализ отвечает за свой текст, прежде чем его спросят
 /// заново.
+// resource-limit: lsp.editor-analysis-retry
+// class: retry
+// unit: ms
+// scope: daemon
+// value: 30000
+// resource: Время, которое неполный анализ кода отвечает за свой сохранённый текст.
+// status: unproven
+// origin: #2578
+// on-reach: следующий запрос о тексте запускает анализ заново
+// issue: #2578
 const EDITOR_ANALYSIS_RETRY_DELAY: Duration = Duration::from_secs(30);
 /// Сколько полный анализ отвечает за свой текст. Находки модуля зависят и
 /// от других модулей и метаданных, поэтому и полный ответ со временем
 /// спрашивают заново.
+// resource-limit: lsp.editor-analysis-retention
+// class: retention
+// unit: ms
+// scope: daemon
+// value: 60000
+// resource: Время, которое полный анализ кода отвечает за свой сохранённый текст.
+// status: unproven
+// origin: #2578
+// on-reach: следующий запрос о тексте запускает анализ заново: находки модуля зависят и от других модулей
+// issue: #2578
 const EDITOR_ANALYSIS_RETENTION: Duration = Duration::from_secs(60);
 
 /// Ответ о документе: находки текста, который видит соединение, и пробелы.

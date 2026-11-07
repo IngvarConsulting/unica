@@ -18,8 +18,38 @@ use unica_address::address::QualifiedAddress;
 use unica_execution_contract::invocation::DomainResult;
 use unica_refusal::RefusalCode;
 
+// resource-limit: view.page-default-entries
+// class: step
+// unit: count
+// scope: request
+// value: 20
+// resource: Число элементов страницы view, когда limit не задан.
+// status: unproven
+// origin: cec3ddf7c
+// on-reach: Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.
 const DEFAULT_LIMIT: usize = 20;
+// resource-limit: view.page-max-entries
+// class: step
+// unit: count
+// scope: request
+// value: 50
+// resource: Наибольшее число элементов одной страницы view.
+// status: unproven
+// origin: cec3ddf7c
+// on-reach: Отказ bad_value «view limit must be between 1 and 50».
 const MAX_LIMIT: usize = 50;
+// resource-limit: view.preferred-page-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 65536
+// resource: Целевой сериализованный объём страницы адресной коллекции view и check.
+// status: unproven
+// origin: #1003
+// on-reach: страница останавливается по объёму (stoppedBy bytes) с курсором; неделимый элемент отдаётся целиком
+// decision: закреплено правилом INV.WIRE.READ-PAGE-BUDGET
+// decision-date: 2026-09-23
+// decision-source: arch/rules/mcp/read-page-budget.md
 pub const PREFERRED_PAGE_BYTES: usize = 64 * 1024;
 type ViewProjector<'a> = dyn Fn(&Value) -> Result<Value, ViewError> + 'a;
 

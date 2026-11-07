@@ -343,6 +343,15 @@ pub fn parse_support_object_rules(text: &str) -> ([usize; 3], HashMap<String, u8
 
 /// Длины записи правила объекта: `<правило>,0,<uuid>` и `<правило>,-1,<uuid>`.
 const RULE_RECORD_MIN: usize = 40;
+// resource-limit: support.rule-record-length
+// class: format
+// unit: chars
+// scope: record
+// value: 41
+// resource: Наибольшая длина записи правила объекта `<правило>,-1,<uuid>` в файле поддержки конфигурации.
+// status: external
+// origin: #2051; формат записи правила поддержки 1С
+// on-reach: окно разбора сдвигается до накопления полной записи; хвост короче записи переносится в следующий блок
 const RULE_RECORD_MAX: usize = 41;
 
 /// Запись правила объекта в `ParentConfigurations.bin`: правило (0 — на

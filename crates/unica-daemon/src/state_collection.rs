@@ -17,6 +17,17 @@ use unica_workspace::state_fs::{
 };
 
 /// How long a directory must stay untouched before it is a candidate.
+// resource-limit: daemon.stale-state-idle
+// class: retention
+// unit: ms
+// scope: daemon
+// value: 604800000
+// literal: pub const STALE_DAEMON_STATE_IDLE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+// count: 1
+// expr: Duration::from_secs(7 * 24 * 60 * 60)
+// resource: Срок простоя, после которого демон удаляет устаревшее состояние: каталоги чужих идентичностей демона и файлы продолжения корневой проверки, не переписанные дольше срока.
+// status: unproven
+// on-reach: тихо: устаревший каталог или файл продолжения удаляется; следующая корневая проверка такого проекта идёт с начала
 pub const STALE_DAEMON_STATE_IDLE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 const STATE_PREFIX: &str = "daemon-p5-";

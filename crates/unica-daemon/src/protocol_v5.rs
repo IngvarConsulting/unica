@@ -32,11 +32,33 @@ use {
 pub const DAEMON_PROTOCOL_VERSION: u32 = super::identity::DAEMON_PROTOCOL_VERSION;
 pub const DAEMON_PROTOCOL_IDENTITY: &str = "unica-daemon-jsonl-5";
 pub const V5_ENDPOINT_SCHEMA_VERSION: u32 = 1;
+// resource-limit: daemon.v5-endpoint-record-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 16384
+// resource: Размер файла записи конечной точки демона v5.
+// status: unproven
+// origin: коммит 4ed8661c6 (feat(v13): wire hidden receipt ledger shell)
+// on-reach: запись отвергается: «v5 daemon endpoint record exceeds the byte limit»
 pub const MAX_V5_ENDPOINT_RECORD_BYTES: usize = 16 * 1024;
 /// Bound of the first frame of a connection, `\n` included. Before the token
 /// is checked only a `hello` of a few hundred bytes is legitimate, and the
 /// number of connections is not capped (`INV.RUNTIME.DAEMON-CONNECTION-ADMISSION`):
 /// an unauthenticated peer can make the daemon hold at most this much.
+// resource-limit: daemon.v5-handshake-line-bytes
+// class: format
+// unit: bytes
+// scope: frame
+// value: 16384
+// resource: Размер первой строки соединения до проверки токена, вместе с переводом строки.
+// status: unproven
+// origin: #1309 (#1402)
+// problem: Число соединений не ограничено, поэтому неаутентифицированный пир может заставить демон держать не больше этого объёма.
+// on-reach: кадр отвергается ответом invalid_request, соединение закрывается
+// decision: закреплено правилом
+// decision-date: 2026-10-18
+// decision-source: arch/rules/runtime/daemon-request-framing.md
 pub const MAX_V5_HANDSHAKE_LINE_BYTES: usize = 16 * 1024;
 /// Bound of one authenticated request frame, `\n` included.
 ///
@@ -49,9 +71,48 @@ pub const MAX_V5_HANDSHAKE_LINE_BYTES: usize = 16 * 1024;
 /// once, so one request costs several times its size; the bound keeps that
 /// finite. The frontend refuses a larger call before sending it and names both
 /// numbers (`V5TransportError::RequestTooLarge`).
+// resource-limit: daemon.v5-request-line-bytes
+// class: format
+// unit: bytes
+// scope: frame
+// value: 67108864
+// resource: Размер одного аутентифицированного кадра запроса JSONL, вместе с переводом строки.
+// status: unproven
+// origin: #1309 (#1402)
+// problem: Демон держит кадр, разобранные аргументы и их канонический хеш одновременно; предел делает этот расход конечным, а прежние 16 КиБ резали обычный apply.
+// on-reach: frontend отказывает до отправки: provider_limit_exceeded, исход fixCall, предел и фактический размер; демон отвергает больший кадр
+// decision: закреплено правилом
+// decision-date: 2026-10-18
+// decision-source: arch/rules/runtime/daemon-request-framing.md
 pub const MAX_V5_REQUEST_LINE_BYTES: usize = 64 * 1024 * 1024;
+// resource-limit: daemon.v5-response-line-bytes
+// class: result
+// unit: bytes
+// scope: frame
+// derived: true
+// resource: Размер одного кадра ответа демона по протоколу v5: канонический результат плюс запас конверта.
+// status: unproven
+// origin: коммит de0ae463d (feat(daemon): add strict protocol v5 shell)
+// on-reach: кадр отвергается ошибкой «v5 daemon response frame exceeds the byte limit»
+// issue: #1119
+// decision: закреплено правилом INV.WIRE.DAEMON-RESPONSE-SIZE
+// decision-date: 2026-09-22
+// decision-source: arch/rules/runtime/daemon-response-size.md
+// review: #1119 PR9
 pub const MAX_V5_RESPONSE_LINE_BYTES: usize =
     MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
+// resource-limit: daemon.v5-wait-ms
+// class: deadline
+// unit: ms
+// scope: request
+// value: 7000
+// resource: Верхняя граница бюджета прямого ответа и ожидания задания в запросе протокола v5.
+// status: unproven
+// origin: коммит de0ae463d (feat(daemon): add strict protocol v5 shell)
+// on-reach: запрос отвергается: «v5 invocation response budget exceeds 7000 ms» или «v5 task wait exceeds 7000 ms»
+// decision: закреплено правилом
+// decision-date: 2026-09-22
+// decision-source: arch/rules/runtime/daemon-protocol.md
 const MAX_V5_WAIT_MS: u64 = 7_000;
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]

@@ -354,6 +354,18 @@ fn docs_page_result(
     page
 }
 
+// resource-limit: docs.text-fragment-bytes
+// class: step
+// unit: bytes
+// scope: line
+// value: 16384
+// resource: Наибольший фрагмент длинной строки текста документа на странице документации.
+// status: unproven
+// origin: #1031
+// on-reach: строка делится на фрагменты по курсору без потери байтов
+// decision: закреплено правилом INV.APP.DOCUMENTATION-TEXT-PAGES
+// decision-date: 2026-09-24
+// decision-source: arch/rules/analysis/documentation/document-text-pages.md
 const DOCUMENT_TEXT_FRAGMENT_BYTES: usize = 16 * 1024;
 
 #[derive(Clone, Copy)]

@@ -62,6 +62,15 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+// resource-limit: native.typed-invocation-deadline-ms
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 5000
+// resource: Срок провайдера для нативного типизированного вызова устаревшей поверхности v0.12.
+// status: unproven
+// origin: 2a3fb2cf1
+// on-reach: Срок ProviderDeadline истекает: провайдер прерывает работу с отказом по сроку.
 const NATIVE_TYPED_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
 
 fn adapter_dry_run(spec: ToolSpec, mode: InvocationMode) -> Result<bool, String> {

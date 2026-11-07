@@ -8,15 +8,35 @@ use unica_daemon::identity::CoreIdentity;
 
 /// Сколько демон ждёт работы, прежде чем выйти. Тёплый индекс BSL стоит минут,
 /// поэтому пауза между задачами не должна стоить пользователю повторной сборки.
+// resource-limit: daemon.idle-grace-default
+// class: deadline
+// unit: ms
+// scope: daemon
+// value: 900000
+// resource: Пауза бездействия демона по умолчанию перед выходом.
+// status: unproven
+// origin: коммит 38512f013 (feat(daemon): add one versioned user executor)
+// problem: Тёплый индекс BSL стоит минут, пауза между задачами не должна стоить повторной сборки (комментарий в daemon.rs).
+// on-reach: демон без работы завершается; значение меняется через --idle-grace-ms или UNICA_DAEMON_IDLE_GRACE_MS
 const DEFAULT_IDLE_GRACE: Duration = Duration::from_secs(15 * 60);
 /// Верхняя граница принимаемого значения. Её проверяет и производственный
 /// запуск демона, и тестовый вход, поэтому она обязана быть не меньше
 /// `DEFAULT_IDLE_GRACE`.
+// resource-limit: daemon.idle-grace-max-ms
+// class: deadline
+// unit: ms
+// scope: daemon
+// value: 3600000
+// resource: Наибольшая пауза бездействия демона перед выходом, принимаемая из аргумента или окружения.
+// status: unproven
+// origin: f6e7e5c05
+// on-reach: Отказ запуска «daemon idle grace is outside the supported range».
 const MAX_IDLE_GRACE_MS: u128 = 60 * 60 * 1_000;
 /// Пауза, назначенная снаружи. Демон переживает процесс, который его поднял,
 /// поэтому вызывающему нужен способ не оставлять его после себя на четверть
 /// часа: интеграционный тест запускает демона десятками, а живут они до конца
 /// всего прогона. Значение проходит ту же проверку, что и `--idle-grace-ms`.
+// resource-limit-excluded: имя переменной окружения UNICA_DAEMON_IDLE_GRACE_MS, не предел
 const IDLE_GRACE_ENV: &str = "UNICA_DAEMON_IDLE_GRACE_MS";
 
 pub fn run_from_args(args: &[String]) -> Result<(), String> {

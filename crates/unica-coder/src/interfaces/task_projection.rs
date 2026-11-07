@@ -20,6 +20,17 @@ use {
     unica_execution_contract::result_size::MAX_TASK_RECORD_ENVELOPE_BYTES,
 };
 
+// resource-limit: mcp.task-projection-bytes
+// class: result
+// unit: bytes
+// scope: request
+// derived: true
+// resource: Размер проекции задания MCP: канонический результат плюс запас конверта.
+// status: unproven
+// origin: коммит 424f6076c (fix(mcp): close native task projection boundaries)
+// on-reach: проекция отвергается: TaskProjectionError::ResultTooLarge, код result_too_large
+// issue: #1119
+// review: #1119 PR9
 const MAX_MCP_TASK_PROJECTION_BYTES: usize =
     MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
 

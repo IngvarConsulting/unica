@@ -51,10 +51,47 @@ impl McpRequestDeadline for ProviderDeadline {
     }
 }
 
+// resource-limit: bsl.session-initialize-timeout
+// class: deadline
+// unit: ms
+// scope: session
+// value: 120000
+// resource: Срок инициализации постоянной MCP-сессии анализатора BSL.
+// status: unproven
+// on-reach: инициализация сессии завершается ошибкой срока
 const SERVICE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+// resource-limit: bsl.session-response-line-bytes
+// class: result
+// unit: bytes
+// scope: line
+// value: 8388608
+// resource: Длина одной строки ответа постоянной MCP-сессии анализатора BSL.
+// status: unproven
+// origin: коммит a04757cf3 (fix: harden persistent analyzer lifecycle)
+// on-reach: ошибка протокола ResponseTooLarge «persistent MCP response exceeds … bytes»; чтение сессии прекращается
+// issue: #1119
+// review: #1119 PR9
 const SERVICE_RESPONSE_LINE_LIMIT: usize = 8 * 1024 * 1024;
+// resource-limit: bsl.session-stderr-tail-bytes
+// class: retention
+// unit: bytes
+// scope: session
+// value: 65536
+// resource: Хвост stderr постоянной сессии анализатора BSL, сохраняемый для диагностики.
+// status: unproven
+// origin: коммит 4550938b3 (fix: bound persistent analyzer diagnostics)
+// on-reach: тихо: сохраняется только хвост, начало отбрасывается
 const BSL_STDERR_TAIL_LIMIT: usize = 64 * 1024;
 /// How long the cancellation notice of an abandoned call may take to write.
+// resource-limit: bsl-analyzer.cancel-notice-timeout-ms
+// class: deadline
+// unit: ms
+// scope: request
+// value: 1000
+// resource: Срок записи уведомления notifications/cancelled для вызова анализатора, брошенного по сроку или отмене.
+// status: unproven
+// origin: #2189
+// on-reach: запись уведомления считается сбоем потока, сессия анализатора списывается
 const CANCEL_NOTICE_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub struct PersistentMcpSession {

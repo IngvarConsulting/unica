@@ -2,9 +2,45 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use unica_address::source_target::ResolvedTarget;
 
+// resource-limit: source-contract.manifest-resources
+// class: step
+// unit: count
+// scope: request
+// value: 100
+// resource: Число ресурсов в манифесте источника по контракту.
+// status: unproven
+// origin: 517463e56 (#266)
+// on-reach: Не применяется: константа в рабочем коде не проверяется (используется только в тестах).
 pub const SOURCE_MANIFEST_RESOURCE_MAX: usize = 100;
+// resource-limit: source-contract.resource-page-entries
+// class: step
+// unit: count
+// scope: request
+// value: 50
+// resource: Наибольшее число ресурсов одной страницы по контракту источника.
+// status: unproven
+// origin: 517463e56 (#266)
+// on-reach: Не применяется: константа в рабочем коде не проверяется (используется только в тестах).
 pub const SOURCE_RESOURCE_PAGE_LIMIT_MAX: usize = 50;
+// resource-limit: source-contract.read-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 65536
+// resource: Наибольший объём одного чтения ресурса источника по контракту.
+// status: unproven
+// origin: #266
+// on-reach: Не применяется: константа в рабочем коде не проверяется (используется только в тестах).
 pub const SOURCE_READ_LIMIT_MAX: usize = 64 * 1024;
+// resource-limit: source-contract.snapshot-ttl
+// class: retention
+// unit: s
+// scope: cache
+// value: 300
+// resource: Срок жизни снимка источника по контракту.
+// status: unproven
+// origin: #266
+// on-reach: Не применяется: константа в рабочем коде не проверяется (используется только в тестах).
 pub const SOURCE_SNAPSHOT_TTL_SECONDS: u64 = 5 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

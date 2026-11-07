@@ -10,6 +10,15 @@ use unica_workspace::full_dump::{
 };
 
 const PROTOCOL_VERSION: u32 = 1;
+// resource-limit: pull.publication-finish-timeout-ms
+// class: deadline
+// unit: ms
+// scope: process
+// value: 120000
+// resource: Срок завершения v8-runner после ответа ready в протоколе публикации полной выгрузки.
+// status: unproven
+// origin: 001fa08f6 (#1734)
+// on-reach: Процесс, не завершившийся за 120 с после защищённого ответа, считается сбоем завершения публикации.
 const FINISH_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]

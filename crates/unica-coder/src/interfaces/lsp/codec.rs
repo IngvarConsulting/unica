@@ -4,7 +4,27 @@ use std::io::{self, BufRead, Read, Write};
 
 /// Тело одного сообщения редактора. Полный текст большого модуля в
 /// `didOpen` укладывается с запасом; дальше кадр протокола демона.
+// resource-limit: lsp.frontend-message-bytes
+// class: format
+// unit: bytes
+// scope: frame
+// value: 33554432
+// resource: Тело одного сообщения редактора в потоке LSP stdio.
+// status: unproven
+// origin: #2173
+// on-reach: поток считается испорченным: `unica lsp` пишет причину в stderr и завершается с кодом 1
+// issue: #2173
 pub(super) const MAX_LSP_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+// resource-limit: lsp.frontend-header-line-bytes
+// class: format
+// unit: bytes
+// scope: line
+// value: 1024
+// resource: Длина одной строки заголовка сообщения LSP stdio.
+// status: unproven
+// origin: #2173
+// on-reach: поток считается испорченным: `unica lsp` завершается с кодом 1
+// issue: #2173
 const MAX_LSP_HEADER_LINE_BYTES: usize = 1024;
 
 /// Прочитать тело следующего сообщения. `None` — поток закрыт между

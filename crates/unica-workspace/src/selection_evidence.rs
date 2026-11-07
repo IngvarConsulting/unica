@@ -13,6 +13,15 @@ use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+// resource-limit: workspace.selection-read-chunk-bytes
+// class: step
+// unit: bytes
+// scope: file
+// value: 65536
+// resource: Размер одной порции чтения и сравнения входа карты исходников при удержании свидетельства выбора.
+// status: unproven
+// origin: коммит 644c01fba (feat: retain source selection evidence for apply)
+// on-reach: файл читается и сравнивается следующей порцией после проверки
 const SELECTION_READ_CHUNK_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy)]

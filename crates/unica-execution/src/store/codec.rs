@@ -9,10 +9,29 @@ use {
 };
 
 const MAGIC: &[u8; 8] = b"UNICAEX1";
+// resource-limit-excluded: точный размер заголовка кадра хранилища операций, вычисляет формат
 pub(crate) const HEADER_BYTES: usize = 128;
 // Each independently encoded role may contain a whole result plus its closed
 // wrapper. This is deliberately not a one-result aggregate allocation bound.
+// resource-limit: execution-store.body-bytes
+// class: result
+// unit: bytes
+// scope: record
+// derived: true
+// resource: Байты одной независимо закодированной роли записи хранилища операций: результат с закрытой обёрткой.
+// status: unproven
+// on-reach: запись или чтение отклоняется как превышение длины
+// issue: #1119
+// review: #1119 PR9
 const BODY_BOUND: usize = MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
+// resource-limit: execution-store.metadata-bound-bytes
+// class: format
+// unit: bytes
+// scope: record
+// derived: true
+// resource: Байты раздела метаданных записи хранилища операций (равно raw::MAX_METADATA_BYTES).
+// status: unproven
+// on-reach: запись или чтение отклоняется как превышение длины
 const METADATA_BOUND: usize = raw::MAX_METADATA_BYTES;
 
 #[derive(Debug)]

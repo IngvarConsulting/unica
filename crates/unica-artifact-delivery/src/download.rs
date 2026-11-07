@@ -32,6 +32,15 @@ impl DownloadObserver for SilentDownload {
 }
 
 /// Шаг чтения.
+// resource-limit: delivery.download-chunk-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 65536
+// resource: Размер одного чтения тела ответа при загрузке артефакта.
+// status: unproven
+// origin: #604
+// on-reach: тело читается следующей порцией до конца ответа
 const CHUNK: usize = 64 * 1024;
 
 /// HTTP-загрузчик поверх общего клиента процесса ([`NetworkClient`]):

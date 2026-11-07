@@ -317,10 +317,38 @@ impl<'a> SearchHitOwners<'a> {
 
 /// The share of the caller's remaining response budget one walk page may
 /// spend before it ends and hands the rest to its cursor.
+// resource-limit: search.walk-page-response-share
+// class: deadline
+// unit: count
+// scope: request
+// value: 2
+// resource: Доля оставшегося бюджета прямого ответа, которую продолжение буквального поиска, читающее исходники своим обходом, тратит на обход, прежде чем отдать продолжение курсору. Первая страница считает весь корпус и по времени не заканчивается.
+// status: unproven
+// origin: #1119 PR-B: собственный обход УТ 11 на отсутствующей строке занимает 31–45 с и уходит в задание
+// problem: Полный обход крупной конфигурации без Git не умещается в бюджет прямого ответа (7 с); страница, закончившаяся раньше рубежа, отдаёт продолжение вместо задания.
+// on-reach: Не отказ: страница заканчивается на границе файла с page.stoppedBy deadline и курсором, который продолжает обход с этого файла; совпадения не теряются. Без бюджета ответа (вызов уже стал заданием) страница по времени не заканчивается.
+// issue: #1119
+// review: Половина оставляет вторую половину бюджета на сужение адресов и сериализацию страницы; замер страницы на УТ 11 — в описании PR.
 pub(in crate::infrastructure::daemon) const WALK_PAGE_RESPONSE_BUDGET_DIVISOR: u32 = 2;
 
 /// How many modules with the most matches the volume of a first answer
 /// names; the rest is one line of counts.
+// resource-limit: search.totals-leading-modules
+// class: result
+// unit: count
+// scope: request
+// value: 20
+// resource: Число модулей с наибольшим числом совпадений, которые сводка объёма первого ответа буквального поиска называет по адресу; остальные модули сводка сообщает одной строкой счёта.
+// status: justified
+// origin: #1119 PR-C: сводка объёма первого ответа буквального поиска
+// problem: Список всех модулей с совпадениями на широком запросе крупной конфигурации растёт до тысяч строк и вытесняет из ответа первую страницу совпадений; агенту для решения, сужать ли область, нужны лидеры и общий счёт.
+// on-reach: Не отказ и не потеря счёта: модули сверх двадцати входят в строку rest (число модулей и их совпадений); общий счёт, раскладка по видам и первая страница остаются точными.
+// issue: #1119
+// evidence: Клон выгрузки УТ 11 (Sendbox), release, 25.10.2026: первый ответ с двадцатью лидерами — 11,9 КиБ на 411 совпадениях в 231 файле и 12,0 КиБ на 162 307 совпадениях в 10 684 файлах; сама сводка — 2,9 и 3,3 КиБ, около 120–130 байт на модуль. Полный список модулей на «Процедура» занял бы около 1,2 МиБ, больше предела страницы 64 КиБ.
+// decision: Первый ответ буквального поиска всегда несёт сводку объёма: точный счёт совпадений и файлов, раскладку по видам объектов, до 20 модулей-лидеров с адресами.
+// decision-date: 2026-10-25
+// decision-source: #1119, решение владельца для PR-C
+// review: Счётчики сводки занимают память по числу модулей с совпадениями, а не по числу совпадений; предела на них нет, число модулей конфигурации конечно.
 pub(in crate::infrastructure::daemon) const MAX_TEXT_TOTALS_LEADING_MODULES: usize = 20;
 
 /// The question a text search answers, independent of the engine.
@@ -347,7 +375,31 @@ impl TextQuery {
         let compile = |pattern: &str| {
             regex::RegexBuilder::new(pattern)
                 .case_insensitive(ignore_case)
+                // resource-limit: search.provider-regex-size-bytes
+                // class: format
+                // unit: bytes
+                // scope: request
+                // value: 1048576
+                // literal: .size_limit(1 << 20)
+                // count: 2
+                // expr: 1 << 20
+                // resource: Размер скомпилированного регулярного выражения текстового поиска: одна сборка служит допуску и исполнению; вторая — тот же шаблон над байтами строки, не являющейся UTF-8, для regex и ignoreCase.
+                // status: unproven
+                // problem: Ограниченная компиляция: шаблон, не умещающийся в бюджет, — ошибка вызывающего, а не сбой поставщика.
+                // on-reach: отказ bad_value «search regex is not a valid pattern» при допуске и при исполнении: шаблон не компилируется в пределах размера
                 .size_limit(1 << 20)
+                // resource-limit: search.provider-regex-dfa-bytes
+                // class: format
+                // unit: bytes
+                // scope: request
+                // value: 1048576
+                // literal: .dfa_size_limit(1 << 20)
+                // count: 2
+                // expr: 1 << 20
+                // resource: Размер DFA регулярного выражения текстового поиска: одна сборка служит допуску и исполнению; вторая — тот же шаблон над байтами строки, не являющейся UTF-8, для regex и ignoreCase.
+                // status: unproven
+                // problem: Ограниченная компиляция: шаблон, не умещающийся в бюджет, — ошибка вызывающего, а не сбой поставщика.
+                // on-reach: отказ bad_value «search regex is not a valid pattern» при допуске и при исполнении: шаблон не компилируется в пределах размера
                 .dfa_size_limit(1 << 20)
                 .build()
                 .map_err(|error| format!("search regex is not a valid pattern: {error}"))

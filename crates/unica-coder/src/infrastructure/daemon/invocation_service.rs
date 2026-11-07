@@ -33,8 +33,36 @@ use self::workspace_admission::{admit_workspace_actor, DiscoveredActorSource};
 
 // Regex anchors and Unicode columns require a complete line. Keep that
 // indivisible unit bounded; neither file nor corpus size is a memory budget.
+// resource-limit: search.canonical-line-bytes
+// class: format
+// unit: bytes
+// scope: line
+// value: 8388608
+// resource: Длина одной строки BSL, которую канонический текстовый поиск держит в памяти целиком.
+// status: unproven
+// origin: cd7331929 (#1106)
+// problem: Якоря regex и столбцы Unicode требуют полной строки; неделимую единицу держат ограниченной, размер файла и корпуса бюджетом памяти не считается (комментарий в invocation_service.rs).
+// on-reach: Неполнота: файл помечается uncovered с деталью, его остальные строки читаются. Если такую строку-кандидат встречает первая страница через Git, страница читается заново своим обходом, чтобы назвать файл.
 const CANONICAL_SEARCH_MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
+// resource-limit: search.canonical-directory-depth
+// class: format
+// unit: depth
+// scope: traversal
+// value: 32
+// resource: Глубина вложенных каталогов, которые обходит канонический текстовый поиск.
+// status: unproven
+// origin: b6650bc18
+// on-reach: Обход без Git отказывает provider_unavailable «exceeded its retained depth limit», страницы нет; в рабочем дереве Git глубину ограничивает только Git.
 const CANONICAL_SEARCH_MAX_DEPTH: usize = 32;
+// resource-limit: search.canonical-uncovered-details
+// class: format
+// unit: count
+// scope: request
+// value: 32
+// resource: Число образцов непокрытых файлов в деталях канонического поиска.
+// status: unproven
+// origin: cd7331929 (#1106)
+// on-reach: тихо: сверх 32 детали не добавляются; полное число сохраняется счётчиком uncovered.
 const CANONICAL_SEARCH_MAX_UNCOVERED_DETAILS: usize = 32;
 
 fn read_search_line_bounded(

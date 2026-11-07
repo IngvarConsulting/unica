@@ -26,14 +26,80 @@ use unica_execution_contract::invocation::TaskId;
 use unica_process::ManagedStartupChild;
 use uuid::Uuid;
 
+// resource-limit: daemon.client-connect-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 5000
+// resource: Срок подключения frontend к демону v5 с запуском при необходимости, ping и ожидания ответа на прочие запросы.
+// status: unproven
+// origin: коммит 4ed8661c6 (feat(v13): wire hidden receipt ledger shell)
+// on-reach: ошибка «protocol-v5 deadline expired during …»; при сбое ping сессия владельца отравляется
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Longest socket wait of an interruptible observation read between checks
 /// of its stop flag.
+// resource-limit: daemon.observation-interrupt-poll
+// class: step
+// unit: ms
+// scope: connection
+// value: 25
+// resource: Наибольшее ожидание сокета прерываемым чтением наблюдения между проверками флага остановки.
+// status: unproven
+// problem: Прерываемое наблюдение должно замечать остановку, не дожидаясь срока всего чтения.
+// on-reach: чтение продолжается следующим окном после проверки флага остановки
 const OBSERVATION_INTERRUPT_POLL: Duration = Duration::from_millis(25);
+// resource-limit: daemon.client-response-safety-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 10000
+// resource: Внутренний потолок ожидания frontend одного ответа демона.
+// status: unproven
+// origin: коммит 136db4642 (feat(daemon): add ReceiptLedger cancellation slice)
+// on-reach: чтение ответа обрывается ошибкой срока, сессия владельца отравляется и больше не используется
+// decision: закреплено правилом
+// decision-date: 2026-09-22
+// decision-source: arch/rules/runtime/daemon-response-time.md
 const OWNER_RESPONSE_SAFETY_TIMEOUT: Duration = Duration::from_secs(10);
+// resource-limit: daemon.spawn-lock-timeout
+// class: deadline
+// unit: ms
+// scope: daemon
+// value: 5000
+// resource: Ожидание блокировки запуска демона в каталоге состояния.
+// status: unproven
+// origin: коммит 38512f013 (feat(daemon): add one versioned user executor)
+// on-reach: ошибка «timed out waiting for daemon spawn ownership»
 const SPAWN_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+// resource-limit: daemon.existing-endpoint-probe-timeout
+// class: deadline
+// unit: ms
+// scope: connection
+// value: 500
+// resource: Срок проверки уже записанной конечной точки демона перед запуском нового.
+// status: unproven
+// origin: коммит f36431393 (fix(v13): preserve startup and receipt authority)
+// on-reach: точка считается недоступной, frontend переходит к блокировке и запуску демона
 const EXISTING_ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+// resource-limit: daemon.startup-cleanup-timeout
+// class: deadline
+// unit: ms
+// scope: process
+// value: 2000
+// resource: Резерв срока на остановку и уборку дочернего демона при неудачном запуске (не больше трети оставшегося бюджета).
+// status: unproven
+// origin: коммит 38512f013 (feat(daemon): add one versioned user executor)
+// on-reach: уборка прекращается, диагностика запуска дополняется ошибкой уборки
 const STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(2);
+// resource-limit: daemon.spawn-readiness-retry
+// class: retry
+// unit: ms
+// scope: process
+// value: 20
+// resource: Пауза между проверками готовности только что запущенного демона.
+// status: unproven
+// origin: коммит 4ed8661c6 (feat(v13): wire hidden receipt ledger shell)
+// on-reach: проверки повторяются до срока готовности запуска; по его истечении запуск завершается ошибкой
 const RETRY_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Protocol-v5 process client: one authenticated owner session over the

@@ -5,7 +5,25 @@ use unica_address::source_target::{MetadataAddress, TargetKind};
 pub use unica_source_contract::location::LocateRejection;
 pub use unica_source_contract::location::SourceLocation;
 
+// resource-limit: navigation.source-page-default-entries
+// class: step
+// unit: count
+// scope: request
+// value: 20
+// resource: Число элементов страницы навигации по исходникам (сохранённые порции apply, xdto info), когда limit не задан.
+// status: unproven
+// origin: #266
+// on-reach: Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.
 pub const SOURCE_NAVIGATION_LIMIT_DEFAULT: usize = 20;
+// resource-limit: navigation.source-page-max-entries
+// class: step
+// unit: count
+// scope: request
+// value: 50
+// resource: Наибольшее число элементов одной страницы навигации по исходникам.
+// status: unproven
+// origin: 517463e56 (#266)
+// on-reach: Отказ проверки аргумента limit (maximum в схеме инструмента; xdto: «limit must be between 1 and 50»).
 pub const SOURCE_NAVIGATION_LIMIT_MAX: usize = 50;
 const CURSOR_MASK: u64 = 0xa93f_4761_c2d8_5be7;
 

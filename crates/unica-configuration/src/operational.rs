@@ -4,7 +4,28 @@ use std::time::Duration;
 use unica_code_intelligence::deadlines::CodeIntelligenceDeadlines;
 use unica_diagnostics::deadlines::CodeDiagnosticsDeadlines;
 
+// resource-limit: config.diagnostics-analyze-timeout-min
+// class: deadline
+// unit: s
+// scope: request
+// value: 30
+// resource: Наименьший явно заданный в настройках срок анализа диагностики.
+// status: unproven
+// origin: #398
+// on-reach: настройка отвергается диагностикой OutOfRange
+// decision: закреплено правилом INV.APP.CONFIG-SNAPSHOT
+// decision-date: 2026-09-22
+// decision-source: arch/rules/analysis/diagnostics-timeout-overlay.md
 const EXPLICIT_DIAGNOSTICS_ANALYZE_MIN_SECONDS: u64 = 30;
+// resource-limit: check.diagnostics-analyze-timeout-max
+// class: deadline
+// unit: s
+// scope: operation
+// value: 3600
+// resource: Наибольший явный срок анализа диагностики, принимаемый из аргумента.
+// status: unproven
+// origin: 093341deb (#398)
+// on-reach: Отказ out_of_range конфигурации для явного аргумента.
 const EXPLICIT_DIAGNOSTICS_ANALYZE_MAX_SECONDS: u64 = 3_600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

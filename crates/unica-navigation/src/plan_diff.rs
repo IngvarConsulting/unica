@@ -5,7 +5,25 @@ use serde_json::{json, Value};
 use std::ops::Range;
 use unica_source_contract::read::SourceImage;
 
+// resource-limit: apply.plan-source-chunk-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 2048
+// resource: Размер одного фрагмента исходника в окне сохранённого плана apply.
+// status: unproven
+// origin: #1434
+// on-reach: исходник делится на следующие фрагменты той же или следующей страницы
 const CHUNK_BYTES: usize = 2048;
+// resource-limit: apply.plan-source-page-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 65536
+// resource: Сериализованный объём одной страницы исходников сохранённого плана apply.
+// status: unproven
+// origin: #1434
+// on-reach: страница останавливается по объёму (stoppedBy bytes) с курсором; один фрагмент больше страницы даёт ошибку «saved plan path exceeds the page byte limit»
 const PAGE_BYTES: usize = 64 * 1024;
 
 struct Window {

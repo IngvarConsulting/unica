@@ -26,9 +26,27 @@ use unica_execution_contract::invocation::{InvocationId, TaskId};
 /// Сколько разных чтений одновременно ждут возможных присоединений. При
 /// переполнении забывается самое старое: оно теряет только возможность
 /// присоединения, а не работу.
+// resource-limit: join.joinable-leaders
+// class: retention
+// unit: count
+// scope: daemon
+// value: 256
+// resource: Число разных чтений, одновременно ожидающих возможных присоединений.
+// status: unproven
+// origin: #1376 (#1388)
+// on-reach: забывается самое старое ведущее чтение: оно теряет только возможность присоединения
 pub(super) const MAX_JOINABLE_LEADERS: usize = 256;
 /// Сколько присоединившихся вызовов демон помнит одновременно. Сверх этого
 /// новый вызов исполняется сам, как до присоединения.
+// resource-limit: join.joined-holders
+// class: retention
+// unit: count
+// scope: daemon
+// value: 1024
+// resource: Число присоединившихся вызовов, которые демон помнит одновременно.
+// status: unproven
+// origin: #1376 (#1388)
+// on-reach: новый вызов не присоединяется и исполняется сам
 pub(super) const MAX_JOINED_HOLDERS: usize = 1024;
 
 /// Сколько после начала ведущего чтения к нему можно присоединиться.
@@ -40,10 +58,32 @@ pub(super) const MAX_JOINED_HOLDERS: usize = 1024;
 /// окон: агенту хватает времени прочитать ошибку и повторить вызов, а
 /// результат обхода, начатого раньше, не выдаётся за свежий надолго. Вне окна
 /// одинаковое чтение начинает свой обход.
+// resource-limit: join.window
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 30000
+// resource: Время после начала ведущего чтения, в которое к нему можно присоединиться.
+// status: unproven
+// origin: #1376 (#1388)
+// problem: Ошибка потерянного ответа доходит до агента примерно через 8 с; около четырёх таких окон хватает на повтор, а старый результат не выдаётся за свежий надолго.
+// on-reach: одинаковое чтение начинает свой обход
+// decision: закреплено правилом
+// decision-date: 2026-10-12
+// decision-source: arch/rules/runtime/read-call-joining.md
 pub(super) const JOIN_WINDOW: Duration = Duration::from_secs(30);
 
 /// Сколько квитанций без задания демон помнит по их `taskId`. Это вызовы,
 /// чей прямой ответ ещё не подтверждён: идущие и потерявшие ответ.
+// resource-limit: join.receipt-handles
+// class: retention
+// unit: count
+// scope: daemon
+// value: 4096
+// resource: Число квитанций без задания, которые демон помнит по их taskId.
+// status: unproven
+// origin: #1376 (#1388)
+// on-reach: забывается самая старая; lookup её taskId далее даёт task_not_found
 pub(super) const MAX_RECEIPT_HANDLES: usize = 4096;
 
 /// Присоединяются только инструменты, не меняющие исходники, базу и
@@ -724,9 +764,31 @@ impl ReceiptHandles {
 /// Обработчик соединения читает кадр сразу после рукопожатия, а резерв
 /// квитанции ограничен бюджетом вызова (до 7 с). Десять минут с запасом
 /// перекрывают это время даже под нагрузкой.
+// resource-limit: join.submit-fence-retention
+// class: retention
+// unit: ms
+// scope: daemon
+// value: 600000
+// resource: Срок, в течение которого демон помнит преграду для кадра потерянного submit.
+// status: unproven
+// origin: #1376 (#1388)
+// problem: Резерв квитанции ограничен бюджетом вызова до 7 с; десять минут перекрывают его с запасом (комментарий в joining.rs).
+// on-reach: преграда истекает; опоздавший кадр больше не останавливается
+// decision: закреплено правилом INV.WIRE.LOST-SUBMIT-TASK-ID
+// decision-date: 2026-10-12
+// decision-source: arch/rules/mcp/lost-submit-refusal.md
 pub(super) const SUBMIT_FENCE_RETENTION: Duration = Duration::from_secs(600);
 /// Сколько преград демон держит одновременно. Сверх этого преграда не
 /// ставится, и frontend честно отвечает, что вызов ещё может идти.
+// resource-limit: join.submit-fences
+// class: retention
+// unit: count
+// scope: daemon
+// value: 4096
+// resource: Число одновременно стоящих преград для кадров потерянного submit.
+// status: unproven
+// origin: #1376 (#1388)
+// on-reach: после чистки истёкших преграда не ставится, frontend отвечает, что вызов ещё может идти
 pub(super) const MAX_SUBMIT_FENCES: usize = 4096;
 const SUBMIT_FENCE_STRIPES: usize = 64;
 

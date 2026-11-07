@@ -49,6 +49,15 @@ pub(super) const OPERATION: &str = "push";
 /// Имя команды раннера и в командной строке, и в конверте: с 0.12 раннер
 /// называет её словом словаря.
 const RUNNER_COMMAND: &str = "push";
+// resource-limit: push.runner-step-count
+// class: format
+// unit: count
+// scope: record
+// value: 64
+// resource: Число шагов в ответе v8-runner push.
+// status: unproven
+// origin: bfaf9b009 (#891)
+// on-reach: Отказ invalid_result «v8-runner push answered with an empty or oversized step list».
 const STEPS_MAX: usize = 64;
 
 #[derive(Debug, Clone)]

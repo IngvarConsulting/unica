@@ -31,6 +31,15 @@ use crate::platform::filesystem::{
     retain_regular_child_for_cleanup, FileIdentity, PortablePermissions,
 };
 
+// resource-limit: workspace.publisher-stage-attempts
+// class: retry
+// unit: count
+// scope: file
+// value: 16
+// resource: Число попыток создать уникальный промежуточный файл при публикации одного файла.
+// status: unproven
+// origin: #163
+// on-reach: ошибка StageCollisionsExhausted с путём цели и числом попыток
 const STAGE_ATTEMPTS: usize = 16;
 static STAGE_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PUBLICATION_PROCESS_LOCKS: OnceLock<Mutex<HashMap<String, Weak<Mutex<()>>>>> =

@@ -37,6 +37,15 @@ pub mod v13;
 pub use tool_contracts::{input_schema_for_tool, strip_schema_descriptions};
 
 #[doc(hidden)]
+// resource-limit: mcp.in-process-invocation-deadline
+// class: deadline
+// unit: ms
+// scope: request
+// value: 5000
+// resource: Срок вызова инструмента, исполняемого в процессе MCP-frontend (call_tool_observed).
+// status: unproven
+// origin: коммит 996b09d20 (fix(subsystem): переиспользовать подготовленный снимок)
+// on-reach: операции, сверяющие ProviderDeadline, прерываются отказом по сроку
 pub const PUBLIC_INVOCATION_DEADLINE: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

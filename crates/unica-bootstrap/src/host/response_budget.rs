@@ -8,6 +8,18 @@
 use std::ffi::OsString;
 
 /// Бюджет по умолчанию — для хостов, чьи пределы не измерены.
+// resource-limit: host.default-response-budget
+// class: result
+// unit: bytes
+// scope: request
+// value: 16384
+// resource: Бюджет текстового ответа с исходником для хоста с неизмеренным пределом.
+// status: unproven
+// origin: #1478 (#1458)
+// on-reach: текст сверх бюджета отказывает result_too_large с подсказкой диапазона строк Body#L<a>-L<b>
+// decision: закреплено правилом
+// decision-date: 2026-10-21
+// decision-source: arch/rules/mcp/source-text-response-budget.md
 pub const DEFAULT_RESPONSE_BUDGET: usize = 16 * 1024;
 
 /// Codex по умолчанию даёт ответу MCP-инструмента 10 000 токенов политики
@@ -18,6 +30,17 @@ pub const DEFAULT_RESPONSE_BUDGET: usize = 16 * 1024;
 /// `truncate_function_output_items_with_policy`; `models.json`, 14.10.2026).
 /// Перед ответом Codex ставит строку о времени вызова (около 40 байт), каждый
 /// блок округляется вверх. 46 КиБ оставляют 896 байт на это и на запас.
+// resource-limit: host.codex-response-budget
+// class: result
+// unit: bytes
+// scope: request
+// value: 47104
+// resource: Бюджет текстового ответа с исходником для клиента Codex.
+// status: external
+// origin: #1478; предел усечения ответа MCP в Codex (codex-rs/utils/output-truncation, 12 000 токенов по 4 байта)
+// problem: Codex выбрасывает середину ответа сверх 48 000 байт
+// on-reach: текст сверх бюджета отказывает result_too_large с подсказкой диапазона строк
+// evidence: Разбор codex-rs/utils/output-truncation и models.json Codex, 14.10.2026 (комментарий CODEX_RESPONSE_BUDGET)
 const CODEX_RESPONSE_BUDGET: usize = 46 * 1024;
 
 /// Claude Code переносит в файл текстовый ответ длиннее 50 000 символов, если
@@ -30,6 +53,17 @@ const CODEX_RESPONSE_BUDGET: usize = 46 * 1024;
 /// 24 400 токенов. Символов в нём не больше байтов, то есть меньше 100 000.
 /// Тот же замер: 80 КБ без объявления доходят до модели целиком, 92 КБ уходят
 /// в файл; с объявлением 500 000 символов целиком доходят 800 КБ.
+// resource-limit: host.claude-response-budget
+// class: result
+// unit: bytes
+// scope: request
+// value: 73728
+// resource: Бюджет текстового ответа с исходником для клиента Claude Code.
+// status: external
+// origin: #1478; MAX_MCP_OUTPUT_TOKENS 25 000 токенов Claude Code, замер 15.10.2026 на модулях УТ
+// problem: ответ сверх предела хоста уходит в файл вместо модели
+// on-reach: текст сверх бюджета отказывает result_too_large с подсказкой диапазона строк
+// evidence: Замер 15.10.2026 на трёх модулях УТ: 3,02–3,27 байта UTF-8 на токен; 80 КБ без объявления доходят целиком, 92 КБ уходят в файл (комментарий CLAUDE_RESPONSE_BUDGET)
 const CLAUDE_RESPONSE_BUDGET: usize = 72 * 1024;
 
 /// ZCode 3.14.1 (клиент 0.16.9) обрезает ответ на 50 000 байтах:
@@ -39,6 +73,17 @@ const CLAUDE_RESPONSE_BUDGET: usize = 72 * 1024;
 /// в том числе два content-блока, как у Body. 48 КиБ всего ответа оставляют
 /// 848 байт до наблюдаемого предела. Бюджет относится к существующему пути
 /// исходного текста; общие structured-ответы и страницы им не ограничены.
+// resource-limit: host.zcode-response-budget
+// class: result
+// unit: bytes
+// scope: request
+// value: 49152
+// resource: Бюджет текстового ответа с исходником для клиента ZCode.
+// status: external
+// origin: #1529, #1473; maxModelBytes=50000 у ZCode 3.14.1
+// problem: ZCode обрезает ответ на 50 000 байтах и теряет конечный маркер
+// on-reach: текст сверх бюджета отказывает result_too_large с подсказкой диапазона строк
+// evidence: Зонд 16.10.2026 в #1473: потеря конечного маркера сверх 50 000 байт, сохранность у 49 152 байт (комментарий ZCODE_RESPONSE_BUDGET)
 const ZCODE_RESPONSE_BUDGET: usize = 48 * 1024;
 
 /// Предел символов текстового ответа, который объявляют `unica.view`
@@ -48,9 +93,24 @@ const ZCODE_RESPONSE_BUDGET: usize = 48 * 1024;
 const CLAUDE_RESULT_SIZE_CHARS: u64 = 100_000;
 
 /// Наибольший бюджет среди известных хостов: больший текст не отдаётся никому.
+// resource-limit: host.max-response-budget
+// class: result
+// unit: bytes
+// scope: request
+// value: 73728
+// derived: true
+// resource: Наибольший бюджет текстового ответа среди известных хостов: верхняя граница текста исходника и явной настройки UNICA_RESPONSE_BUDGET.
+// status: external
+// origin: #1478; = CLAUDE_RESPONSE_BUDGET
+// on-reach: текст больше не отдаётся никому (result_too_large); настройка вне 1024..73728 игнорируется с сообщением в stderr
+// evidence: Выводится из бюджетов host.claude-response-budget, host.codex-response-budget, host.zcode-response-budget
+// decision: правило закрепляет принцип «наибольший бюджет среди известных хостов», а не число 72 КиБ
+// decision-date: 2026-10-21
+// decision-source: arch/rules/mcp/source-text-response-budget.md
 pub const MAX_RESPONSE_BUDGET: usize = CLAUDE_RESPONSE_BUDGET;
 
 /// Явный бюджет в байтах: настройка пользователя для любого хоста.
+// resource-limit-excluded: имя переменной окружения UNICA_RESPONSE_BUDGET, не предел
 const BUDGET_ENV: &str = "UNICA_RESPONSE_BUDGET";
 
 /// Переменные, которые хост выставляет процессу сервера своего плагина.

@@ -9,7 +9,25 @@ use unica_work_control::cancellation::CancellationToken;
 #[cfg(any(test, feature = "test-support"))]
 use unica_work_control::provider_deadline::ProviderDeadline;
 
+// resource-limit: find.page-default-entries
+// class: step
+// unit: count
+// scope: request
+// value: 20
+// resource: Число записей страницы find, когда limit не задан.
+// status: unproven
+// origin: cec3ddf7c
+// on-reach: Не срабатывает как отказ: значение по умолчанию, когда limit не передан; остаток отдаётся продолжением по cursor.
 const DEFAULT_LIMIT: usize = 20;
+// resource-limit: find.page-max-entries
+// class: step
+// unit: count
+// scope: request
+// value: 100
+// resource: Наибольшее число записей одной страницы find.
+// status: unproven
+// origin: cec3ddf7c
+// on-reach: тихо: больший limit сводится к 100 (min).
 const MAX_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

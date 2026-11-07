@@ -11,7 +11,31 @@ use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
 const POLICY_NAME: &str = ".v8-project.json";
+// resource-limit: workspace.support-policy-bytes
+// class: format
+// unit: bytes
+// scope: file
+// value: 33554432
+// resource: Размер файла политики поддержки .v8-project.json, читаемого актором.
+// status: unproven
+// origin: коммит 991a18ae8 (retain actor support policy evidence)
+// on-reach: политика сверх предела не разрешает warn/off: проверка поддержки идёт как deny
+// decision: закреплено правилом
+// decision-date: 2026-10-21
+// decision-source: arch/rules/workspace/support-policy-read-bounds.md
 const MAX_SUPPORT_POLICY_BYTES: usize = 32 * 1024 * 1024;
+// resource-limit: workspace.support-policy-read-chunk-bytes
+// class: step
+// unit: bytes
+// scope: file
+// value: 65536
+// resource: Размер одной порции чтения политики поддержки .v8-project.json между проверками отмены и срока.
+// status: unproven
+// origin: коммит f7a85752f (fix(apply): checkpoint retained policy read chunks)
+// on-reach: файл читается следующей порцией после проверки отмены и срока
+// decision: закреплено правилом INV.APP.SUPPORT-POLICY-READ-BOUNDS
+// decision-date: 2026-09-22
+// decision-source: arch/rules/workspace/support-policy-read-bounds.md
 const SUPPORT_POLICY_READ_CHUNK_BYTES: usize = 64 * 1024;
 
 #[cfg(any(test, feature = "test-support"))]
