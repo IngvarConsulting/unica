@@ -265,3 +265,42 @@ fn the_module_address_mcp_gives_a_file_with_body_is_its_document_address() {
         assert_eq!(content(&host, &editor, &uri), text(relative), "{uri}");
     }
 }
+
+/// Product admission after the source set changes on disk: a replaced root and
+/// a root moved in `v8project.yaml` each get a new actor bound to the new root,
+/// never the old one.
+#[test]
+fn product_admission_gives_a_new_actor_for_a_replaced_or_moved_root() {
+    let workspace = workspace();
+    let root = workspace.path();
+    let (_host, workspaces) = service();
+    let first = Arc::downgrade(&workspaces.admit(root, soon()).unwrap().actor);
+
+    fs::rename(root.join("src"), root.join("src.old")).unwrap();
+    fs::create_dir_all(root.join(MODULE).parent().unwrap()).unwrap();
+    fs::copy(
+        root.join("src.old/Configuration.xml"),
+        root.join("src/Configuration.xml"),
+    )
+    .unwrap();
+    fs::write(root.join(MODULE), DISK).unwrap();
+    let replaced = workspaces
+        .admit(root, soon())
+        .expect("the new root is admitted");
+    assert!(first
+        .upgrade()
+        .is_none_or(|old| !Arc::ptr_eq(&old, &replaced.actor)));
+    assert!(replaced.source_sets[0].root.ends_with("src"));
+
+    fs::rename(root.join("src"), root.join("moved")).unwrap();
+    fs::write(
+        root.join("v8project.yaml"),
+        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: moved\n",
+    )
+    .unwrap();
+    let moved = workspaces
+        .admit(root, soon())
+        .expect("the moved root is admitted");
+    assert!(!Arc::ptr_eq(&replaced.actor, &moved.actor));
+    assert!(moved.source_sets[0].root.ends_with("moved"));
+}
