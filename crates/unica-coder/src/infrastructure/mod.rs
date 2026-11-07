@@ -26,7 +26,9 @@ pub(crate) mod metadata_kinds;
 pub mod metadata_operations;
 pub mod native_operations;
 pub mod operational_config;
-pub mod platform;
+pub(crate) mod platform;
+// Модуль `platform` закрыт: крейтам выше нужны только эти имена.
+pub use platform::{current_target_id, TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_BYTES};
 pub mod platform_xml_owner;
 // This foundational provider is consumed by the public migration in the next slice.
 #[allow(dead_code)]
