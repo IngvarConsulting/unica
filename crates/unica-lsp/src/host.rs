@@ -28,8 +28,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::{Duration, Instant};
-use unica_code_intelligence::completion::{CompletionKind, CompletionMethod};
-use unica_code_intelligence::symbols::{
+use unica_code_model::completion::{CompletionKind, CompletionMethod};
+use unica_code_model::symbols::{
     Incompleteness, SymbolAnswer, SymbolInfo, SymbolLocation, SymbolPosition, SymbolRequestContext,
 };
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};

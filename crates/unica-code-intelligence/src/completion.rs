@@ -7,9 +7,12 @@
 //! [`CompletionSources`]; nothing of an analysis provider is asked.
 
 use std::collections::BTreeSet;
-use std::ops::Range;
 use unica_address::source_target::{metadata_collection_kind, metadata_collection_names};
 use unica_bsl_parser::{parse, EditorSymbol, EditorSymbolKind, ParsedModule};
+
+pub use unica_code_model::completion::{
+    Completion, CompletionItem, CompletionKind, CompletionMethod,
+};
 
 /// A method or property of the platform's global context.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,44 +55,6 @@ pub trait CompletionSources {
     fn module_owner(&self) -> Option<ModuleOwner>;
     /// The request is no longer wanted: stop and answer nothing.
     fn cancelled(&self) -> bool;
-}
-
-/// What an item is, in the editor's terms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CompletionKind {
-    Method,
-    Function,
-    Field,
-    Variable,
-    Class,
-    Module,
-    Property,
-    Struct,
-}
-
-/// A method an item names, for its description on resolve.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompletionMethod {
-    pub name: String,
-    /// The common module that exports it; `None` for this module's own.
-    pub common_module: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompletionItem {
-    pub label: String,
-    pub kind: CompletionKind,
-    /// Orders items: the closer the name, the smaller.
-    pub rank: u8,
-    pub detail: Option<String>,
-    pub method: Option<CompletionMethod>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Completion {
-    pub items: Vec<CompletionItem>,
-    /// The bytes of the text the chosen item replaces: the name typed so far.
-    pub replaces: Range<usize>,
 }
 
 /// Kinds whose managers are global context properties (`Справочники`).

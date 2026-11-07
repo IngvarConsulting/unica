@@ -6,7 +6,7 @@
 //! [`LspSymbols`], а служба LSP переводит места в адреса `unica://`
 //! пространства документа и отбрасывает те, что редактор не откроет.
 
-use unica_code_intelligence::symbols::{
+use unica_code_model::symbols::{
     Incompleteness, SymbolAnswer, SymbolInfo, SymbolLocation, SymbolPosition, SymbolRequestContext,
 };
 use unica_lsp_contract::protocol::V5LspFailure;

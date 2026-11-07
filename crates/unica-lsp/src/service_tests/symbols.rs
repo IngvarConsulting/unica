@@ -6,7 +6,7 @@ use super::*;
 use crate::{LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use unica_code_intelligence::symbols::{
+use unica_code_model::symbols::{
     Incompleteness, SymbolAnswer, SymbolInfo, SymbolKind, SymbolLocation, SymbolPosition,
     SymbolRange, SymbolRequestContext,
 };

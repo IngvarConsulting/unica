@@ -14,7 +14,7 @@ percent-encoding.workspace = true
 sha2.workspace = true
 unica-address = { path = "../unica-address" }
 unica-bsl = { path = "../unica-bsl" }
-unica-code-intelligence = { path = "../unica-code-intelligence" }
+unica-code-model = { path = "../unica-code-model" }
 unica-execution-contract = { path = "../unica-execution-contract" }
 unica-lsp-contract = { path = "../unica-lsp-contract" }
 unica-source-contract = { path = "../unica-source-contract" }

@@ -6,9 +6,7 @@ use super::*;
 use crate::{LspCompletion, LspCompletionAnswer, LspCompletionRequest};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use unica_code_intelligence::completion::{
-    Completion, CompletionItem, CompletionKind, CompletionMethod,
-};
+use unica_code_model::completion::{Completion, CompletionItem, CompletionKind, CompletionMethod};
 use unica_lsp_contract::protocol::{V5LspCompletionData, V5LspCompletionItem, V5LspCompletionKind};
 
 /// A port that offers `Сумма` and this module's `Пересчитать`, replacing

@@ -2557,11 +2557,20 @@ dependencies = [
  "unica-address",
  "unica-bsl",
  "unica-bsl-parser",
+ "unica-code-model",
  "unica-navigation",
  "unica-source-contract",
  "unica-work-control",
  "unica-workspace",
  "uuid",
+]
+
+[[package]]
+name = "unica-code-model"
+version = "0.15.0-rc.1"
+dependencies = [
+ "serde",
+ "unica-work-control",
 ]
 
 [[package]]
@@ -2885,7 +2894,7 @@ dependencies = [
  "tempfile",
  "unica-address",
  "unica-bsl",
- "unica-code-intelligence",
+ "unica-code-model",
  "unica-execution-contract",
  "unica-lsp-contract",
  "unica-source-contract",
