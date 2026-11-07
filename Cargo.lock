@@ -2901,6 +2901,7 @@ version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
+ "unica-work-control",
  "uuid",
 ]
 

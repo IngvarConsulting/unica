@@ -17,7 +17,7 @@ use unica_lsp_contract::protocol::{V5LspCompletionData, V5LspCompletionItem, V5L
 pub(super) struct ScriptedCompletion {
     platform_loading: AtomicBool,
     asked: Mutex<Vec<(String, String, usize)>>,
-    cancel_while_asked: Mutex<Option<Arc<AtomicBool>>>,
+    cancel_while_asked: Mutex<Option<unica_work_control::cancellation::CancellationToken>>,
 }
 
 impl LspCompletion for ScriptedCompletion {
@@ -27,12 +27,12 @@ impl LspCompletion for ScriptedCompletion {
         _: &unica_work_control::cancellation::CancellationToken,
     ) -> Result<LspCompletionAnswer, V5LspFailure> {
         self.asked.lock().unwrap().push((
-            request.module.to_owned(),
+            request.module.module().to_owned(),
             request.text.to_owned(),
             request.offset,
         ));
-        if let Some(signal) = self.cancel_while_asked.lock().unwrap().as_ref() {
-            signal.store(true, Ordering::Release);
+        if let Some(cancellation) = self.cancel_while_asked.lock().unwrap().as_ref() {
+            cancellation.cancel();
         }
         let typed = request.text[..request.offset]
             .rfind(|character: char| !character.is_alphanumeric())
@@ -68,11 +68,11 @@ impl LspCompletion for ScriptedCompletion {
         &self,
         _: &str,
         _: &str,
-        module: &str,
+        module: &crate::ModuleDocument,
         method: &CompletionMethod,
         _: &unica_work_control::cancellation::CancellationToken,
     ) -> Option<String> {
-        (module == "main:CommonModule.Main" && method.name == "Пересчитать")
+        (module.module() == "main:CommonModule.Main" && method.name == "Пересчитать")
             .then(|| "Пересчитывает строки.".to_owned())
     }
 }
@@ -201,8 +201,8 @@ fn a_cancelled_completion_gives_no_list() {
     let workspace = workspace();
     let (host, workspaces) = service();
     let session = open(&host, workspace.path(), "Work");
-    let cancelled = Arc::new(AtomicBool::new(false));
-    *workspaces.completion.cancel_while_asked.lock().unwrap() = Some(Arc::clone(&cancelled));
+    let cancellation = unica_work_control::cancellation::CancellationToken::new();
+    *workspaces.completion.cancel_while_asked.lock().unwrap() = Some(cancellation.clone());
 
     let outcome = host.call(
         &session,
@@ -213,7 +213,7 @@ fn a_cancelled_completion_gives_no_list() {
                 character: 0,
             },
         },
-        &LspCallContext::new(cancelled, soon()),
+        &LspCallContext::new(cancellation, soon()),
     );
 
     assert_eq!(outcome, V5LspOutcome::Cancelled {});

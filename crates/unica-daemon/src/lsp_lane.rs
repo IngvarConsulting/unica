@@ -8,7 +8,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::Instant;
@@ -17,6 +16,7 @@ use unica_lsp_contract::protocol::{
     V5LspCall, V5LspFailure, V5LspNotification, V5LspOpening, V5LspOutcome,
     V5LspServerNotification, V5LspSessionId, V5LspWorkspaceFolder,
 };
+use unica_work_control::cancellation::CancellationToken;
 
 /// Исполнителей LSP. Узкая полоса оставляет процессор вызовам MCP.
 // resource-limit: lsp.lane-workers
@@ -78,7 +78,7 @@ struct LaneState {
 
 struct SessionEntry {
     inbox: LspClientInbox,
-    in_flight: HashMap<u64, Arc<AtomicBool>>,
+    in_flight: HashMap<u64, CancellationToken>,
     /// Oldest first: when full, the oldest early cancellation is forgotten.
     cancelled_early: VecDeque<u64>,
 }
@@ -86,7 +86,7 @@ struct SessionEntry {
 struct Job {
     session: V5LspSessionId,
     call: V5LspCall,
-    cancelled: Arc<AtomicBool>,
+    cancellation: CancellationToken,
     deadline: Instant,
     reply: mpsc::SyncSender<V5LspOutcome>,
 }
@@ -170,7 +170,7 @@ impl LspLane {
         call: V5LspCall,
         deadline: Instant,
     ) -> V5LspOutcome {
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancellation = CancellationToken::new();
         let (reply, answer) = mpsc::sync_channel(1);
         {
             let mut state = match self.state() {
@@ -195,11 +195,11 @@ impl LspLane {
             if queue_full {
                 return failed(V5LspFailure::Busy);
             }
-            entry.in_flight.insert(request, Arc::clone(&cancelled));
+            entry.in_flight.insert(request, cancellation.clone());
             state.jobs.push_back(Job {
                 session: session.clone(),
                 call,
-                cancelled: Arc::clone(&cancelled),
+                cancellation: cancellation.clone(),
                 deadline,
                 reply,
             });
@@ -209,7 +209,7 @@ impl LspLane {
         {
             Ok(outcome) => outcome,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                cancelled.store(true, Ordering::Release);
+                cancellation.cancel();
                 failed(V5LspFailure::DeadlineExceeded)
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => failed(V5LspFailure::Unavailable),
@@ -222,7 +222,7 @@ impl LspLane {
         match outcome {
             V5LspOutcome::Failed { .. } => outcome,
             // A cancellation that won the race with the answer still withholds it.
-            _ if cancelled.load(Ordering::Acquire) => V5LspOutcome::Cancelled {},
+            _ if cancellation.is_cancelled() => V5LspOutcome::Cancelled {},
             // Nobody cancelled it: the host stopped because the deadline passed.
             V5LspOutcome::Cancelled {} => failed(V5LspFailure::DeadlineExceeded),
             answer => answer,
@@ -237,7 +237,7 @@ impl LspLane {
             .get_mut(session)
             .ok_or(V5LspFailure::SessionUnknown)?;
         match entry.in_flight.get(&request) {
-            Some(cancelled) => cancelled.store(true, Ordering::Release),
+            Some(cancellation) => cancellation.cancel(),
             None => {
                 if entry.cancelled_early.len() >= MAX_EARLY_CANCELLATIONS {
                     entry.cancelled_early.pop_front();
@@ -271,8 +271,8 @@ impl LspLane {
         let Some(entry) = entry else {
             return;
         };
-        for cancelled in entry.in_flight.values() {
-            cancelled.store(true, Ordering::Release);
+        for cancellation in entry.in_flight.values() {
+            cancellation.cancel();
         }
         entry.inbox.close();
         let _ = guarded(|| self.shared.host.close(session));
@@ -324,7 +324,7 @@ fn run_worker(shared: &Shared) {
                 };
             }
         };
-        let context = LspCallContext::new(job.cancelled, job.deadline);
+        let context = LspCallContext::new(job.cancellation, job.deadline);
         let outcome = if context.is_cancelled() {
             V5LspOutcome::Cancelled {}
         } else {

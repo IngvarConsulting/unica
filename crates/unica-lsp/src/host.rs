@@ -16,6 +16,7 @@ use crate::diagnostics::{
 use crate::document::ContentChange;
 use crate::documents::ModuleSourceRead;
 use crate::documents::{LspDocumentError, LspDocuments, SourceSetLayout, SpaceLayout};
+use crate::module_document::ModuleDocument;
 use crate::position::{LineIndex, Utf16Position};
 use crate::symbols::{
     reason_code, LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols,
@@ -41,7 +42,6 @@ use unica_lsp_contract::protocol::{
 use unica_lsp_contract::protocol::{
     V5LspCompletionData, V5LspCompletionItem, V5LspCompletionKind, V5LspTextEdit,
 };
-use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::actor::WorkspaceActor;
 use unica_workspace::documents::{DocumentOverlay, DocumentOverlayError, DocumentText};
@@ -262,11 +262,11 @@ impl LspHost for UnicaLspHost {
                 // Nobody in this session asks about the module any more.
                 if let (Some(space), Some(module)) = (
                     session.spaces.get(&location.document.space),
-                    location.document.address.strip_suffix(BODY),
+                    location.document.module(),
                 ) {
                     self.analysis.forget(
                         &session_waiter(session.documents.session()),
-                        Some((&space.folder.display().to_string(), module)),
+                        Some((&space.folder.display().to_string(), module.module())),
                     );
                 }
                 return Ok(());
@@ -462,15 +462,11 @@ fn symbol_operation(call: &V5LspCall) -> Option<LspSymbolOperation> {
     }
 }
 
-/// A document is the body of a module: its address is the module's with
-/// this segment after it.
-const BODY: &str = ".Body";
-
 /// What a symbol call takes from the session, under its lock.
 struct SymbolCall {
     space: String,
     source_set: String,
-    module: String,
+    module: ModuleDocument,
     buffer: Option<String>,
     symbols: Arc<dyn LspSymbols>,
     client: LspClientChannel,
@@ -492,10 +488,8 @@ fn symbol_call(session: &Session, uri: &str) -> Result<SymbolCall, V5LspFailure>
     // The symbol service names modules, not their bodies.
     let module = location
         .document
-        .address
-        .strip_suffix(BODY)
-        .ok_or(V5LspFailure::DocumentUnknown)?
-        .to_owned();
+        .module()
+        .ok_or(V5LspFailure::DocumentUnknown)?;
     Ok(SymbolCall {
         symbols: Arc::clone(&space.symbols),
         client: session.client.clone(),
@@ -525,7 +519,7 @@ fn symbol_answer(
         | V5LspCall::CompletionResolve { .. } => return Err(V5LspFailure::NotSupported),
     };
     let asked = symbol_call(&read(session), uri)?;
-    let cancellation = CancellationToken::observing(context.cancellation_signal());
+    let cancellation = context.cancellation();
     let answer = asked.symbols.ask(
         LspSymbolRequest {
             source_set: &asked.source_set,
@@ -539,7 +533,7 @@ fn symbol_answer(
         },
         &SymbolRequestContext {
             deadline: ProviderDeadline::new(context.deadline()),
-            cancellation: &cancellation,
+            cancellation,
         },
     );
     // A read stopped by the request's own cancellation is a cancellation,
@@ -600,7 +594,7 @@ fn symbol_answer(
 struct DiagnosticCall {
     folder: PathBuf,
     source_set: String,
-    module: String,
+    module: ModuleDocument,
     buffer: Option<String>,
     /// The saved files of the set and the module's file in them, read after
     /// the session's lock is let go.
@@ -628,10 +622,8 @@ fn diagnostic_call(session: &Session, uri: &str) -> Result<DiagnosticCall, V5Lsp
         .map(|document| document.text().to_owned());
     let module = location
         .document
-        .address
-        .strip_suffix(BODY)
-        .ok_or(V5LspFailure::DocumentUnknown)?
-        .to_owned();
+        .module()
+        .ok_or(V5LspFailure::DocumentUnknown)?;
     let read = space.reads.saved(&location.source_set)?;
     let target = session
         .documents
@@ -711,7 +703,7 @@ const ANALYSIS_ANSWER_RESERVE: Duration = Duration::from_millis(250);
 /// The request was cancelled by its editor, as opposed to running out of
 /// time: an answer is still owed until the deadline.
 fn cancelled(context: &LspCallContext) -> bool {
-    context.cancellation_signal().load(Ordering::Acquire)
+    context.cancellation().is_cancelled()
 }
 
 /// The analysis of the saved text, waited for until shortly before the
@@ -725,7 +717,11 @@ fn analysis_within(
 ) -> Option<LspAnalysis> {
     static REQUESTS: AtomicU64 = AtomicU64::new(0);
     let waiter = format!("request-{}", REQUESTS.fetch_add(1, Ordering::Relaxed));
-    let key = AnalysisKey::new(asked.folder.display().to_string(), &asked.module, saved);
+    let key = AnalysisKey::new(
+        asked.folder.display().to_string(),
+        asked.module.module(),
+        saved,
+    );
     let (ready, finished) = mpsc::channel::<()>();
     let ready = Mutex::new(ready);
     let ready: crate::diagnostics::AnalysisWaiter = Arc::new(move || {
@@ -779,7 +775,7 @@ fn analysis_within(
 struct CompletionCall {
     session: String,
     source_set: String,
-    module: String,
+    module: ModuleDocument,
     text: String,
     completion: Arc<dyn LspCompletion>,
 }
@@ -795,10 +791,8 @@ fn completion_call(session: &Session, uri: &str) -> Result<CompletionCall, V5Lsp
         .ok_or(V5LspFailure::DocumentUnknown)?;
     let module = location
         .document
-        .address
-        .strip_suffix(BODY)
-        .ok_or(V5LspFailure::DocumentUnknown)?
-        .to_owned();
+        .module()
+        .ok_or(V5LspFailure::DocumentUnknown)?;
     Ok(CompletionCall {
         text: document_text(session, uri)?,
         session: session.documents.session().to_owned(),
@@ -828,7 +822,6 @@ fn completion_answer(
             },
         )
         .map_err(|_| V5LspFailure::DocumentUnknown)?;
-    let cancellation = CancellationToken::observing(context.cancellation_signal());
     let answer = asked.completion.complete(
         LspCompletionRequest {
             session: &asked.session,
@@ -837,7 +830,7 @@ fn completion_answer(
             text: &asked.text,
             offset,
         },
-        &cancellation,
+        context.cancellation(),
     )?;
     if cancelled(context) {
         return Ok(V5LspOutcome::Cancelled {});
@@ -913,7 +906,7 @@ fn resolve_item(
         };
         let (Some(space), Some(module)) = (
             session.spaces.get(&location.document.space),
-            location.document.address.strip_suffix(BODY),
+            location.document.module(),
         ) else {
             return item;
         };
@@ -921,7 +914,7 @@ fn resolve_item(
             Arc::clone(&space.completion),
             session.documents.session().to_owned(),
             location.source_set,
-            module.to_owned(),
+            module,
         )
     };
     let (completion, session, source_set, module) = asked;
@@ -929,9 +922,13 @@ fn resolve_item(
         name: data.method.clone(),
         common_module: data.common_module.clone(),
     };
-    let cancellation = CancellationToken::observing(context.cancellation_signal());
-    item.documentation =
-        completion.describe(&session, &source_set, &module, &method, &cancellation);
+    item.documentation = completion.describe(
+        &session,
+        &source_set,
+        &module,
+        &method,
+        context.cancellation(),
+    );
     item
 }
 
@@ -958,7 +955,7 @@ fn lsp_location(session: &Session, space: &str, place: &SymbolLocation) -> Optio
         .spaces()
         .format(&DocumentUri {
             space: space.to_owned(),
-            address: format!("{}{BODY}", place.at),
+            address: ModuleDocument::of_module(place.at.as_str()).document(),
         })
         .ok()?;
     session.documents.locate(&uri).ok()?;

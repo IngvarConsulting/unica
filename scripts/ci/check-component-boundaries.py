@@ -134,7 +134,9 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
         allowed = ABSTRACTIONS | frozenset({"execution", "workspace", "process", "bootstrap", "artifact-delivery", "lsp-contract"})
         if target not in allowed:
             reasons.append("daemon owns transport and identity without product dispatch or family backends")
-    if name == "lsp-contract" and dependency.startswith("unica-"):
+    if name == "lsp-contract" and dependency.startswith("unica-") and target != "work-control":
+        # The request's cancellation token is the one the transport cancels
+        # and the service's work watches; nothing else is shared.
         reasons.append("the LSP contract is a leaf shared by the transport and the service")
     if name == "lsp" and dependency.startswith("unica-"):
         # `code-intelligence` gives the symbol answers the service turns into
