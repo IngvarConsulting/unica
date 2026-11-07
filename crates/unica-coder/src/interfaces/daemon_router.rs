@@ -2725,6 +2725,18 @@ mod medium_tests {
         fn release(&self) {
             self.released.store(true, Ordering::SeqCst);
         }
+
+        /// A known-long call answers with its Task before the execution
+        /// thread enters `execute`, so the count is awaited, not read once.
+        fn assert_executions_started(&self, expected: usize) {
+            let started = Instant::now();
+            while self.executions.load(Ordering::SeqCst) < expected
+                && started.elapsed() < Duration::from_secs(10)
+            {
+                thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(self.executions.load(Ordering::SeqCst), expected);
+        }
     }
 
     impl crate::infrastructure::daemon::server::CanonicalInvocationService for GatedService {
@@ -2936,7 +2948,7 @@ mod medium_tests {
         let leader = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
         let joined = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
         assert_ne!(joined.task_id(), leader.task_id());
-        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+        service.assert_executions_started(1);
         let different = task_of(call_tool(&router, V5ToolIdentity::Search, &other));
         let first_apply = task_of(call_tool(&router, V5ToolIdentity::Apply, &edit));
         let second_apply = task_of(call_tool(&router, V5ToolIdentity::Apply, &edit));
@@ -2977,7 +2989,7 @@ mod medium_tests {
         let leader = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
         let first = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
         let second = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
-        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+        service.assert_executions_started(1);
 
         // One joined holder and then the leader's own holder let go: each sees
         // its own cancellation, the work goes on for the remaining holder.
@@ -3079,7 +3091,7 @@ mod medium_tests {
             let same = json!({"query": "Товары"}).as_object().unwrap().clone();
             let leader = task_of(call_tool(router, V5ToolIdentity::Search, &same));
             let joined = task_of(call_tool(router, V5ToolIdentity::Search, &same));
-            assert_eq!(fixture.service.executions.load(Ordering::SeqCst), 1);
+            fixture.service.assert_executions_started(1);
             let (leaving, remaining) = if cancel_leader {
                 (&leader, &joined)
             } else {
@@ -3136,7 +3148,7 @@ mod medium_tests {
             let same = json!({"query": "Товары"}).as_object().unwrap().clone();
             let leader = task_of(call_tool(router, V5ToolIdentity::Search, &same));
             let joined = task_of(call_tool(router, V5ToolIdentity::Search, &same));
-            assert_eq!(fixture.service.executions.load(Ordering::SeqCst), 1);
+            fixture.service.assert_executions_started(1);
             fixture.service.release();
             let (leaving, remaining) = if cancel_leader {
                 (&leader, &joined)
@@ -3235,7 +3247,7 @@ mod medium_tests {
         let applied = task_of(call_tool(&router, V5ToolIdentity::Apply, &edit));
         wait_terminal(&router, applied.task_id());
         let later = task_of(call_tool(&router, V5ToolIdentity::Search, &same));
-        assert_eq!(service.executions.load(Ordering::SeqCst), 3);
+        service.assert_executions_started(3);
 
         // The exact repeat answers from its own receipt, never as a holder of
         // the later read: cancelling it still cancels its own work.
@@ -3296,7 +3308,7 @@ mod medium_tests {
         let leader = task_of(call_tool(&router, V5ToolIdentity::Search, &check));
         // Nothing changed: the identical check joins the running walk.
         let joined = task_of(call_tool(&router, V5ToolIdentity::Search, &check));
-        assert_eq!(service.executions.load(Ordering::SeqCst), 1);
+        service.assert_executions_started(1);
 
         // The agent edits a module directly, not through Unica.
         std::fs::write(
