@@ -566,9 +566,15 @@ struct DiagnosticCall {
     source_set: String,
     module: String,
     buffer: Option<String>,
-    /// The saved module; `None` when it has no file.
-    saved: Option<String>,
+    /// The saved files of the set and the module's file in them, read after
+    /// the session's lock is let go.
+    saved: (
+        Box<dyn ModuleSourceRead>,
+        unica_address::source_target::MetadataAddress,
+    ),
     diagnostics: Arc<dyn LspDiagnostics>,
+    session: String,
+    client: LspClientChannel,
 }
 
 fn diagnostic_call(session: &Session, uri: &str) -> Result<DiagnosticCall, V5LspFailure> {
@@ -591,16 +597,14 @@ fn diagnostic_call(session: &Session, uri: &str) -> Result<DiagnosticCall, V5Lsp
         .ok_or(V5LspFailure::DocumentUnknown)?
         .to_owned();
     let read = space.reads.saved(&location.source_set)?;
-    let saved = session
+    let target = session
         .documents
-        .saved_content(uri, read.as_ref())
-        .map_err(|error| match error {
-            LspDocumentError::Read(_) | LspDocumentError::Overlay(_) => V5LspFailure::Unavailable,
-            _ => V5LspFailure::DocumentUnknown,
-        })?
-        .map(|text| text.trim_start_matches('\u{feff}').to_owned());
+        .saved_target(uri, read.as_ref())
+        .map_err(|_| V5LspFailure::DocumentUnknown)?;
     Ok(DiagnosticCall {
-        saved,
+        saved: (read, target),
+        session: session.documents.session().to_owned(),
+        client: session.client.clone(),
         folder: space.folder.clone(),
         source_set: location.source_set,
         diagnostics: Arc::clone(&space.diagnostics),
@@ -620,7 +624,11 @@ fn diagnostic_answer(
     context: &LspCallContext,
 ) -> Result<V5LspOutcome, V5LspFailure> {
     let asked = diagnostic_call(&read(session), uri)?;
-    let saved = asked.saved.clone();
+    let (read, target) = &asked.saved;
+    let saved = read
+        .module_source(target)
+        .map_err(|_| V5LspFailure::Unavailable)?
+        .map(|text| text.trim_start_matches('\u{feff}').to_owned());
     let text = asked
         .buffer
         .clone()
@@ -687,17 +695,30 @@ fn analysis_within(
     let ready: crate::diagnostics::AnalysisWaiter = Arc::new(move || {
         let _ = lock(&ready).send(());
     });
+    // The session hears of the analysis too, after this request is gone: its
+    // editor is offered to ask again.
+    let client = asked.client.clone();
+    let refresh: crate::diagnostics::AnalysisWaiter = Arc::new(move || {
+        let _ = client.push(V5LspServerNotification::DiagnosticsRefresh {});
+    });
     loop {
         let port = Arc::clone(&asked.diagnostics);
         let (set, module) = (asked.source_set.clone(), asked.module.clone());
+        let text = saved.to_owned();
         if let Some(done) = analysis.findings(
             key.clone(),
             &waiter,
-            move |cancellation| port.analyse(&set, &module, cancellation),
+            move |cancellation| port.analyse(&set, &module, &text, cancellation),
             Arc::clone(&ready),
         ) {
             return Some(done);
         }
+        let _ = analysis.findings(
+            key.clone(),
+            &format!("session-{}", asked.session),
+            |_| LspAnalysis::default(),
+            Arc::clone(&refresh),
+        );
         let until = context
             .deadline()
             .checked_sub(ANALYSIS_ANSWER_RESERVE)

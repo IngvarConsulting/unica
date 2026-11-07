@@ -48,7 +48,7 @@ impl LspDiagnostics for ScriptedDiagnostics {
             .collect()
     }
 
-    fn analyse(&self, _: &str, module: &str, _: &CancellationToken) -> LspAnalysis {
+    fn analyse(&self, _: &str, module: &str, _: &str, _: &CancellationToken) -> LspAnalysis {
         self.runs.fetch_add(1, Ordering::SeqCst);
         self.analysed.lock().unwrap().push(module.to_owned());
         let gate = self.gate.lock().unwrap().take();
@@ -208,4 +208,39 @@ fn a_request_cancelled_while_it_waits_for_the_analysis_gives_no_report() {
     canceller.join().unwrap();
     release.send(()).unwrap();
     assert_eq!(outcome, V5LspOutcome::Cancelled {});
+}
+
+/// rule: INV.LSP.PARTIAL-ANSWERS
+#[test]
+fn the_session_is_told_when_the_analysis_it_lacked_is_ready() {
+    let workspace = workspace();
+    let (host, workspaces) = service();
+    *workspaces.diagnostics.answer.lock().unwrap() = analysis_finding();
+    let release = workspaces.diagnostics.hold();
+    let session = V5LspSessionId::new();
+    let (client, inbox) = LspClientChannel::pair();
+    host.open(
+        &session,
+        &[folder(workspace.path(), "Work")],
+        client,
+        soon(),
+    )
+    .unwrap();
+
+    let early = items(diagnostic(
+        &host,
+        &session,
+        &LspCallContext::for_test(Instant::now() + Duration::from_millis(100)),
+    ));
+    assert_eq!(codes(&early), ["unica.diagnostics_incomplete"]);
+    assert!(inbox
+        .take_before(Instant::now() + Duration::from_millis(50))
+        .unwrap()
+        .is_empty());
+
+    release.send(()).unwrap();
+    assert_eq!(
+        inbox.take_before(soon()).unwrap(),
+        [unica_lsp_contract::protocol::V5LspServerNotification::DiagnosticsRefresh {}]
+    );
 }

@@ -245,13 +245,13 @@ impl LspDocuments {
         read.module_source(&target).map_err(LspDocumentError::Read)
     }
 
-    /// The saved module of a document, whatever buffer this connection has
-    /// open: `read` must not see the connection's buffers.
-    pub(crate) fn saved_content(
+    /// The module file of a document in `read`, a read of the saved files of
+    /// its source set; the caller reads it, whatever buffer is open.
+    pub(crate) fn saved_target(
         &self,
         uri: &str,
         read: &dyn ModuleSourceRead,
-    ) -> Result<Option<String>, LspDocumentError> {
+    ) -> Result<MetadataAddress, LspDocumentError> {
         let location = self.locate(uri)?;
         let layout = self.source_set(&location.document.space, &location.source_set)?;
         if read.source_set() != location.source_set
@@ -260,8 +260,7 @@ impl LspDocuments {
             return Err(LspDocumentError::UnknownSourceSet(location.source_set));
         }
         let at = module_of_body(&location.document)?;
-        let target = module_target(&at, layout).ok_or(LspDocumentError::NotAModule)?;
-        read.module_source(&target).map_err(LspDocumentError::Read)
+        module_target(&at, layout).ok_or(LspDocumentError::NotAModule)
     }
 
     /// The `unica://` URIs to refresh after `apply` published `relatives`

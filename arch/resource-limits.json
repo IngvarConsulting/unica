@@ -6872,6 +6872,30 @@
       "evidence": [],
       "decision": null,
       "review": null
+    },
+    {
+      "id": "lsp.editor-analysis-retention",
+      "class": "retention",
+      "resource": "Время, которое полный анализ кода отвечает за свой сохранённый текст.",
+      "unit": "ms",
+      "scope": "daemon",
+      "source": {
+        "file": "crates/unica-lsp/src/diagnostics.rs",
+        "symbol": "EDITOR_ANALYSIS_RETENTION"
+      },
+      "expr": "Duration::from_secs(60)",
+      "value": 60000,
+      "applied": [
+        "crates/unica-lsp/src/diagnostics.rs"
+      ],
+      "status": "unproven",
+      "origin": "#2578",
+      "problem": null,
+      "onReach": "следующий запрос о тексте запускает анализ заново: находки модуля зависят и от других модулей",
+      "issue": "#2578",
+      "evidence": [],
+      "decision": null,
+      "review": null
     }
   ],
   "excluded": [

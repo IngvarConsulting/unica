@@ -240,10 +240,10 @@ fn a_newer_saved_text_cancels_the_older_and_takes_its_waiters() {
 }
 
 /// An unfinished analysis calls its waiters back once more after the retry
-/// delay, and the next request runs it again; an absent analyzer is not
-/// retried.
+/// delay, and the next request runs it again; so does one whose analyzer is
+/// absent, since `check` may deliver it meanwhile.
 #[test]
-fn an_unfinished_analysis_is_retried_and_an_absent_one_is_not() {
+fn an_unfinished_or_absent_analysis_is_retried() {
     let analysis = Arc::new(EditorAnalysis::with_retry_delay(Duration::from_millis(50)));
     let (ready, called) = signal();
     let not_ready = || LspAnalysis {
@@ -281,9 +281,27 @@ fn an_unfinished_analysis_is_retried_and_an_absent_one_is_not() {
         absent_ready,
     );
     absent_called.recv_timeout(WAIT).unwrap();
-    assert!(absent_called
-        .recv_timeout(Duration::from_millis(300))
-        .is_err());
+    absent_called.recv_timeout(WAIT).unwrap();
+}
+
+/// A complete analysis answers for its text only for a while: the module's
+/// findings depend on other modules too.
+#[test]
+fn a_complete_analysis_is_asked_again_after_its_retention() {
+    let analysis = Arc::new(EditorAnalysis::with_retention(Duration::from_millis(50)));
+    let (ready, called) = signal();
+    analysis.findings(key("saved"), "editor", |_| complete(), ready);
+    called.recv_timeout(WAIT).unwrap();
+    assert!(analysis
+        .findings(key("saved"), "editor", |_| unreachable!("kept"), never())
+        .is_some());
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        analysis
+            .findings(key("saved"), "editor", |_| complete(), never())
+            .is_none(),
+        "past its retention the text is analysed again"
+    );
 }
 
 /// An analysis that panics is an unavailable one and frees its turn.

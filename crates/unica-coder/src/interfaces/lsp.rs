@@ -320,12 +320,17 @@ impl Frontend {
             }
         };
         let poll_stop = Arc::new(AtomicBool::new(false));
+        let refresh = params
+            .pointer("/capabilities/workspace/diagnostics/refreshSupport")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         spawn_poller(
             Arc::clone(&self.client),
             session.clone(),
             Arc::clone(&self.output),
             Arc::clone(&poll_stop),
             Arc::clone(&self.session_lost),
+            refresh,
         );
         self.phase = Phase::Running(Box::new(Session {
             id: session,
@@ -562,6 +567,7 @@ fn spawn_poller(
     output: Output,
     stop: Arc<AtomicBool>,
     session_lost: SessionLost,
+    refresh: bool,
 ) {
     let _ = thread::Builder::new()
         .name("unica-lsp-notifications".into())
@@ -588,7 +594,9 @@ fn spawn_poller(
                     Ok(items) => {
                         failures = 0;
                         for item in items {
-                            write(&output, &server_notification_json(item));
+                            if let Some(message) = server_notification_json(item, refresh) {
+                                write(&output, &message);
+                            }
                         }
                     }
                     // The daemon answered: this session is gone there.
@@ -685,7 +693,8 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
     if capabilities.diagnostics {
         result.insert(
             "diagnosticProvider".into(),
-            json!({"interFileDependencies": false, "workspaceDiagnostics": false}),
+            // A module's findings depend on other modules and the metadata.
+            json!({"interFileDependencies": true, "workspaceDiagnostics": false}),
         );
     }
     if capabilities.text_document_content {
@@ -729,8 +738,23 @@ fn diagnostic_json(item: &V5LspDiagnostic) -> Value {
     })
 }
 
-fn server_notification_json(notification: V5LspServerNotification) -> Value {
-    match notification {
+/// A notification of the daemon as the editor's message. A diagnostics
+/// refresh is a server request the editor answers; a client that declared no
+/// refresh support asks for findings again by itself, on its own events.
+fn server_notification_json(notification: V5LspServerNotification, refresh: bool) -> Option<Value> {
+    static REFRESHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    Some(match notification {
+        V5LspServerNotification::DiagnosticsRefresh {} => {
+            if !refresh {
+                return None;
+            }
+            let id = REFRESHES.fetch_add(1, Ordering::Relaxed);
+            json!({
+                "jsonrpc": "2.0",
+                "id": format!("unica-refresh-{id}"),
+                "method": "workspace/diagnostic/refresh",
+            })
+        }
         V5LspServerNotification::LogMessage { level, message } => {
             let kind = match level {
                 V5LspMessageLevel::Error => 1,
@@ -743,7 +767,7 @@ fn server_notification_json(notification: V5LspServerNotification) -> Value {
                 "params": {"type": kind, "message": message},
             })
         }
-    }
+    })
 }
 
 fn workspace_folders(params: &Value) -> Vec<V5LspWorkspaceFolder> {

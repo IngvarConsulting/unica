@@ -215,6 +215,7 @@ pub struct V5LspCapabilities {
     #[serde(default, skip_serializing_if = "is_false")]
     pub references: bool,
     /// `textDocument/diagnostic` по запросу редактора.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub diagnostics: bool,
     /// `workspace/textDocumentContent` для адресов `unica://`.
     pub text_document_content: bool,
@@ -390,6 +391,9 @@ pub enum V5LspServerNotification {
         level: V5LspMessageLevel,
         message: String,
     },
+    /// Источник находок стал готов или его стоит спросить заново: редактору
+    /// предлагают запросить находки открытых документов.
+    DiagnosticsRefresh {},
 }
 
 impl V5LspServerNotification {
@@ -398,7 +402,7 @@ impl V5LspServerNotification {
             Self::LogMessage { message, .. } if message.len() > MAX_LSP_LOG_MESSAGE_BYTES => {
                 Err("v5 lsp log message exceeds its limit".to_string())
             }
-            Self::LogMessage { .. } => Ok(()),
+            Self::LogMessage { .. } | Self::DiagnosticsRefresh {} => Ok(()),
         }
     }
 }

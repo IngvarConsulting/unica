@@ -91,12 +91,15 @@ pub struct LspAnalysis {
 pub trait LspDiagnostics: Send + Sync {
     /// Собственные проверки Unica над текстом.
     fn own_findings(&self, text: &str) -> Vec<LspFinding>;
-    /// Анализ кода сохранённого модуля. Отказ поставщика — пробел, а не
-    /// ошибка: ответ называет, чего в нём нет.
+    /// Анализ кода сохранённого модуля, текст которого `saved`. Отказ
+    /// поставщика — пробел, а не ошибка: ответ называет, чего в нём нет.
+    /// Файл, изменившийся за время анализа, — тоже пробел: находки стоят
+    /// на строках другого текста.
     fn analyse(
         &self,
         source_set: &str,
         module: &str,
+        saved: &str,
         cancellation: &CancellationToken,
     ) -> LspAnalysis;
 }
@@ -116,6 +119,10 @@ const MAX_CONCURRENT_EDITOR_ANALYSES: usize = 2;
 /// Сколько неполный анализ отвечает за свой текст, прежде чем его спросят
 /// заново.
 const EDITOR_ANALYSIS_RETRY_DELAY: Duration = Duration::from_secs(30);
+/// Сколько полный анализ отвечает за свой текст. Находки модуля зависят и
+/// от других модулей и метаданных, поэтому и полный ответ со временем
+/// спрашивают заново.
+const EDITOR_ANALYSIS_RETENTION: Duration = Duration::from_secs(60);
 
 /// Ответ о документе: находки текста, который видит соединение, и пробелы.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -238,6 +245,7 @@ type Job = Box<dyn FnOnce(&CancellationToken) -> LspAnalysis + Send>;
 pub(crate) struct EditorAnalysis {
     entries: Mutex<EditorAnalysisEntries>,
     retry_delay: Duration,
+    retention: Duration,
 }
 
 impl Default for EditorAnalysis {
@@ -245,6 +253,7 @@ impl Default for EditorAnalysis {
         Self {
             entries: Mutex::default(),
             retry_delay: EDITOR_ANALYSIS_RETRY_DELAY,
+            retention: EDITOR_ANALYSIS_RETENTION,
         }
     }
 }
@@ -266,10 +275,10 @@ enum AnalysisSlot {
         waiters: BTreeMap<String, AnalysisWaiter>,
         cancellation: CancellationToken,
     },
-    /// Ответ и для неполного — момент, после которого его спросят заново.
+    /// Ответ и момент, после которого о тексте спросят заново.
     Done {
         analysis: LspAnalysis,
-        retry_after: Option<Instant>,
+        retry_after: Instant,
     },
 }
 
@@ -277,8 +286,16 @@ impl EditorAnalysis {
     #[cfg(test)]
     pub(crate) fn with_retry_delay(retry_delay: Duration) -> Self {
         Self {
-            entries: Mutex::default(),
             retry_delay,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_retention(retention: Duration) -> Self {
+        Self {
+            retention,
+            ..Self::default()
         }
     }
 
@@ -297,9 +314,7 @@ impl EditorAnalysis {
             Some(AnalysisSlot::Done {
                 analysis,
                 retry_after,
-            }) if retry_after.is_none_or(|retry| Instant::now() < retry) => {
-                return Some(analysis.clone())
-            }
+            }) if Instant::now() < *retry_after => return Some(analysis.clone()),
             Some(AnalysisSlot::Pending { waiters, .. }) => {
                 waiters.insert(waiter.to_owned(), ready);
                 return None;
@@ -382,12 +397,9 @@ impl EditorAnalysis {
             findings: Vec::new(),
             gaps: vec![LspDiagnosticGap::AnalysisUnavailable],
         });
-        // Пробел, который анализатор может закрыть сам, спрашивают заново
-        // через время; отсутствующий анализатор для этого текста не появится.
-        let retry = done
-            .gaps
-            .iter()
-            .any(|gap| *gap != LspDiagnosticGap::AnalysisAbsent);
+        // Неполный ответ спрашивают заново через время: анализ может
+        // закончиться, а анализатор — появиться, когда его доставит `check`.
+        let retry = !done.gaps.is_empty();
         let waiters = {
             let mut entries = self.lock();
             entries.running -= 1;
@@ -400,7 +412,12 @@ impl EditorAnalysis {
                         key,
                         AnalysisSlot::Done {
                             analysis: done,
-                            retry_after: retry.then(|| Instant::now() + self.retry_delay),
+                            retry_after: Instant::now()
+                                + if retry {
+                                    self.retry_delay
+                                } else {
+                                    self.retention
+                                },
                         },
                     ) else {
                         unreachable!("the slot was pending");

@@ -178,6 +178,7 @@ impl LspDiagnostics for ProductDiagnostics {
         &self,
         source_set: &str,
         module: &str,
+        saved: &str,
         cancellation: &CancellationToken,
     ) -> LspAnalysis {
         let unavailable = || LspAnalysis {
@@ -187,26 +188,42 @@ impl LspDiagnostics for ProductDiagnostics {
         let Ok((actor, binding, artifacts)) = self.space.bound(source_set) else {
             return unavailable();
         };
-        let (Some(profile), Ok(module)) = (
+        let (Some(profile), Ok(body), Ok(module)) = (
             bsl_profile_for_source(binding.source_profile()),
             QualifiedAddress::parse(&format!("{module}.Body")),
+            QualifiedAddress::parse(module),
         ) else {
             return unavailable();
         };
-        let authority = LogicalViewReadAuthority::with_read_authority_and_registration_cache(
-            cancellation,
-            self.space.saved_read(binding),
-            profile,
-            ProviderDeadline::no_deadline(),
-            artifacts,
-        );
-        super::lsp_diagnostics::analyse(
+        let authority = |artifacts| {
+            LogicalViewReadAuthority::with_read_authority_and_registration_cache(
+                cancellation,
+                self.space.saved_read(binding),
+                profile,
+                ProviderDeadline::no_deadline(),
+                artifacts,
+            )
+        };
+        let analysed = super::lsp_diagnostics::analyse(
             self.registry.as_ref(),
-            &authority,
+            &authority(Arc::clone(&artifacts)),
             actor.context(),
-            &module,
+            &body,
             cancellation,
-        )
+        );
+        // The analyzer reads the file when it runs: findings of a file saved
+        // anew meanwhile stand on another text's lines.
+        let unchanged = authority(artifacts)
+            .module_text(&module)
+            .is_ok_and(|text| text.trim_start_matches('\u{feff}') == saved);
+        if unchanged {
+            analysed
+        } else {
+            LspAnalysis {
+                findings: Vec::new(),
+                gaps: vec![LspDiagnosticGap::AnalysisNotReady],
+            }
+        }
     }
 }
 

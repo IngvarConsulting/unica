@@ -301,7 +301,7 @@ fn capabilities_follow_what_the_lsp_service_declares() {
             "hoverProvider": true,
             "definitionProvider": true,
             "referencesProvider": true,
-            "diagnosticProvider": {"interFileDependencies": false, "workspaceDiagnostics": false},
+            "diagnosticProvider": {"interFileDependencies": true, "workspaceDiagnostics": false},
             "workspace": {"textDocumentContent": {"schemes": ["unica"]}},
             "experimental": {"unica": {"workspaces": [{"folder": "file:///work", "space": "w0"}]}},
         })
@@ -1207,4 +1207,17 @@ fn mcp_view(
     };
     assert!(result.ok, "{} {:?}", result.summary, result.diagnostics);
     started.elapsed()
+}
+
+/// A diagnostics refresh reaches an editor that declared it can take one,
+/// as its own server request; another editor asks again by itself.
+#[test]
+fn a_diagnostics_refresh_is_asked_only_of_an_editor_that_supports_it() {
+    let refresh = server_notification_json(V5LspServerNotification::DiagnosticsRefresh {}, true)
+        .expect("a supporting editor is asked");
+    assert_eq!(refresh["method"], "workspace/diagnostic/refresh");
+    assert!(refresh["id"].is_string());
+    assert!(
+        server_notification_json(V5LspServerNotification::DiagnosticsRefresh {}, false).is_none()
+    );
 }
