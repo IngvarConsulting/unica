@@ -208,12 +208,20 @@ pub enum V5LspTextSync {
 pub struct V5LspCapabilities {
     pub text_document_sync: V5LspTextSync,
     pub hover: bool,
+    /// Возможности, добавленные после первой версии маршрута, отсутствуют в
+    /// кадре, пока выключены: кадр прежней формы читается и пишется как был.
+    #[serde(default, skip_serializing_if = "is_false")]
     pub definition: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
     pub references: bool,
     /// `textDocument/diagnostic` по запросу редактора.
     pub diagnostics: bool,
     /// `workspace/textDocumentContent` для адресов `unica://`.
     pub text_document_content: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl V5LspCapabilities {
@@ -440,4 +448,27 @@ fn validate_short_text(value: &str, limit: usize, field: &str) -> Result<(), Str
         return Err(format!("{field} must be non-empty short text"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frame of the first form of the route reads as all later
+    /// capabilities off and is written back as it was; a capability on is
+    /// written.
+    #[test]
+    fn later_capabilities_keep_the_first_frame_form() {
+        let first = r#"{"textDocumentSync":"incremental","hover":true,"textDocumentContent":true}"#;
+        let read: V5LspCapabilities = serde_json::from_str(first).unwrap();
+        assert!(!read.definition && !read.references);
+        assert_eq!(serde_json::to_string(&read).unwrap(), first);
+        let on = V5LspCapabilities {
+            definition: true,
+            ..read
+        };
+        assert!(serde_json::to_string(&on)
+            .unwrap()
+            .contains(r#""definition":true"#));
+    }
 }

@@ -30,6 +30,7 @@ pub(super) struct ScriptedSymbols {
     /// Set while the port works: the transport cancelling the request.
     cancel_while_asked: Mutex<Option<Arc<AtomicBool>>>,
     saw_cancellation: AtomicBool,
+    deadlines: Mutex<Vec<unica_work_control::provider_deadline::ProviderDeadline>>,
 }
 
 impl ScriptedSymbols {
@@ -60,6 +61,7 @@ impl LspSymbols for ScriptedSymbols {
         }
         self.saw_cancellation
             .store(context.cancellation.is_cancelled(), Ordering::Release);
+        self.deadlines.lock().unwrap().push(context.deadline);
         self.answer
             .lock()
             .unwrap()
@@ -298,4 +300,26 @@ fn a_port_failing_because_the_request_was_cancelled_gives_a_cancellation() {
     );
 
     assert_eq!(outcome, V5LspOutcome::Cancelled {});
+}
+
+/// rule: INV.RUNTIME.TIMERS-PRESERVE-WORK
+#[test]
+fn a_symbol_call_gives_the_provider_the_requests_own_deadline() {
+    let workspace = workspace();
+    let (host, workspaces) = service();
+    let session = open(&host, workspace.path(), "Work");
+    workspaces.symbols.answer(places(Vec::new(), Vec::new()));
+    let deadline = soon();
+
+    host.call(
+        &session,
+        definition(),
+        &LspCallContext::new(Arc::default(), deadline),
+    );
+
+    assert_eq!(
+        *workspaces.symbols.deadlines.lock().unwrap(),
+        [unica_work_control::provider_deadline::ProviderDeadline::new(deadline)],
+        "no new deadline is started for the provider"
+    );
 }
