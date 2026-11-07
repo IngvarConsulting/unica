@@ -26,8 +26,9 @@ PORTED_FAMILIES = frozenset({"dcs"})
 CODEC_SELECTION = "crates/unica-coder/src/infrastructure/family_codecs.rs"
 
 
-# What a crate declares as `component` under `[package.metadata.unica]`. A kind
-# with a rule below is checked against it; `service` has no dependency rule yet.
+# What a crate declares as `component` under `[package.metadata.unica]`. The
+# declaration must match what `edge_errors` applies to the crate by name, so a
+# new crate states its place instead of falling outside every list unnoticed.
 COMPONENT_KINDS = {
     "family": "semantic family, listed in FAMILIES",
     "abstraction": "shared contract, listed in ABSTRACTIONS",
@@ -36,7 +37,7 @@ COMPONENT_KINDS = {
     "adapter": "`unica-adapter-*` implementation of a port",
     "integration-tests": "`unica-*-integration-tests` cross-component checks",
     "product": "the product composition: unica-coder and unica-product",
-    "service": "any other runtime component",
+    "service": "any other runtime component; a closed dependency rule is added to edge_errors by name",
 }
 
 
