@@ -25,6 +25,8 @@ pub(crate) mod operational_config;
 pub mod ports;
 pub(crate) use unica_runner::admission as runtime_admission;
 #[cfg(test)]
+mod medium_application_tests;
+#[cfg(test)]
 mod runtime_admission_integration;
 
 pub mod tool_contracts;
