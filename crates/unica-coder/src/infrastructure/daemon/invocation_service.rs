@@ -1,5 +1,4 @@
 use super::super::protocol::InvocationRequest;
-use super::super::v13_workspace_bootstrap::project_config_present;
 use crate::domain::apply::ApplyRequest;
 use unica_analysis_services::provider_host::{LongWorkFailure, ProviderHostKey, ProviderHostOwner};
 use unica_execution::invocation::InvocationResponseDeadline;
@@ -12,10 +11,8 @@ use unica_source_contract::read::SourceDirectory;
 type RuntimeJobService = unica_execution::runtime_jobs::RuntimeJobService<
     unica_adapter_v8_runner::request::RuntimeJobRequest,
 >;
-use crate::infrastructure::source_workspace::discover_project_source_admission;
 use crate::infrastructure::source_workspace::{WorkspaceActor, WorkspaceActorRegistry};
 use crate::infrastructure::v13_large_configuration::RegistrationCache;
-use crate::infrastructure::workspace::discover_workspace;
 use std::io::BufRead;
 use std::sync::Arc;
 use unica_address::address::QualifiedAddress;
@@ -25,13 +22,14 @@ use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::actor::{
     ApplyAdmission, ApplyAdmissionError, IndexWorkIdentity, ProviderRootBinding,
-    WorkspaceActorRegistryError, WorkspaceSourceSetInput,
 };
 use unica_workspace::selection_evidence::SourceSelectionEvidenceErrorKind;
 
 mod ordered_search_names;
 pub(in crate::infrastructure::daemon) mod text_search;
+pub(in crate::infrastructure::daemon) mod workspace_admission;
 use self::text_search::SearchHitOwners;
+use self::workspace_admission::{admit_workspace_actor, DiscoveredActorSource};
 
 // Regex anchors and Unicode columns require a complete line. Keep that
 // indivisible unit bounded; neither file nor corpus size is a memory budget.
@@ -1299,16 +1297,6 @@ impl ActorInvocationResources {
     }
 }
 
-#[derive(Clone)]
-struct DiscoveredActorSource {
-    name: String,
-    kind: SourceSetKind,
-    source_format: SourceFormat,
-    source_profile: SourceProfile,
-    root: std::path::PathBuf,
-    retained_identity: unica_source_contract::read::FileIdentity,
-}
-
 #[cfg(test)]
 pub(super) struct ActorInvocationResourcesForTest(ActorInvocationResources);
 
@@ -1361,179 +1349,77 @@ fn bind_workspace_invocation_controlled(
     cancellation: &CancellationToken,
     after_actor_admission: impl FnOnce(&mut [DiscoveredActorSource]),
 ) -> Result<ActorBoundInvocation, WorkspaceAdmissionError> {
-    let context = discover_workspace(Some(std::path::PathBuf::from(request.workspace_hint())))
-        .map_err(|reason| WorkspaceAdmissionError::WorkspaceUndiscoverable { reason })?;
-    let unadmitted = |cause| WorkspaceAdmissionError::Unadmitted {
-        workspace_root: context.workspace_root.clone(),
-        cause,
-    };
-    // Срока у допуска нет: обход идёт до конца. Отмена обрывает обход той же
-    // ошибкой, что и сорванный обход, и отличить их может только сам
-    // чекпоинт: отменённый допуск не описывают как сбой обхода.
-    let admission_cancelled = std::cell::Cell::new(false);
-    let mut checkpoint = || {
-        #[cfg(test)]
-        test_control::pause_admission(&context.workspace_root);
-        if cancellation.is_cancelled() {
-            admission_cancelled.set(true);
-            Err("daemon actor admission was cancelled".to_string())
-        } else {
-            Ok(())
-        }
-    };
-    let source_admission =
-        discover_project_source_admission(&context.workspace_root, &mut checkpoint).map_err(
-            |reason| {
-                if admission_cancelled.get() {
-                    unadmitted(UnadmittedCause::AdmissionCancelled)
-                } else if project_config_present(&context.workspace_root) {
-                    unadmitted(UnadmittedCause::ProjectConfigInvalid(reason))
-                } else {
-                    unadmitted(UnadmittedCause::SourceDiscoveryFailed(reason))
-                }
-            },
-        )?;
-    let declared_sources = &source_admission.map().source_sets;
-    let parent_source_names = declared_sources
+    // Срока у допуска нет: обход идёт до конца или до явной отмены.
+    let admitted = admit_workspace_actor(
+        std::path::Path::new(request.workspace_hint()),
+        actors,
+        &mut |_workspace_root| {
+            #[cfg(test)]
+            test_control::pause_admission(_workspace_root);
+            cancellation.is_cancelled()
+        },
+        |declared| view_extension_target(request, declared).is_some(),
+        after_actor_admission,
+    )?;
+    let parent_source_names = admitted
+        .source_admission
+        .map()
+        .source_sets
         .iter()
         .filter(|source| source.kind == SourceSetKind::Configuration)
         .map(|source| source.name.clone())
         .collect::<Vec<_>>();
-    let view_extension_target = (request.tool()
-        == unica_execution::invocation_store::ToolIdentity::View)
-        .then(|| {
-            request
-                .arguments()
-                .get("at")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|at| QualifiedAddress::parse(at).ok())
-        })
-        .flatten()
-        .filter(|at| {
-            declared_sources.iter().any(|source| {
-                source.name == at.source_set() && source.kind == SourceSetKind::Extension
-            })
-        });
-    let mut admitted_sources = declared_sources
-        .iter()
-        .filter(|source| source.source_format == SourceFormat::PlatformXml)
-        .filter(|source| {
-            // An unavailable possible parent must not hide a healthy extension.
-            // Its name remains in parent_source_names, making resolution incomplete.
-            !(view_extension_target.is_some()
-                && source.kind == SourceSetKind::Configuration
-                && closed_daemon_source_relative_path(&source.path)
-                    .ok()
-                    .and_then(|relative| source_admission.source_root_identity(&relative))
-                    .is_none())
-        })
-        .map(|source| {
-            let unreadable = |reason| {
-                unadmitted(UnadmittedCause::SourceRootUnreadable {
-                    source_set: source.name.clone(),
-                    path: source.path.clone(),
-                    reason,
-                })
-            };
-            let relative = closed_daemon_source_relative_path(&source.path)
-                .map_err(|_| unreadable("its declared path leaves the workspace root"))?;
-            let retained_identity = source_admission
-                .source_root_identity(&relative)
-                .ok_or_else(|| unreadable("its declared root is absent or cannot be retained"))?;
-            let root = context.workspace_root.join(&relative);
-            Ok(DiscoveredActorSource {
-                name: source.name.clone(),
-                kind: source.kind,
-                source_format: source.source_format,
-                source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
-                root,
-                retained_identity,
-            })
-        })
-        .collect::<Result<Vec<_>, WorkspaceAdmissionError>>()?;
-    if admitted_sources.is_empty() {
-        return Err(unadmitted(if declared_sources.is_empty() {
-            UnadmittedCause::Uninitialized
-        } else {
-            UnadmittedCause::NoPlatformXmlSourceSet(declared_sources.clone())
-        }));
-    }
-    admitted_sources.sort_by(|left, right| left.name.cmp(&right.name));
-    let actor = actors
-        .get_or_create(
-            &context,
-            admitted_sources.iter().map(|source| {
-                WorkspaceSourceSetInput::new(
-                    source.name.clone(),
-                    source.root.clone(),
-                    source.kind,
-                    source.source_format,
-                    source.source_profile,
-                )
-            }),
-            WORKSPACE_ACTOR_SCOPE,
-        )
-        .map_err(|error| match error {
-            WorkspaceActorRegistryError::InvalidIdentity(_) => {
-                unadmitted(UnadmittedCause::ActorBindingFailed {
-                    stage: "the actor registry rejected the workspace identity",
-                })
-            }
-            WorkspaceActorRegistryError::NamedRootUnavailable => {
-                unadmitted(UnadmittedCause::ActorRootUnavailable)
-            }
-            WorkspaceActorRegistryError::Poisoned => WorkspaceAdmissionError::RegistryFailed,
-        })?;
-    after_actor_admission(&mut admitted_sources);
-    let read_sources = admitted_sources
-        .iter()
-        .map(|source| {
-            actor
-                .bind_provider_root(&source.name, &source.root)
-                .and_then(|binding| {
-                    if binding.retained_root().identity() != source.retained_identity {
-                        return Err("actor binding does not match retained source-map admission"
-                            .to_string());
-                    }
-                    Ok(ActorReadSourceBinding { binding })
-                })
-                .map_err(|_| {
-                    unadmitted(UnadmittedCause::ActorBindingFailed {
-                        stage: "an admitted source root changed while the actor was binding it",
-                    })
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let read_sources = admitted
+        .bindings
+        .into_iter()
+        .map(|binding| ActorReadSourceBinding { binding })
+        .collect::<Vec<_>>();
     let provider_root = read_sources
         .iter()
         .find(|source| source.binding.source_set_name() == "main")
         .or_else(|| read_sources.first())
         .map(|source| source.binding.clone())
-        .ok_or_else(|| {
-            unadmitted(UnadmittedCause::ActorBindingFailed {
+        .ok_or_else(|| WorkspaceAdmissionError::Unadmitted {
+            workspace_root: admitted.workspace_root.clone(),
+            cause: UnadmittedCause::ActorBindingFailed {
                 stage: "no admitted source set could serve as the provider root",
-            })
+            },
         })?;
-    let workspace_identity_hash = actor.safe_identity_hash().map_err(|_| {
-        unadmitted(UnadmittedCause::ActorBindingFailed {
-            stage: "the workspace identity hash could not be computed",
-        })
-    })?;
     Ok(ActorBoundInvocation {
         tool: request.tool(),
         arguments: request.arguments().clone(),
         response_deadline,
-        actor,
+        actor: admitted.actor,
         provider_root,
         read_sources: Arc::from(read_sources),
         parent_source_names,
-        parent_source_selection: Arc::new(source_admission.into_evidence()),
-        workspace_identity_hash,
+        parent_source_selection: Arc::new(admitted.source_admission.into_evidence()),
+        workspace_identity_hash: admitted.identity,
         deliveries: resources.deliveries,
         provider_hosts: resources.provider_hosts,
         runtime_resources: resources.runtime_resources,
         runtime_service: resources.runtime_service,
     })
+}
+
+/// The extension `view` reads, when the call is a `view` of a declared extension.
+fn view_extension_target(
+    request: &InvocationRequest,
+    declared_sources: &[ProjectSourceSet],
+) -> Option<QualifiedAddress> {
+    if request.tool() != unica_execution::invocation_store::ToolIdentity::View {
+        return None;
+    }
+    request
+        .arguments()
+        .get("at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|at| QualifiedAddress::parse(at).ok())
+        .filter(|at| {
+            declared_sources.iter().any(|source| {
+                source.name == at.source_set() && source.kind == SourceSetKind::Extension
+            })
+        })
 }
 
 /// The scope under which a workspace is admitted. The actor of a workspace

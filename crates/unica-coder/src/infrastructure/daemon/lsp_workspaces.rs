@@ -1,13 +1,11 @@
-//! Продуктовая сторона службы LSP: папка редактора допускается так же, как
-//! `workspace_hint` вызова MCP, и модуль читается той же авторизацией чтения.
+//! Продуктовая сторона службы LSP: папка редактора допускается тем же
+//! допуском, что `workspace_hint` вызова MCP, и модуль читается той же
+//! авторизацией чтения.
 
-use super::server::{closed_daemon_source_relative_path, WORKSPACE_ACTOR_SCOPE};
+use super::server::admit_editor_folder;
 use crate::domain::source_capabilities::bsl_profile_for_source;
-use crate::infrastructure::source_workspace::{
-    discover_project_source_admission, WorkspaceActor, WorkspaceActorRegistry,
-};
+use crate::infrastructure::source_workspace::{WorkspaceActor, WorkspaceActorRegistry};
 use crate::infrastructure::v13_read_port::ProviderReadAuthority;
-use crate::infrastructure::workspace::discover_workspace;
 use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::Instant;
@@ -18,8 +16,7 @@ use unica_lsp::{
     AdmittedWorkspace, LspModuleReads, LspWorkspaces, ModuleSourceRead, SourceSetLayout,
 };
 use unica_lsp_contract::protocol::V5LspFailure;
-use unica_source_contract::{SourceFormat, SourceProfile};
-use unica_workspace::actor::{ProviderRootBinding, WorkspaceSourceSetInput};
+use unica_workspace::actor::ProviderRootBinding;
 
 pub(super) struct ProductLspWorkspaces {
     actors: Arc<WorkspaceActorRegistry>,
@@ -33,60 +30,8 @@ impl ProductLspWorkspaces {
 
 impl LspWorkspaces for ProductLspWorkspaces {
     fn admit(&self, folder: &Path, deadline: Instant) -> Option<AdmittedWorkspace> {
-        let context = discover_workspace(Some(folder.to_path_buf())).ok()?;
-        // The walk stops at the editor's deadline instead of outliving it.
-        let mut checkpoint = || {
-            if Instant::now() < deadline {
-                Ok(())
-            } else {
-                Err("LSP workspace admission passed its deadline".to_string())
-            }
-        };
-        let admission =
-            discover_project_source_admission(&context.workspace_root, &mut checkpoint).ok()?;
-        let mut sources = admission
-            .map()
-            .source_sets
-            .iter()
-            .filter(|source| source.source_format == SourceFormat::PlatformXml)
-            .map(|source| {
-                let relative = closed_daemon_source_relative_path(&source.path).ok()?;
-                let identity = admission.source_root_identity(&relative)?;
-                Some((
-                    source.name.clone(),
-                    source.kind,
-                    context.workspace_root.join(&relative),
-                    identity,
-                ))
-            })
-            .collect::<Option<Vec<_>>>()?;
-        if sources.is_empty() {
-            return None;
-        }
-        sources.sort_by(|left, right| left.0.cmp(&right.0));
-        let actor = self
-            .actors
-            .get_or_create(
-                &context,
-                sources.iter().map(|(name, kind, root, _)| {
-                    WorkspaceSourceSetInput::new(
-                        name.clone(),
-                        root.clone(),
-                        *kind,
-                        SourceFormat::PlatformXml,
-                        SourceProfile::platform_xml_8_3_27_format_2_20(),
-                    )
-                }),
-                WORKSPACE_ACTOR_SCOPE,
-            )
-            .ok()?;
-        let bindings = sources
-            .iter()
-            .map(|(name, _, root, identity)| {
-                let binding = actor.bind_provider_root(name, root).ok()?;
-                (binding.retained_root().identity() == *identity).then_some(binding)
-            })
-            .collect::<Option<Vec<_>>>()?;
+        let admitted = admit_editor_folder(folder, &self.actors, deadline)?;
+        let (actor, bindings, identity) = (admitted.actor, admitted.bindings, admitted.identity);
         let source_sets = bindings
             .iter()
             .map(|binding| {
@@ -98,7 +43,6 @@ impl LspWorkspaces for ProductLspWorkspaces {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
-        let identity = actor.safe_identity_hash().ok()?;
         Some(AdmittedWorkspace {
             reads: Box::new(ProductModuleReads {
                 actor: Arc::downgrade(&actor),

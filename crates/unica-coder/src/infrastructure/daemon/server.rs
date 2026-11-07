@@ -24,7 +24,7 @@ pub(crate) use self::invocation_service::{
 };
 use super::protocol::InvocationRequest;
 use crate::application::tool_contracts::SurfaceRelease;
-pub(super) use invocation_service::{closed_daemon_source_relative_path, WORKSPACE_ACTOR_SCOPE};
+pub(super) use invocation_service::workspace_admission::admit_editor_folder;
 use unica_analysis_services::provider_host::ProviderHostOwner;
 use unica_execution::clock::TokioClock;
 use unica_execution::invocation::InvocationResponseDeadline;
