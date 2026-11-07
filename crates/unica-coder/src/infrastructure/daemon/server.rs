@@ -19741,6 +19741,11 @@ mod medium_finite_deadline_guard {
             "NATIVE_TYPED_INVOCATION_DEADLINE: legacy v0.12 surface",
         ),
         (
+            "crates/unica-lsp/src/host.rs",
+            1,
+            "a symbol call carries the editor request's own cutoff, set by the LSP lane, to the provider; a_symbol_call_gives_the_provider_the_requests_own_deadline rejects rearming",
+        ),
+        (
             "crates/unica-coder/src/infrastructure/daemon/invocation_service.rs",
             1,
             "saved apply adapts the existing caller cutoff; saved_apply_adapter_preserves_the_existing_cutoff_and_absence rejects rearming",
