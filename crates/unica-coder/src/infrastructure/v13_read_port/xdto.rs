@@ -48,10 +48,7 @@ impl ProviderReadAuthority {
         let mut payload = serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?;
         if type_name.is_none() {
-            match unica_metadata_designer::descriptor_comment::read_comment(
-                &descriptor,
-                "XDTOPackage",
-            ) {
+            match crate::infrastructure::family_codecs::metadata_read_codec().descriptor_comment(&descriptor, "XDTOPackage") {
                 Ok(Some(comment)) => payload["Comment"] = json!(comment),
                 Ok(None) => {}
                 Err(message) => payload["commentError"] = json!(message),

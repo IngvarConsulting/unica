@@ -52,6 +52,8 @@ pub mod interface_operations;
 
 pub mod site;
 
+pub mod read_codec;
+
 pub mod recovery;
 
 pub mod support_state;

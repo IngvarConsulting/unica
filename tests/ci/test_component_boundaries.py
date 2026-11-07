@@ -204,6 +204,20 @@ class ComponentBoundaryTests(unittest.TestCase):
         self.assertEqual(checker.codec_selection_errors(
             "crates/unica-coder/src/lib.rs", "use unica_dcs::codec::DcsCodec;\n"), [])
 
+    def test_metadata_read_code_reaches_the_codec_through_the_family_port(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
+        call = "let code = unica_metadata_designer::language_code::read_code(&descriptor)?;\n"
+        port = "let code = metadata_read_codec().language_code(&descriptor)?;\n"
+        fresh = "crates/unica-coder/src/infrastructure/v13_read_port/new_kind.rs"
+        self.assertTrue(checker.metadata_read_codec_errors(fresh, call))
+        self.assertEqual(checker.metadata_read_codec_errors(fresh, port), [])
+        listed = "crates/unica-coder/src/infrastructure/v13_read_port/metadata.rs"
+        self.assertIn(listed, checker.METADATA_READ_CODEC_ALLOWANCE)
+        self.assertEqual(checker.metadata_read_codec_errors(listed, call), [])
+        self.assertTrue(checker.metadata_read_codec_errors(listed, port))
+        self.assertEqual(checker.metadata_read_codec_errors(
+            "crates/unica-coder/src/infrastructure/native_operations/meta.rs", call), [])
+
     def test_target_specific_alias_cannot_hide_a_composition_backedge(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         with tempfile.TemporaryDirectory() as temporary:

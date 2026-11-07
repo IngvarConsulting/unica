@@ -26,6 +26,25 @@ CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
 # selects the implementation in one module; everyone else calls the trait.
 PORTED_FAMILIES = frozenset({"dcs"})
 CODEC_SELECTION = "crates/unica-coder/src/infrastructure/family_codecs.rs"
+# Metadata read code of the composition parses descriptors through the family
+# port `MetadataReadCodec`. Write code still names the codec, so `metadata` is
+# not in PORTED_FAMILIES. Read files that still name it are listed below; the
+# list only shrinks: a listed file that stopped naming the codec, or no longer
+# exists, is an error too.
+METADATA_READ_SOURCES = "crates/unica-coder/src/infrastructure/v13_read"
+METADATA_READ_CODEC_ALLOWANCE = frozenset({
+    "crates/unica-coder/src/infrastructure/v13_read.rs",
+    "crates/unica-coder/src/infrastructure/v13_read/tests.rs",
+    "crates/unica-coder/src/infrastructure/v13_read/tests/form_support.rs",
+    "crates/unica-coder/src/infrastructure/v13_read_port.rs",
+    "crates/unica-coder/src/infrastructure/v13_read_port/configuration.rs",
+    "crates/unica-coder/src/infrastructure/v13_read_port/form.rs",
+    "crates/unica-coder/src/infrastructure/v13_read_port/metadata.rs",
+    "crates/unica-coder/src/infrastructure/v13_read_port/subsystem.rs",
+    "crates/unica-coder/src/infrastructure/v13_read_port/support.rs",
+    "crates/unica-coder/src/infrastructure/v13_read_port/wsreference.rs",
+    "crates/unica-coder/src/infrastructure/v13_read_projection/metadata/props.rs",
+})
 
 
 # What a crate declares as `component` under `[package.metadata.unica]`. The
@@ -180,6 +199,20 @@ def codec_selection_errors(path: str, text: str) -> list[str]:
     return errors
 
 
+def metadata_read_codec_errors(path: str, text: str) -> list[str]:
+    """Metadata read code names the metadata codec only in the shrinking allowance."""
+    if not path.startswith(METADATA_READ_SOURCES):
+        return []
+    lines = [number for number, line in enumerate(text.splitlines(), 1)
+             if re.search(r"\bunica_metadata_designer\b", line)]
+    if path in METADATA_READ_CODEC_ALLOWANCE:
+        if lines:
+            return []
+        return [f"{path}: no longer names unica_metadata_designer; remove it from METADATA_READ_CODEC_ALLOWANCE"]
+    return [f"{path}:{number}: metadata read code parses descriptors through MetadataReadCodec"
+            for number in lines]
+
+
 def manifests(root: Path) -> dict[str, tuple[Path, dict]]:
     document = tomllib.loads((root / "Cargo.toml").read_text())
     result: dict[str, tuple[Path, dict]] = {}
@@ -225,7 +258,13 @@ def check(root: Path) -> list[str]:
     for source in sorted((root / "crates").glob("*/**/*.rs")):
         relative = source.relative_to(root).as_posix()
         if "/target/" not in relative:
-            diagnostics.extend(codec_selection_errors(relative, source.read_text(encoding="utf-8")))
+            text = source.read_text(encoding="utf-8")
+            diagnostics.extend(codec_selection_errors(relative, text))
+            diagnostics.extend(metadata_read_codec_errors(relative, text))
+    read_root = (root / METADATA_READ_SOURCES).parent
+    for allowed in sorted(METADATA_READ_CODEC_ALLOWANCE):
+        if read_root.is_dir() and not (root / allowed).is_file():
+            diagnostics.append(f"{allowed}: listed in METADATA_READ_CODEC_ALLOWANCE but missing; remove it")
     return sorted(set(diagnostics))
 
 
