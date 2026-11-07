@@ -99,7 +99,7 @@ const NOT_IN_MATRIX: &[(&str, &str)] = &[
 /// namespace and the bytes agree once the prefix is removed. An operation
 /// without a sample here fails the inventory check below.
 #[test]
-fn every_metadata_write_keeps_the_owner_prefix() {
+fn medium_every_metadata_write_keeps_the_owner_prefix() {
     let steps: Vec<(&str, Value)> = vec![
         (
             "object.create",

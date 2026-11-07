@@ -194,7 +194,7 @@ mod tests {
 
     /// rule: INV.APP.VIEW-CURSOR-CAPACITY
     #[test]
-    fn snapshot_beyond_the_former_memory_quota_pages_exactly_from_disk() {
+    fn medium_snapshot_beyond_the_former_memory_quota_pages_exactly_from_disk() {
         let text = "я".repeat(512 * 1024);
         // 72 MiB of item text: more than the former 64 MiB in-memory budget.
         let items = (0..72)
