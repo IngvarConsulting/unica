@@ -1766,11 +1766,15 @@ fn project_health_git_ignore_negated_rule_does_not_ignore_the_path() {
     );
 }
 
+const IGNORED_PATTERN_FILE_WARNING: &str = "ignoring excessively large pattern file";
+
 #[test]
 fn project_health_git_ignore_file_that_git_skips_is_reported_not_trusted() {
-    // Git skips a pattern file of 100 MiB or more with a warning. The skipped
-    // file holds every required rule, so trusting the answer would report the
-    // rules missing; the check must say the policy could not be read instead.
+    // Git 2.46 and later skip a pattern file of 100 MiB or more with a warning.
+    // The skipped file holds every required rule, so trusting the answer would
+    // report the rules missing; the check must say the policy could not be read
+    // instead. Earlier versions read the file and find the rules: that answer
+    // is complete. In neither case are the rules reported missing.
     let fixture = parent_repository_fixture();
     let mut policy = "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n".to_string();
     policy.push_str(&"# padding\n".repeat(101 * 1024 * 1024 / 10));
@@ -1787,6 +1791,102 @@ fn project_health_git_ignore_file_that_git_skips_is_reported_not_trusted() {
         )
         .unwrap();
 
+    let probe = Command::new("git")
+        .args(["check-ignore", "--no-index", "-q", "ConfigDumpInfo.xml"])
+        .current_dir(&fixture.repository_root)
+        .output()
+        .unwrap();
+    let this_git_skips_the_file =
+        String::from_utf8_lossy(&probe.stderr).contains(IGNORED_PATTERN_FILE_WARNING);
+    assert_eq!(
+        inspection.facts.iter().any(|fact| matches!(
+            fact,
+            ProjectHealthFact::GitInspectionIncomplete {
+                check: ProjectCheckId::RepositoryIgnore,
+                reason,
+                ..
+            } if reason.contains(IGNORED_PATTERN_FILE_WARNING)
+        )),
+        this_git_skips_the_file,
+        "{:?}",
+        inspection.facts
+    );
+    assert!(!inspection.facts.iter().any(|fact| matches!(
+        fact,
+        ProjectHealthFact::IgnoreRuleMissing { .. } | ProjectHealthFact::IgnoreRuleLocalOnly { .. }
+    )));
+}
+
+/// The refusal itself, on any installed Git: its answer is replayed the way a
+/// version with the size limit gives it.
+#[test]
+fn project_health_git_ignore_warning_makes_the_policy_incomplete_on_any_git() {
+    struct SkippingIgnoreFiles;
+
+    impl SkippingIgnoreFiles {
+        fn inner() -> &'static (dyn ProcessRunner + Send + Sync) {
+            unica_process::runner::system_process_runner()
+        }
+    }
+
+    impl ProcessRunner for SkippingIgnoreFiles {
+        fn run(&self, command: &ProcessCommand) -> Result<ProcessOutput, String> {
+            Self::inner().run(command)
+        }
+
+        fn run_with_input(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+        ) -> Result<ProcessOutput, String> {
+            if command.args.iter().any(|arg| arg == "check-ignore") {
+                return Ok(ProcessOutput {
+                    status: "exit status: 1".into(),
+                    stderr: format!("warning: {IGNORED_PATTERN_FILE_WARNING}: .gitignore\n"),
+                    ..process_output(false, "")
+                });
+            }
+            Self::inner().run_with_input(command, input)
+        }
+
+        fn run_streaming_records(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+            delimiter: u8,
+            on_record: &mut dyn FnMut(&[u8]) -> unica_process::StreamControl,
+        ) -> Result<unica_process::runner::ProcessStreamOutput, String> {
+            Self::inner().run_streaming_records(command, input, delimiter, on_record)
+        }
+
+        fn run_streaming_bytes(
+            &self,
+            command: &ProcessCommand,
+            input: &[u8],
+            on_chunk: &mut dyn FnMut(&[u8]) -> unica_process::StreamControl,
+        ) -> Result<unica_process::runner::ProcessStreamOutput, String> {
+            Self::inner().run_streaming_bytes(command, input, on_chunk)
+        }
+    }
+
+    let fixture = parent_repository_fixture();
+    fs::write(
+        fixture.repository_root.join(".gitignore"),
+        "**/.build/\nConfigDumpInfo.xml\nDumpFilesIndex.txt\n",
+    )
+    .unwrap();
+    git(&fixture.repository_root, &["add", ".gitignore"]);
+    let layout = inspect_layout(&fixture.context);
+
+    let inspection = GitRepositoryInspector::with_runner(&SkippingIgnoreFiles)
+        .inspect_base(
+            &fixture.context,
+            &layout,
+            &CancellationToken::new(),
+            ProviderDeadline::no_deadline(),
+        )
+        .unwrap();
+
     assert!(
         inspection.facts.iter().any(|fact| matches!(
             fact,
@@ -1794,7 +1894,7 @@ fn project_health_git_ignore_file_that_git_skips_is_reported_not_trusted() {
                 check: ProjectCheckId::RepositoryIgnore,
                 reason,
                 ..
-            } if reason.contains("ignoring excessively large pattern file")
+            } if reason.contains(IGNORED_PATTERN_FILE_WARNING)
         )),
         "{:?}",
         inspection.facts
