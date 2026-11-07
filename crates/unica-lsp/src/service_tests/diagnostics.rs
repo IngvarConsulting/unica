@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::{LspAnalysis, LspDiagnostics, LspFinding, LspSeverity};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Mutex};
 use unica_lsp_contract::protocol::{V5LspDiagnostic, V5LspSeverity};
 use unica_work_control::cancellation::CancellationToken;
@@ -48,9 +48,18 @@ impl LspDiagnostics for ScriptedDiagnostics {
             .collect()
     }
 
-    fn analyse(&self, _: &str, module: &str, _: &str, _: &CancellationToken) -> LspAnalysis {
+    fn analyse(
+        &self,
+        _: &str,
+        module: &crate::ModuleDocument,
+        _: &str,
+        _: &CancellationToken,
+    ) -> LspAnalysis {
         self.runs.fetch_add(1, Ordering::SeqCst);
-        self.analysed.lock().unwrap().push(module.to_owned());
+        self.analysed
+            .lock()
+            .unwrap()
+            .push(module.module().to_owned());
         let gate = self.gate.lock().unwrap().take();
         if let Some(gate) = gate {
             let _ = gate.recv();
@@ -194,16 +203,16 @@ fn a_request_cancelled_while_it_waits_for_the_analysis_gives_no_report() {
     let (host, workspaces) = service();
     let release = workspaces.diagnostics.hold();
     let session = open(&host, workspace.path(), "Work");
-    let cancelled = Arc::new(AtomicBool::new(false));
+    let cancellation = unica_work_control::cancellation::CancellationToken::new();
     let canceller = {
-        let cancelled = Arc::clone(&cancelled);
+        let cancellation = cancellation.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(100));
-            cancelled.store(true, Ordering::Release);
+            cancellation.cancel();
         })
     };
 
-    let outcome = diagnostic(&host, &session, &LspCallContext::new(cancelled, soon()));
+    let outcome = diagnostic(&host, &session, &LspCallContext::new(cancellation, soon()));
 
     canceller.join().unwrap();
     release.send(()).unwrap();

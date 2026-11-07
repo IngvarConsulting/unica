@@ -69,6 +69,13 @@ pub struct DocumentUri {
     pub address: String,
 }
 
+impl DocumentUri {
+    /// The module whose body this document is, if it is one.
+    pub fn module(&self) -> Option<crate::ModuleDocument> {
+        crate::ModuleDocument::of_document(&self.address)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UriError {
     /// Not a `unica://` URI with a space, a source set and an address.
