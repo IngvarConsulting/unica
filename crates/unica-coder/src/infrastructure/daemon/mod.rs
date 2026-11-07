@@ -1,3 +1,4 @@
+mod lsp_completion;
 mod lsp_diagnostics;
 mod lsp_workspaces;
 #[cfg(test)]

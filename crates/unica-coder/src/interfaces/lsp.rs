@@ -24,6 +24,7 @@ use unica_lsp_contract::protocol::{
     V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange,
     V5LspServerNotification, V5LspSessionId, V5LspSeverity, V5LspTextSync, V5LspWorkspaceFolder,
 };
+use unica_lsp_contract::protocol::{V5LspCompletionData, V5LspCompletionItem, V5LspCompletionKind};
 
 /// Бюджет запроса на полосе демона.
 const LSP_CALL_BUDGET: Duration = Duration::from_secs(5);
@@ -227,6 +228,25 @@ impl Frontend {
                     "invalid position params",
                 )),
             },
+            (Phase::Running(_), "textDocument/completion") => {
+                match position_call(method, &params) {
+                    Some(call) => self.dispatch(id, call),
+                    None => self.send(error_response(
+                        id,
+                        INVALID_PARAMS,
+                        "invalid completion params",
+                    )),
+                }
+            }
+            (Phase::Running(_), "completionItem/resolve") => {
+                match completion_item(&params).map(|item| V5LspCall::CompletionResolve {
+                    item: Box::new(item),
+                }) {
+                    Some(call) if call_is_valid(&call) => self.dispatch(id, call),
+                    // An item this server did not give is answered as it came.
+                    _ => self.send(json!({"jsonrpc": "2.0", "id": id, "result": params})),
+                }
+            }
             (Phase::Running(_), "textDocument/diagnostic") => match document_uri(&params) {
                 Some(uri) => self.dispatch(id, V5LspCall::Diagnostic { uri }),
                 None => self.send(error_response(
@@ -538,6 +558,17 @@ fn call_daemon(
         Ok(V5LspOutcome::Text { text }) => {
             json!({"jsonrpc": "2.0", "id": id, "result": {"text": text}})
         }
+        Ok(V5LspOutcome::CompletionList { incomplete, items }) => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "isIncomplete": incomplete,
+                "items": items.iter().map(completion_item_json).collect::<Vec<_>>(),
+            },
+        }),
+        Ok(V5LspOutcome::CompletionItem { item }) => {
+            json!({"jsonrpc": "2.0", "id": id, "result": completion_item_json(&item)})
+        }
         Ok(V5LspOutcome::Locations { locations }) => {
             json!({"jsonrpc": "2.0", "id": id, "result": locations})
         }
@@ -690,6 +721,12 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
     if capabilities.references {
         result.insert("referencesProvider".into(), json!(true));
     }
+    if capabilities.completion {
+        result.insert(
+            "completionProvider".into(),
+            json!({"triggerCharacters": ["."], "resolveProvider": true}),
+        );
+    }
     if capabilities.diagnostics {
         result.insert(
             "diagnosticProvider".into(),
@@ -719,6 +756,77 @@ fn capabilities_json(opening: V5LspOpening) -> Value {
         json!({"unica": {"workspaces": workspaces}}),
     );
     Value::Object(result)
+}
+
+/// LSP `CompletionItemKind` of each kind.
+const COMPLETION_KINDS: [(V5LspCompletionKind, u64); 8] = [
+    (V5LspCompletionKind::Method, 2),
+    (V5LspCompletionKind::Function, 3),
+    (V5LspCompletionKind::Field, 5),
+    (V5LspCompletionKind::Variable, 6),
+    (V5LspCompletionKind::Class, 7),
+    (V5LspCompletionKind::Module, 9),
+    (V5LspCompletionKind::Property, 10),
+    (V5LspCompletionKind::Struct, 22),
+];
+
+/// A completion item as LSP `CompletionItem`. Its document and method ride
+/// in `data`, so `completionItem/resolve` finds the description.
+fn completion_item_json(item: &V5LspCompletionItem) -> Value {
+    let kind = COMPLETION_KINDS
+        .iter()
+        .find(|(kind, _)| *kind == item.kind)
+        .map_or(1, |(_, number)| *number);
+    let mut json = json!({"label": item.label, "kind": kind, "sortText": item.sort_text});
+    if let Some(detail) = &item.detail {
+        json["detail"] = json!(detail);
+    }
+    if let Some(documentation) = &item.documentation {
+        json["documentation"] = json!({"kind": "plaintext", "value": documentation});
+    }
+    if let Some(edit) = &item.text_edit {
+        json["textEdit"] = json!({"range": edit.range, "newText": edit.new_text});
+    }
+    if let Some(data) = &item.data {
+        json["data"] = json!({
+            "unicaDocument": data.uri,
+            "method": data.method,
+            "commonModule": data.common_module,
+        });
+    }
+    json
+}
+
+/// The item an editor sends back to `completionItem/resolve`, if this
+/// server gave it.
+fn completion_item(params: &Value) -> Option<V5LspCompletionItem> {
+    let number = params.get("kind")?.as_u64()?;
+    let kind = COMPLETION_KINDS
+        .iter()
+        .find(|(_, known)| *known == number)?
+        .0;
+    let text = |name: &str| params.get(name).and_then(Value::as_str).map(str::to_owned);
+    let data = params.get("data")?;
+    Some(V5LspCompletionItem {
+        label: text("label")?,
+        kind,
+        sort_text: text("sortText").unwrap_or_default(),
+        detail: text("detail"),
+        documentation: None,
+        text_edit: None,
+        data: Some(V5LspCompletionData {
+            uri: data.get("unicaDocument")?.as_str()?.to_owned(),
+            method: data.get("method")?.as_str()?.to_owned(),
+            common_module: data
+                .get("commonModule")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        }),
+    })
+}
+
+fn call_is_valid(call: &V5LspCall) -> bool {
+    unica_lsp_contract::protocol::validate_call(call).is_ok()
 }
 
 /// One finding as LSP `Diagnostic`, told by Unica.
@@ -818,6 +926,7 @@ fn position_call(method: &str, params: &Value) -> Option<V5LspCall> {
         "textDocument/hover" => Some(V5LspCall::Hover { uri, position }),
         "textDocument/definition" => Some(V5LspCall::Definition { uri, position }),
         "textDocument/references" => Some(V5LspCall::References { uri, position }),
+        "textDocument/completion" => Some(V5LspCall::Completion { uri, position }),
         _ => None,
     }
 }

@@ -8,6 +8,7 @@
 //! Актор, чей корень подменили, сессия при следующем обращении заменяет
 //! тем, которого реестр выдаёт и MCP, и переносит в него свои буферы.
 
+use crate::completion::{LspCompletion, LspCompletionRequest};
 use crate::diagnostics::{
     merge, wire_diagnostics, AnalysisKey, EditorAnalysis, LspAnalysis, LspDiagnosticGap,
     LspDiagnostics,
@@ -15,7 +16,7 @@ use crate::diagnostics::{
 use crate::document::ContentChange;
 use crate::documents::ModuleSourceRead;
 use crate::documents::{LspDocumentError, LspDocuments, SourceSetLayout, SpaceLayout};
-use crate::position::Utf16Position;
+use crate::position::{LineIndex, Utf16Position};
 use crate::symbols::{
     reason_code, LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols,
 };
@@ -26,6 +27,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::{Duration, Instant};
+use unica_code_intelligence::completion::{CompletionKind, CompletionMethod};
 use unica_code_intelligence::symbols::{
     Incompleteness, SymbolAnswer, SymbolInfo, SymbolLocation, SymbolPosition, SymbolRequestContext,
 };
@@ -35,6 +37,9 @@ use unica_lsp_contract::protocol::{
     V5LspMessageLevel, V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange,
     V5LspServerNotification, V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder,
     V5LspWorkspaceSpace,
+};
+use unica_lsp_contract::protocol::{
+    V5LspCompletionData, V5LspCompletionItem, V5LspCompletionKind, V5LspTextEdit,
 };
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
@@ -80,6 +85,7 @@ pub struct AdmittedWorkspace {
     pub reads: Box<dyn LspModuleReads>,
     pub symbols: Arc<dyn LspSymbols>,
     pub diagnostics: Arc<dyn LspDiagnostics>,
+    pub completion: Arc<dyn LspCompletion>,
 }
 
 /// Допуск папки редактора. Реализует продукт: у папки и у `workspace_hint`
@@ -109,6 +115,7 @@ struct AdmittedSpace {
     reads: Box<dyn LspModuleReads>,
     symbols: Arc<dyn LspSymbols>,
     diagnostics: Arc<dyn LspDiagnostics>,
+    completion: Arc<dyn LspCompletion>,
 }
 
 impl UnicaLspHost {
@@ -192,6 +199,7 @@ impl LspHost for UnicaLspHost {
                 definition: true,
                 references: true,
                 diagnostics: true,
+                completion: true,
                 text_document_content: true,
             },
             workspaces,
@@ -316,8 +324,18 @@ impl LspHost for UnicaLspHost {
             return diagnostic_answer(&self.analysis, &session, uri, context)
                 .unwrap_or_else(failed);
         }
-        let session = read(&session);
-        answer(&session, call).unwrap_or_else(failed)
+        match call {
+            V5LspCall::Completion { uri, position } => {
+                completion_answer(&session, &uri, position, context).unwrap_or_else(failed)
+            }
+            V5LspCall::CompletionResolve { item } => V5LspOutcome::CompletionItem {
+                item: Box::new(resolve_item(&read(&session), *item)),
+            },
+            call => {
+                let session = read(&session);
+                answer(&session, call).unwrap_or_else(failed)
+            }
+        }
     }
 
     fn close(&self, session: &V5LspSessionId) {
@@ -426,7 +444,9 @@ fn answer(session: &Session, call: V5LspCall) -> Result<V5LspOutcome, V5LspFailu
         V5LspCall::Hover { .. }
         | V5LspCall::Definition { .. }
         | V5LspCall::References { .. }
-        | V5LspCall::Diagnostic { .. } => Err(V5LspFailure::NotSupported),
+        | V5LspCall::Diagnostic { .. }
+        | V5LspCall::Completion { .. }
+        | V5LspCall::CompletionResolve { .. } => Err(V5LspFailure::NotSupported),
     }
 }
 
@@ -435,7 +455,10 @@ fn symbol_operation(call: &V5LspCall) -> Option<LspSymbolOperation> {
         V5LspCall::Hover { .. } => Some(LspSymbolOperation::Hover),
         V5LspCall::Definition { .. } => Some(LspSymbolOperation::Definition),
         V5LspCall::References { .. } => Some(LspSymbolOperation::References),
-        V5LspCall::TextDocumentContent { .. } | V5LspCall::Diagnostic { .. } => None,
+        V5LspCall::TextDocumentContent { .. }
+        | V5LspCall::Diagnostic { .. }
+        | V5LspCall::Completion { .. }
+        | V5LspCall::CompletionResolve { .. } => None,
     }
 }
 
@@ -496,9 +519,10 @@ fn symbol_answer(
         V5LspCall::Hover { uri, position }
         | V5LspCall::Definition { uri, position }
         | V5LspCall::References { uri, position } => (uri, *position),
-        V5LspCall::TextDocumentContent { .. } | V5LspCall::Diagnostic { .. } => {
-            return Err(V5LspFailure::NotSupported)
-        }
+        V5LspCall::TextDocumentContent { .. }
+        | V5LspCall::Diagnostic { .. }
+        | V5LspCall::Completion { .. }
+        | V5LspCall::CompletionResolve { .. } => return Err(V5LspFailure::NotSupported),
     };
     let asked = symbol_call(&read(session), uri)?;
     let cancellation = CancellationToken::observing(context.cancellation_signal());
@@ -751,6 +775,153 @@ fn analysis_within(
     }
 }
 
+/// What a completion call takes from the session, under its lock.
+struct CompletionCall {
+    session: String,
+    source_set: String,
+    module: String,
+    text: String,
+    completion: Arc<dyn LspCompletion>,
+}
+
+fn completion_call(session: &Session, uri: &str) -> Result<CompletionCall, V5LspFailure> {
+    let location = session
+        .documents
+        .locate(uri)
+        .map_err(|_| V5LspFailure::DocumentUnknown)?;
+    let space = session
+        .spaces
+        .get(&location.document.space)
+        .ok_or(V5LspFailure::DocumentUnknown)?;
+    let module = location
+        .document
+        .address
+        .strip_suffix(BODY)
+        .ok_or(V5LspFailure::DocumentUnknown)?
+        .to_owned();
+    Ok(CompletionCall {
+        text: document_text(session, uri)?,
+        session: session.documents.session().to_owned(),
+        source_set: location.source_set,
+        completion: Arc::clone(&space.completion),
+        module,
+    })
+}
+
+/// `textDocument/completion`: the names the code at `position` can use, in
+/// the text this session sees. The sources are asked without the session's
+/// lock; the list is incomplete while the platform's global context loads.
+fn completion_answer(
+    session: &RwLock<Session>,
+    uri: &str,
+    position: V5LspPosition,
+    context: &LspCallContext,
+) -> Result<V5LspOutcome, V5LspFailure> {
+    let asked = completion_call(&read(session), uri)?;
+    let lines = LineIndex::new(&asked.text);
+    let offset = lines
+        .offset(
+            &asked.text,
+            Utf16Position {
+                line: position.line,
+                character: position.character,
+            },
+        )
+        .map_err(|_| V5LspFailure::DocumentUnknown)?;
+    let answer = asked.completion.complete(
+        LspCompletionRequest {
+            session: &asked.session,
+            source_set: &asked.source_set,
+            module: &asked.module,
+            text: &asked.text,
+            offset,
+        },
+        &|| context.is_cancelled(),
+    )?;
+    if cancelled(context) {
+        return Ok(V5LspOutcome::Cancelled {});
+    }
+    let Some(completion) = answer.completion else {
+        return Ok(V5LspOutcome::CompletionList {
+            incomplete: false,
+            items: Vec::new(),
+        });
+    };
+    let point = |offset| {
+        let at = lines.position(&asked.text, offset);
+        V5LspPosition {
+            line: at.line,
+            character: at.character,
+        }
+    };
+    let replaces = V5LspRange {
+        start: point(completion.replaces.start),
+        end: point(completion.replaces.end),
+    };
+    let items = completion
+        .items
+        .into_iter()
+        .map(|item| V5LspCompletionItem {
+            sort_text: format!("{}{}", item.rank, item.label.to_lowercase()),
+            kind: match item.kind {
+                CompletionKind::Method => V5LspCompletionKind::Method,
+                CompletionKind::Function => V5LspCompletionKind::Function,
+                CompletionKind::Field => V5LspCompletionKind::Field,
+                CompletionKind::Variable => V5LspCompletionKind::Variable,
+                CompletionKind::Class => V5LspCompletionKind::Class,
+                CompletionKind::Module => V5LspCompletionKind::Module,
+                CompletionKind::Property => V5LspCompletionKind::Property,
+                CompletionKind::Struct => V5LspCompletionKind::Struct,
+            },
+            text_edit: Some(V5LspTextEdit {
+                range: replaces,
+                new_text: item.label.clone(),
+            }),
+            data: item.method.map(|method| V5LspCompletionData {
+                uri: uri.to_owned(),
+                method: method.name,
+                common_module: method.common_module,
+            }),
+            detail: item.detail,
+            documentation: None,
+            label: item.label,
+        })
+        .collect();
+    Ok(V5LspOutcome::CompletionList {
+        incomplete: !answer.platform_ready,
+        items,
+    })
+}
+
+/// `completionItem/resolve`: the description of the method an item names,
+/// found in the document the item came from. An item the service did not
+/// give, or of a document no longer open here, comes back as it was.
+fn resolve_item(session: &Session, mut item: V5LspCompletionItem) -> V5LspCompletionItem {
+    let Some(data) = &item.data else {
+        return item;
+    };
+    let Ok(location) = session.documents.locate(&data.uri) else {
+        return item;
+    };
+    let (Some(space), Some(module)) = (
+        session.spaces.get(&location.document.space),
+        location.document.address.strip_suffix(BODY),
+    ) else {
+        return item;
+    };
+    let method = CompletionMethod {
+        name: data.method.clone(),
+        common_module: data.common_module.clone(),
+    };
+    item.documentation = space.completion.describe(
+        session.documents.session(),
+        &location.source_set,
+        module,
+        &method,
+    );
+    item
+}
+
 /// The name a session waits for analyses under.
 fn session_waiter(session: &str) -> String {
     format!("session-{session}")
@@ -849,6 +1020,7 @@ fn admit(
             reads: admitted.reads,
             symbols: admitted.symbols,
             diagnostics: admitted.diagnostics,
+            completion: admitted.completion,
         },
         admitted.actor,
     ))

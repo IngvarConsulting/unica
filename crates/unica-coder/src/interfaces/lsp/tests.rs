@@ -14,8 +14,8 @@ use unica_daemon::lsp_lane::MAX_LSP_LANE_WORKERS;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
-    V5LspCapabilities, V5LspDiagnostic, V5LspLocation, V5LspRange, V5LspSeverity,
-    V5LspWorkspaceSpace,
+    V5LspCapabilities, V5LspCompletionData, V5LspCompletionItem, V5LspCompletionKind,
+    V5LspDiagnostic, V5LspLocation, V5LspRange, V5LspSeverity, V5LspWorkspaceSpace,
 };
 
 /// Допуск задержки MCP под потоком hover: медиана вызова MCP при занятой
@@ -240,8 +240,12 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
         "diagnostics are served, so declared"
     );
     assert!(
-        capabilities.get("completionProvider").is_none(),
-        "completion is not served yet, so it is not declared"
+        capabilities["completionProvider"]["resolveProvider"] == true,
+        "completion is served, so declared"
+    );
+    assert!(
+        capabilities.get("signatureHelpProvider").is_none(),
+        "signature help is not served yet, so it is not declared"
     );
     assert_eq!(
         capabilities["experimental"]["unica"]["workspaces"],
@@ -261,7 +265,7 @@ fn lsp_lifecycle_declares_only_ready_capabilities_and_ends_with_exit() {
         INVALID_PARAMS
     );
     assert_eq!(
-        error_code(&editor.request("textDocument/completion", json!({}))),
+        error_code(&editor.request("textDocument/signatureHelp", json!({}))),
         METHOD_NOT_FOUND
     );
 
@@ -301,6 +305,7 @@ fn capabilities_follow_what_the_lsp_service_declares() {
             "hoverProvider": true,
             "definitionProvider": true,
             "referencesProvider": true,
+            "completionProvider": {"triggerCharacters": ["."], "resolveProvider": true},
             "diagnosticProvider": {"interFileDependencies": true, "workspaceDiagnostics": false},
             "workspace": {"textDocumentContent": {"schemes": ["unica"]}},
             "experimental": {"unica": {"workspaces": [{"folder": "file:///work", "space": "w0"}]}},
@@ -352,6 +357,30 @@ fn capabilities_follow_what_the_lsp_service_declares() {
             "source": "unica",
             "message": "Текст Unica",
         }]})
+    );
+    let completion = editor.request(
+        "textDocument/completion",
+        hover_params("file:///work/a.bsl"),
+    );
+    let item = completion["result"]["items"][0].clone();
+    assert_eq!(completion["result"]["isIncomplete"], true);
+    assert_eq!(
+        item,
+        json!({
+            "label": "Сумма", "kind": 2, "sortText": "0сумма",
+            "data": {"unicaDocument": "file:///work/a.bsl", "method": "Сумма", "commonModule": null},
+        })
+    );
+    let resolved = editor.request("completionItem/resolve", item);
+    assert_eq!(
+        resolved["result"]["documentation"],
+        json!({"kind": "plaintext", "value": "Описание."})
+    );
+    // An item this server did not give comes back as it was.
+    let foreign = json!({"label": "Чужой", "kind": 1});
+    assert_eq!(
+        editor.request("completionItem/resolve", foreign.clone())["result"],
+        foreign
     );
     // Nothing found while a source is not ready is no empty list.
     let references = editor.request(
@@ -807,6 +836,7 @@ impl LspHost for HeldHost {
                 definition: true,
                 references: true,
                 diagnostics: true,
+                completion: true,
                 text_document_content: true,
             },
             workspaces: folders
@@ -876,6 +906,28 @@ impl LspHost for HeldHost {
                         message: "Текст Unica".into(),
                     }],
                 };
+            }
+            V5LspCall::Completion { uri, .. } => {
+                return V5LspOutcome::CompletionList {
+                    incomplete: true,
+                    items: vec![V5LspCompletionItem {
+                        label: "Сумма".into(),
+                        kind: V5LspCompletionKind::Method,
+                        sort_text: "0сумма".into(),
+                        detail: None,
+                        documentation: None,
+                        text_edit: None,
+                        data: Some(V5LspCompletionData {
+                            uri,
+                            method: "Сумма".into(),
+                            common_module: None,
+                        }),
+                    }],
+                };
+            }
+            V5LspCall::CompletionResolve { mut item } => {
+                item.documentation = Some("Описание.".into());
+                return V5LspOutcome::CompletionItem { item };
             }
             V5LspCall::Hover { .. } => {}
         }
