@@ -37,10 +37,8 @@ METADATA_READ_CODEC_ALLOWANCE = frozenset({
     "crates/unica-coder/src/infrastructure/v13_read/tests.rs",
     "crates/unica-coder/src/infrastructure/v13_read/tests/form_support.rs",
     "crates/unica-coder/src/infrastructure/v13_read_port.rs",
-    "crates/unica-coder/src/infrastructure/v13_read_port/configuration.rs",
     "crates/unica-coder/src/infrastructure/v13_read_port/form.rs",
     "crates/unica-coder/src/infrastructure/v13_read_port/metadata.rs",
-    "crates/unica-coder/src/infrastructure/v13_read_port/subsystem.rs",
     "crates/unica-coder/src/infrastructure/v13_read_port/support.rs",
     "crates/unica-coder/src/infrastructure/v13_read_projection/metadata/props.rs",
 })

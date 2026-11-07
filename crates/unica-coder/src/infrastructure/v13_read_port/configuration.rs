@@ -7,10 +7,6 @@ use std::path::Path;
 use std::sync::Arc;
 use unica_address::address::NodeKind;
 use unica_metadata::configuration::{CfHomePageData, CfInterfaceData};
-use unica_metadata_designer::configuration::{
-    cf_home_page_item_data, parse_cf_command_interface_xml, parse_cf_home_page_xml_strict,
-    parse_cf_info_xml,
-};
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::owner::prove_already_read_source_set_owner;
@@ -64,21 +60,22 @@ impl ProviderReadAuthority {
                 "Configuration.xml is not UTF-8",
             )
         })?;
-        let parsed = parse_cf_info_xml(
-            text,
-            self.configuration_support(checkpoint)?,
-            self.home_page()?,
-            self.command_interface()?,
-            self.panels()?,
-        )
-        .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
+        let data = crate::infrastructure::family_codecs::metadata_read_codec()
+            .configuration_info(
+                text,
+                self.configuration_support(checkpoint)?,
+                self.home_page()?,
+                self.command_interface()?,
+                self.panels()?,
+            )
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
         let owner = prove_already_read_source_set_owner(
             Path::new("Configuration.xml"),
             &bytes,
             self.source_set_kind,
         )
         .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error.message))?;
-        let mut payload = serde_json::to_value(parsed.data)
+        let mut payload = serde_json::to_value(data)
             .map_err(|error| ViewError::new(RefusalCode::ProviderUnavailable, error.to_string()))?
             .as_object()
             .cloned()
@@ -189,7 +186,8 @@ impl ProviderReadAuthority {
                 "CommandInterface.xml is not UTF-8",
             )
         })?;
-        parse_cf_command_interface_xml(text)
+        crate::infrastructure::family_codecs::metadata_read_codec()
+            .configuration_command_interface(text)
             .map(Some)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
@@ -197,7 +195,7 @@ impl ProviderReadAuthority {
     /// Раскладка панелей корня в форме, которую принимает `panels.set`.
     fn panels(&self) -> Result<Option<Value>, ViewError> {
         let Some(bytes) = self.read_optional_relative_whole(Path::new(
-            unica_metadata_designer::client_interface::CLIENT_INTERFACE_RELATIVE,
+            crate::infrastructure::family_codecs::metadata_read_codec().client_interface_relative(),
         ))?
         else {
             return Ok(None);
@@ -208,8 +206,9 @@ impl ProviderReadAuthority {
                 "ClientApplicationInterface.xml is not UTF-8",
             )
         })?;
-        unica_metadata_designer::client_interface::parse_panels(text)
-            .map(|stored| Some(stored.to_json()))
+        crate::infrastructure::family_codecs::metadata_read_codec()
+            .client_panels(text)
+            .map(Some)
             .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 
@@ -225,12 +224,9 @@ impl ProviderReadAuthority {
                 "HomePageWorkArea.xml is not UTF-8",
             )
         })?;
-        let layout = parse_cf_home_page_xml_strict(text)
-            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))?;
-        Ok(Some(CfHomePageData {
-            template: layout.template,
-            left: cf_home_page_item_data(&layout.left),
-            right: cf_home_page_item_data(&layout.right),
-        }))
+        crate::infrastructure::family_codecs::metadata_read_codec()
+            .configuration_home_page(text)
+            .map(Some)
+            .map_err(|error| ViewError::detailed(RefusalDetail::SourceUnreadable, error))
     }
 }
