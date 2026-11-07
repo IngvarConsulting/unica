@@ -5,5 +5,5 @@ pub(super) const SPEC: MetadataPropertySpec = property(
     "QuickChoice",
     MetaPropertyKey::QuickChoice,
     MetaPropertyValueKind::Boolean,
-    CATALOG_KINDS,
+    QUICK_CHOICE_KINDS,
 );

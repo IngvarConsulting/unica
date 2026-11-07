@@ -174,6 +174,14 @@ const fn patterned_string_property(
     }
 }
 
+const QUICK_CHOICE_KINDS: &[MetadataKind] = &[
+    MetadataKind::Catalog,
+    MetadataKind::Enum,
+    MetadataKind::ChartOfCharacteristicTypes,
+    MetadataKind::ChartOfCalculationTypes,
+    MetadataKind::ChartOfAccounts,
+    MetadataKind::ExchangePlan,
+];
 const CATALOG_KINDS: &[MetadataKind] = &[MetadataKind::Catalog];
 const DOCUMENT_KINDS: &[MetadataKind] = &[MetadataKind::Document];
 const INFORMATION_REGISTER_KINDS: &[MetadataKind] = &[MetadataKind::InformationRegister];
@@ -727,7 +735,18 @@ mod tests {
                 MetaPropertyValue::Boolean(true),
                 &[CommonModule],
             ),
-            ("QuickChoice", MetaPropertyValue::Boolean(true), &[Catalog]),
+            (
+                "QuickChoice",
+                MetaPropertyValue::Boolean(true),
+                &[
+                    Catalog,
+                    Enum,
+                    ChartOfCharacteristicTypes,
+                    ChartOfCalculationTypes,
+                    ChartOfAccounts,
+                    ExchangePlan,
+                ],
+            ),
             (
                 "RealTimePosting",
                 MetaPropertyValue::String("Allow".into()),
