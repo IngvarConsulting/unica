@@ -1,6 +1,8 @@
 //! Полоса LSP без транспорта: отмена, переполнение, паника службы, закрытие.
 use super::*;
-use crate::protocol_v5::lsp::{V5LspMessageLevel, V5LspPosition};
+use crate::protocol_v5::lsp::{
+    V5LspCapabilities, V5LspMessageLevel, V5LspPosition, V5LspWorkspaceSpace,
+};
 use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 

@@ -1,4 +1,4 @@
-pub mod lsp;
+pub use unica_lsp_contract::protocol as lsp;
 
 use super::identity::CoreIdentity;
 use lsp::{

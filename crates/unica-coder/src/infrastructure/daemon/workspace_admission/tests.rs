@@ -5,14 +5,14 @@ use crate::infrastructure::daemon::lsp_workspaces::ProductLspWorkspaces;
 use crate::infrastructure::daemon::protocol::InvocationRequest;
 use std::fs;
 use std::time::Duration;
-use unica_daemon::lsp_lane::{LspCallContext, LspClientChannel, LspHost};
-use unica_daemon::protocol_v5::lsp::{
-    V5LspCall, V5LspFailure, V5LspOutcome, V5LspSessionId, V5LspWorkspaceFolder,
-    V5LspWorkspaceSpace,
-};
 use unica_execution::clock::TokioClock;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_lsp::UnicaLspHost;
+use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
+use unica_lsp_contract::protocol::{
+    V5LspCall, V5LspFailure, V5LspOutcome, V5LspSessionId, V5LspWorkspaceFolder,
+    V5LspWorkspaceSpace,
+};
 
 const DISK: &str = "Procedure FromExtension() EndProcedure\n";
 

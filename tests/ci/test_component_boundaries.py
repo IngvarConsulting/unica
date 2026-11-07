@@ -108,6 +108,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-daemon", "unica-bootstrap"),
             ("unica-daemon", "unica-artifact-delivery"),
             ("unica-daemon", "unica-process"),
+            ("unica-daemon", "unica-lsp-contract"),
             ("unica-adapter-v8-runner", "unica-execution"),
             ("unica-coder", "rmcp"),
             ("unica-bsl-parser", "bsl-syntax"),
@@ -149,6 +150,33 @@ class ComponentBoundaryTests(unittest.TestCase):
         ):
             with self.subTest(owner=owner, target=target, kind=kind):
                 self.assertEqual(checker.edge_errors(owner, target, kind), [])
+
+    def test_lsp_service_and_its_contract_keep_their_own_boundary(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
+        refused = (
+            ("unica-lsp", "unica-daemon"),
+            ("unica-lsp", "unica-coder"),
+            ("unica-lsp", "unica-execution"),
+            ("unica-lsp", "unica-forms"),
+            ("unica-lsp-contract", "unica-daemon"),
+            ("unica-lsp-contract", "unica-workspace"),
+            ("unica-lsp-contract", "unica-address"),
+            ("unica-daemon", "unica-lsp"),
+        )
+        for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
+            for owner, target in refused:
+                with self.subTest(kind=kind, owner=owner, target=target):
+                    self.assertTrue(checker.edge_errors(owner, target, kind))
+        for owner, target in (
+            ("unica-lsp", "unica-lsp-contract"),
+            ("unica-lsp", "unica-workspace"),
+            ("unica-lsp", "unica-bsl"),
+            ("unica-lsp", "unica-source-designer"),
+            ("unica-lsp", "unica-address"),
+            ("unica-coder", "unica-lsp-contract"),
+        ):
+            with self.subTest(owner=owner, target=target):
+                self.assertEqual(checker.edge_errors(owner, target, "dependencies"), [])
 
     def test_only_the_product_package_depends_on_the_composition(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""

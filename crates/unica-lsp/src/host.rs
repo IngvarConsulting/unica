@@ -17,8 +17,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, Weak};
 use std::time::Instant;
-use unica_daemon::lsp_lane::{LspCallContext, LspClientChannel, LspHost};
-use unica_daemon::protocol_v5::lsp::{
+use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
+use unica_lsp_contract::protocol::{
     V5LspCall, V5LspCapabilities, V5LspContentChange, V5LspFailure, V5LspNotification,
     V5LspOpening, V5LspOutcome, V5LspSessionId, V5LspTextSync, V5LspWorkspaceFolder,
     V5LspWorkspaceSpace,

@@ -4,12 +4,12 @@ use super::*;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
-use unica_daemon::lsp_lane::{LspCallContext, LspClientChannel, LspHost};
-use unica_daemon::protocol_v5::lsp::{
+use unica_lsp::UnicaLspHost;
+use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
+use unica_lsp_contract::protocol::{
     V5LspCall, V5LspContentChange, V5LspNotification, V5LspOutcome, V5LspSessionId,
     V5LspWorkspaceFolder, V5LspWorkspaceSpace,
 };
-use unica_lsp::UnicaLspHost;
 
 const MODULE: &str = "src/CommonModules/Main/Ext/Module.bsl";
 const DISK: &str = "Procedure Disk() EndProcedure\n";
@@ -306,9 +306,9 @@ fn a_change_the_buffer_cannot_take_is_refused_so_the_editor_drops_it() {
         uri: uri.clone(),
         version,
         changes: vec![V5LspContentChange {
-            range: Some(unica_daemon::protocol_v5::lsp::V5LspRange {
-                start: unica_daemon::protocol_v5::lsp::V5LspPosition { line, character: 0 },
-                end: unica_daemon::protocol_v5::lsp::V5LspPosition { line, character: 0 },
+            range: Some(unica_lsp_contract::protocol::V5LspRange {
+                start: unica_lsp_contract::protocol::V5LspPosition { line, character: 0 },
+                end: unica_lsp_contract::protocol::V5LspPosition { line, character: 0 },
             }),
             text: "x".into(),
         }],
