@@ -64,6 +64,58 @@ class ChoiceTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertTrue(choose([path, "crates/a/src/lib.rs"]).full)
 
+    def test_a_lock_changed_only_for_workspace_crates_selects_by_crate(self) -> None:
+        choice = choose(["Cargo.lock", "crates/a/Cargo.toml", "crates/a/src/lib.rs"], lock_is_internal=True)
+        self.assertFalse(choice.full)
+        self.assertEqual(choice.packages, ("unica-a",))
+        self.assertEqual(choice.dependents, ("unica-b", "unica-coder"))
+        # Манифест рабочей области и тулчейн остаются полным набором и рядом с такой правкой.
+        for path in ("Cargo.toml", "rust-toolchain.toml"):
+            with self.subTest(path=path):
+                self.assertTrue(choose(["Cargo.lock", path], lock_is_internal=True).full)
+
+    def test_only_external_packages_of_the_lock_count(self) -> None:
+        member = '[[package]]\nname = "unica-a"\nversion = "1.0.0"\ndependencies = ["serde"]\n'
+        serde = '[[package]]\nname = "serde"\nversion = "1.0.0"\nsource = "registry+x"\nchecksum = "aa"\n'
+        members = {"unica-a", "unica-new"}
+        same = queue.external_packages(serde + member, members)
+        self.assertEqual(same, queue.external_packages(serde, members))
+        self.assertEqual(same, queue.external_packages(member + '[[package]]\nname = "unica-new"\nversion = "1.0.0"\n' + serde, members))
+        # Путевой патч не член рабочей области, хотя `source` у него тоже нет.
+        patched = '[[package]]\nname = "ureq"\nversion = "2.0.0"\n'
+        self.assertNotEqual(queue.external_packages(serde + patched, members), queue.external_packages(serde + patched.replace("2.0.0", "2.0.1"), members))
+        for changed in (
+            serde.replace('version = "1.0.0"', 'version = "1.0.1"'),
+            serde.replace('checksum = "aa"', 'checksum = "bb"'),
+            serde.replace('registry+x', 'git+y'),
+            serde + 'dependencies = ["itoa"]\n',
+            serde + '[[package]]\nname = "itoa"\nversion = "1.0.0"\nsource = "registry+x"\n',
+            '[[package]]\nname = "other"\nversion = "1.0.0"\n',
+        ):
+            with self.subTest(changed=changed):
+                self.assertNotEqual(same, queue.external_packages(changed, members))
+
+    def test_the_lock_is_compared_between_the_two_revisions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            git = lambda *arguments: subprocess.check_output(["git", "-c", "user.name=t", "-c", "user.email=t@example.test", *arguments], cwd=root, text=True).strip()
+            git("init", "-q")
+            serde = '[[package]]\nname = "serde"\nversion = "1.0.0"\nsource = "registry+x"\n'
+            revisions = []
+            for lock in (serde, serde + '[[package]]\nname = "unica-new"\nversion = "1.0.0"\n', serde.replace("1.0.0", "1.0.1")):
+                (root / "Cargo.lock").write_text(lock, encoding="utf-8")
+                git("add", "Cargo.lock")
+                git("commit", "-qm", "x")
+                revisions.append(git("rev-parse", "HEAD"))
+            self.assertTrue(queue.lock_keeps_external(revisions[0], revisions[1], {"unica-new"}, root))
+            self.assertFalse(queue.lock_keeps_external(revisions[1], revisions[2], {"unica-new"}, root))
+
+    def test_a_lock_that_cannot_be_read_runs_everything(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"GITHUB_OUTPUT": str(Path(directory) / "o")}):
+            with mock.patch.object(queue, "workspace", return_value=(DIRS, DEPENDENTS)), mock.patch.object(queue.subprocess, "check_output", side_effect=["Cargo.lock\n", subprocess.CalledProcessError(128, "git")]):
+                self.assertEqual(queue.main(["--base", "a", "--head", "b", "--dry-run"]), 0)
+            self.assertEqual((Path(directory) / "o").read_text(encoding="utf-8"), "full=true\n")
+
     def test_paths_rust_tests_read_select_the_crates_that_mention_them(self) -> None:
         for path in ("tests/fixtures/xdto/a.xml", "scripts/dev/x.py"):
             with self.subTest(path=path):
@@ -97,6 +149,16 @@ class ChoiceTests(unittest.TestCase):
     def test_an_empty_diff_and_the_switch_run_everything(self) -> None:
         self.assertTrue(choose([]).full)
         self.assertTrue(choose(["crates/a/src/lib.rs"], force_full=True).full)
+
+    def test_every_crate_selected_runs_the_full_set_in_the_real_workspace(self) -> None:
+        directories, dependents = queue.workspace()
+        members = [path for path, name in directories.items() if name != "ureq"]
+        choice = queue.choose([f"{path}/Cargo.toml" for path in members], directories, dependents)
+        self.assertTrue(choice.full, choice.reason)
+        # Один незатронутый крейт оставляет обычный выбор.
+        choice = queue.choose([f"{path}/Cargo.toml" for path in members[1:]], directories, dependents)
+        self.assertFalse(choice.full, choice.reason)
+        self.assertNotIn(directories[members[0]], choice.packages)
 
     def test_small_runs_everywhere_and_selected_crates_are_not_run_twice(self) -> None:
         runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))

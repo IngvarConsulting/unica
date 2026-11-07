@@ -2,10 +2,12 @@ pub use unica_application::application;
 pub use unica_domain as domain;
 
 #[cfg(test)]
-mod application_medium_tests;
+mod application_tests;
 mod composition;
 pub(crate) mod infrastructure;
 pub mod interfaces;
+#[cfg(test)]
+mod medium_application_tests;
 
 #[cfg(feature = "receipt-ledger-test-support")]
 #[doc(hidden)]

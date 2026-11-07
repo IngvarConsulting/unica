@@ -2412,7 +2412,6 @@ name = "unica-application"
 version = "0.15.0-rc.1"
 dependencies = [
  "jsonschema",
- "percent-encoding",
  "serde",
  "serde_json",
  "sha2",
@@ -2581,7 +2580,6 @@ dependencies = [
  "jsonschema",
  "libc",
  "objc2-core-foundation",
- "percent-encoding",
  "proc-macro2",
  "quote",
  "regex",
@@ -2622,6 +2620,8 @@ dependencies = [
  "unica-execution-contract",
  "unica-forms",
  "unica-forms-designer",
+ "unica-lsp",
+ "unica-lsp-contract",
  "unica-metadata",
  "unica-metadata-designer",
  "unica-navigation",
@@ -2676,6 +2676,7 @@ dependencies = [
  "unica-bootstrap",
  "unica-execution",
  "unica-execution-contract",
+ "unica-lsp-contract",
  "unica-process",
  "unica-work-control",
  "unica-workspace",
@@ -2873,6 +2874,32 @@ dependencies = [
  "unica-metadata",
  "unica-source-contract",
  "unica-workspace",
+]
+
+[[package]]
+name = "unica-lsp"
+version = "0.15.0-rc.1"
+dependencies = [
+ "percent-encoding",
+ "sha2",
+ "tempfile",
+ "unica-address",
+ "unica-bsl",
+ "unica-execution-contract",
+ "unica-lsp-contract",
+ "unica-source-contract",
+ "unica-source-designer",
+ "unica-workspace",
+ "url",
+]
+
+[[package]]
+name = "unica-lsp-contract"
+version = "0.15.0-rc.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

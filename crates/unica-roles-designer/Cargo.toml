@@ -18,3 +18,7 @@ unica-roles = { path = "../unica-roles" }
 unica-source-designer = { path = "../unica-source-designer" }
 unica-xml-format = { path = "../unica-xml-format" }
 roxmltree.workspace = true
+
+[package.metadata.unica]
+component = "codec"
+file-io = "none"

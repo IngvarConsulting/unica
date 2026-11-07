@@ -38,7 +38,6 @@ unica-templates = { path = "../unica-templates" }
 unica-work-control = { path = "../unica-work-control" }
 unica-workspace = { path = "../unica-workspace" }
 unica-xdto = { path = "../unica-xdto" }
-percent-encoding.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -60,3 +59,7 @@ unica-work-control = { path = "../unica-work-control", features = ["test-support
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 unica-xdto = { path = "../unica-xdto", features = ["test-support"] }
 jsonschema.workspace = true
+
+[package.metadata.unica]
+component = "coordinator"
+file-io = "owned"

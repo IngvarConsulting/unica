@@ -19,8 +19,6 @@ use unica_workspace::cache::{CacheAccess, CacheReport};
 
 use unica_navigation::deferred_delivery;
 pub(crate) mod diagnostics;
-#[allow(dead_code)]
-pub mod lsp;
 pub(crate) mod metadata;
 pub mod operation_descriptors;
 pub(crate) mod operational_config;

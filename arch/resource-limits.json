@@ -6519,13 +6519,13 @@
       "unit": "count",
       "scope": "session",
       "source": {
-        "file": "crates/unica-daemon/src/lsp_lane.rs",
+        "file": "crates/unica-lsp-contract/src/host.rs",
         "symbol": "LSP_OUTBOX_CAPACITY"
       },
       "expr": "256",
       "value": 256,
       "applied": [
-        "crates/unica-daemon/src/lsp_lane.rs"
+        "crates/unica-lsp-contract/src/host.rs"
       ],
       "status": "unproven",
       "origin": "#2173",
@@ -6567,13 +6567,13 @@
       "unit": "bytes",
       "scope": "record",
       "source": {
-        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "file": "crates/unica-lsp-contract/src/protocol.rs",
         "symbol": "MAX_LSP_URI_BYTES"
       },
       "expr": "4 * 1024",
       "value": 4096,
       "applied": [
-        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+        "crates/unica-lsp-contract/src/protocol.rs"
       ],
       "status": "unproven",
       "origin": "#2173",
@@ -6591,13 +6591,13 @@
       "unit": "count",
       "scope": "session",
       "source": {
-        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "file": "crates/unica-lsp-contract/src/protocol.rs",
         "symbol": "MAX_LSP_WORKSPACE_FOLDERS"
       },
       "expr": "64",
       "value": 64,
       "applied": [
-        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+        "crates/unica-lsp-contract/src/protocol.rs"
       ],
       "status": "unproven",
       "origin": "#2173",
@@ -6615,13 +6615,13 @@
       "unit": "bytes",
       "scope": "record",
       "source": {
-        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "file": "crates/unica-lsp-contract/src/protocol.rs",
         "symbol": "MAX_LSP_FOLDER_NAME_BYTES"
       },
       "expr": "1024",
       "value": 1024,
       "applied": [
-        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+        "crates/unica-lsp-contract/src/protocol.rs"
       ],
       "status": "unproven",
       "origin": "#2173",
@@ -6639,13 +6639,13 @@
       "unit": "bytes",
       "scope": "record",
       "source": {
-        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "file": "crates/unica-lsp-contract/src/protocol.rs",
         "symbol": "MAX_LSP_LANGUAGE_ID_BYTES"
       },
       "expr": "64",
       "value": 64,
       "applied": [
-        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+        "crates/unica-lsp-contract/src/protocol.rs"
       ],
       "status": "unproven",
       "origin": "#2173",
@@ -6663,13 +6663,13 @@
       "unit": "bytes",
       "scope": "record",
       "source": {
-        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "file": "crates/unica-lsp-contract/src/protocol.rs",
         "symbol": "MAX_LSP_LOG_MESSAGE_BYTES"
       },
       "expr": "4 * 1024",
       "value": 4096,
       "applied": [
-        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+        "crates/unica-lsp-contract/src/protocol.rs"
       ],
       "status": "unproven",
       "origin": "#2173",
@@ -6711,13 +6711,13 @@
       "unit": "bytes",
       "scope": "record",
       "source": {
-        "file": "crates/unica-daemon/src/protocol_v5/lsp.rs",
+        "file": "crates/unica-lsp-contract/src/protocol.rs",
         "symbol": "MAX_LSP_SPACE_BYTES"
       },
       "expr": "64",
       "value": 64,
       "applied": [
-        "crates/unica-daemon/src/protocol_v5/lsp.rs"
+        "crates/unica-lsp-contract/src/protocol.rs"
       ],
       "status": "unproven",
       "origin": "#2173",

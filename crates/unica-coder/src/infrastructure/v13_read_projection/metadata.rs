@@ -4,13 +4,23 @@ use super::{
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_execution_contract::view_error::ViewError;
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_refusal::{RefusalCode, RefusalDetail};
 
+mod collections;
 mod items;
+mod limits;
+mod props;
 mod relations;
+use collections::{metadata_branch_kinds, metadata_collection, metadata_details};
 use items::{metadata_item_with_context, metadata_items, tabular_standard_attribute_limits};
+use limits::{
+    metadata_limits, task_addressing_applies, task_addressing_issue, unreadable_collection,
+    unreadable_entries, wsdl_limits,
+};
+pub(crate) use props::borrowing_props;
+use props::{metadata_detail_props, metadata_property_props};
 use relations::{metadata_missing_relation_limits, metadata_relation_limits, metadata_relations};
 
 pub(super) const PAYLOAD_KEYS: &[&str] = &[
@@ -463,291 +473,12 @@ fn project_metadata(
     )))
 }
 
-fn metadata_limits(payload: &Value) -> Vec<String> {
-    let mut limits = unreadable_limits(payload);
-    limits.extend(metadata_missing_relation_limits(payload));
-    limits.extend(wsdl_limits(payload));
-    limits
-}
-
-fn wsdl_limits(payload: &Value) -> Vec<String> {
-    payload
-        .pointer("/wsdlDefinition/limits")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .map(str::to_owned)
-        .collect()
-}
-
-/// Поля, которые читатель не смог спроецировать, — строками для `limits`.
-fn unreadable_limits(payload: &Value) -> Vec<String> {
-    unreadable_entries(payload)
-        .map(|(field, message)| format!("{field} не прочитано: {message}"))
-        .collect()
-}
-
-/// Причина, по которой коллекция из пофактовой части вида осталась без данных.
-///
-/// Без неё `URLTemplate` сервиса, чей шаблон читатель не разобрал, отвечал бы
-/// «нет такой коллекции», и агент счёл бы сервис пустым.
-fn unreadable_collection(payload: &Value, kind: NodeKind) -> Option<String> {
-    let (prefix, property) = match kind {
-        NodeKind::AddressingAttribute => ("collections.addressingAttributes", None),
-        NodeKind::PredefinedItem => ("predefinedItems", None),
-        NodeKind::UrlTemplate => ("details.urlTemplates", None),
-        NodeKind::Operation => ("details.operations", None),
-        NodeKind::StandardAttribute => {
-            ("standardAttributes", Some("properties.StandardAttributes"))
-        }
-        NodeKind::Characteristic => ("characteristics", Some("properties.Characteristics")),
-        NodeKind::StandardTabularSection => (
-            "standardTabularSections",
-            Some("properties.StandardTabularSections"),
-        ),
-        _ => return None,
-    };
-    // У применимой декларации есть ключ, даже если её состав не прочитан.
-    // Чужое одноимённое свойство не делает декларацию применимой к объекту.
-    if property.is_some() && metadata_collection(payload, kind).is_none() {
-        return None;
-    }
-    let reasons = unreadable_entries(payload)
-        .filter(|(field, _)| {
-            property == Some(*field)
-                || field
-                    .strip_prefix(prefix)
-                    .is_some_and(|rest| rest.is_empty() || rest.starts_with(['.', '[']))
-        })
-        .map(|(field, message)| format!("{field}: {message}"))
-        .collect::<Vec<_>>();
-    (!reasons.is_empty()).then(|| reasons.join("; "))
-}
-
-fn task_addressing_applies(address: &QualifiedAddress, payload: &Value) -> bool {
-    address
-        .segments()
-        .first()
-        .is_some_and(|owner| owner.kind() == NodeKind::Task && owner.name().is_some())
-        && payload.get("kind").and_then(Value::as_str) == Some("Task")
-}
-
-// The optional native collection distinguishes an unreadable/absent container
-// from a proved empty collection. Never run the generic empty fallback for it.
-fn task_addressing_issue(payload: &Value) -> Option<String> {
-    if let Some(reason) = unreadable_collection(payload, NodeKind::AddressingAttribute) {
-        return Some(format!(
-            "metadata AddressingAttribute collection is unreadable: {reason}"
-        ));
-    }
-    if metadata_collection(payload, NodeKind::AddressingAttribute)
-        .is_none_or(|value| !value.is_array())
-    {
-        return Some("collections.addressingAttributes is unknown: Task ChildObjects is absent or unreadable".into());
-    }
-    None
-}
-
-fn unreadable_entries(payload: &Value) -> impl Iterator<Item = (&str, &str)> {
-    payload
-        .get("unreadable")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            Some((
-                entry.get("field")?.as_str()?,
-                entry.get("message")?.as_str()?,
-            ))
-        })
-}
-
-/// Ветви объекта в порядке дерева Конфигуратора: измерения, ресурсы,
-/// реквизиты, табличные части, значения, графы, перерасчёты, операции,
-/// шаблоны URL, затем формы, команды и макеты. Стандартные реквизиты и
-/// табличные части идут за своими видами; характеристики и предопределённые
-/// элементы, которых дерево не показывает, — в конце.
-fn metadata_branch_kinds() -> &'static [NodeKind] {
-    &[
-        NodeKind::Dimension,
-        NodeKind::Resource,
-        NodeKind::Attribute,
-        NodeKind::AddressingAttribute,
-        NodeKind::StandardAttribute,
-        NodeKind::TabularSection,
-        NodeKind::StandardTabularSection,
-        NodeKind::EnumValue,
-        NodeKind::Column,
-        NodeKind::Recalculation,
-        NodeKind::Operation,
-        NodeKind::UrlTemplate,
-        NodeKind::Form,
-        NodeKind::Command,
-        NodeKind::Template,
-        NodeKind::Characteristic,
-        NodeKind::PredefinedItem,
-    ]
-}
-
-fn metadata_collection(payload: &Value, kind: NodeKind) -> Option<&Value> {
-    let collections = payload.get("collections")?;
-    let declarations = payload.get("declarations");
-    match kind {
-        NodeKind::Attribute => collections.get("attributes"),
-        NodeKind::AddressingAttribute
-            if payload.get("kind").and_then(Value::as_str) == Some("Task") =>
-        {
-            collections.get("addressingAttributes")
-        }
-        NodeKind::StandardAttribute => declarations?.get("standardAttributes"),
-        NodeKind::Characteristic => declarations?.get("characteristics"),
-        NodeKind::StandardTabularSection => declarations?.get("standardTabularSections"),
-        // Страница элементов лежит в `items`, а правдивый счёт — в `total`
-        // рядом: при урезанной странице длина массива соврала бы.
-        NodeKind::PredefinedItem => payload.get("predefinedItems")?.get("items"),
-        NodeKind::TabularSection => collections.get("tabularSections"),
-        NodeKind::Dimension => collections.get("dimensions"),
-        NodeKind::Resource => collections.get("resources"),
-        NodeKind::Recalculation => collections.get("recalculations"),
-        NodeKind::EnumValue => collections.get("enumValues"),
-        NodeKind::Column => collections.get("columns"),
-        NodeKind::Form => collections.get("forms"),
-        NodeKind::Template => collections.get("templates"),
-        NodeKind::Command => collections.get("commands"),
-        // Последовательности пофактовой части вида: платформа держит их не в
-        // `collections`, но для читателя это такая же адресуемая коллекция.
-        NodeKind::UrlTemplate => metadata_details(payload)?.get("urlTemplates"),
-        NodeKind::Operation => metadata_details(payload)?.get("operations"),
-        _ => None,
-    }
-}
-
-/// Пофактовая часть вида: `details` приходит соседним тегом `{kind, details}`.
-fn metadata_details(payload: &Value) -> Option<&Value> {
-    payload
-        .get("details")
-        .and_then(|adjacent| adjacent.get("details"))
-}
-
-/// Пофактовая часть вида раскладывается в `props` по ролям.
-///
-/// Составное значение из двух-трёх полей не помещается в `props` объектом и
-/// не заслуживает ветви: адресовать внутри него нечего. Роль каждого поля
-/// называет ключ, и родительный падеж уходит в имя: `handlerModule`, а не
-/// `method.metadataPath`.
-fn metadata_detail_props(
-    address: &QualifiedAddress,
-    payload: &Value,
-    limits: &mut Vec<String>,
-) -> Map<String, Value> {
-    let mut props = Map::new();
-    let Some(details) = payload
-        .get("details")
-        .and_then(|adjacent| adjacent.get("details"))
-    else {
-        return props;
-    };
-    for (source, roles) in [
-        (
-            "method",
-            &[
-                ("metadataPath", "handlerModule"),
-                ("method", "handlerMethod"),
-            ][..],
-        ),
-        (
-            "schedule",
-            &[
-                ("register", "scheduleRegister"),
-                ("valueField", "scheduleValueField"),
-                ("dateField", "scheduleDateField"),
-            ][..],
-        ),
-    ] {
-        let Some(composite) = details.get(source) else {
-            continue;
-        };
-        for (field, role) in roles {
-            if let Some(value) = composite.get(field) {
-                let subject = format!("metadata {role}");
-                place_prop(&mut props, limits, address, role, value, false, &subject);
-            }
-        }
-    }
-    // Тип корня — свойство платформы `Type`, под тем же именем его
-    // принимает запись.
-    if let Some(value) = details.get("type") {
-        place_prop(
-            &mut props,
-            limits,
-            address,
-            "Type",
-            value,
-            false,
-            "metadata type",
-        );
-    }
-    props
-}
-
-fn metadata_property_props(
-    address: &QualifiedAddress,
-    payload: &Value,
-    limits: &mut Vec<String>,
-) -> Map<String, Value> {
-    let mut props = Map::new();
-    for property in payload
-        .get("properties")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let (Some(key), Some(value)) = (
-            property.get("key").and_then(Value::as_str),
-            property.get("value"),
-        ) else {
-            continue;
-        };
-        let subject = format!("metadata property {key}");
-        place_prop(&mut props, limits, address, key, value, true, &subject);
-    }
-    props
-}
-
-pub(crate) fn borrowing_props(
-    borrowing: &unica_metadata_designer::xml_model::MetaBorrowing,
-) -> Map<String, Value> {
-    let mut props = Map::new();
-    props.insert(
-        "belonging".into(),
-        json!(if borrowing.extends.is_some() {
-            "borrowed"
-        } else {
-            "own"
-        }),
-    );
-    if let Some(parent_id) = &borrowing.extends {
-        if safe_prop("parentId", &json!(parent_id)) {
-            props.insert("parentId".into(), json!(parent_id));
-        }
-        props.insert("parentStatus".into(), json!("unavailable"));
-        let overrides = borrowing.overrides.join(", ");
-        let complete = safe_prop("overrides", &json!(overrides));
-        props.insert("overridesCount".into(), json!(borrowing.overrides.len()));
-        props.insert("overridesComplete".into(), json!(complete));
-        if complete && !overrides.is_empty() {
-            props.insert("overrides".into(), json!(overrides));
-        }
-    }
-    props
-}
-
 #[cfg(test)]
 mod tabular_standard_attribute_property_tests {
     use super::items::metadata_item_node;
     use super::*;
     use crate::infrastructure::v13_read_projection::MAX_COMPACT_PROP_BYTES;
+    use serde_json::json;
 
     #[test]
     fn tabular_standard_properties_keep_a_closed_utf8_bound_and_independent_values() {

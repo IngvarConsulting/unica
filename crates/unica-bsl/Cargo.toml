@@ -26,4 +26,6 @@ serde_json.workspace = true
 unica-metadata = { path = "../unica-metadata" }
 
 [package.metadata.unica]
+component = "family"
+file-io = "none"
 inputs = ["tests/fixtures/v013/address-profile-8.3.27.json"]

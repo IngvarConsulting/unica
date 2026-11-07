@@ -9,3 +9,7 @@ repository.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
+
+[package.metadata.unica]
+component = "abstraction"
+file-io = "none"

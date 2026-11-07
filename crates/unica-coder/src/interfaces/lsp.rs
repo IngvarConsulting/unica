@@ -18,12 +18,12 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use unica_daemon::client_v5::{V5DaemonClient, V5DaemonProcessOwner, V5LspExchangeError};
-use unica_daemon::protocol_v5::lsp::{
+use unica_daemon::protocol_v5::V5EndpointRecord;
+use unica_lsp_contract::protocol::{
     V5LspCall, V5LspContentChange, V5LspFailure, V5LspMessageLevel, V5LspNotification,
     V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange, V5LspServerNotification, V5LspSessionId,
     V5LspTextSync, V5LspWorkspaceFolder,
 };
-use unica_daemon::protocol_v5::V5EndpointRecord;
 
 /// Бюджет запроса на полосе демона.
 const LSP_CALL_BUDGET: Duration = Duration::from_secs(5);
@@ -93,6 +93,7 @@ pub(crate) fn serve(
         phase: Phase::Uninitialized,
         in_flight: Arc::new(Mutex::new(HashMap::new())),
         next_request: 0,
+        unsynced: std::collections::HashSet::new(),
     };
     let code = loop {
         let body = match codec::read_message(&mut input) {
@@ -126,6 +127,9 @@ struct Frontend {
     phase: Phase,
     in_flight: InFlight,
     next_request: u64,
+    /// Documents whose text the daemon lost track of. Requests about them
+    /// are refused until the editor opens them again.
+    unsynced: std::collections::HashSet<String>,
 }
 
 enum Phase {
@@ -268,6 +272,10 @@ impl Frontend {
                     // state the editor no longer has.
                     self.withdraw_document(notification.document_uri());
                 }
+                if !matches!(notification, V5LspNotification::DidChange { .. }) {
+                    // Opening sends the whole text again; closing ends it.
+                    self.unsynced.remove(notification.document_uri());
+                }
                 self.forward(notification)
             }
             _ => Flow::Continue,
@@ -322,6 +330,17 @@ impl Frontend {
     }
 
     fn dispatch(&mut self, id: Value, call: V5LspCall) {
+        if call
+            .document_uri()
+            .is_some_and(|uri| self.unsynced.contains(uri))
+        {
+            self.send(error_response(
+                id,
+                CONTENT_MODIFIED,
+                "document is out of sync",
+            ));
+            return;
+        }
         let Phase::Running(session) = &self.phase else {
             return;
         };
@@ -403,6 +422,7 @@ impl Frontend {
         };
         eprintln!("unica lsp ignored a document notification it cannot pass on");
         self.withdraw_document(&uri);
+        self.unsynced.insert(uri.clone());
         let close = V5LspNotification::DidClose { uri };
         if close.validate().is_err() {
             return Flow::Continue;
@@ -414,16 +434,29 @@ impl Frontend {
         let Phase::Running(session) = &mut self.phase else {
             return Flow::Continue;
         };
+        let changed = match &notification {
+            V5LspNotification::DidOpen { uri, .. } | V5LspNotification::DidChange { uri, .. } => {
+                Some(uri.clone())
+            }
+            V5LspNotification::DidClose { .. } => None,
+        };
         let deadline = Instant::now() + LSP_SESSION_EXCHANGE_TIMEOUT;
         match session
             .anchor
             .lsp_notify_before(&session.id, notification, deadline)
         {
             Ok(()) => Flow::Continue,
-            // The daemon refused this document; the session stays.
+            // The daemon refused this document; the session stays. A refused
+            // change leaves the daemon's buffer behind the editor's text, so
+            // the document is dropped there rather than answered from it.
             Err(V5LspExchangeError::Refused(failure))
                 if failure != V5LspFailure::SessionUnknown =>
             {
+                // The daemon closed the document on its side.
+                if let Some(uri) = changed {
+                    self.withdraw_document(&uri);
+                    self.unsynced.insert(uri);
+                }
                 Flow::Continue
             }
             Err(error) => Flow::Fail(exchange_message(&error)),
@@ -584,6 +617,7 @@ fn failure_code(failure: V5LspFailure) -> &'static str {
         V5LspFailure::DeadlineExceeded => "lsp_deadline_exceeded",
         V5LspFailure::Unavailable => "lsp_unavailable",
         V5LspFailure::WorkspaceUnavailable => "lsp_workspace_unavailable",
+        V5LspFailure::DocumentUnknown => "lsp_document_unknown",
     }
 }
 

@@ -17,6 +17,8 @@ receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "u
 unica-application = { path = "../unica-application" }
 unica-domain = { path = "../unica-domain" }
 unica-daemon = { path = "../unica-daemon" }
+unica-lsp-contract = { path = "../unica-lsp-contract" }
+unica-lsp = { path = "../unica-lsp" }
 unica-bindings = { path = "../unica-bindings" }
 unica-adapter-lexical = { path = "../unica-adapter-lexical" }
 unica-adapter-bsl-analyzer = { path = "../unica-adapter-bsl-analyzer" }
@@ -85,7 +87,6 @@ regex.workspace = true
 regex-syntax.workspace = true
 tempfile.workspace = true
 url.workspace = true
-percent-encoding.workspace = true
 uuid.workspace = true
 # `flate2` кодом крейта не вызывается: она объявлена, чтобы `zip` получил
 # чистый Rust-backend для deflate вместо системного zlib и без `zopfli`
@@ -108,6 +109,7 @@ cap-fs-ext.workspace = true
 [dev-dependencies]
 unica-application = { path = "../unica-application", features = ["test-support"] }
 unica-daemon = { path = "../unica-daemon", features = ["test-support"] }
+unica-lsp-contract = { path = "../unica-lsp-contract", features = ["test-support"] }
 unica-project-health = { path = "../unica-project-health", features = ["test-support"] }
 unica-roles-designer = { path = "../unica-roles-designer", features = ["test-support"] }
 unica-templates-designer = { path = "../unica-templates-designer", features = ["test-support"] }
@@ -143,6 +145,8 @@ syn.workspace = true
 tar.workspace = true
 
 [package.metadata.unica]
+component = "product"
+file-io = "owned"
 # `crates`: production_operation_paths_start_no_new_finite_deadline walks every crate's src.
 inputs = ["crates", "plugins/unica/skills", "plugins/unica/third-party/tools.lock.json", "tests/fixtures/acceptance", "tests/fixtures/analyzer", "tests/fixtures/bsl_analyzer", "tests/fixtures/platform_8_3_27", "tests/fixtures/styleitem_values", "tests/fixtures/unica_mcp_script_parity", "tests/fixtures/v013", "tests/fixtures/xdto"]
 read-outside-baseline = 1

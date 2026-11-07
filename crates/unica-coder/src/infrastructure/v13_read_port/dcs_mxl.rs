@@ -136,6 +136,8 @@ impl ProviderReadAuthority {
         })
     }
 
+    /// `with_content` carries the cell text. It is off for every structural
+    /// read: the area count and its parameters are cheap, the text is not.
     pub(crate) fn mxl_payload(
         &self,
         target: &MetadataAddress,

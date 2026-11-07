@@ -2,7 +2,7 @@
 //!
 //! Методы, уведомления и исходы — закрытые варианты, как и остальной
 //! протокол v5. Тексты документов и адреса передаются как есть; их смысл
-//! разбирает служба LSP за портом [`crate::lsp_lane::LspHost`].
+//! разбирает служба LSP за портом [`crate::host::LspHost`].
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -36,7 +36,7 @@ impl V5LspSessionId {
 
     /// The id names a session and is checked without carrying it into the
     /// error: a refused frame's text reaches logs.
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         let canonical = Uuid::parse_str(&self.0).is_ok_and(|parsed| {
             parsed.get_version() == Some(uuid::Version::Random)
                 && parsed.get_variant() == uuid::Variant::RFC4122
@@ -233,7 +233,7 @@ impl V5LspWorkspaceSpace {
         }
     }
 
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         validate_uri(&self.folder)?;
         match (&self.space, self.failure) {
             (Some(space), None) => validate_space(space),
@@ -269,6 +269,8 @@ pub enum V5LspFailure {
     Unavailable,
     /// Рабочая папка не открылась как рабочая область Unica.
     WorkspaceUnavailable,
+    /// Адрес не называет модуль, доступный этому соединению.
+    DocumentUnknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,7 +321,7 @@ pub enum V5LspServerNotification {
 }
 
 impl V5LspServerNotification {
-    pub(super) fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         match self {
             Self::LogMessage { message, .. } if message.len() > MAX_LSP_LOG_MESSAGE_BYTES => {
                 Err("v5 lsp log message exceeds its limit".to_string())
@@ -329,7 +331,7 @@ impl V5LspServerNotification {
     }
 }
 
-pub(super) fn validate_open(folders: &[V5LspWorkspaceFolder]) -> Result<(), String> {
+pub fn validate_open(folders: &[V5LspWorkspaceFolder]) -> Result<(), String> {
     if folders.len() > MAX_LSP_WORKSPACE_FOLDERS {
         return Err("v5 lsp session has too many workspace folders".to_string());
     }
@@ -344,11 +346,11 @@ pub(super) fn validate_open(folders: &[V5LspWorkspaceFolder]) -> Result<(), Stri
     Ok(())
 }
 
-pub(super) fn validate_call(call: &V5LspCall) -> Result<(), String> {
+pub fn validate_call(call: &V5LspCall) -> Result<(), String> {
     call.validate()
 }
 
-pub(super) fn validate_notification(notification: &V5LspNotification) -> Result<(), String> {
+pub fn validate_notification(notification: &V5LspNotification) -> Result<(), String> {
     notification.validate()
 }
 

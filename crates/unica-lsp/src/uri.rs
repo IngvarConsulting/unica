@@ -5,8 +5,9 @@
 //! folders share it. Editors lower-case a URI authority (VS Code does), so a
 //! space is named and matched in lower case. A URI of a space this connection was not given is refused, so
 //! two workspaces that both have a source set `main` never mix. The address
-//! follows the Unica logical address grammar (`CommonModule.X`,
-//! `Catalog.X.Module.Object`, ...).
+//! follows the Unica logical address grammar; a document is a module body,
+//! addressed as MCP addresses it (`CommonModule.X.Body`,
+//! `Catalog.X.Module.Object.Body`).
 
 use percent_encoding::{percent_decode_str, utf8_percent_encode, AsciiSet, CONTROLS};
 use sha2::{Digest, Sha256};
@@ -276,6 +277,7 @@ mod tests {
             "main:Catalog.Валюты.Module.Object",
             "ext:Document.Заказ.Form.ФормаДокумента.Module.Form",
             r"main:CommonTemplate.S.Parameter.A\.B",
+            "main:CommonModule.ОбщегоНазначения.Body",
         ] {
             let document = DocumentUri {
                 space: "ws".to_owned(),

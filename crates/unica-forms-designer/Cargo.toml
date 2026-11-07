@@ -26,6 +26,8 @@ roxmltree.workspace = true
 serde_json.workspace = true
 
 [package.metadata.unica]
+component = "codec"
+file-io = "none"
 inputs = [
     "crates/unica-metadata-designer/tests/platform/dump_parity",
     "plugins/unica/skills/form-compile/SKILL.md",

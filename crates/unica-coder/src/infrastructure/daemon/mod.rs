@@ -1,3 +1,4 @@
+mod lsp_workspaces;
 #[cfg(test)]
 #[path = "../../../tests/platform/receipt_runtime.rs"]
 mod medium_receipt_runtime_tests;

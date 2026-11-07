@@ -925,6 +925,21 @@ def file_io_free_packages(repo_root: Path) -> dict[str, str]:
     return {name: found[name] for name in sorted(found) if is_file_io_free_package(name)}
 
 
+def file_io_declaration_errors(manifests: dict[str, str]) -> list[str]:
+    """A package that says nothing about file IO would stay outside this guard unnoticed."""
+    errors: list[str] = []
+    for path, text in sorted(manifests.items()):
+        package = tomllib.loads(text).get("package", {})
+        name = package.get("name", "")
+        declared = package.get("metadata", {}).get("unica", {}).get("file-io")
+        required = "none" if is_file_io_free_package(name) else "owned"
+        if declared not in {"none", "owned"}:
+            errors.append(f'{path}: declare file-io under [package.metadata.unica]: "none" reads files only through workspace ports and is listed in FILE_IO_COMPONENTS or DOMAIN_COMPONENTS, "owned" may touch the file system directly')
+        elif declared != required:
+            errors.append(f"{path}: file-io {declared} disagrees with this guard, which treats {name} as {required}; update FILE_IO_COMPONENTS or the declaration")
+    return errors
+
+
 def check_repository(repo_root: Path) -> list[str]:
     manifests, workspace_dependencies = collect_repository_manifests(repo_root)
     manifest_diagnostics = [diagnostic for path in sorted(manifests)
@@ -943,7 +958,8 @@ def main() -> int:
         return 0
 
     try:
-        diagnostics = check_repository(args.repo_root.resolve())
+        root = args.repo_root.resolve()
+        diagnostics = file_io_declaration_errors(collect_repository_manifests(root)[0]) + check_repository(root)
     except (OSError, subprocess.CalledProcessError, UnicodeDecodeError, ValueError, tomllib.TOMLDecodeError) as error:
         print(f"rust platform boundary error: {error}", file=sys.stderr)
         return 1

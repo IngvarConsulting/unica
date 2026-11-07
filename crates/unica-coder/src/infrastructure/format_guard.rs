@@ -2502,7 +2502,7 @@ mod medium_tests {
     /// `#[test]` сделала бы из этого ещё один прогон уже сделанной работы.
     fn format_evidence_payload() {
         single_writable_platform_xml_profile_is_exact();
-        crate::application_medium_tests::native_mutation_surface_has_exact_operations_and_schemas();
+        crate::application_tests::native_mutation_surface_has_exact_operations_and_schemas();
         public_platform_xml_mutators_have_closed_pre_side_effect_format_refusal();
         staged_dcs_owner_is_outside_the_old_external_source_set_profile();
         older_extension_dump_recommends_platform_reexport();
@@ -2603,8 +2603,8 @@ mod medium_tests {
         // diagnostic route, so exercise all three of those public calls
         // separately. Together these close the exact two handler variants
         // without pretending their public diagnostics match.
-        crate::application_medium_tests::incompatible_format_blocks_before_native_handler();
-        crate::application_medium_tests::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
+        crate::medium_application_tests::incompatible_format_blocks_before_native_handler();
+        crate::medium_application_tests::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
         std::fs::remove_dir_all(workspace_root).unwrap();
     }
 
