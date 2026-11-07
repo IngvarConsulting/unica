@@ -381,7 +381,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
     # itself is gone with the rest of the v0.12 initializers (#1813).
 
     def test_rust_registry_parity_list_matches_python_parity_harness(self) -> None:
-        app_mod = (REPO_ROOT / "crates/unica-coder/src/medium_application_tests.rs").read_text(
+        app_mod = (REPO_ROOT / "crates/unica-application/src/application/medium_application_tests.rs").read_text(
             encoding="utf-8"
         )
         match = re.search(
