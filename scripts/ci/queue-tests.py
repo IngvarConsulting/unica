@@ -189,16 +189,23 @@ def load_runner():
 
 
 def commands(packages: tuple[str, ...], runner, dependents: tuple[str, ...] = ()) -> list[list[str]]:
-    """`small` остальных крейтов и `small` с `medium` выбранных: без повтора одних и тех же тестов."""
+    """`small` остальных крейтов и `small` с `medium` выбранных: без повтора одних и тех же тестов.
+
+    Каждый вызов собирает `--workspace` и отбирает пакеты фильтром nextest. С `-p`
+    и `--exclude` Cargo объединял бы признаки по другому набору пакетов, и следующий
+    вызов пересобирал бы общие зависимости заново; с одним набором сборка одна.
+    """
     # `ureq` не член рабочей области: его набор идёт из своего манифеста ниже.
     members = tuple(package for package in packages if package != "ureq")
-    others = ("--workspace", *(item for package in members for item in ("--exclude", package)))
+    chosen = " | ".join(f"package({package})" for package in members)
+    others = ("--workspace", "-E", f"not ({chosen})") if members else ("--workspace",)
     planned = [[*runner.rust_command("pr", others), "--no-tests=pass"]]
     if members:
-        selection = tuple(item for package in members for item in ("-p", package))
+        selection = ("--workspace", "-E", chosen)
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
     if dependents:
-        selection = (*(item for package in dependents for item in ("-p", package)), "-E", DEPENDENT_FILTER)
+        reached = " | ".join(f"package({package})" for package in dependents)
+        selection = ("--workspace", "-E", f"({reached}) & ({DEPENDENT_FILTER})")
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
     if {"unica-coder-daemon", "unica-product"} & set(packages):
         planned.append(runner.rust_command("queue", runner.LEDGER_FEATURE_SELECTION))

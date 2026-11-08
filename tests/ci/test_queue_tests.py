@@ -56,7 +56,9 @@ class ChoiceTests(unittest.TestCase):
         runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
         runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
         planned = queue.commands(("unica-a",), runner, ("unica-coder",))
-        self.assertEqual(planned[-1], ["queue", "-p", "unica-coder", "-E", queue.DEPENDENT_FILTER, "--no-tests=pass"])
+        self.assertEqual(planned[-1], [
+            "queue", "--workspace", "-E", f"(package(unica-coder)) & ({queue.DEPENDENT_FILTER})", "--no-tests=pass",
+        ])
         self.assertNotIn(["queue", "ledger"], planned)
 
     def test_only_the_whole_build_runs_everything(self) -> None:
@@ -164,15 +166,28 @@ class ChoiceTests(unittest.TestCase):
         runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
         runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
         self.assertEqual(queue.commands((), runner), [["pr", "--workspace", "--no-tests=pass"]])
-        self.assertEqual(queue.commands(("unica-a",), runner), [
-            ["pr", "--workspace", "--exclude", "unica-a", "--no-tests=pass"],
-            ["queue", "-p", "unica-a", "--no-tests=pass"],
+        self.assertEqual(queue.commands(("unica-a", "unica-b"), runner), [
+            ["pr", "--workspace", "-E", "not (package(unica-a) | package(unica-b))", "--no-tests=pass"],
+            ["queue", "--workspace", "-E", "package(unica-a) | package(unica-b)", "--no-tests=pass"],
         ])
         planned = queue.commands(("unica-coder-daemon", "ureq"), runner)
-        self.assertEqual(planned[1], ["queue", "-p", "unica-coder-daemon", "--no-tests=pass"])
+        self.assertEqual(planned[1], ["queue", "--workspace", "-E", "package(unica-coder-daemon)", "--no-tests=pass"])
         self.assertEqual(planned[2:], [["queue", "ledger"], ["queue", "ureq"]])
         # Фасад журнала живёт в демоне: правка нижнего слоя его не запускает.
         self.assertNotIn(["queue", "ledger"], queue.commands(("unica-coder",), runner))
+
+    def test_every_workspace_call_builds_the_same_package_set(self) -> None:
+        # С `-p` или `--exclude` Cargo объединяет признаки по другому набору
+        # пакетов и пересобирает общие зависимости в следующем вызове.
+        runner = mock.Mock(LEDGER_FEATURE_SELECTION=("ledger",), UREQ_RECYCLING_SELECTION=("ureq",))
+        runner.rust_command.side_effect = lambda profile, selection: [profile, *selection]
+        planned = queue.commands(("unica-a", "unica-coder"), runner, ("unica-b",))
+        self.assertEqual(len(planned), 3)
+        for command in planned:
+            with self.subTest(command=command):
+                self.assertEqual(command[1], "--workspace")
+                self.assertNotIn("-p", command)
+                self.assertNotIn("--exclude", command)
 
     def test_a_vendored_patch_is_selected_in_the_real_workspace(self) -> None:
         directories, dependents = queue.workspace()
