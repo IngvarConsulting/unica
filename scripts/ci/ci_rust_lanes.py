@@ -514,16 +514,21 @@ def result_directory(report: Path, host: str, lane: str) -> Path:
     return report / f"results-rust-{host}-{lane}-1"
 
 
-def build_host(root: Path, work: Path, report: Path, profile: str, host: str, line: str | None) -> int:
+def build_host(root: Path, work: Path, report: Path, profile: str, host: str, line: str | None,
+               only: str | None = None) -> int:
     """Build every lane archive of this runner in the job that will run it.
 
     The archive is not handed to another job: it pins the bytes the plan lists
     to the bytes the run executes, and a later lane's build (Receipt rebuilds
     `unica` with its feature) cannot replace them, because the run extracts
     its own archive. A failed lane still leaves its signed configuration.
+    `only` builds one lane of the plan: the queue's probe of the nightly path.
     """
+    planned = lanes(profile, host)
+    if only is not None and only not in planned:
+        raise ValueError(f"lane {only} is not in the {profile} plan of {host}: {', '.join(planned)}")
     failed = []
-    for lane in lanes(profile, host):
+    for lane in planned if only is None else (only,):
         try:
             build(root, work / lane, lane, profile, host, line)
         except Exception as error:  # one red lane never stops the next one
