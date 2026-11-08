@@ -1,0 +1,17 @@
+{
+  "area": "Код BSL",
+  "task": "Ограничить поиск корнем конфигурации",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "КонецФункции",
+        "scope": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S152"
+}

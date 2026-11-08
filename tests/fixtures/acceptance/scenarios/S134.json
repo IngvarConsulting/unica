@@ -1,0 +1,26 @@
+{
+  "area": "Формы",
+  "task": "Назначить обработчик события ПриОткрытии",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Event.OnOpen",
+        "ops": [
+          {
+            "op": "event.bind",
+            "args": {
+              "values": {
+                "handler": "ПриОткрытии"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S134"
+}

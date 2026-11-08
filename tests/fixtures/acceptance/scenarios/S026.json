@@ -1,0 +1,32 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Узнать, какие операции доступны на корне конфигурации",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "object.create",
+            "args": "values"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "subsystem.create",
+            "args": "values"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S026"
+}

@@ -1,0 +1,26 @@
+{
+  "area": "Свойства объектов",
+  "task": "Изменить комментарий роли (превью правки свойств роли)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Роль чтения продаж"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S057"
+}

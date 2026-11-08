@@ -1,0 +1,26 @@
+{
+  "id": "S278",
+  "area": "Код BSL",
+  "task": "Вставить код в общий модуль выгрузки 2.21 — отказ по формату владельца",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "newer:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "// проба\n"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+    }
+  ],
+  "workspace": "tests/fixtures/acceptance/workspace-format"
+}

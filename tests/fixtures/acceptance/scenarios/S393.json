@@ -1,0 +1,130 @@
+{
+  "id": "S393",
+  "name": "misplaced-element-add-routes-to-form-can",
+  "issue": 1351,
+  "area": "Формы",
+  "task": "item.add на адресе события поля отказывает без записи; next минует поле, в которое элемент не добавить, и ведёт к can формы, а исправленный вызов на адресе группы строит предпросмотр",
+  "workspace": "tests/fixtures/acceptance/workspace",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "item.add",
+            "args": "items"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "item.remove",
+            "args": "at"
+          }
+        }
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ПолеКомментарий",
+                  "path": "Объект.Наименование"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `item.add` does not apply to Event `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange`; it applies at `main:Catalog.Ва",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.item.add"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "item.add",
+            "args": "items"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ПолеКомментарий",
+                  "path": "Объект.Наименование"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    }
+  ]
+}

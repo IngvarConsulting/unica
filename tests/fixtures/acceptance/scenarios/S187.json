@@ -1,0 +1,21 @@
+{
+  "area": "СКД",
+  "task": "Очистить отборы схемы",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+        "ops": [
+          {
+            "op": "filter.clear"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S187"
+}

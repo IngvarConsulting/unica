@@ -1,0 +1,27 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Создать документ Заказ клиента",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Document",
+                "name": "ЗаказКлиента"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S104"
+}

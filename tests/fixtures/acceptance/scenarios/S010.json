@@ -1,0 +1,16 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Перечислить реквизиты табличной части Представления",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления.Attribute"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S010"
+}

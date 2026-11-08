@@ -1,0 +1,17 @@
+{
+  "area": "Код BSL",
+  "task": "Поиск регулярным выражением",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "Перевести.*Текст",
+        "regex": true
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S154"
+}

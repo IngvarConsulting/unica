@@ -1,0 +1,27 @@
+{
+  "area": "Роли и права",
+  "task": "Забрать право удаления интерактивно",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Catalog_Валюты",
+        "ops": [
+          {
+            "op": "right.set",
+            "args": {
+              "values": {
+                "right": "InteractiveDelete",
+                "value": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S169"
+}

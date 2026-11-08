@@ -1,0 +1,40 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить измерение в регистр сведений (текущий ответ поверхности)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.АдминистративнаяИерархия",
+        "ops": [
+          {
+            "op": "dimension.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Регион",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 50,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  },
+                  "position": {
+                    "after": "КодСубъектаРФ"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S076"
+}

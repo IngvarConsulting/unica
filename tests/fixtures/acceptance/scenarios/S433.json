@@ -1,0 +1,277 @@
+{
+  "id": "S433",
+  "name": "mxl-direct-edits-of-a-platform-export",
+  "issue": 1448,
+  "area": "Макеты",
+  "workspace": "tests/fixtures/acceptance/workspace-mxl",
+  "task": "На выгрузке 8.3.27 mxl.set меняет текст одной ячейки, area.add дописывает строки, область и высоту; результат каждого шага совпадает с тем, что платформа выгружает после загрузки; повтор не меняет файл; ячейка внутри объединения отказывает без записи",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.PlatformExport.Area.Строка.Parameter"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml"
+        },
+        "owner": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F06Report.xml"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+          "eq": "2648b2265a7d5e6d96f2f3bcb1a143d2acc585584d724306a7e9c0783ea604bb"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.PlatformExport.Area.Подвал",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C2": "x"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: the cell lies inside a merged cell that starts at document row 5 column 1; write that cell instead",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.cells.R1C2"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.PlatformExport.Area.Шапка",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Отчёт за год"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "text": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.text"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+          "eq": "0f065d5735844936debadd893a5064a68828c7307b88db4da11b02d832cf63b0"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.PlatformExport",
+        "ops": [
+          {
+            "op": "area.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Итог",
+                  "cells": {
+                    "R1C1": "Итого",
+                    "R3C2": "x"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "captures": {
+        "area": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.area"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+          "eq": "85474cc6da131bd40b7579f500f5fa10ab584d2bceb8aa7a530f1211d4d0b274"
+        },
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report.xml",
+          "eq": "$capture.owner"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.PlatformExport.Area.Итог.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "index": 1,
+              "template": false,
+              "text": "Итого"
+            },
+            {
+              "index": 2,
+              "template": false,
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.PlatformExport.Area.Шапка",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "Отчёт за год"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "repeat": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.repeat"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/PlatformExport/Ext/Template.xml",
+          "eq": "85474cc6da131bd40b7579f500f5fa10ab584d2bceb8aa7a530f1211d4d0b274"
+        }
+      ]
+    }
+  ]
+}

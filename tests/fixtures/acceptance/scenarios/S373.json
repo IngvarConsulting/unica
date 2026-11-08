@@ -1,0 +1,290 @@
+{
+  "id": "S373",
+  "name": "dcs-selected-appearance-removal",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "conditionalAppearance.remove использует прочитанный индекс и удаляет один элемент; второй элемент и параметры вывода сохраняются",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveAppearanceRemove",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAppearanceRemove.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAppearanceRemove.Setting.Основной",
+        "ops": [
+          {
+            "op": "conditionalAppearance.add",
+            "args": {
+              "items": [
+                {
+                  "fields": [
+                    "Amount"
+                  ],
+                  "appearance": {
+                    "Format": "ЧДЦ=2"
+                  }
+                },
+                {
+                  "fields": [
+                    "Category"
+                  ],
+                  "appearance": {
+                    "Format": "ЧРГ=0"
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "outputParameter.set",
+            "args": {
+              "values": {
+                "name": "Title",
+                "value": "Unchanged"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount",
+            "Category"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAppearanceRemove.Setting.Основной.Property"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/1/kind",
+          "eq": "ConditionalAppearance"
+        },
+        {
+          "pointer": "/data/items/1/index",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/items/1/fields",
+          "eq": "Amount"
+        },
+        {
+          "pointer": "/data/items/2/index",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/items/2/fields",
+          "eq": "Category"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAppearanceRemove.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveAppearanceRemove.Setting.Основной",
+        "ops": [
+          {
+            "op": "conditionalAppearance.remove",
+            "args": {
+              "values": {
+                "index": 0
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Category"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveAppearanceRemove/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item/{http://v8.1c.ru/8.1/data-composition-system/core}value",
+          "eq": [
+            "Unchanged"
+          ]
+        }
+      ]
+    }
+  ]
+}

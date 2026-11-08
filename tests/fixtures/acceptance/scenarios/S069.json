@@ -1,0 +1,35 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Поменять синоним и тип реквизита одним вызовом (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.ФИООтветственногоЗаОбработкуПДн",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "synonym": "Ответственный",
+                "type": {
+                  "variants": [
+                    {
+                      "kind": "string",
+                      "length": 150,
+                      "allowedLength": "variable"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S069"
+}

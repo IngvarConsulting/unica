@@ -1,0 +1,44 @@
+{
+  "id": "S356",
+  "issue": 919,
+  "area": "Формы",
+  "task": "Не переносить элемент без явного получателя: item.move требует values.into и не трактует пропуск как корень формы",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеПолное",
+        "ops": [
+          {
+            "op": "item.move"
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[0].args.values: required argument is missing; `item.move` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименованиеП",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "d2afae775e4a3352b6bd8a73da925ca5e52d8247d249a93a56a832007a5a6dde"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "id": "S290",
+  "area": "Расширения конфигурации",
+  "task": "Проверить корень набора-расширения — валидатор cfe выбран по виду набора",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "cfe"
+      ]
+    }
+  ]
+}

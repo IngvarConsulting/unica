@@ -1,0 +1,97 @@
+{
+  "id": "S360",
+  "name": "external-missing-root-fails-readiness",
+  "issue": 313,
+  "area": "Приёмочный корпус",
+  "task": "Недоступный объявленный внешний набор даёт failed с source_set.path_missing",
+  "workspace": "tests/fixtures/acceptance/workspace-external-missing",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/sourceSets/1/sourceState",
+          "eq": "declared"
+        },
+        {
+          "pointer": "/data/sourceSets/1/path",
+          "eq": "missing-erf"
+        },
+        {
+          "pointer": "/data/sourceSelectionError",
+          "eq": null
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "8fac3c46841b4eadb76154ed64f2996efcbf08c3ac6c87dd39cf646818be6d09"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {},
+      "expect": [
+        "ok"
+      ],
+      "status": "failed",
+      "assertions": [
+        {
+          "pointer": "/data/ready",
+          "eq": false
+        },
+        {
+          "pointer": "/data/discoveredReady",
+          "eq": false
+        },
+        {
+          "pointer": "/data/checks",
+          "contains": {
+            "id": "source.layout",
+            "scope": "sourceSet",
+            "sourceSet": "erf",
+            "status": "failed",
+            "reason": "Declared source root does not exist"
+          }
+        },
+        {
+          "pointer": "/data/diagnostics",
+          "contains": {
+            "code": "source_set.path_missing",
+            "severity": "error",
+            "scope": "sourceSet",
+            "sourceSet": "erf",
+            "paths": [
+              "missing-erf"
+            ],
+            "count": 1,
+            "message": "Declared source root does not exist",
+            "evidence": [],
+            "remediation": {
+              "summary": "Correct the declared source-set path",
+              "steps": [
+                "Set the source-set path in v8project.yaml to an existing regular directory contained directly inside the workspace",
+                "Do not route the source root through symbolic links, reparse points, .., or an external directory",
+                "Run unica.view with an empty object again"
+              ],
+              "commands": []
+            }
+          }
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "v8project.yaml",
+          "eq": "8fac3c46841b4eadb76154ed64f2996efcbf08c3ac6c87dd39cf646818be6d09"
+        }
+      ]
+    }
+  ]
+}

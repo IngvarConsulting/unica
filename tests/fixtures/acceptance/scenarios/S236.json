@@ -1,0 +1,19 @@
+{
+  "area": "Документация и стандарты",
+  "task": "Как правильно назвать общий модуль по стандартам",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "имена общих модулей",
+        "source": "development-standard"
+      },
+      "expect": [
+        "ok",
+        "provider",
+        "task"
+      ]
+    }
+  ],
+  "id": "S236"
+}

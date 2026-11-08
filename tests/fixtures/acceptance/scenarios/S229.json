@@ -1,0 +1,17 @@
+{
+  "area": "Проверки качества",
+  "task": "Точечный дифф стандартных реквизитов",
+  "wire": [
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "main:Catalog.Валюты.StandardAttribute",
+        "right": "main:Document.АктОбУничтоженииПерсональныхДанных.StandardAttribute"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S229"
+}

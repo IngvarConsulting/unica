@@ -1,0 +1,27 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Создать обработку Загрузка прайса",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "DataProcessor",
+                "name": "ЗагрузкаПрайса"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S109"
+}

@@ -1,0 +1,17 @@
+{
+  "id": "S305",
+  "area": "Навигация и чтение",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "task": "Прочитать узел старой выгрузки — чтение открыто, совет о формате остаётся за check",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "older:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ]
+}

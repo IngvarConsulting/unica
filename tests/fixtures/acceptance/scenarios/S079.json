@@ -1,0 +1,38 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить ресурс в регистр сведений (текущий ответ поверхности)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.АдминистративнаяИерархия",
+        "ops": [
+          {
+            "op": "resource.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Вес",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "number",
+                        "digits": 10,
+                        "fraction": 2,
+                        "sign": "any"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S079"
+}

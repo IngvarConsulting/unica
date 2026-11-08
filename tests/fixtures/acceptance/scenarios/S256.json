@@ -1,0 +1,35 @@
+{
+  "area": "Свойства объектов",
+  "task": "Записать комментарий отчёта по-настоящему",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Отчёт проверен приёмкой"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S256"
+}

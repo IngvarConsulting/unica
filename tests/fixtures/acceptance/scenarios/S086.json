@@ -1,0 +1,26 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Изменить колонку журнала по её адресу",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentJournal.ДокументыОрганизации.Column.Организация",
+        "ops": [
+          {
+            "op": "column.set",
+            "args": {
+              "values": {
+                "synonym": "Организация документа"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S086"
+}

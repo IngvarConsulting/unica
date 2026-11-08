@@ -1,0 +1,57 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить и удалить предопределённый элемент одним пакетом: удаление по адресу элемента",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "predefinedItem.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Тестовый",
+                  "id": "a1b2c3d4-2222-4222-8222-222222222222"
+                }
+              ]
+            }
+          },
+          {
+            "op": "predefinedItem.remove",
+            "args": {
+              "at": "main:Catalog.Валюты.PredefinedItem.Тестовый"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/Валюты/Ext/Predefined.xml",
+          "eq": false
+        }
+      ]
+    }
+  ],
+  "id": "S090"
+}

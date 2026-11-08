@@ -1,0 +1,22 @@
+{
+  "id": "S267",
+  "area": "Проверки качества",
+  "task": "Проверить корень конфигурации в выгрузке формата 2.21 — проверка проходит и предупреждает о формате новее профиля",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "newer:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "diagnostic": "platformVersionUnsupported",
+      "validators": [
+        "cf"
+      ]
+    }
+  ],
+  "workspace": "tests/fixtures/acceptance/workspace-format"
+}

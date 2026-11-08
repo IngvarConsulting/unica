@@ -1,0 +1,55 @@
+{
+  "id": "S288",
+  "area": "Поддержка поставщика",
+  "task": "Запретить изменения конфигурации на поддержке и попытаться изменить редактируемый объект — отказ по общему флагу",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "supportCapability.set",
+            "args": {
+              "values": {
+                "enabled": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Правка при запрете изменений"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: the configuration is on vendor support with changes disabled; enable editing with `supportCapability.set` in a separate apply before ordinary edits"
+    }
+  ]
+}

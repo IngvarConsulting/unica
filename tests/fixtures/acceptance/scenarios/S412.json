@@ -1,0 +1,348 @@
+{
+  "id": "S412",
+  "name": "retired-duplicate-arguments-route-to-the-address",
+  "issue": 1353,
+  "area": "СКД",
+  "task": "Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; запрос правится только по адресу DataSet.<набор>.Query, прежний адрес Template.T.Query.<набор> и вызов на самом наборе отвергаются с next к запросу набора; снятая form.create ведёт к form.add на владельце, и форма создаётся там",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "schema": {
+          "file": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query",
+        "ops": [
+          {
+            "op": "query.set",
+            "args": {
+              "values": {
+                "dataSet": "НаборДанных1",
+                "query": "ВЫБРАТЬ 1 КАК Поле1"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `query.set` takes its subject from `at`; remove `values.dataSet` and call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.dataSet"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query.Can.query.set"
+        },
+        {
+          "pointer": "/next/1/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Reports/АнализВерсийОбъектов/Templates/ОсновнаяСхемаКомпоновкиДанных/Ext/Template.xml",
+          "eq": "$capture.schema"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query.Can.query.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "query.set"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1",
+        "ops": [
+          {
+            "op": "query.set",
+            "args": {
+              "values": {
+                "query": "ВЫБРАТЬ 1 КАК Поле1"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `query.set` does not apply to DataSet `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1`; it applies",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query.Can.query.set"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query",
+        "ops": [
+          {
+            "op": "query.set",
+            "args": {
+              "values": {
+                "query": "ВЫБРАТЬ 1 КАК Поле1"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Query.НаборДанных1",
+        "ops": [
+          {
+            "op": "query.set",
+            "args": {
+              "values": {
+                "query": "ВЫБРАТЬ 1 КАК Поле1"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: a query is addressed through its dataset: `query.set` applies at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Q",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query.Can.query.set"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной",
+        "ops": [
+          {
+            "op": "structure.set",
+            "args": {
+              "values": {
+                "variant": "Основной",
+                "groupBy": [
+                  "ТипОбъекта"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `structure.set` takes its subject from `at`; remove `values.variant` and call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Set",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.variant"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной.Can.structure.set"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаПодбора",
+        "ops": [
+          {
+            "op": "form.create",
+            "args": {
+              "values": {
+                "type": "ChoiceForm"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `form.create` is retired: call `form.add` at `main:Catalog.Валюты`; `items: [{name, type}]` names the form and its type",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].op"
+        },
+        {
+          "pointer": "/next",
+          "eq": [
+            {
+              "tool": "unica.view",
+              "args": {
+                "at": "main:Catalog.Валюты"
+              },
+              "reason": "какие операции применимы к этому узлу"
+            }
+          ]
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/Валюты/Forms/ФормаПодбора.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ФормаПодбора",
+                  "type": "ChoiceForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование",
+        "ops": [
+          {
+            "op": "childSubsystem.remove",
+            "args": {
+              "items": [
+                {
+                  "name": "КонтрольРаботыПользователей"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `childSubsystem.remove` names its subject by address, not by `items[0].name`; call it at `main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].name"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей.Can.childSubsystem.remove"
+        },
+        {
+          "pointer": "/next/1/args/at",
+          "eq": "main:Subsystem.Администрирование.Subsystem"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "childSubsystem.remove",
+            "args": "at"
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Администрирование"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "childSubsystem.add",
+            "args": "items"
+          }
+        }
+      ]
+    }
+  ]
+}

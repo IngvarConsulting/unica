@@ -1,0 +1,28 @@
+{
+  "id": "S280",
+  "area": "Поддержка поставщика",
+  "task": "Включить возможность изменения в конфигурации, которая не на поддержке — типизированный отказ вместо тихого no-op",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "nosupport:Configuration",
+        "ops": [
+          {
+            "op": "supportCapability.set",
+            "args": {
+              "values": {
+                "enabled": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: the configuration is not on vendor support (no Ext/ParentConfigurations.bin); there is no support state to switch"
+    }
+  ],
+  "workspace": "tests/fixtures/acceptance/workspace-format"
+}

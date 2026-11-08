@@ -1,0 +1,36 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Скопировать объект: прочитать состав и создать аналог (маршрут с текущим ответом)",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.ВажностьПроблемыУчета"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "Enum",
+                "name": "ВажностьКопия"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S117"
+}

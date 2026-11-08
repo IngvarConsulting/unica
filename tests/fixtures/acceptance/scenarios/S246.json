@@ -1,0 +1,26 @@
+{
+  "area": "Поддержка поставщика",
+  "task": "Выключить возможность изменения конфигурации на поддержке",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "supportCapability.set",
+            "args": {
+              "values": {
+                "enabled": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S246"
+}

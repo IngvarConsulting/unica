@@ -1,0 +1,38 @@
+{
+  "area": "Подсистемы и интерфейс",
+  "task": "Добавить объект в состав подсистемы и тут же исключить его одним пакетом",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Subsystem.Администрирование",
+        "ops": [
+          {
+            "op": "content.add",
+            "args": {
+              "items": [
+                {
+                  "object": "Catalog.Валюты"
+                }
+              ]
+            }
+          },
+          {
+            "op": "content.remove",
+            "args": {
+              "items": [
+                {
+                  "object": "Catalog.Валюты"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S207"
+}

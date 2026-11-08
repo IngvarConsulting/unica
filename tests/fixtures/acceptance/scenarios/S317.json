@@ -1,0 +1,17 @@
+{
+  "id": "S317",
+  "area": "Код BSL",
+  "task": "Найти определение функции по смыслу",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "ПеревестиТекст",
+        "role": "semantic"
+      },
+      "expect": [
+        "provider"
+      ]
+    }
+  ]
+}

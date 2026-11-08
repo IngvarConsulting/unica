@@ -1,0 +1,53 @@
+{
+  "id": "S313",
+  "area": "Расширения конфигурации",
+  "task": "Заимствовать отчёт и общий модуль в расширение и проверить расширение",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "ext:Configuration",
+        "ops": [
+          {
+            "op": "object.borrow",
+            "args": {
+              "from": "nosupport:CommonModule.GoogleПереводчик"
+            }
+          },
+          {
+            "op": "object.borrow",
+            "args": {
+              "from": "nosupport:Report.АнализВерсийОбъектов"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:Configuration"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "cfe"
+      ]
+    }
+  ]
+}

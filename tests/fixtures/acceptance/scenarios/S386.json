@@ -1,0 +1,100 @@
+{
+  "id": "S386",
+  "name": "resolve-reverse-path-and-owner-location",
+  "issue": 976,
+  "area": "Навигация и чтение",
+  "task": "Сохранить обратное разрешение пути и расположение владельца",
+  "workspace": "tests/fixtures/acceptance/workspace-resolve",
+  "wire": [
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:CommonModule.Probe"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonModule.Probe"
+        },
+        {
+          "pointer": "/data/kind",
+          "eq": "CommonModule"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonModules/Probe.xml"
+        },
+        {
+          "pointer": "/data/lines",
+          "eq": {
+            "state": "notLineBased"
+          }
+        },
+        {
+          "pointer": "/rev",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/CommonModules/Probe.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonModule.Probe"
+        },
+        {
+          "pointer": "/rev",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/CommonModules/Probe/Ext/Module.bsl"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:CommonModule.Probe"
+        },
+        {
+          "pointer": "/rev",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "path": "src/Catalogs/Items.xml"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/at",
+          "eq": "main:Catalog.Items"
+        },
+        {
+          "pointer": "/rev",
+          "absent": true
+        }
+      ]
+    }
+  ]
+}

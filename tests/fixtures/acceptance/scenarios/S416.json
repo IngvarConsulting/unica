@@ -1,0 +1,174 @@
+{
+  "id": "S416",
+  "name": "catalog-form-template-and-command-take-platform-slots",
+  "issue": 1385,
+  "area": "Формы",
+  "task": "Форма справочника регистрируется после его табличных частей и имеющихся форм, а макет — перед командами, как в выгрузке платформы",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "form.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ФормаНовая",
+                  "type": "ObjectForm"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xmlTags",
+          "select": "./{*}Catalog/{*}ChildObjects/*",
+          "eq": [
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "TabularSection",
+            "Form",
+            "Form",
+            "Form"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xml",
+          "select": "./{*}Catalog/{*}ChildObjects/{*}Form",
+          "eq": [
+            "ФормаЭлемента",
+            "ФормаСписка",
+            "ФормаНовая"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "command.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ОткрытьКурсы"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xmlTags",
+          "select": "./{*}Catalog/{*}ChildObjects/*",
+          "eq": [
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "TabularSection",
+            "Form",
+            "Form",
+            "Form",
+            "Command"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ПечатнаяФорма",
+                  "templateType": "SpreadsheetDocument"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "xmlTags",
+          "select": "./{*}Catalog/{*}ChildObjects/*",
+          "eq": [
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "Attribute",
+            "TabularSection",
+            "Form",
+            "Form",
+            "Form",
+            "Template",
+            "Command"
+          ]
+        }
+      ]
+    }
+  ]
+}

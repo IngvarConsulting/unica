@@ -1,0 +1,473 @@
+{
+  "id": "S375",
+  "name": "dcs-structure-properties-repeated-axes",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Отключение и пользовательские свойства Table/Chart/Group; повторные именованные оси и patch groupBy=[] с сохранением соседей",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveRichStructure",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной",
+        "ops": [
+          {
+            "op": "structure.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Table",
+                  "kind": "table",
+                  "use": false,
+                  "columnsViewMode": "Inaccessible",
+                  "rowsViewMode": "QuickAccess",
+                  "itemsViewMode": "Normal",
+                  "viewMode": "Normal",
+                  "userSettingID": "11111111-1111-4111-8111-111111111111",
+                  "userSettingPresentation": {
+                    "ru": "Таблица",
+                    "en": "Table"
+                  }
+                },
+                {
+                  "name": "Chart",
+                  "kind": "chart",
+                  "pointsViewMode": "QuickAccess",
+                  "seriesViewMode": "Inaccessible"
+                },
+                {
+                  "name": "Group",
+                  "groupBy": [
+                    "Amount"
+                  ],
+                  "use": false
+                }
+              ]
+            }
+          },
+          {
+            "op": "structure.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной.Item.Table",
+              "items": [
+                {
+                  "name": "RowA",
+                  "axis": "row",
+                  "groupBy": [
+                    "Amount"
+                  ]
+                },
+                {
+                  "name": "RowB",
+                  "axis": "row",
+                  "groupBy": [
+                    "Category"
+                  ],
+                  "use": false
+                },
+                {
+                  "name": "ColumnA",
+                  "axis": "column",
+                  "groupBy": [
+                    "Period"
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "op": "structure.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной.Item.Chart",
+              "items": [
+                {
+                  "name": "PointA",
+                  "axis": "point",
+                  "groupBy": [
+                    "Category"
+                  ]
+                },
+                {
+                  "name": "PointB",
+                  "axis": "point",
+                  "groupBy": [
+                    "Amount"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}use",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}rowsViewMode",
+          "eq": [
+            "QuickAccess"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}columnsViewMode",
+          "eq": [
+            "Inaccessible"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}userSettingPresentation/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='en']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Table"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}userSettingPresentation/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Таблица"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}row/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "RowA",
+            "RowB"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}column/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "ColumnA"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Chart']/{http://v8.1c.ru/8.1/data-composition-system/settings}point/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "PointA",
+            "PointB"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Chart']/{http://v8.1c.ru/8.1/data-composition-system/settings}pointsViewMode",
+          "eq": [
+            "QuickAccess"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Chart']/{http://v8.1c.ru/8.1/data-composition-system/settings}seriesViewMode",
+          "eq": [
+            "Inaccessible"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной",
+        "ops": [
+          {
+            "op": "structure.patch",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной.Item.Table",
+              "values": {
+                "use": true,
+                "rowsViewMode": "Normal",
+                "userSettingPresentation": {
+                  "ru": "Обновлено",
+                  "en": "Updated"
+                }
+              }
+            }
+          },
+          {
+            "op": "structure.patch",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной.Item.Table.Item.RowB",
+              "values": {
+                "groupBy": [],
+                "viewMode": "Normal"
+              }
+            }
+          },
+          {
+            "op": "structure.patch",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной.Item.Group",
+              "values": {
+                "groupBy": []
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}use",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}rowsViewMode",
+          "eq": [
+            "Normal"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}columnsViewMode",
+          "eq": [
+            "Inaccessible"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}userSettingID",
+          "eq": [
+            "11111111-1111-4111-8111-111111111111"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}row[{http://v8.1c.ru/8.1/data-composition-system/settings}name='RowB']/{http://v8.1c.ru/8.1/data-composition-system/settings}groupItems",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}row[{http://v8.1c.ru/8.1/data-composition-system/settings}name='RowB']/{http://v8.1c.ru/8.1/data-composition-system/settings}use",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Table']/{http://v8.1c.ru/8.1/data-composition-system/settings}row[{http://v8.1c.ru/8.1/data-composition-system/settings}name='RowA']/{http://v8.1c.ru/8.1/data-composition-system/settings}groupItems/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Group']/{http://v8.1c.ru/8.1/data-composition-system/settings}groupItems",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveRichStructure/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}item[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Chart']/{http://v8.1c.ru/8.1/data-composition-system/settings}point/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "PointA",
+            "PointB"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveRichStructure.Setting.Основной.Item"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ]
+}

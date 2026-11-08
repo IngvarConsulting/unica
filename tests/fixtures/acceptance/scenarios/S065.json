@@ -1,0 +1,41 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить реквизит с синонимом и позицией после существующего (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "КодКлассификатора",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 12,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  },
+                  "synonym": "Код по классификатору",
+                  "position": {
+                    "after": "Организация"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S065"
+}

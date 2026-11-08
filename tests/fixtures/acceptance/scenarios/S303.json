@@ -1,0 +1,22 @@
+{
+  "id": "S303",
+  "area": "Роли и права",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "task": "Проверить роль в старой выгрузке — совет доходит и до прав",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "older:Role.SalesReader"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "diagnostic": "formatMigrationAvailable",
+      "validators": [
+        "role"
+      ]
+    }
+  ]
+}

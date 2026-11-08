@@ -1,0 +1,35 @@
+{
+  "area": "Свойства объектов",
+  "task": "Изменить комментарий справочника и записать по-настоящему",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Приёмочный прогон"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S038"
+}

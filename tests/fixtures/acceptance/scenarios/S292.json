@@ -1,0 +1,19 @@
+{
+  "id": "S292",
+  "area": "Расширения конфигурации",
+  "task": "Проверить язык расширения — у узла нет валидаторов, ответ о читаемости",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "ext:Language.Русский"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "readable",
+      "validators": []
+    }
+  ]
+}

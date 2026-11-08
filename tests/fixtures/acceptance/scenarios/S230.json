@@ -1,0 +1,22 @@
+{
+  "area": "Проверки качества",
+  "task": "Передать check фильтр — аргумента нет, валидаторы выбирает Unica по виду узла",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "filter": {
+          "validation": {
+            "profile": "meta"
+          }
+        }
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: canonical invocation has unknown argument `filter`"
+    }
+  ],
+  "id": "S230"
+}

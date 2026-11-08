@@ -1,0 +1,56 @@
+{
+  "id": "S408",
+  "name": "element-add-ambiguous-placement-refused",
+  "issue": 1392,
+  "area": "Формы",
+  "task": "item.add по адресу командной панели, имя которой носят обе командные панели формы, отказывает без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-form-names",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Строки.Form.ФормаСписка"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Строки/Forms/ФормаСписка/Ext/Form.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Строки.Form.ФормаСписка.Item.Панель",
+        "ops": [
+          {
+            "op": "item.add",
+            "args": {
+              "items": [
+                {
+                  "name": "КнопкаЗакрыть",
+                  "type": "Button",
+                  "stdCommand": "Close"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: [ERROR] Target element 'Панель' is ambiguous",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Строки/Forms/ФормаСписка/Ext/Form.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    }
+  ]
+}

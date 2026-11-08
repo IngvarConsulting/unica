@@ -1,0 +1,26 @@
+{
+  "area": "Поддержка поставщика",
+  "task": "Разрешить редактирование объекта поставщика с сохранением поддержки",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "supportRule.set",
+            "args": {
+              "values": {
+                "rule": "editable"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S247"
+}

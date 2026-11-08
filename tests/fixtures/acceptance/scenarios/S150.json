@@ -1,0 +1,17 @@
+{
+  "area": "Код BSL",
+  "task": "Поискать только в модуле переводчика",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "ДоступныеЯзыки",
+        "scope": "main:CommonModule.GoogleПереводчик"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S150"
+}

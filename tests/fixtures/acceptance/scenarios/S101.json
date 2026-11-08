@@ -1,0 +1,20 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Проверить состав после серии правок",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    }
+  ],
+  "id": "S101"
+}

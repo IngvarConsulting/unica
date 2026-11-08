@@ -1,0 +1,26 @@
+{
+  "area": "Свойства объектов",
+  "task": "Сделать реквизит обязательным к заполнению (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных.Attribute.СпособУничтожения",
+        "ops": [
+          {
+            "op": "attribute.set",
+            "args": {
+              "values": {
+                "required": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S052"
+}

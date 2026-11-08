@@ -1,0 +1,132 @@
+{
+  "id": "S436",
+  "name": "form-attribute-add-refuses-unwritten-properties-and-writes-fill-check",
+  "issue": 1447,
+  "area": "Формы",
+  "task": "attribute.add отказывает bad_value на functionalOptions, которых писатель реквизита не пишет, без записи; проверка заполнения записывается тегом FillCheck, который загружает платформа, а не FillChecking",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Комментарий",
+                  "type": "String",
+                  "functionalOptions": [
+                    "FunctionalOption.Валюты"
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: ops[0].args.items[0].functionalOptions: unknown argument; `attribute.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаЭлемента.Can.attrib",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].functionalOptions"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Комментарий",
+                  "type": "String",
+                  "fillChecking": "ShowError"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "captures": {
+        "attributeToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.attributeToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.3/xcf/logform}Attributes/{http://v8.1c.ru/8.3/xcf/logform}Attribute[@name='Комментарий']/{http://v8.1c.ru/8.3/xcf/logform}FillCheck",
+          "eq": [
+            "ShowError"
+          ]
+        },
+        {
+          "path": "src/Catalogs/Валюты/Forms/ФормаЭлемента/Ext/Form.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.3/xcf/logform}FillChecking",
+          "eq": []
+        }
+      ]
+    }
+  ]
+}

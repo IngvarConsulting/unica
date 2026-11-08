@@ -1,0 +1,26 @@
+{
+  "area": "Свойства объектов",
+  "task": "Изменить синоним табличной части по её адресу",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления",
+        "ops": [
+          {
+            "op": "tabularSection.set",
+            "args": {
+              "values": {
+                "synonym": "Мультиязычные представления"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S056"
+}

@@ -1,0 +1,18 @@
+{
+  "area": "Тесты и запуск",
+  "task": "Узнать по документации, как подключить YaXUnit",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "YaXUnit юнит-тесты 1С"
+      },
+      "expect": [
+        "ok",
+        "provider",
+        "task"
+      ]
+    }
+  ],
+  "id": "S232"
+}

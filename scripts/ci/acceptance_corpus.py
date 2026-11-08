@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Load the acceptance corpus and guard it against silent loss.
 
-The corpus is stored so that two changes, each adding its own scenario, never
-touch the same lines:
+The corpus is stored so that two changes, each adding or editing its own
+scenario, never touch the same lines:
 
-* `tests/fixtures/acceptance/scenario-corpus.json` holds the header and the
-  closed historical block `S001`…`S440`; nothing is appended to it any more;
-* every later scenario lives in its own file
-  `tests/fixtures/acceptance/scenarios/<id>.json` with a stable identifier
+* `tests/fixtures/acceptance/scenario-corpus.json` holds only the header:
+  fields every scenario shares;
+* every scenario lives in its own file
+  `tests/fixtures/acceptance/scenarios/<id>.json`. The closed historical block
+  keeps its numbers `S001`…`S440`; a later scenario has a stable identifier
   `S-<issue>-<slug>` that does not depend on the order of addition;
 * `tests/fixtures/acceptance/scenario-manifest/<id>.steps` freezes the step
   tools of each scenario, one per line.  A scenario without its manifest, a
@@ -15,8 +16,8 @@ touch the same lines:
   manifest fails the corpus test; changing a manifest is the explicit
   decision that the scenario or its steps change.
 
-Loading order is defined: the historical block in file order, then the
-per-file scenarios by issue number and slug.
+Loading order is defined: the historical block by number, then the later
+scenarios by issue number and slug.
 
     python scripts/ci/acceptance_corpus.py --check          # verify the manifest
     python scripts/ci/acceptance_corpus.py --freeze S-1489-two-branches
@@ -33,7 +34,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROOT = REPO_ROOT / "tests/fixtures/acceptance"
-LEGACY_FILE = "scenario-corpus.json"
+HEADER_FILE = "scenario-corpus.json"
+# The former name of the header file, which used to hold the historical block.
+LEGACY_FILE = HEADER_FILE
 SCENARIO_DIR = "scenarios"
 MANIFEST_DIR = "scenario-manifest"
 MANIFEST_SUFFIX = ".steps"
@@ -97,16 +100,13 @@ def visible_files(directory: Path) -> list[Path]:
 def load(root: Path = ROOT) -> dict:
     """The whole corpus: the header and scenarios in their defined order."""
     root = Path(root)
-    corpus = strict_load(root / LEGACY_FILE)
-    legacy = corpus["scenarios"]
-    for scenario in legacy:
-        match = LEGACY_ID.fullmatch(str(scenario.get("id")))
-        if match is None or not 1 <= int(match.group(1)) <= LEGACY_LAST:
-            raise CorpusError(
-                f"{root / LEGACY_FILE}: {scenario.get('id')!r} is outside the closed block "
-                f"S001-S{LEGACY_LAST:03d}; put a new scenario into {SCENARIO_DIR}/<id>.json"
-            )
-    added = []
+    corpus = strict_load(root / HEADER_FILE)
+    if "scenarios" in corpus:
+        raise CorpusError(
+            f"{root / HEADER_FILE}: the header holds no scenarios; each one is its own "
+            f"file {SCENARIO_DIR}/<id>.json"
+        )
+    legacy, added = [], []
     directory = root / SCENARIO_DIR
     for path in visible_files(directory):
         if path.suffix != ".json":
@@ -114,8 +114,18 @@ def load(root: Path = ROOT) -> dict:
         scenario = strict_load(path)
         if not isinstance(scenario, dict) or scenario.get("id") != path.stem:
             raise CorpusError(f"{path}: the file holds one scenario whose id is {path.stem!r}")
+        match = LEGACY_ID.fullmatch(path.stem)
+        if match is not None:
+            if not 1 <= int(match.group(1)) <= LEGACY_LAST:
+                raise CorpusError(
+                    f"{path}: {path.stem!r} is outside the closed block S001-S{LEGACY_LAST:03d}; "
+                    f"a new scenario is S-<issue>-<slug>"
+                )
+            legacy.append(scenario)
+            continue
         stable_order(path.stem)
         added.append(scenario)
+    legacy.sort(key=lambda scenario: int(scenario["id"][1:]))
     added.sort(key=lambda scenario: stable_order(scenario["id"]))
     identifiers = [scenario["id"] for scenario in legacy + added]
     duplicates = sorted({item for item in identifiers if identifiers.count(item) > 1})

@@ -1,0 +1,73 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Изменить свойство и вернуть обратно (обратимость реальной записи)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Обратимость"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "right": "main:Document.АктОбУничтоженииПерсональныхДанных"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S096"
+}

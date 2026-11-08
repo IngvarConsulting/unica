@@ -1,0 +1,753 @@
+{
+  "id": "S361",
+  "name": "dcs-compose-query-object-union",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Создать СКД примитивами: источник, Query/Object/Union и вложенный набор; проверить чтение, XML, отсутствие скрытой выборки и итоговый check; снятый dataSet, названный членом объединения, ведёт next к вложенному запросу этого члена",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveData",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData",
+        "ops": [
+          {
+            "op": "dataSource.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Primary",
+                  "kind": "Local"
+                },
+                {
+                  "name": "Disposable",
+                  "kind": "External"
+                }
+              ]
+            }
+          },
+          {
+            "op": "dataSource.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSource.Disposable",
+              "values": {
+                "kind": "Local"
+              }
+            }
+          },
+          {
+            "op": "dataSet.add",
+            "args": {
+              "items": [
+                {
+                  "name": "QueryData",
+                  "kind": "Query",
+                  "dataSource": "Primary",
+                  "query": "ВЫБРАТЬ 1 КАК Amount"
+                },
+                {
+                  "name": "ObjectData",
+                  "kind": "Object",
+                  "dataSource": "Primary",
+                  "objectName": "InputTable"
+                },
+                {
+                  "name": "UnionData",
+                  "kind": "Union"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSource[{http://v8.1c.ru/8.1/data-composition-system/schema}name='Disposable']/{http://v8.1c.ru/8.1/data-composition-system/schema}dataSourceType",
+          "eq": [
+            "Local"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}name",
+          "eq": [
+            "QueryData",
+            "ObjectData",
+            "UnionData"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData",
+        "ops": [
+          {
+            "op": "dataSet.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Nested",
+                  "kind": "Query",
+                  "dataSource": "Primary",
+                  "query": "ВЫБРАТЬ 7 КАК Amount"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet[{http://v8.1c.ru/8.1/data-composition-system/schema}name='UnionData']/{http://v8.1c.ru/8.1/data-composition-system/schema}item/{http://v8.1c.ru/8.1/data-composition-system/schema}name",
+          "eq": [
+            "Nested"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase6Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData",
+        "ops": [
+          {
+            "op": "field.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.QueryData",
+              "items": [
+                {
+                  "dataPath": "Amount",
+                  "title": "Итого [шт]"
+                }
+              ]
+            }
+          },
+          {
+            "op": "field.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData",
+              "items": [
+                {
+                  "dataPath": "Amount",
+                  "type": "decimal(10,2)"
+                }
+              ]
+            }
+          },
+          {
+            "op": "field.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData",
+              "items": [
+                {
+                  "dataPath": "Amount",
+                  "type": "decimal(10,2)"
+                }
+              ]
+            }
+          },
+          {
+            "op": "field.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested",
+              "items": [
+                {
+                  "dataPath": "Amount"
+                }
+              ]
+            }
+          },
+          {
+            "op": "dataSet.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData",
+              "values": {
+                "objectName": "UpdatedInput"
+              }
+            }
+          },
+          {
+            "op": "dataSet.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.QueryData",
+              "values": {
+                "autoFillFields": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase6Before"
+        }
+      ],
+      "captures": {
+        "phase6Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase6Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet[{http://v8.1c.ru/8.1/data-composition-system/schema}name='ObjectData']/{http://v8.1c.ru/8.1/data-composition-system/schema}objectName",
+          "eq": [
+            "UpdatedInput"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet[{http://v8.1c.ru/8.1/data-composition-system/schema}name='QueryData']/{http://v8.1c.ru/8.1/data-composition-system/schema}autoFillFields",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase8Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData",
+        "ops": [
+          {
+            "op": "field.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData.Field.Amount",
+              "values": {
+                "title": {
+                  "ru": "Сумма [шт]",
+                  "en": "Amount @work"
+                },
+                "type": "decimal(12,3)"
+              }
+            }
+          },
+          {
+            "op": "fieldRole.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData.Field.Amount",
+              "values": {
+                "role": {
+                  "dimension": true,
+                  "required": true
+                }
+              }
+            }
+          },
+          {
+            "op": "query.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Query",
+              "values": {
+                "query": "ВЫБРАТЬ 8 КАК Amount"
+              }
+            }
+          },
+          {
+            "op": "query.patch",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Query",
+              "values": {
+                "find": "8 КАК",
+                "replace": "9 КАК",
+                "once": true
+              }
+            }
+          },
+          {
+            "op": "dataSetLink.add",
+            "args": {
+              "items": [
+                {
+                  "source": "QueryData",
+                  "destination": "ObjectData",
+                  "sourceExpression": "Amount",
+                  "destinationExpression": "Amount"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase8Before"
+        }
+      ],
+      "captures": {
+        "phase8Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase8Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet[{http://v8.1c.ru/8.1/data-composition-system/schema}name='ObjectData']/{http://v8.1c.ru/8.1/data-composition-system/schema}field/{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='en']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Amount @work"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet[{http://v8.1c.ru/8.1/data-composition-system/schema}name='ObjectData']/{http://v8.1c.ru/8.1/data-composition-system/schema}field/{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Сумма [шт]"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet[{http://v8.1c.ru/8.1/data-composition-system/schema}name='ObjectData']/{http://v8.1c.ru/8.1/data-composition-system/schema}field/{http://v8.1c.ru/8.1/data-composition-system/schema}role/{http://v8.1c.ru/8.1/data-composition-system/common}dimension",
+          "eq": [
+            "true"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet[{http://v8.1c.ru/8.1/data-composition-system/schema}name='UnionData']/{http://v8.1c.ru/8.1/data-composition-system/schema}item/{http://v8.1c.ru/8.1/data-composition-system/schema}query",
+          "eq": [
+            "ВЫБРАТЬ 9 КАК Amount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSetLink/{http://v8.1c.ru/8.1/data-composition-system/schema}sourceDataSet",
+          "eq": [
+            "QueryData"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Field"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Field.Amount"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Query"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/text",
+          "eq": "ВЫБРАТЬ 9 КАК Amount"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData.Query",
+        "ops": [
+          {
+            "op": "query.set",
+            "args": {
+              "values": {
+                "dataSet": "Nested",
+                "query": "ВЫБРАТЬ 9 КАК Amount"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `query.set` names its subject by address, not by `values.dataSet`; call it at `cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Query",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.dataSet"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Query.Can.query.set"
+        },
+        {
+          "pointer": "/next/1/args/at",
+          "eq": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "dcs"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase10Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveData",
+        "ops": [
+          {
+            "op": "dataSet.remove",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested"
+            }
+          },
+          {
+            "op": "dataSource.remove",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveData.DataSource.Disposable"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase10Before"
+        }
+      ],
+      "captures": {
+        "phase10Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase10Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet[{http://v8.1c.ru/8.1/data-composition-system/schema}name='UnionData']/{http://v8.1c.ru/8.1/data-composition-system/schema}item",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveData/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSource/{http://v8.1c.ru/8.1/data-composition-system/schema}name",
+          "eq": [
+            "ИсточникДанных1",
+            "Primary"
+          ]
+        }
+      ]
+    }
+  ]
+}

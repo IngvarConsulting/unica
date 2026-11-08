@@ -1,0 +1,46 @@
+{
+  "area": "Проверки качества",
+  "task": "Проверить читаемость каждого ключевого объекта",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:InformationRegister.АдминистративнаяИерархия"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "meta"
+      ]
+    }
+  ],
+  "id": "S222"
+}

@@ -1,0 +1,17 @@
+{
+  "id": "S272",
+  "area": "Проверки качества",
+  "task": "Проверить отсутствующую подсистему — типизированный отказ, а не транспортная ошибка",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "main:Subsystem.Отсутствует"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: metadata owner `Subsystem.Отсутствует` is not registered"
+    }
+  ]
+}

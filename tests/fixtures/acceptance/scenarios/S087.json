@@ -1,0 +1,21 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Удалить колонку журнала по её адресу",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:DocumentJournal.ДокументыОрганизации.Column.Организация",
+        "ops": [
+          {
+            "op": "column.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S087"
+}

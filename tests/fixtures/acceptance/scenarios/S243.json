@@ -1,0 +1,19 @@
+{
+  "area": "Документация и стандарты",
+  "task": "Стандарт про обработку ошибок и Попытку",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "обработка исключений Попытка",
+        "source": "development-standard"
+      },
+      "expect": [
+        "ok",
+        "provider",
+        "task"
+      ]
+    }
+  ],
+  "id": "S243"
+}

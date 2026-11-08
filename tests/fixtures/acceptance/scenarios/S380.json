@@ -1,0 +1,427 @@
+{
+  "id": "S380",
+  "name": "dcs-explicit-empty-values-and-repeat-noop",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Явные пустые value/title/expression/presentationExpression записываются; повтор такого же сохранённого плана оставляет XML без изменений и имеет нулевой эффект",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveEmptyValues",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues",
+        "ops": [
+          {
+            "op": "dataSet.add",
+            "args": {
+              "items": [
+                {
+                  "name": "EmptyData",
+                  "kind": "Query",
+                  "dataSource": "ИсточникДанных1",
+                  "query": "ВЫБРАТЬ 1 КАК Amount"
+                }
+              ]
+            }
+          },
+          {
+            "op": "field.add",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData",
+              "items": [
+                {
+                  "dataPath": "Amount",
+                  "title": "Amount before",
+                  "presentationExpression": "Amount"
+                }
+              ]
+            }
+          },
+          {
+            "op": "parameter.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Text",
+                  "type": "string",
+                  "title": "Before",
+                  "value": "Filled",
+                  "expression": "&Other"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter/{http://v8.1c.ru/8.1/data-composition-system/schema}value",
+          "eq": [
+            "Filled"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter/{http://v8.1c.ru/8.1/data-composition-system/schema}expression",
+          "eq": [
+            "&Other"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}field/{http://v8.1c.ru/8.1/data-composition-system/schema}presentationExpression",
+          "eq": [
+            "Amount"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues",
+        "ops": [
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.Parameter.Text",
+              "values": {
+                "title": "",
+                "value": "",
+                "expression": ""
+              }
+            }
+          },
+          {
+            "op": "field.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData.Field.Amount",
+              "values": {
+                "title": "",
+                "presentationExpression": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter/{http://v8.1c.ru/8.1/data-composition-system/schema}value",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter/{http://v8.1c.ru/8.1/data-composition-system/schema}expression",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}parameter/{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}field/{http://v8.1c.ru/8.1/data-composition-system/schema}title/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            ""
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}field/{http://v8.1c.ru/8.1/data-composition-system/schema}presentationExpression",
+          "eq": [
+            ""
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "emptyPostimage": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues",
+        "ops": [
+          {
+            "op": "parameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.Parameter.Text",
+              "values": {
+                "title": "",
+                "value": "",
+                "expression": ""
+              }
+            }
+          },
+          {
+            "op": "field.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues.DataSet.EmptyData.Field.Amount",
+              "values": {
+                "title": "",
+                "presentationExpression": ""
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.emptyPostimage"
+        }
+      ],
+      "captures": {
+        "emptyNoopToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.emptyNoopToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveEmptyValues/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.emptyPostimage"
+        }
+      ]
+    },
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveEmptyValues"
+      },
+      "expect": [
+        "ok"
+      ],
+      "status": "passed",
+      "validators": [
+        "dcs"
+      ]
+    }
+  ]
+}

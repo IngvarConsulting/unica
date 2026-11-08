@@ -1,0 +1,247 @@
+{
+  "id": "S367",
+  "name": "dcs-query-literal-control-tokens",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Типизированный query.patch принимает прежние управляющие последовательности как буквальный текст и сохраняет остальные запросы",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveLiteral",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLiteral/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLiteral/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLiteral"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveLiteral/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLiteral",
+        "ops": [
+          {
+            "op": "dataSet.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Literal",
+                  "dataSource": "ИсточникДанных1",
+                  "query": "ВЫБРАТЬ \"@once => [шт]\" КАК Amount"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLiteral/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLiteral/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}query",
+          "eq": [
+            "ВЫБРАТЬ \"@once => [шт]\" КАК Amount"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLiteral.DataSet.Literal"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveLiteral/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLiteral.DataSet.Literal.Query",
+        "ops": [
+          {
+            "op": "query.patch",
+            "args": {
+              "values": {
+                "find": "@once => [шт]",
+                "replace": "@user => [новое]",
+                "once": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLiteral/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveLiteral/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}dataSet/{http://v8.1c.ru/8.1/data-composition-system/schema}query",
+          "eq": [
+            "ВЫБРАТЬ \"@user => [новое]\" КАК Amount"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveLiteral.DataSet.Literal.Query"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/text",
+          "eq": "ВЫБРАТЬ \"@user => [новое]\" КАК Amount"
+        }
+      ]
+    }
+  ]
+}

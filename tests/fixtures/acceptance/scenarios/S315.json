@@ -1,0 +1,16 @@
+{
+  "id": "S315",
+  "area": "XDTO и обмены",
+  "task": "Открыть один тип большого XDTO-пакета без находок по остальным типам",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ]
+}

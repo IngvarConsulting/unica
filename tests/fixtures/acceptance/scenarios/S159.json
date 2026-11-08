@@ -1,0 +1,43 @@
+{
+  "area": "Код BSL",
+  "task": "Полный маршрут правки кода: найти вызов, изучить модуль, вставить код",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "НастройкиАвторизации"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Method"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.НастройкиАвторизации",
+        "ops": [
+          {
+            "op": "code.insert",
+            "args": {
+              "text": "// приёмочная вставка",
+              "position": "after"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S159"
+}

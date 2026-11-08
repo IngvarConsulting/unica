@@ -1,0 +1,36 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить ссылочный реквизит на справочник валют (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Document.АктОбУничтоженииПерсональныхДанных",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ВалютаУчёта",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "reference",
+                        "metadataPath": "Catalog.Валюты"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S064"
+}

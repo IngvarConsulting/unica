@@ -1,0 +1,31 @@
+{
+  "area": "Роли и права",
+  "task": "Право на запуск обработки для роли",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader",
+        "ops": [
+          {
+            "op": "right.add",
+            "args": {
+              "items": [
+                {
+                  "object": "Report.АнализВерсийОбъектов",
+                  "rights": {
+                    "Use": true
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S173"
+}

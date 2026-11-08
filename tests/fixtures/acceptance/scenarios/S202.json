@@ -1,0 +1,19 @@
+{
+  "area": "Макеты",
+  "task": "Узнать по стандартам, как оформлять печатные формы",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "печатная форма макет требования",
+        "source": "development-standard"
+      },
+      "expect": [
+        "ok",
+        "provider",
+        "task"
+      ]
+    }
+  ],
+  "id": "S202"
+}

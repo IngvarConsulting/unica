@@ -1,0 +1,236 @@
+{
+  "id": "S418",
+  "name": "spreadsheet-area-is-addressed-and-created-by-area-add",
+  "issue": 1354,
+  "area": "Макеты",
+  "workspace": "tests/fixtures/acceptance/workspace-mxl",
+  "task": "Область в аргументах вместо адреса Area отказывает без записи; mxl.set правит только существующую область по её адресу, отсутствующая отвечает not_found с next к макету; новую область с начальными ячейками создаёт area.add на макете, повтор имени существующей области отказывает",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "area.add",
+            "args": "items"
+          }
+        }
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "area": "B",
+                "cells": {
+                  "R1C1": "x"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `mxl.set` names its subject by address, not by `values.area`; call it at `cf:Report.F06Report.Template.F06Template.Area.B`; a missing one is created by `area.ad",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F06Report.Template.F06Template.Area.B.Can.mxl.set"
+        },
+        {
+          "pointer": "/next/1/args/at",
+          "eq": "cf:Report.F06Report.Template.F06Template.Area"
+        },
+        {
+          "pointer": "/next/2/args/at",
+          "eq": "cf:Report.F06Report.Template.F06Template.Can.area.add"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template.Area.Z",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "x"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: the template has no area `Z`; create it with area.add at `cf:Report.F06Report.Template.F06Template`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F06Report.Template.F06Template"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template",
+        "ops": [
+          {
+            "op": "area.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Z",
+                  "cells": {
+                    "R1C1": "Итого",
+                    "R1C2": 0
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ],
+      "captures": {
+        "add": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template.Area.Z.Body"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items",
+          "eq": [
+            {
+              "index": 1,
+              "template": false,
+              "text": "Итого"
+            },
+            {
+              "index": 2,
+              "template": false,
+              "text": "0"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template",
+        "ops": [
+          {
+            "op": "area.add",
+            "args": {
+              "items": [
+                {
+                  "name": "A",
+                  "cells": {
+                    "R1C1": "x"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: the template already has area `A`; change its cells with mxl.set at `cf:Report.F06Report.Template.F06Template.Area.A`",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.items[0].name"
+        }
+      ]
+    }
+  ]
+}

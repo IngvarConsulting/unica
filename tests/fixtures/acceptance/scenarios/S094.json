@@ -1,0 +1,66 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить реквизит перечислению нельзя — применимость видна в словаре",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Enum.ВажностьПроблемыУчета"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "enumValue.add",
+            "args": "items"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "notEq": []
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.ВажностьПроблемыУчета",
+        "ops": [
+          {
+            "op": "attribute.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Лишний",
+                  "type": {
+                    "variants": [
+                      {
+                        "kind": "string",
+                        "length": 10,
+                        "allowedLength": "variable"
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `attribute.add` does not apply to Enum `main:Enum.ВажностьПроблемыУчета`; it addresses `Kind.Name` of a kind with attributes or `Kind.Name.Tabul",
+      "assertions": [
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:Enum.ВажностьПроблемыУчета"
+        }
+      ]
+    }
+  ],
+  "id": "S094"
+}

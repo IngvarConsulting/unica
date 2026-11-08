@@ -1,0 +1,17 @@
+{
+  "id": "S304",
+  "area": "Объекты метаданных",
+  "workspace": "tests/fixtures/acceptance/workspace-format",
+  "task": "Проверить объект в старой выгрузке — типизированный отказ поставщика вместо догадки",
+  "wire": [
+    {
+      "tool": "unica.check",
+      "args": {
+        "at": "older:Catalog.Валюты"
+      },
+      "expect": [
+        "provider"
+      ]
+    }
+  ]
+}

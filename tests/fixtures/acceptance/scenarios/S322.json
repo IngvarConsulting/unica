@@ -1,0 +1,74 @@
+{
+  "id": "S322",
+  "area": "XDTO и обмены",
+  "task": "Открыть шаблоны URL и метод HTTP-сервиса из выгрузки Конфигуратора",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.ПроверкаСвязи"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.ПроверкаСвязи.URLTemplate"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:HTTPService.ПроверкаСвязи.URLTemplate.ПринятьДанные.Method.POST"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/httpMethod",
+          "eq": "POST"
+        },
+        {
+          "pointer": "/data/props/handler",
+          "eq": "ПринятьДанныеPOST"
+        },
+        {
+          "pointer": "/data/at",
+          "eq": "main:HTTPService.ПроверкаСвязи.URLTemplate.ПринятьДанные.Method.POST"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/HTTPServices/ПроверкаСвязи.xml",
+          "eq": "4fa183eaf063769b291158ac318b7c2d1a5135134fbe19392d7d8ee4b55f8acf"
+        },
+        {
+          "kind": "xml",
+          "path": "src/HTTPServices/ПроверкаСвязи.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}URLTemplate/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Пинг",
+            "Принять данные"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/HTTPServices/ПроверкаСвязи.xml",
+          "select": ".//{http://v8.1c.ru/8.3/MDClasses}Method/{http://v8.1c.ru/8.3/MDClasses}Properties/{http://v8.1c.ru/8.3/MDClasses}Synonym/{http://v8.1c.ru/8.1/data/core}item/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "GET",
+            "POST"
+          ]
+        }
+      ]
+    }
+  ],
+  "issue": 634
+}
