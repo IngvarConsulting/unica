@@ -1,5 +1,7 @@
 [workspace]
 members = ["crates/*"]
+# Исследовательские тесты собираются отдельно и только вручную.
+exclude = ["crates/unica-research"]
 resolver = "2"
 
 [workspace.package]

@@ -238,11 +238,15 @@ def metadata_read_codec_errors(path: str, text: str) -> list[str]:
 def manifests(root: Path) -> dict[str, tuple[Path, dict]]:
     document = tomllib.loads((root / "Cargo.toml").read_text())
     result: dict[str, tuple[Path, dict]] = {}
+    # Как Cargo: `exclude` снимает каталог с членства, и он не компонент.
+    excluded = {root / path for path in document["workspace"].get("exclude", [])}
     for pattern in document["workspace"]["members"]:
         candidates = sorted(root.glob(pattern))
         if not candidates:
             raise ValueError(f"unresolved member {pattern}")
         for directory in candidates:
+            if directory in excluded:
+                continue
             manifest = directory / "Cargo.toml"
             parsed = tomllib.loads(manifest.read_text())
             name = parsed["package"]["name"]
