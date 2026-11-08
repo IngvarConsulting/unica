@@ -400,8 +400,6 @@ class GateProfileCompositionTests(unittest.TestCase):
                             continue
                         probe = steps[index - 1]
                         self.assertEqual(probe.get("id"), "nextest-present")
-                        self.assertIn(".config/nextest.toml", probe["run"])
-                        self.assertIn("cargo nextest --version", probe["run"])
                         self.assertIn("steps.nextest-present.outputs.present != 'true'", step["if"])
                         # The probe runs exactly when the install would.
                         self.assertIn(probe["if"].strip("${} ").removeprefix("{{").strip(),

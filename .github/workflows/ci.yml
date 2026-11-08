@@ -190,7 +190,8 @@ jobs:
       - name: Контракт версий
         if: env.KEPT != 'true'
         run: python scripts/ci/check-version-contract.py
-      - name: Clippy
+      - id: clippy
+        name: Clippy
         if: env.KEPT != 'true'
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       # Medium Python запускает продукт. Сборка идёт до тестов Rust: вызов
@@ -211,7 +212,8 @@ jobs:
         run: python scripts/ci/queue-tests.py --base "$BASE_SHA" --head "$HEAD_SHA"
       # Неразрешимый выбор — полный набор и здесь. Иначе Python medium идёт ночью,
       # кроме смоука продукта и снимков контрактов.
-      - name: Тесты Python
+      - id: python
+        name: Тесты Python
         if: ${{ !cancelled() && github.event_name == 'merge_group' && env.KEPT != 'true' }}
         env:
           FULL: ${{ steps.selection.outputs.full }}
@@ -254,5 +256,6 @@ jobs:
         with:
           shared-key: ci-rust-ordinary
           save-if: false
-      - name: Clippy
+      - id: clippy
+        name: Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
