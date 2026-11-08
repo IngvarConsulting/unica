@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import re
 import subprocess
 import sys
@@ -218,9 +219,7 @@ def _cfg_expression_end(source: str, opening_parenthesis: int) -> int:
 
 
 def _mask_range(masked: list[str], start: int, end: int) -> None:
-    for index in range(start, end):
-        if masked[index] != "\n":
-            masked[index] = " "
+    masked[start:end] = [" " if char != "\n" else char for char in masked[start:end]]
 
 
 def _raw_string_end(source: str, start: int) -> int | None:
@@ -296,6 +295,9 @@ def _char_literal_end(source: str, start: int) -> int | None:
     return index + 1 if index < len(source) and source[index] == "'" else None
 
 
+_MASK_START = re.compile(r"""[/"'rb]""")
+
+
 def _mask_non_code(source: str) -> str:
     """Replace comments and literals with spaces while keeping source offsets stable."""
     masked = list(source)
@@ -343,7 +345,10 @@ def _mask_non_code(source: str) -> str:
                 index = end
                 continue
 
-        index += 1
+        # Only these characters start a comment or a literal: every other
+        # position falls through all branches above, so skip to the next one.
+        found = _MASK_START.search(source, index + 1)
+        index = found.start() if found else len(source)
     return "".join(masked)
 
 
@@ -478,12 +483,20 @@ def _grouped_use_entries(
     return entries
 
 
+_GROUP_DELIMITER = re.compile(r"[{},]")
+
+
 def _grouped_entries_at(masked: str, opening_brace: int) -> list[tuple[int, str]]:
     entries: list[tuple[int, str]] = []
     entry_start = opening_brace + 1
     depth = 1
     index = entry_start
     while index < len(masked) and depth:
+        # Only braces and commas change the walk: jump straight to the next one.
+        found = _GROUP_DELIMITER.search(masked, index)
+        if found is None:
+            break
+        index = found.start()
         char = masked[index]
         if char == "{":
             depth += 1
@@ -581,7 +594,9 @@ def _root_aliases(masked: str, root: str) -> tuple[str, ...]:
     )
 
 
+@functools.lru_cache(maxsize=4)
 def _alias_sources(masked: str) -> dict[str, set[str]]:
+    """Aliases of one masked file; cached, since every root asks for them. Read-only."""
     aliases: dict[str, set[str]] = {}
 
     def record(source: str, alias: str) -> None:
