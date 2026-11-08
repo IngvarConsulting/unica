@@ -12,6 +12,12 @@
 и при `QUEUE_FULL_TESTS=true`. Правка `Cargo.lock` только в записях крейтов рабочей области полного
 набора не требует: сами крейты выбраны по своим файлам. Остальное исполняет ночь; правило для красной ночи и откат —
 в `.agents/skills/unica-testing/references/ci-pipeline.md`.
+
+На Linux временные каталоги тестов очередь держит в памяти (`TMPDIR` в `/dev/shm`): журнал
+квитанций и рабочие области публикуют каждую запись через `fsync`, и на диске раннера каждый
+вызов продукта ждёт его. Те же системные вызовы выполняются, ждать им нечего. Ночь и выпуск идут
+на диске, поведение файловой системы проверяется там. Нет `/dev/shm`, мало места или из него нельзя
+исполнять файлы — тесты идут во временном каталоге системы, как раньше.
 """
 
 from __future__ import annotations
@@ -23,8 +29,10 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from typing import Callable
 
@@ -39,6 +47,13 @@ MENTIONED = re.compile(r"^(tests/fixtures/(?!acceptance/scenario-manifest/)|scri
 NO_RUST = re.compile(r"^(docs/pages/|docs/visual-kit/|arch/rules/|\.agents/|scripts/research/|[^/]+\.md$)")
 # Крейт, который собирает путь к данным из частей, читает любой их каталог.
 ASSEMBLED_FIXTURES = '"tests/fixtures"'
+MEMORY_TEMP_ROOT = Path("/dev/shm")
+# Свободного места в памяти не меньше: пик временных каталогов пяти самых
+# тяжёлых крейтов (unica-product, unica-coder, unica-workspace,
+# unica-project-health, unica-metadata-integration-tests) в четыре потока —
+# 288 МиБ по замеру раз в секунду, остаток после прогона 6 МиБ. Запас около
+# трёх с половиной раз покрывает пики между замерами и остальные крейты.
+MEMORY_TEMP_MIN_FREE_BYTES = 1 << 30
 
 
 @dataclass(frozen=True)
@@ -132,6 +147,36 @@ def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, 
     return Choice(False, tuple(sorted(selected)), f"medium: {sorted(selected) or 'нет'}, цели зависимых: {reached or 'нет'}", tuple(reached))
 
 
+def memory_temp(root: Path = MEMORY_TEMP_ROOT, min_free: int = MEMORY_TEMP_MIN_FREE_BYTES,
+                platform: str = sys.platform) -> tuple[Path | None, str]:
+    """Каталог для `TMPDIR` тестов очереди в памяти и почему он выбран или нет."""
+    if not platform.startswith("linux"):
+        return None, "не Linux"
+    if not root.is_dir():
+        return None, f"нет {root}"
+    try:
+        status = os.statvfs(root)
+    except OSError as error:
+        return None, f"{root} не читается: {error}"
+    free = status.f_bavail * status.f_frsize
+    if free < min_free:
+        return None, f"в {root} свободно {free >> 20} МиБ, нужно {min_free >> 20}"
+    directory = Path(tempfile.mkdtemp(prefix="unica-queue-", dir=root))
+    # Тесты исполняют заглушки из временного каталога: том с `noexec` не годится.
+    probe = directory / "exec-probe"
+    probe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    probe.chmod(0o700)
+    try:
+        runs = subprocess.run([str(probe)], check=False).returncode == 0
+    except OSError:
+        runs = False
+    probe.unlink(missing_ok=True)
+    if not runs:
+        shutil.rmtree(directory, ignore_errors=True)
+        return None, f"из {root} нельзя исполнять файлы"
+    return directory, f"{free >> 20} МиБ свободно"
+
+
 def load_runner():
     spec = importlib.util.spec_from_file_location("run_tests", ROOT / "scripts" / "ci" / "run-tests.py")
     module = importlib.util.module_from_spec(spec)
@@ -184,10 +229,21 @@ def main(argv: list[str] | None = None) -> int:
     if choice.no_rust:
         return 0
     planned = runner.rust_commands("queue") if choice.full else commands(choice.packages, runner, choice.dependents)
+    temp, why = memory_temp()
+    environment = dict(os.environ)
+    if temp is not None:
+        environment["TMPDIR"] = str(temp)
+        print(f"временные каталоги тестов: {temp} ({why})", flush=True)
+    else:
+        print(f"временные каталоги тестов: системные ({why})", flush=True)
     code = 0
-    for command in planned:
-        print("+ " + " ".join(command), flush=True)
-        code = subprocess.run(command, cwd=ROOT, check=False).returncode or code
+    try:
+        for command in planned:
+            print("+ " + " ".join(command), flush=True)
+            code = subprocess.run(command, cwd=ROOT, env=environment, check=False).returncode or code
+    finally:
+        if temp is not None:
+            shutil.rmtree(temp, ignore_errors=True)
     return code
 
 
