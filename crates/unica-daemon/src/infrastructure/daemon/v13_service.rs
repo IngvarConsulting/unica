@@ -564,7 +564,7 @@ fn search_selected_role(
     request: &SearchRequest,
     context: &CodeIntelligenceContext,
     cancellation: &CancellationToken,
-    deadlines: unica_code_intelligence::deadlines::CodeIntelligenceDeadlines,
+    deadlines: unica_configuration::deadlines::CodeIntelligenceDeadlines,
 ) -> Result<unica_code_intelligence::coordinator::CodeSearchExecution, String> {
     use unica_code_intelligence::coordinator::CodeSearchCoordinator;
 

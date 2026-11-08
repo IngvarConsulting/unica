@@ -2558,6 +2558,7 @@ dependencies = [
  "unica-bsl",
  "unica-bsl-parser",
  "unica-code-model",
+ "unica-configuration",
  "unica-navigation",
  "unica-source-contract",
  "unica-work-control",
@@ -2662,8 +2663,6 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
- "unica-code-intelligence",
- "unica-diagnostics",
 ]
 
 [[package]]
@@ -2698,6 +2697,7 @@ dependencies = [
  "unica-bsl-parser",
  "unica-code-intelligence",
  "unica-coder",
+ "unica-configuration",
  "unica-daemon-protocol",
  "unica-diagnostics",
  "unica-documentation",
