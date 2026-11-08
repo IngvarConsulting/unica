@@ -388,6 +388,68 @@ class MetadataBuildTriggerTests(unittest.TestCase):
                 )
 
 
+class PersistentRunnerCacheTests(unittest.TestCase):
+    def test_cache_and_retries_follow_the_runner_switch(self) -> None:
+        gate = job(load(CI_WORKFLOW), "unica-ci")
+        local = step_by_id(gate, "local-target")
+        remote = steps_using(gate, "Swatinem/rust-cache")[0]
+        for event, attempt, enabled, environment in (
+            ("merge_group", 1, "true", "self-hosted"),
+            ("merge_group", 2, "true", "self-hosted"),
+            ("merge_group", 1, "false", "github-hosted"),
+            ("merge_group", 2, "false", "github-hosted"),
+            ("merge_group", 1, "", "github-hosted"),
+            ("pull_request", 1, "true", "github-hosted"),
+        ):
+            with self.subTest(event=event, attempt=attempt, enabled=enabled):
+                labels = evaluate(gate["runs-on"], {
+                    "github.event_name": event, "github.run_attempt": attempt,
+                    "vars.UNICA_SELF_HOSTED": enabled,
+                })
+                self.assertEqual("self-hosted" in labels, environment == "self-hosted")
+                for kept in ("", "true"):
+                    values = {"runner.environment": environment, "env.KEPT": kept}
+                    self.assertEqual(evaluate(local["if"], values), environment == "self-hosted" and kept != "true")
+                    self.assertEqual(evaluate(remote["if"], values), environment == "github-hosted" and kept != "true")
+        order = steps(gate)
+        self.assertLess(order.index(steps_using(gate, "actions/checkout")[0]), order.index(local))
+        self.assertLess(order.index(local), order.index(step_by_id(gate, "clippy")))
+
+    @unittest.skipIf(os.name == "nt", "PVE target links are used only on Linux")
+    def test_checkout_cleans_sources_but_preserves_each_runner_build(self) -> None:
+        local = step_by_id(job(load(CI_WORKFLOW), "unica-ci"), "local-target")
+        with tempfile.TemporaryDirectory() as temporary:
+            targets = []
+            for name in ("runner one", "runner two"):
+                workspace = Path(temporary) / name / "unica"
+                workspace.mkdir(parents=True)
+                def git(*args):
+                    return subprocess.run(["git", *args], cwd=workspace, check=True, capture_output=True)
+                git("init", "-q")
+                (workspace / ".gitignore").write_text("target/\n.build/\n", encoding="utf-8")
+                (workspace / "source").write_text("tracked", encoding="utf-8")
+                git("add", ".")
+                git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture")
+                environment = {**os.environ, "GITHUB_WORKSPACE": str(workspace)}
+                def attach():
+                    subprocess.run(["bash", "-e", "-o", "pipefail", "-c", local["run"]],
+                                   cwd=workspace, env=environment, check=True, capture_output=True)
+                attach()
+                target = workspace / "target"
+                targets.append(target.resolve())
+                (target / "artifact").write_text(name, encoding="utf-8")
+                (workspace / "untracked").write_text("old job", encoding="utf-8")
+                (workspace / "source").write_text("dirty", encoding="utf-8")
+                git("clean", "-ffdx")
+                git("reset", "--hard", "HEAD")
+                self.assertFalse(target.exists())
+                self.assertFalse((workspace / "untracked").exists())
+                self.assertEqual((workspace / "source").read_text(encoding="utf-8"), "tracked")
+                attach()
+                self.assertEqual((target / "artifact").read_text(encoding="utf-8"), name)
+            self.assertNotEqual(*targets)
+
+
 class UnicaWorkflowGuardrailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.release = load(RELEASE_WORKFLOW)
