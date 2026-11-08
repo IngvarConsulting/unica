@@ -1743,9 +1743,3 @@ fn descriptor_format_version(descriptor: &[u8]) -> Option<String> {
     let document = roxmltree::Document::parse(source).ok()?;
     unica_source_designer::roots::root_version_literal(source, document.root_element())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-}
