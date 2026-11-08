@@ -17,7 +17,6 @@ skip = [
   "tests.ci.test_classify_workflow_changes",
   "tests.ci.test_collect_results",
   "tests.ci.test_publish_channels",
-  "tests.ci.test_resource_limits",
   "tests.ci.test_scope_skips",
   "tests.dev.test_verify_8_3_27_platform",
 ]
