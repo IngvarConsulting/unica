@@ -221,7 +221,7 @@ fn published_tool_values(profile: V13TaskProfile) -> Vec<(String, Value)> {
         .collect()
 }
 
-/// #1211: clients that translate tool schemas into a single-`type` dialect
+/// Clients that translate tool schemas into a single-`type` dialect
 /// refuse or mishandle `"type": [...]`; no published schema may use it.
 #[test]
 fn published_tool_schemas_declare_one_type_per_node() {
@@ -249,7 +249,7 @@ fn published_tool_schemas_declare_one_type_per_node() {
     assert!(found);
 }
 
-/// #1210: a form client fills every schema `default` into the call. A tool
+/// A form client fills every schema `default` into the call. A tool
 /// that answers `{}` must therefore publish none: `unica.view {limit: 20}`
 /// is refused because limit requires at. A tool with required arguments
 /// gets a default only when it is valid next to those arguments alone;
