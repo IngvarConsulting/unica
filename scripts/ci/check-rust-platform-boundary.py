@@ -106,6 +106,14 @@ DOMAIN_COMPONENTS = DOMAIN_FLOOR | crate_declarations.packages(crate_declaration
 FILE_IO_COMPONENTS = FILE_IO_FLOOR | crate_declarations.packages(crate_declarations.repository(), file_io="none")
 
 
+def use_declarations(repo_root: Path) -> None:
+    """Derive the file-IO sets from the crates under `repo_root`, the tree checked."""
+    global DOMAIN_COMPONENTS, FILE_IO_COMPONENTS
+    declarations = crate_declarations.read(repo_root)
+    DOMAIN_COMPONENTS = DOMAIN_FLOOR | crate_declarations.packages(declarations, file_io="domain")
+    FILE_IO_COMPONENTS = FILE_IO_FLOOR | crate_declarations.packages(declarations, file_io="none")
+
+
 def required_file_io(name: str) -> str:
     """The least restriction a package keeps whatever it declares."""
     if name in DOMAIN_FLOOR:
@@ -939,6 +947,7 @@ def collect_repository_manifests(repo_root: Path) -> tuple[dict[str, str], dict[
 
 def file_io_free_packages(repo_root: Path) -> dict[str, str]:
     """Package name → repository directory of every file-IO-free package."""
+    use_declarations(repo_root)
     manifests, _ = collect_repository_manifests(repo_root)
     found = {name: str(PurePosixPath(path).parent) for path, text in manifests.items()
              if isinstance(name := tomllib.loads(text).get("package", {}).get("name", ""), str)}
@@ -961,6 +970,7 @@ def file_io_declaration_errors(manifests: dict[str, str]) -> list[str]:
 
 
 def check_repository(repo_root: Path) -> list[str]:
+    use_declarations(repo_root)
     manifests, workspace_dependencies = collect_repository_manifests(repo_root)
     manifest_diagnostics = [diagnostic for path in sorted(manifests)
                             for diagnostic in check_manifest(path, manifests[path], workspace_dependencies)]

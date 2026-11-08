@@ -25,10 +25,11 @@ SEMANTIC_DEPENDENCIES = {
     "xdto": frozenset(), "templates": frozenset({"metadata"}),
     "bsl": frozenset({"metadata"}),
 }
-def _declared(component: str) -> frozenset[str]:
+def _declared(component: str, declarations: dict | None = None) -> frozenset[str]:
+    declarations = crate_declarations.repository() if declarations is None else declarations
     return frozenset(
         name.removeprefix("unica-")
-        for name in crate_declarations.packages(crate_declarations.repository(), component=component)
+        for name in crate_declarations.packages(declarations, component=component)
     )
 
 
@@ -44,6 +45,14 @@ COORDINATOR_FLOOR = frozenset({
 FAMILIES = FAMILY_FLOOR | (_declared("family") & SEMANTIC_DEPENDENCIES.keys())
 # Everything the rule against importing a port implementation applies to.
 PORT_CALLERS = COORDINATOR_FLOOR | _declared("coordinator")
+
+
+def use_declarations(root: Path) -> None:
+    """Derive the restriction sets from the crates under `root`, the tree checked."""
+    global FAMILIES, PORT_CALLERS
+    declarations = crate_declarations.read(root)
+    FAMILIES = FAMILY_FLOOR | (_declared("family", declarations) & SEMANTIC_DEPENDENCIES.keys())
+    PORT_CALLERS = COORDINATOR_FLOOR | _declared("coordinator", declarations)
 CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
 # Families whose codec sits behind the family port (#1826). Product composition
 # selects the implementation in one module; everyone else calls the trait.
@@ -101,7 +110,7 @@ def declaration_errors(members: dict[str, tuple[Path, dict]]) -> list[str]:
         if declared not in COMPONENT_KINDS:
             errors.append(f'{package}: declare component under [package.metadata.unica] in its Cargo.toml; kinds are {hint}')
         elif declared != required:
-            errors.append(f"{package}: component {declared} needs the rules of this guard to treat it so, and they treat it as {required}; update the list in check-component-boundaries.py or the declaration")
+            errors.append(f"{package}: component {declared} needs the rules of this guard to treat it so, and they treat it as {required}; a floor in check-component-boundaries.py or a closed list of permissions there decides it, not the declaration")
     return errors
 
 
@@ -242,6 +251,7 @@ def manifests(root: Path) -> dict[str, tuple[Path, dict]]:
 
 def check(root: Path) -> list[str]:
     root = root.resolve()
+    use_declarations(root)
     members = manifests(root)
     paths = {directory.resolve(): name for name, (directory, _) in members.items()}
     workspace = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]
