@@ -2121,11 +2121,10 @@ pub(crate) mod medium_tests {
         }))
     }
 
-    /// ADR-0072: the typed operation materializes the exact facet the retired
-    /// `help.add` produced — the same generators pin Help.xml and the page,
-    /// and the owner's form gains the IncludeHelpInContents flip.
+    /// `addHelp` writes Help.xml and the language page from the help
+    /// generators, and the owner's form gains the IncludeHelpInContents flip.
     #[test]
-    fn typed_add_help_matches_the_retired_help_add_files() {
+    fn typed_add_help_writes_the_help_files_and_flips_the_form_flag() {
         let fixture = Fixture::new("add-help-parity");
         add_help_owner(&fixture, "Typed");
         let application = fixture_application(&fixture);
