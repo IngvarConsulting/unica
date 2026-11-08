@@ -123,7 +123,10 @@ class RustLaneTests(unittest.TestCase):
             for action in ("list", "run"):
                 command = lanes.reuse_command(action, Path("/repo"), Path("tests.tar.zst"), lane, "queue", "hash:1/2")
                 self.assertIn("--archive-file", command)
-                for forbidden in ("--workspace", "--features", "--lib", "--test", "--manifest-path"):
+                # nextest refuses build-directory options with `--archive-file`:
+                # the archive carries its own and extracts into `<extract-to>/target`.
+                for forbidden in ("--workspace", "--features", "--lib", "--test", "--manifest-path",
+                                  "--target-dir", "--target-dir-remap"):
                     self.assertNotIn(forbidden, command)
                 self.assertIn("hash:1/2", command)
 
