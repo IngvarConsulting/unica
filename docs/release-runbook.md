@@ -473,13 +473,17 @@ commits. The commit's parent is the slice; the release description names it as
   be older than the release, so the night stays green and releases no alpha until
   `main` raises the version.
 - **Retention.** After a publication the run calls
-  `release-alpha.py prune`: the two newest published alphas stay, older ones go
-  with their tags, and so do older tags whose build never published. The
-  `released version tags` ruleset must exclude `refs/tags/v*-alpha.*`. On a
-  mutable release the tag goes first, so a refusal leaves the release intact and
-  the step fails with that message; the new alpha stays published. An immutable
-  release is deleted first, and if GitHub keeps its tag, the tag stays with a
-  warning: a kept tag holds no assets and `N` only grows.
+  `release-alpha.py prune`: the two newest published alphas stay, and the GitHub
+  releases of older ones are deleted. Their tags stay. The next number and the
+  released slice are read from the tags, so `N` only grows, and a kept tag holds
+  no assets. Nothing deletes or rewrites a `v*` tag, so the tag ruleset needs no
+  exclusion for alphas.
+- **Tag ruleset.** One rule covers every `v*` tag, alphas included: deletion and
+  non-fast-forward updates are blocked for everyone, and creation is restricted
+  with the role admin and **Deploy keys** in the bypass list. The deploy key from
+  `RELEASE_TAG_KEY` creates alpha tags in the environment `alpha` and candidate
+  tags in `marketplace`; the app GitHub Actions gets no bypass, so a workflow run
+  from any branch cannot create a `v*` tag with the run's token.
 - **Immutable releases.** Assets can be uploaded only before publication, so every
   prerelease goes up as a draft and a separate step publishes it. A failed run
   before that step can be rerun: it continues the draft. After publication a
