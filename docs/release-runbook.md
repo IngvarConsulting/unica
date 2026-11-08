@@ -317,7 +317,31 @@ so nothing but a published tag will do — and a candidate needs testers before
 the release it becomes. A release candidate is published to the `next`
 channel of the marketplace and never to the stable catalog.
 
-Give the version an `-rc.N` suffix and tag it as usual:
+A candidate is cut from a checked alpha by a workflow:
+
+```bash
+gh workflow run rc-from-alpha.yml --repo IngvarConsulting/unica --ref main -f alpha=v0.15.0-alpha.4
+```
+
+The job runs in the environment `marketplace` and waits for the owner's
+approval. `scripts/ci/release-rc.py` then refuses unless:
+
+- the alpha is published and its slice — the parent of its version commit — is
+  in `main` and equals the `main@<sha>` of its release description;
+- the night that set this alpha is green and checked that very commit, so the
+  slice's tree is the tree it tested;
+- `vX.Y.Z` is not released yet.
+
+It commits `bump-version.py X.Y.Z-rc.N` on the slice, with `N` the next free
+number, tags the commit and pushes the tag with the deploy key from the secret
+`RELEASE_TAG_KEY`. The key's push starts the ordinary release by tag below:
+the full tests, the build, the install checks and the `next` channel. That tag
+is set by the workflow, not signed by a person: the owner's approval of the job
+and the checks above stand in for the signature. A stable `vX.Y.Z` is still a
+signed tag as in step 1.
+
+A candidate can still be tagged by hand when it must not come from an alpha:
+give the version an `-rc.N` suffix and tag it as usual:
 
 ```bash
 python3.12 scripts/dev/bump-version.py 0.13.0-rc.1
