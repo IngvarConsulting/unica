@@ -421,7 +421,7 @@ def _forbidden_imports(path: PurePosixPath) -> tuple[str, ...]:
         return FORBIDDEN_DOMAIN_IMPORTS
     if normalized.startswith("crates/unica-application/src/application/"):
         return FORBIDDEN_APPLICATION_IMPORTS
-    if normalized.startswith("crates/unica-coder/src/infrastructure/"):
+    if normalized.startswith(("crates/unica-coder/src/infrastructure/", "crates/unica-coder-daemon/src/infrastructure/")):
         return FORBIDDEN_INFRASTRUCTURE_IMPORTS
     return ()
 

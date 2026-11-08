@@ -3705,7 +3705,7 @@ pub(crate) fn configured_output_directory() -> Result<PathBuf, String> {
 /// Зарегистрированные операции `unica.apply`: тот же реестр, по которому
 /// словарь `can` публикует операции узла.
 fn registered_apply_operations() -> BTreeSet<String> {
-    unica_coder::registered_apply_operation_names()
+    unica_coder_daemon::registered_apply_operation_names()
         .into_iter()
         .map(str::to_string)
         .collect()

@@ -41,12 +41,14 @@ Designer layout, workspace и process. Он не импортирует испо
 предметные семейства или их кодеки и движки; связывание с исполнением
 остаётся в продуктовой composition.
 
-Ни компонент, ни его unit target не зависят от `unica-coder`, кроме пакета
-`unica-product`. Он объявляет исполняемый файл продукта и межкомпонентные
-проверки, которым нужна продуктовая композиция. От `unica-product` не зависит
-никто. Пакеты `unica-application` и `unica-domain` не зависят ни от адаптеров, ни
+Продуктовая композиция — три пакета: нижний слой `unica-coder`, демон с его
+дверями `unica-coder-daemon` и `unica-product`. Ни компонент, ни его unit target
+не зависят от `unica-coder` и `unica-coder-daemon`; от первого зависит только
+`unica-coder-daemon`, от второго — только `unica-product`. `unica-product`
+объявляет исполняемый файл продукта и межкомпонентные проверки, которым нужна
+продуктовая композиция. От `unica-product` не зависит никто. Пакеты `unica-application` и `unica-domain` не зависят ни от адаптеров, ни
 от Designer-кодеков, а `unica-application` вызывает их через порты. Ограничение действует и на build/dev и платформенные зависимости:
 псевдоним зависимости не меняет её владельца.
 
-MCP SDK принадлежит `unica-coder`. Внешние Rust-типы parser/syntax скрывает
+MCP SDK принадлежит `unica-coder-daemon`. Внешние Rust-типы parser/syntax скрывает
 `unica-bsl-parser`; потребители используют его нормализованные факты.

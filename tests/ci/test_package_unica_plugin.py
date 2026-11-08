@@ -288,7 +288,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
         rust_sources = sorted(
             path
-            for package in ("unica-coder", "unica-application", "unica-domain")
+            for package in ("unica-coder", "unica-coder-daemon", "unica-application", "unica-domain")
             for path in (repo_root / "crates" / package / "src").rglob("*.rs")
         )
         forbidden = (
