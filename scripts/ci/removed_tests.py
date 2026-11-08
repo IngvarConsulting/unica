@@ -28,8 +28,10 @@ evaluated; tests a macro generates and files reached only through a computed
 `include!` are not seen, except the modules a build script of `crates/`
 declares for each `*.rs` of a module's own directory. The queue still checks what this misses.
 
-Python tests of `tests/**/test_*.py` are named as `unittest` names them,
-`tests.ci.test_x.Class.test`, read from the source without importing it: a
+Python tests of `tests/**/test_*.py` (the local `tests/agent_evaluation`
+included: its tests are checks too) are named by their module path from the
+repository root, as `run-static-tests.py` names them, `tests.ci.test_x.Class.test`,
+and read from the source without importing it: a
 class whose bases within the module reach a `...TestCase`, its `test*`
 methods and those of its bases defined in the same module. A test moved to
 another module keeps its `Class.test`: a lost one counts as moved when that
