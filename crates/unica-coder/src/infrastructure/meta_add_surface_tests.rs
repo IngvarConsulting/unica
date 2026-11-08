@@ -68,32 +68,17 @@ impl Drop for TempWorkspace {
     }
 }
 
+/// Набор `main` с источниками ссылок для добавляемых объектов: справочник,
+/// документ-регистратор, план счетов, план видов расчёта, задача и общий
+/// модуль с экспортными обработчиками `Run` и `Handle`. Снимок однажды записан
+/// этим же `unica.meta.add` поверх пустой конфигурации 8.3.27; сами добавления
+/// этих видов проверяет `meta_add_apply_all_23_kinds_is_atomic_and_duplicate_is_byte_stable`.
 fn create_configuration_workspace(label: &str) -> TempWorkspace {
     let workspace = TempWorkspace::new(label);
-    test_fixtures::copy_empty_configuration(workspace.path());
-    for (kind, name) in [
-        ("Catalog", "MetaAddSource"),
-        ("Document", "MetaAddRegistrar"),
-        ("ChartOfAccounts", "MetaAddAccounts"),
-        ("ChartOfCalculationTypes", "MetaAddCalculationTypes"),
-        ("Task", "MetaAddTask"),
-        ("CommonModule", "MetaAddHandlers"),
-    ] {
-        let added = call_add(workspace.path(), kind, name, false);
-        assert!(added.ok, "{kind}.{name}: {:?}", added.errors);
-    }
-    std::fs::write(
-        workspace
-            .path()
-            .join("src/CommonModules/MetaAddHandlers/Ext/Module.bsl"),
-        concat!(
-            "Procedure Run() Export\n",
-            "EndProcedure\n\n",
-            "Procedure Handle(Source, Cancel) Export\n",
-            "EndProcedure\n",
-        ),
-    )
-    .unwrap();
+    test_fixtures::copy_tree(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meta-add-sources"),
+        workspace.path(),
+    );
     workspace
 }
 
