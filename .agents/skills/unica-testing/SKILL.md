@@ -76,17 +76,20 @@ description: Выбор, написание, запуск и ревью тест
   скорость или окружение. Rust: крейт `crates/unica-research`, цели `repro`
   и `platform`. Python: `tests/research/repro/` и `tests/research/platform/`.
   Имя `repro`-теста начинается с `issue_<номер>` (`test_issue_<номер>_…`
-  в Python). Запуск: `python3.12 scripts/ci/run-tests.py --profile research
-  --issue <номер>` и `python3.12 scripts/ci/run-tests.py --profile platform`.
-  Профили ворот (`pr`, `queue`, `main`, `large`, `release`) это место
-  не собирают и не запускают.
+  в Python). Запуск: `python3.12 scripts/dev/run-research.py --profile research
+  --issue <номер>` и `python3.12 scripts/dev/run-research.py --profile platform`.
+  Крейт вне рабочего пространства, а `tests/research` вне наборов
+  `run-static-tests.py`, поэтому профили ворот `scripts/ci/run-tests.py`
+  (`pr`, `queue`, `main`, `large`, `release`) это место не собирают
+  и не запускают.
 - **Разовый** проверяет, что разовая работа выполнена: удаление,
   переименование, перенос, миграция. Он остаётся в PR, в описании
   и в локальном прогоне, и в репозиторий не попадает.
 
 Вне исследовательского места номер issue в имени теста и `#[ignore]` —
-ошибка стража. Исключение — вспомогательный процесс, который запускает
-другой тест: его `#[ignore]` объясняет причина `helper process: …`.
+ошибка стража `tests/ci/test_research_place.py`. Исключение —
+вспомогательный процесс, который запускает другой тест: причина его
+`#[ignore]` начинается с `helper process`.
 
 `unica-research` зависит от крейтов продукта, а от него не зависит никто.
 Внутренности крейта он видит только через признак `test-support` этого крейта.
