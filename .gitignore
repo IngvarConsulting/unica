@@ -5,7 +5,7 @@ its/
 .build/
 .worktrees/
 .session-temp/
-target
+target/
 dist/
 docs-local/
 .DS_Store

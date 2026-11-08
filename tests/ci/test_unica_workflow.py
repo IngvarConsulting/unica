@@ -391,6 +391,7 @@ class MetadataBuildTriggerTests(unittest.TestCase):
 class PersistentRunnerCacheTests(unittest.TestCase):
     def test_cache_and_retries_follow_the_runner_switch(self) -> None:
         gate = job(load(CI_WORKFLOW), "unica-ci")
+        park = step_by_id(gate, "park-target")
         local = step_by_id(gate, "local-target")
         remote = steps_using(gate, "Swatinem/rust-cache")[0]
         for event, attempt, enabled, environment in (
@@ -409,15 +410,22 @@ class PersistentRunnerCacheTests(unittest.TestCase):
                 self.assertEqual("self-hosted" in labels, environment == "self-hosted")
                 for kept in ("", "true"):
                     values = {"runner.environment": environment, "env.KEPT": kept}
+                    self.assertEqual(evaluate(park["if"], values), environment == "self-hosted" and kept != "true")
                     self.assertEqual(evaluate(local["if"], values), environment == "self-hosted" and kept != "true")
                     self.assertEqual(evaluate(remote["if"], values), environment == "github-hosted" and kept != "true")
         order = steps(gate)
+        self.assertLess(order.index(park), order.index(steps_using(gate, "actions/checkout")[0]))
         self.assertLess(order.index(steps_using(gate, "actions/checkout")[0]), order.index(local))
         self.assertLess(order.index(local), order.index(step_by_id(gate, "clippy")))
 
-    @unittest.skipIf(os.name == "nt", "PVE target links are used only on Linux")
+    def run_cache_step(self, workspace: Path, step_id: str, *, check: bool = True):
+        step = step_by_id(job(load(CI_WORKFLOW), "unica-ci"), step_id)
+        return subprocess.run(["bash", "-e", "-o", "pipefail", "-c", step["run"]],
+                              cwd=workspace, env={**os.environ, "GITHUB_WORKSPACE": str(workspace)},
+                              check=check, capture_output=True)
+
+    @unittest.skipIf(os.name == "nt", "PVE shell steps are used only on Linux")
     def test_checkout_cleans_sources_but_preserves_each_runner_build(self) -> None:
-        local = step_by_id(job(load(CI_WORKFLOW), "unica-ci"), "local-target")
         with tempfile.TemporaryDirectory() as temporary:
             targets = []
             for name in ("runner one", "runner two"):
@@ -430,25 +438,53 @@ class PersistentRunnerCacheTests(unittest.TestCase):
                 (workspace / "source").write_text("tracked", encoding="utf-8")
                 git("add", ".")
                 git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture")
-                environment = {**os.environ, "GITHUB_WORKSPACE": str(workspace)}
-                def attach():
-                    subprocess.run(["bash", "-e", "-o", "pipefail", "-c", local["run"]],
-                                   cwd=workspace, env=environment, check=True, capture_output=True)
-                attach()
+                self.run_cache_step(workspace, "park-target")
+                self.run_cache_step(workspace, "local-target")
                 target = workspace / "target"
+                target.mkdir()
                 self.assertEqual(git("ls-files", "--others", "--exclude-standard").stdout, b"")
                 targets.append(target.resolve())
                 (target / "artifact").write_text(name, encoding="utf-8")
                 (workspace / "untracked").write_text("old job", encoding="utf-8")
                 (workspace / "source").write_text("dirty", encoding="utf-8")
+                self.run_cache_step(workspace, "park-target")
                 git("clean", "-ffdx")
                 git("reset", "--hard", "HEAD")
                 self.assertFalse(target.exists())
                 self.assertFalse((workspace / "untracked").exists())
                 self.assertEqual((workspace / "source").read_text(encoding="utf-8"), "tracked")
-                attach()
+                # A retry after interruption must keep the parked directory.
+                self.run_cache_step(workspace, "park-target")
+                self.run_cache_step(workspace, "local-target")
+                self.assertFalse(target.is_symlink())
+                self.assertEqual(target.resolve(), workspace.resolve() / "target")
                 self.assertEqual((target / "artifact").read_text(encoding="utf-8"), name)
             self.assertNotEqual(*targets)
+
+    @unittest.skipIf(os.name == "nt", "PVE shell steps are used only on Linux")
+    def test_cache_conflicts_and_invalid_parks_preserve_existing_data(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary) / "unica"
+            workspace.mkdir()
+            target = workspace / "target"
+            target.mkdir()
+            (target / "current").write_text("current", encoding="utf-8")
+            park = workspace.parent / ".unica-ci-target"
+            park.mkdir()
+            (park / "saved").write_text("saved", encoding="utf-8")
+            for step in ("park-target", "local-target"):
+                self.assertNotEqual(self.run_cache_step(workspace, step, check=False).returncode, 0)
+                self.assertEqual(sorted(p.name for p in target.iterdir()), ["current"])
+                self.assertEqual(sorted(p.name for p in park.iterdir()), ["saved"])
+            shutil.rmtree(park)
+            park.write_text("not a directory", encoding="utf-8")
+            self.assertNotEqual(self.run_cache_step(workspace, "local-target", check=False).returncode, 0)
+            self.assertEqual(park.read_text(encoding="utf-8"), "not a directory")
+            park.unlink()
+            park.symlink_to(workspace.parent / "missing", target_is_directory=True)
+            for step in ("park-target", "local-target"):
+                self.assertNotEqual(self.run_cache_step(workspace, step, check=False).returncode, 0)
+                self.assertTrue(park.is_symlink())
 
 
 class UnicaWorkflowGuardrailTests(unittest.TestCase):
