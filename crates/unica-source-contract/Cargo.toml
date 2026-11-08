@@ -16,4 +16,4 @@ unica-address = { path = "../unica-address" }
 
 [package.metadata.unica]
 component = "abstraction"
-file-io = "none"
+file-io = "domain"

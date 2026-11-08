@@ -7,7 +7,7 @@ repository.workspace = true
 
 [package.metadata.unica]
 component = "coordinator"
-file-io = "none"
+file-io = "domain"
 
 [lib]
 name = "unica_domain"

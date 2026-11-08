@@ -130,7 +130,7 @@ MODULE_ITEM = re.compile(
 PATH_ATTRIBUTE = re.compile(r"#\[path\s*=([^\[\]]*)\]")
 STRING = re.compile(r'^\s*"([^"\\]*)"\s*$')
 # `include!` of the `mod` declarations build.rs writes for every `*.rs` file
-# of the including module's own directory (crates/unica-coder/build.rs).
+# of the including module's own directory (crates/unica-coder*/build.rs).
 DISCOVERED_MODULES = re.compile(
     r'\s*concat!\s*\(\s*env!\s*\(\s*"OUT_DIR"\s*\)\s*,\s*"/[a-z0-9_]+_modules\.rs"\s*\)\s*\)')
 

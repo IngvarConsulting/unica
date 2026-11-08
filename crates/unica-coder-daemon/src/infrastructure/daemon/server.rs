@@ -4746,7 +4746,7 @@ pub(crate) mod medium_actor_capacity_tests {
             "Процедура Ping() Экспорт\nКонецПроцедуры\n",
         )
         .unwrap();
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let exe = std::env::consts::EXE_SUFFIX;
         std::fs::write(
             plugin.join("third-party/manifest.json"),
@@ -4801,7 +4801,7 @@ pub(crate) mod medium_actor_capacity_tests {
     fn every_route_refuses_a_missing_engine_with_one_typed_refusal() {
         const CHILD: &str = "UNICA_MISSING_ENGINE_ROUTES_CHILD";
         const ROOT: &str = "UNICA_MISSING_ENGINE_ROUTES_ROOT";
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let exe = std::env::consts::EXE_SUFFIX;
         if std::env::var_os(CHILD).is_some() {
             let root = std::path::PathBuf::from(std::env::var_os(ROOT).unwrap());
@@ -5310,7 +5310,7 @@ fn main() {
             });
             let release_path = root.join("runtime-manifest.json");
             std::fs::write(&release_path, release.to_string()).unwrap();
-            let target = crate::infrastructure::platform::current_target_id().unwrap();
+            let target = crate::infrastructure::current_target_id().unwrap();
             let suffix = std::env::consts::EXE_SUFFIX;
             std::fs::write(plugin.join("third-party/manifest.json"), serde_json::json!({
                 "schemaVersion": 2,
@@ -15091,7 +15091,7 @@ struct ActorLogicalReadLease {"#,
         let root = tempfile::tempdir().unwrap();
         let plugin = root.path().join("plugin");
         std::fs::create_dir_all(plugin.join("third-party")).unwrap();
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let exe = std::env::consts::EXE_SUFFIX;
         std::fs::write(
             plugin.join("third-party/manifest.json"),
@@ -15641,7 +15641,7 @@ struct ActorLogicalReadLease {"#,
         let root = tempfile::tempdir().unwrap();
         let plugin = root.path().join("plugin");
         std::fs::create_dir_all(plugin.join("third-party")).unwrap();
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let exe = std::env::consts::EXE_SUFFIX;
         std::fs::write(
             plugin.join("third-party/manifest.json"),
@@ -17377,7 +17377,7 @@ fn main() {
         }
 
         let plugin = root.join("plugins/unica");
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let binary_name = format!("v8-runner{}", std::env::consts::EXE_SUFFIX);
         let relative = format!("bin/{target}/{binary_name}");
         let binary = plugin.join(&relative);
@@ -18007,9 +18007,9 @@ fn main() {
         run_long_work_contract_obligation(
             "infrastructure::daemon::server::medium_actor_capacity_tests::daemon_long_work_rejects_replaced_actor_root_before_reuse_or_publication",
         );
-        run_long_work_contract_obligation(
-            "infrastructure::runtime_jobs_integration::tests::medium_runtime_resource_tree_lease_contract",
-        );
+        // Обязательство нижнего слоя,
+        // `infrastructure::runtime_jobs_integration::tests::medium_runtime_resource_tree_lease_contract`,
+        // идёт отдельным тестом в наборе `unica-coder`: бинарь демона его не содержит.
     }
 
     /// rule: INV.APP.DAEMON-ACTOR-CAPACITY

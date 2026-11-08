@@ -14,5 +14,5 @@ serde_json.workspace = true
 
 [package.metadata.unica]
 component = "abstraction"
-file-io = "none"
+file-io = "domain"
 inputs = ["tests/fixtures/v013/address-profile-8.3.27.json"]

@@ -4,6 +4,9 @@ mod lsp_workspaces;
 #[cfg(test)]
 #[path = "../../../tests/platform/receipt_runtime.rs"]
 mod medium_receipt_runtime_tests;
+#[cfg(test)]
+#[path = "../../../tests/platform/workspace_services_canonical.rs"]
+mod medium_workspace_services_canonical_tests;
 pub(crate) mod protocol;
 #[cfg(test)]
 #[path = "../../../tests/platform/receipt_join_freshness.rs"]

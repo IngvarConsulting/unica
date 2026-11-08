@@ -10,4 +10,4 @@ unica-bsl-types = { path = "../unica-bsl-types" }
 
 [package.metadata.unica]
 component = "service"
-file-io = "none"
+file-io = "domain"

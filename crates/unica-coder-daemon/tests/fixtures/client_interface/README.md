@@ -4,7 +4,7 @@
 что платформа 1С 8.3.27.2074 (формат 2.20) выгружает после загрузки
 отредактированной конфигурации. Тест
 `panels_and_home_page_publish_the_platform_bytes_and_read_back` в
-`crates/unica-coder/src/infrastructure/daemon/server/client_interface_tests.rs`
+`crates/unica-coder-daemon/src/infrastructure/daemon/server/client_interface_tests.rs`
 применяет операции к копии `tests/fixtures/acceptance/workspace-borrowed`
 и сравнивает `src/cf/Ext/ClientApplicationInterface.xml` и
 `src/cf/Ext/HomePageWorkArea.xml` с файлами отсюда побайтно.

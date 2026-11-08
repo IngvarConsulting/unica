@@ -20,4 +20,4 @@ unica-refusal = { path = "../unica-refusal" }
 
 [package.metadata.unica]
 component = "coordinator"
-file-io = "none"
+file-io = "domain"

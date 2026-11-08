@@ -21,4 +21,4 @@ jsonschema.workspace = true
 
 [package.metadata.unica]
 component = "family"
-file-io = "none"
+file-io = "domain"

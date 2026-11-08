@@ -1729,7 +1729,7 @@ mod tests {
         assert_eq!(data["retryable"], false);
         assert_eq!(
             data["target"],
-            crate::infrastructure::platform::current_target_id().unwrap()
+            crate::infrastructure::current_target_id().unwrap()
         );
         assert!(
             data["path"]

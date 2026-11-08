@@ -24,13 +24,13 @@ GATES = ("pr", "queue", "main", "release")
 # file that declares them: map capacity checks and the real-time daemon run
 # past the former operation deadlines (#1251).
 LARGE_LIBRARY_MODULES = {
-    ("unica_coder", "infrastructure::daemon::medium_receipt_runtime_tests::"): (
-        "crates/unica-coder/tests/platform/receipt_runtime.rs",
+    ("unica_coder_daemon", "infrastructure::daemon::medium_receipt_runtime_tests::"): (
+        "crates/unica-coder-daemon/tests/platform/receipt_runtime.rs",
         "infrastructure::daemon::medium_receipt_runtime_tests::",
     ),
     # Root check and resource inspection past the former corpus caps (#1119).
-    ("unica_coder", "infrastructure::daemon::v13_workspace_bootstrap::medium_tests::"): (
-        "crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs",
+    ("unica_coder_daemon", "infrastructure::daemon::v13_workspace_bootstrap::medium_tests::"): (
+        "crates/unica-coder-daemon/src/infrastructure/daemon/v13_workspace_bootstrap.rs",
         "infrastructure::daemon::v13_workspace_bootstrap::",
     ),
     ("unica_project_health", "inspection::resources::medium_tests::"): (
@@ -100,7 +100,7 @@ def large_groups(expression: str) -> dict[str, list[str]]:
     result = exact_groups(
         expression,
         "large",
-        {"daemon_receipt_ledger", "unica_coder", "unica_project_health", "unica_workspace", "selection"},
+        {"daemon_receipt_ledger", "unica_coder_daemon", "unica_project_health", "unica_workspace", "selection"},
     )
     for target, names in result.items():
         for name in names:
@@ -188,7 +188,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         # Тела проверок обвязки — в библиотеке без `#[test]`; тест каждой из
         # них разворачивает бинарь контракта одним макросом. Список в макросе
         # единственный, и обе известные проверки в нём есть.
-        coder = REPO_ROOT / "crates/unica-coder"
+        coder = REPO_ROOT / "crates/unica-coder-daemon"
         harness = (coder / "tests/support/receipt_scenario/tests.rs").read_text(encoding="utf-8")
         self.assertEqual(attributed_test_functions(harness), set())
         listed = re.search(r"(?m)^harness_checks!\((.*?)\);", harness, re.S)
@@ -200,7 +200,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         ledger = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
         self.assertIn('#[path = "daemon_receipt_ledger/receipt_scenario_harness.rs"]\nmod receipt_scenario_harness;', ledger)
         wrapper = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger/receipt_scenario_harness.rs").read_text(encoding="utf-8")
-        self.assertIn("unica_coder::receipt_scenario_harness_tests!();", wrapper)
+        self.assertIn("unica_coder_daemon::receipt_scenario_harness_tests!();", wrapper)
         # Бинарь контракта — `kind(test)`: размер `medium` идёт из каталога,
         # особой переразметки у запускателя для обвязки нет.
         self.assertIn("kind(test)", self.config["profile"]["pr"]["default-filter"])
@@ -295,7 +295,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         ledger = (REPO_ROOT / "crates" / "unica-product" / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
         declared_by_target = {
             "daemon_receipt_ledger": attributed_test_functions(ledger),
-            "unica_coder": set(),
+            "unica_coder_daemon": set(),
             "unica_project_health": set(),
             "unica_workspace": set(),
             "selection": set(),
@@ -334,13 +334,13 @@ class GateProfileCompositionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     nightly_only_groups(expression.replace(exact, replacement, 1))
         with self.assertRaises(ValueError):
-            nightly_only_groups(expression.replace("binary(v13_workspace_bootstrap)", "binary(unica_coder)", 1))
+            nightly_only_groups(expression.replace("binary(v13_workspace_bootstrap)", "binary(unica_coder_daemon)", 1))
         self.assertEqual(test_function_attributes('#[test]\n#[ignore = "why"]\nfn quiet() {}\n#[test]\nfn loud() {}'),
                          {"quiet": ["#[test]", '#[ignore="why"]'], "loud": ["#[test]"]})
 
     def test_large_filter_rejects_broad_wrong_target_and_duplicate_members(self) -> None:
         expression = self.config["profile"]["large"]["default-filter"].strip()
-        name = large_groups(expression)["unica_coder"][-1]
+        name = large_groups(expression)["unica_coder_daemon"][-1]
         exact = f"test(/^{name}$/)"
         for replacement in [
             f"test(/^{name}/)",
@@ -460,7 +460,7 @@ FACADE_GUARDS = (
 
 class FacadeGuardInventoryTests(unittest.TestCase):
     def test_facade_guards_are_contract_tests_the_receipt_lane_runs(self) -> None:
-        coder = REPO_ROOT / "crates/unica-coder"
+        coder = REPO_ROOT / "crates/unica-coder-daemon"
         guards = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger/facade_guards.rs").read_text(encoding="utf-8")
         self.assertEqual(sorted(attributed_test_functions(guards)), sorted(FACADE_GUARDS))
         # Страж исполняется, а не только объявлен: ни `#[ignore]`, ни `cfg`
