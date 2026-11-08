@@ -952,6 +952,22 @@ class PreviousInventoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "test result"):
             self.verify(self.previous(removed=["package-ordinary", "package-receipt", "package-vendor"]), mutate=rename)
 
+    def test_a_test_moved_to_another_target_or_module_is_not_a_vanished_result(self):
+        def move(plan):
+            for part in plan["shards"]:
+                for case in part:
+                    case["name"] = "relocated::" + case["name"]
+            plan["inventory"] = sum(plan["shards"], [])
+        report = self.verify(self.previous(), mutate=move)
+        self.assertEqual(report["previousInventory"]["movedCases"]["ubuntu-latest/ordinary"],
+                         {"package-ordinary::case_0": "package-ordinary::relocated::case_0"})
+
+    def test_a_move_is_one_function_name_lost_and_arrived_once(self):
+        lost = ["old::a::kept_name", "old::b::twice", "old::c::twice", "old::d::two_arrivals", "old::e::gone"]
+        arrived = ["new::kept_name", "new::x::twice", "new::y::two_arrivals", "new::z::two_arrivals", "new::renamed"]
+        self.assertEqual(lanes.moved_cases(lost, arrived), {"old::a::kept_name": "new::kept_name"})
+        self.assertEqual(lanes.moved_cases(lost, []), {})
+
     def test_cases_belong_to_the_longest_nested_target_id(self):
         binaries = ["unica-coder", "unica-coder::daemon_receipt_ledger"]
         self.assertEqual(lanes.binary_of("unica-coder::daemon_receipt_ledger::t1", binaries), "unica-coder::daemon_receipt_ledger")
