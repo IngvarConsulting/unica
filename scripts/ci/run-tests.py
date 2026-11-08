@@ -20,7 +20,6 @@ import allure_results  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_UNITTEST = Path(__file__).with_name("run-unittest.py")
-PYTHON_SIZES = REPO_ROOT / ".config" / "python-sizes.toml"
 NEXTEST_JUNIT = REPO_ROOT / "target" / "nextest" / "default" / "junit.xml"
 
 from workflow_routing import (  # noqa: E402
@@ -182,20 +181,20 @@ def python_commands(
         lane_sizes = [size for size in admitted if size == only_size]
         if not lane_sizes:
             return []
-    # Размер набора — умолчание; манифест поднимает отдельные классы и тесты
-    # до `medium`. Ворота, допускающие не все размеры, получают `--admit`;
+    # Размер набора — умолчание; объявления модулей поднимают отдельные классы
+    # и тесты до `medium` (`scripts/ci/python_sizes.py`). Ворота, допускающие не все размеры, получают `--admit`;
     # `all` без записи результатов повторяет прежнюю команду один в один.
     def tail(size: str) -> list[str]:
         sizing: list[str] = []
         if set(lane_sizes) != set(SIZES):
-            sizing = ["--sizes", str(PYTHON_SIZES), "--admit", ",".join(lane_sizes)]
+            sizing = ["--admit", ",".join(lane_sizes)]
         if only_size:
             sizing += ["--lane", only_size]
         if docs_only and "medium" in ADMITTED[profile]:
             sizing += ["--scope-skip-medium"]
         if results is None:
             return (["--profile", profile] if docs_only else []) + ([] if size == "small" else ["--size", size]) + sizing
-        return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size, "--sizes", str(PYTHON_SIZES), *sizing]
+        return ["--results", str(results), "--runner", runner, "--profile", profile, "--size", size, *sizing]
 
     return [
         [interpreter, str(RUN_UNITTEST), "-s", name, *extra, *tail(size)]

@@ -38,7 +38,7 @@ TOOLCHAIN_PATHS = {
     # Настройка исполнителя тестов меняет, как гоняется каждая цель на каждом
     # раннере: это тот же класс, что смена toolchain.
     ".config/nextest.toml",
-    ".config/python-sizes.toml",
+    "scripts/ci/python_sizes.py",
 }
 PACKAGE_PATHS = {
     ".agents/plugins/marketplace.json",

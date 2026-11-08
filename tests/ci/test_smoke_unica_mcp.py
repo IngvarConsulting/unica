@@ -16,6 +16,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Дым MCP: сокет и процесс продукта.
+MEDIUM = ("SmokeUnicaMcpTests",)
+# Очередь исполняет при выборе тестов: смоук продукта.
+QUEUE_KEEPS_MEDIUM = ("SmokeUnicaMcpTests",)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_SCRIPT = REPO_ROOT / "scripts" / "ci" / "smoke-unica-mcp.py"

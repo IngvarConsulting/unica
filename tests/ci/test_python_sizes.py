@@ -1,8 +1,9 @@
-"""Размер тестов Python объявлен вне кода: манифест существует, конструкции покрыты.
+"""Размер тестов Python объявлен в самих модулях: имена существуют, конструкции покрыты.
 
 Признак `medium` — тест зовёт `cargo`, берёт продукт через `ensure_binary`
-или поднимает сокет: модуль с такими конструкциями обязан быть назван
-в манифесте, а каждая запись манифеста — существовать в дереве. Наших имён страж не знает.
+или поднимает сокет: модуль с такими конструкциями обязан объявить `MEDIUM`,
+а каждое объявленное имя — существовать в своём модуле
+(`scripts/ci/python_sizes.py`). Наших имён страж не знает.
 """
 
 from __future__ import annotations
@@ -12,14 +13,13 @@ import importlib.util
 import io
 import contextlib
 import re
+import sys
 import tempfile
-import tomllib
 import unittest
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = REPO_ROOT / ".config" / "python-sizes.toml"
 SUITES = ("tests/ci", "tests/dev")
 # Вызов, а не упоминание: `"cargo"` в ожидании мока или в утверждении — не сборка.
 CARGO = re.compile(r'subprocess\.(?:run|Popen|check_output|check_call|call)\(\s*\[\s*"cargo"')
@@ -51,8 +51,19 @@ def load_runner():
     return module
 
 
+def load_sizes():
+    spec = importlib.util.spec_from_file_location("python_sizes", REPO_ROOT / "scripts" / "ci" / "python_sizes.py")
+    module = importlib.util.module_from_spec(spec)
+    # `dataclass` ищет модуль класса в `sys.modules`.
+    sys.modules.setdefault("python_sizes", module)
+    spec.loader.exec_module(module)
+    return module
+
+
 def entries() -> list[str]:
-    return tomllib.loads(MANIFEST.read_text(encoding="utf-8"))["medium"]["entries"]
+    """Все объявленные имена: `medium` и те, что очередь оставляет себе."""
+    declared = load_sizes().collect(REPO_ROOT)
+    return [*declared.medium, *declared.keep_medium]
 
 
 def module_path(module: str) -> Path | None:
@@ -115,25 +126,42 @@ class PythonSizeManifestTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp(prefix="sizes-"))
         (root / "test_alpha.py").write_text(
             "import unittest\n"
+            'MEDIUM = ("Heavy", "Cheap.test_missing")\n'
             "class Cheap(unittest.TestCase):\n    def test_one(self):\n        pass\n"
             "class Heavy(unittest.TestCase):\n    def test_two(self):\n        pass\n    def test_three(self):\n        pass\n",
             encoding="utf-8",
         )
-        manifest = root / "sizes.toml"
-        manifest.write_text('[medium]\nentries = ["test_alpha.Heavy", "test_alpha.Cheap.test_missing"]\n', encoding="utf-8")
 
         def plan(admit: str) -> list[str]:
             out = io.StringIO()
             with contextlib.redirect_stdout(out):
-                runner.main(["-s", str(root), "--plan-only", "--sizes", str(manifest), "--admit", admit])
+                runner.main(["-s", str(root), "--plan-only", "--admit", admit])
             return sorted(line for line in out.getvalue().splitlines() if line)
 
         self.assertEqual(plan("small"), ["test_alpha.Cheap.test_one"])
         self.assertEqual(plan("medium"), ["test_alpha.Heavy.test_three", "test_alpha.Heavy.test_two"])
         self.assertEqual(len(plan("small,medium")), 3)
-        sizes = runner.Sizes.load(manifest)
+        sizes = runner.Sizes.declared(root)
         self.assertEqual(sizes.size_of("test_alpha.Heavy.test_two"), "medium")
         self.assertEqual(sizes.size_of("test_alpha.Cheap.test_one"), "small")
+
+    def test_a_malformed_declaration_is_refused_not_ignored(self) -> None:
+        """Строка вместо кортежа или пустая причина молча сняли бы размер."""
+        sizes = load_sizes()
+        root = Path(tempfile.mkdtemp(prefix="sizes-"))
+        for source in ('MEDIUM = "Heavy"\n', "MEDIUM = (1,)\n", 'MEDIUM = ("",)\n', "MEDIUM = HEAVY\n",
+                       'PR_SKIP = ""\n', "PR_SKIP = True\n", 'QUEUE_KEEPS_MEDIUM = ["Heavy"]\n'):
+            with self.subTest(source=source):
+                path = root / "test_bad.py"
+                path.write_text(source, encoding="utf-8")
+                with self.assertRaises(ValueError):
+                    sizes.module_declarations(path)
+        (root / "test_bad.py").unlink()
+        path = root / "test_good.py"
+        path.write_text('MEDIUM = ("Heavy",)\nPR_SKIP = "нужен продукт"\nQUEUE_KEEPS_MEDIUM = ("Heavy",)\n',
+                        encoding="utf-8")
+        declared = sizes.collect(root, (".",))
+        self.assertEqual((declared.medium, declared.keep_medium), (("test_good.Heavy",), ("test_good.Heavy",)))
 
 
 if __name__ == "__main__":

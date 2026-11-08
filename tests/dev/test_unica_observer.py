@@ -26,6 +26,10 @@ from collections import deque
 from pathlib import Path
 from scripts.ci.prepared_binary import ensure_binary
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Наблюдатель адресов: процесс продукта и страница на 127.0.0.1.
+MEDIUM = ("UnicaObserverTests",)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "dev" / "unica-observer.py"
 FIXTURE = REPO_ROOT / "tests" / "fixtures" / "acceptance" / "workspace"

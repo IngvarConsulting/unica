@@ -17,6 +17,10 @@ from tests.ci.acceptance_profiles import completed_delivery_call, isolated_envir
 from tests.ci.test_acceptance_scenarios import AcceptanceServer, REPO_ROOT
 from tests.ci.test_unica_mcp_smoke import snapshot_workspace_files
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Собирает продукт и гоняет сценарии через MCP.
+MEDIUM = ("WholeTemplatePlanDiffWireTests",)
+
 
 FIXTURE = REPO_ROOT / "tests/fixtures/acceptance/workspace-whole-template-removal"
 OWNER = "Reports/OwnRemovalReport.xml"

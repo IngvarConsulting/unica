@@ -22,6 +22,9 @@ from pathlib import Path
 from tests.ci.test_release_channel import write_payload
 from tests.ci.test_unica_workflow import PUBLISH_WORKFLOW, REPO_ROOT, job, load, step_named
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+PR_SKIP = "дольше бюджета модуля уровня PR"
+
 CHANNEL_SCRIPT = REPO_ROOT / "scripts" / "ci" / "release-channel.py"
 STAGE_STEP = ("stage", "Push the staged payload without changing any catalog")
 ANCHOR_STEP = ("anchor", "Create the candidate anchor at the staged payload")

@@ -35,14 +35,13 @@ class PythonScopeSkipTests(unittest.TestCase):
             "run_url": "https://github.com/IngvarConsulting/unica/actions/runs/42",
             "profile": "queue", "runner": "ubuntu-latest", "ecosystem": "python",
         }
-        self.manifest = self.root / "sizes.toml"
-        self.manifest.write_text('[medium]\nentries = ["test_scope_fixture.Medium"]\n')
 
     def fixture(self, suite="tests/ci", *, small_failure=False, import_failure=False):
         path = self.root / suite
         path.mkdir(parents=True, exist_ok=True)
         source = (
             "import unittest\nfrom pathlib import Path\n"
+            "MEDIUM = ('Medium',)\n"
             "class Small(unittest.TestCase):\n"
             "    def test_small(self):\n"
             "        Path('small-ran').write_text('yes')\n"
@@ -62,7 +61,7 @@ class PythonScopeSkipTests(unittest.TestCase):
     def invoke(self, output, *, suite="tests/ci", plan=False, scope=True, profile="queue"):
         command = [sys.executable, str(RUNNER), "-s", suite, "--results", str(output),
                    "--runner", "ubuntu-latest", "--profile", profile,
-                   "--sizes", str(self.manifest), "--admit", "small", "--lane", "small"]
+                   "--admit", "small", "--lane", "small"]
         if plan:
             command.append("--plan-only")
         if scope:

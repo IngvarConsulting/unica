@@ -339,7 +339,7 @@ class ClassifyWorkflowChangesTests(unittest.TestCase):
             "crates/unica-coder/Cargo.toml",
             "rust-toolchain.toml",
             ".config/nextest.toml",
-            ".config/python-sizes.toml",
+            "scripts/ci/python_sizes.py",
             "vendor/ureq/Cargo.toml",
             "vendor/ureq/Cargo.lock",
             "vendor/ureq/.config/nextest.toml",

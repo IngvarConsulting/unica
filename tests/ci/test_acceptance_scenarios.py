@@ -65,6 +65,11 @@ from tests.ci.acceptance_controls import (
     validate_controls,
 )
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+PR_SKIP = "малым тестам нужен продукт"
+# Приёмочный корпус: собирает продукт и гоняет сценарии через MCP.
+MEDIUM = ("AcceptanceCorpusRunTests", "AcceptanceDeliveryCorpusRunTests", "AcceptanceFaultCorpusRunTests")
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BINARY = binary_path(REPO_ROOT)
 

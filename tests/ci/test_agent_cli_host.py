@@ -12,6 +12,10 @@ from types import SimpleNamespace
 
 from tests.agent_evaluation import dcs_driver as driver
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Родной Job Object: запуск CLI-подобного процесса и проверка потомков.
+MEDIUM = ("NativeAgentCliCleanupTests",)
+
 
 class AgentCliHostTests(unittest.TestCase):
     def test_windows_read_only_command_selects_a_native_sandbox(self):

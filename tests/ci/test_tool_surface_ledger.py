@@ -14,6 +14,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Реестр поверхности инструментов: продукт через `ensure_binary`.
+MEDIUM = ("ToolSurfaceLedgerTests",)
+# Очередь исполняет при выборе тестов: снимок контракта.
+QUEUE_KEEPS_MEDIUM = ("ToolSurfaceLedgerTests",)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "scripts/ci/generate-tool-surface.py"
 LEDGER = REPO_ROOT / "docs/tool-surface.md"
