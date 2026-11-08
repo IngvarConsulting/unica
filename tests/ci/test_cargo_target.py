@@ -24,8 +24,9 @@ LITERAL_TARGET = re.compile(r'/\s*"target(?:/[^"]*)?"|"target/|"--target-dir",\s
 # Where a literal is the point: the helper itself, and the report that finds
 # stray `target/` directories in working copies.
 ALLOWED = {"scripts/ci/cargo_target.py", "scripts/dev/prune-build-caches.py"}
-# A vendored selection keeps `--target-dir target` for CI; `targeted()` maps it.
-MARKER = "# cargo-target: mapped"
+# A line that names `target` on purpose says why: `mapped` (a vendored selection
+# `targeted()` maps) or `extracted archive` (reuse extracts into `<root>/target`).
+MARKER = "# cargo-target: "
 
 
 class CargoTargetTests(unittest.TestCase):
