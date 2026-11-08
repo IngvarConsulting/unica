@@ -844,11 +844,33 @@ class RustPlatformBoundaryTests(unittest.TestCase):
         errors = checker.file_io_declaration_errors({"crates/new/Cargo.toml": manifest("unica-new")})
         self.assertEqual(len(errors), 1)
         self.assertIn("crates/new/Cargo.toml: declare file-io", errors[0])
-        self.assertIn("FILE_IO_COMPONENTS", errors[0])
-        self.assertEqual(checker.file_io_declaration_errors({"a": manifest("unica-new", 'file-io = "owned"')}), [])
-        # Заявить "none", не войдя в список стража, значит не проверяться.
-        self.assertIn("disagrees", checker.file_io_declaration_errors({"a": manifest("unica-new", 'file-io = "none"')})[0])
+        for level in ("domain", "none", "owned"):
+            self.assertIn(f'"{level}"', errors[0])
+        # A new package restricts itself by its declaration alone.
+        for level in ("owned", "none", "domain"):
+            self.assertEqual(checker.file_io_declaration_errors({"a": manifest("unica-new", f'file-io = "{level}"')}), [])
         self.assertEqual(checker.file_io_declaration_errors({"a": manifest("unica-navigation", 'file-io = "none"')}), [])
+        self.assertEqual(checker.file_io_declaration_errors({"a": manifest("unica-navigation", 'file-io = "domain"')}), [])
+
+    def test_a_package_does_not_lift_its_own_file_io_restriction(self) -> None:
+        """rule: INV.APP.DOMAIN-INPUTS"""
+        checker = load_checker_module()
+
+        def manifest(name, level):
+            return f'[package]\nname = "{name}"\n\n[package.metadata.unica]\nfile-io = "{level}"\n'
+
+        for name, level in (
+            ("unica-navigation", "owned"),
+            ("unica-forms-designer", "owned"),
+            ("unica-domain", "none"),
+            ("unica-address", "owned"),
+        ):
+            with self.subTest(package=name, level=level):
+                errors = checker.file_io_declaration_errors({"a": manifest(name, level)})
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("lifts a restriction", errors[0])
+        self.assertLessEqual(checker.DOMAIN_FLOOR, checker.DOMAIN_COMPONENTS)
+        self.assertLessEqual(checker.FILE_IO_FLOOR, checker.FILE_IO_COMPONENTS)
 
 
 class HostNameBoundaryTests(unittest.TestCase):

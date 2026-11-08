@@ -33,10 +33,22 @@ class ComponentBoundaryTests(unittest.TestCase):
         def members(name, component):
             return {name: (Path("x"), {"package": {"name": name, "metadata": {"unica": {"component": component}}}})}
 
-        # Объявить координатора, не внеся его в правила, значит остаться без проверки.
-        self.assertIn("treat it as service", checker.declaration_errors(members("unica-new", "coordinator"))[0])
+        # A new crate restricts itself by its declaration alone.
+        self.assertEqual(checker.declaration_errors(members("unica-new", "coordinator")), [])
+        # A crate of a floor cannot lift its restriction by declaring a looser kind.
         self.assertIn("treat it as coordinator", checker.declaration_errors(members("unica-navigation", "service"))[0])
+        self.assertIn("treat it as family", checker.declaration_errors(members("unica-forms", "service"))[0])
         self.assertEqual(checker.declaration_errors(members("unica-navigation", "coordinator")), [])
+        # Permissions stay closed: a crate does not make itself a shared contract,
+        # nor a family without semantic dependencies this guard grants.
+        self.assertIn("treat it as service", checker.declaration_errors(members("unica-new", "abstraction"))[0])
+        self.assertIn("treat it as service", checker.declaration_errors(members("unica-new", "family"))[0])
+
+    def test_restriction_sets_are_their_floors_and_the_declarations(self) -> None:
+        self.assertLessEqual(checker.FAMILY_FLOOR, checker.FAMILIES)
+        self.assertLessEqual(checker.COORDINATOR_FLOOR, checker.PORT_CALLERS)
+        self.assertEqual(checker.required_component("unica-new", "coordinator"), "coordinator")
+        self.assertEqual(checker.required_component("unica-new"), "service")
 
     def test_owner_edges_reject_hidden_concrete_dependencies(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""

@@ -71,6 +71,9 @@ PACKAGE_PATHS = {
 CI_CONTRACT_PATHS = {
     "scripts/ci/check-component-boundaries.py",
     "tests/ci/test_component_boundaries.py",
+    # Both boundary guards derive their package sets from crate declarations.
+    "scripts/ci/crate_declarations.py",
+    "tests/ci/test_crate_declarations.py",
     "scripts/ci/check-crate-read-boundary.py",
     "tests/ci/test_crate_read_boundary.py",
     "scripts/ci/check-discovered-modules-format.py",
@@ -121,6 +124,7 @@ CI_CONTRACT_PATHS = {
 PLATFORM_CONTRACT_PATHS = {
     "scripts/ci/check-rust-platform-boundary.py",
     "tests/ci/test_rust_platform_boundary.py",
+    "scripts/ci/crate_declarations.py",
     # Проход Clippy по файловым методам (#1894): конфигурация, проба и скрипт.
     "scripts/ci/check-file-io-methods.py",
     "tests/ci/test_file_io_methods.py",
