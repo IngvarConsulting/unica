@@ -611,8 +611,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     .and_then(Value::as_str)
                     .unwrap_or("ru")
                     .to_string();
-                let (registry, policy_warnings) =
-                    documentation_registry(context, cancellation, false)?;
+                let registry = documentation_registry(context, cancellation, false)?;
                 let requested_version = args.get("platformVersion").and_then(Value::as_str);
                 let context = documentation_context(
                     &unica_adapter_v8_runner::full_dump::default_platform_roots(),
@@ -625,21 +624,10 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
                     &language,
                     &context,
                 )?;
-                let mut handler = HandlerOutcome::with_data(
+                let handler = HandlerOutcome::with_data(
                     AdapterOutcome::ok("unica.documentation.get completed"),
                     data,
                 );
-                if !policy_warnings.is_empty() {
-                    handler.diagnostics = Some(Value::Array(
-                        documentation_policy_warnings(&policy_warnings)
-                            .into_iter()
-                            .map(|mut warning| {
-                                warning["severity"] = json!("warning");
-                                warning
-                            })
-                            .collect(),
-                    ));
-                }
                 Ok(handler)
             }
             ToolHandler::Documentation { operation } => {
@@ -913,40 +901,23 @@ const DOCUMENTATION_PROVIDER_IDS: &[&str] = &[
     "bsl-analyzer-rules",
 ];
 
-/// Предупреждения политики документации — в `warnings` ответа: секция
-/// удалённого поставщика принимается, но пользователь должен её увидеть.
-fn documentation_policy_warnings(warnings: &[String]) -> Vec<Value> {
-    warnings
-        .iter()
-        .map(|message| json!({"code": "retired_provider", "message": message}))
-        .collect()
-}
-
 /// Composition root: the registry of documentation providers. Declaration
 /// order here is the section order of the public result:
 /// локальная справка платформы раньше сетевых поставщиков, справка раньше
 /// стандартов. Собирается здесь, а не в домене, чтобы тесты внедряли
 /// подмены; политика читается на каждый вызов — она из файлов проекта.
-/// Вторым значением идут предупреждения политики для ответа вызова.
 fn documentation_registry(
     context: &WorkspaceContext,
     cancellation: &unica_work_control::cancellation::CancellationToken,
     revalidate_search: bool,
-) -> Result<
-    (
-        unica_documentation::model::DocumentationRegistry,
-        Vec<String>,
-    ),
-    String,
-> {
+) -> Result<unica_documentation::model::DocumentationRegistry, String> {
     use std::sync::Arc;
 
     #[cfg(any(test, feature = "test-support"))]
     {
         let _ = cancellation;
         if let Some(stand_in) = documentation_registry_stand_in() {
-            return unica_documentation::model::DocumentationRegistry::new(vec![stand_in])
-                .map(|registry| (registry, Vec::new()));
+            return unica_documentation::model::DocumentationRegistry::new(vec![stand_in]);
         }
     }
     let policy = unica_documentation_sources::documentation_policy::DocumentationPolicy::load(
@@ -993,7 +964,6 @@ fn documentation_registry(
             },
         ),
     ])
-    .map(|registry| (registry, policy.warnings().to_vec()))
 }
 
 /// Canonical v0.13 documentation search adapter.
@@ -1039,10 +1009,8 @@ fn open_documentation_page(
     document_id: &str,
     cancellation: &CancellationToken,
 ) -> unica_execution_contract::invocation::DomainResult {
-    let mut policy_warnings = Vec::new();
     let opened = (|| {
-        let (registry, warnings) = documentation_registry(workspace, cancellation, false)?;
-        policy_warnings = warnings;
+        let registry = documentation_registry(workspace, cancellation, false)?;
         let context = documentation_context(
             &unica_adapter_v8_runner::full_dump::default_platform_roots(),
             None,
@@ -1050,7 +1018,7 @@ fn open_documentation_page(
         );
         unica_documentation::projection::get(&registry, document_id, "ru", &context)
     })();
-    let mut result = match opened {
+    match opened {
         Ok(data) => {
             let mut result = unica_execution_contract::invocation::DomainResult::success(
                 "unica.docs opened the page",
@@ -1072,9 +1040,7 @@ fn open_documentation_page(
             }));
             refusal
         }
-    };
-    result.warnings = documentation_policy_warnings(&policy_warnings);
-    result
+    }
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -1149,11 +1115,8 @@ pub fn canonical_v13_docs_search_with_limit(
         limit: fetch_limit,
         language: "ru".to_string(),
     };
-    let mut policy_warnings = Vec::new();
     let result = (|| {
-        let (registry, warnings) =
-            documentation_registry(workspace, cancellation, revalidate_search)?;
-        policy_warnings = warnings;
+        let registry = documentation_registry(workspace, cancellation, revalidate_search)?;
         let context = documentation_context(
             &unica_adapter_v8_runner::full_dump::default_platform_roots(),
             None,
@@ -1161,7 +1124,7 @@ pub fn canonical_v13_docs_search_with_limit(
         );
         unica_documentation::projection::search(&registry, &request, &context)
     })();
-    let mut result = match result {
+    match result {
         Ok(data) => {
             let mut result =
                 unica_execution_contract::invocation::DomainResult::success("unica.docs completed");
@@ -1179,9 +1142,7 @@ pub fn canonical_v13_docs_search_with_limit(
                 error,
             )
         }
-    };
-    result.warnings = documentation_policy_warnings(&policy_warnings);
-    result
+    }
 }
 
 /// Подмена реестра позволяет управлять поставщиками в тестах.
@@ -2447,7 +2408,7 @@ mod medium_tests {
             cache_root: workspace.join(".build/unica"),
             workspace_epoch: 1,
         };
-        let (registry, _) = documentation_registry(
+        let registry = documentation_registry(
             &context,
             &unica_work_control::cancellation::CancellationToken::default(),
             false,
@@ -2490,50 +2451,6 @@ mod medium_tests {
         );
     }
 
-    /// Секция удалённого поставщика `kb-1ci` в `unica.toml` не отключает
-    /// документацию: поиск и открытие страницы доходят до ответа, а в его
-    /// `warnings` пользователь видит, что ключ можно убрать.
-    /// rule: INV.APP.DOCUMENTATION-NETWORK-POLICY
-    #[test]
-    fn a_retired_provider_in_the_policy_reaches_the_docs_answer_as_a_warning() {
-        let _serial = documentation_registry_serial();
-        let dir = tempfile::tempdir().expect("каталог");
-        let workspace = dir.path().to_path_buf();
-        // Сеть запрещена общим умолчанием: проверке не нужен v8std.
-        std::fs::write(
-            workspace.join("unica.toml"),
-            "[network]\ndefault = \"deny\"\n\n[providers.kb-1ci]\nnetwork = \"allow\"\n",
-        )
-        .expect("unica.toml");
-        let context = WorkspaceContext {
-            cwd: workspace.clone(),
-            workspace_root: workspace.clone(),
-            cache_root: workspace.join(".build/unica"),
-            workspace_epoch: 1,
-        };
-        let cancellation = CancellationToken::default();
-        for result in [
-            canonical_v13_docs_search(
-                &context,
-                "ссылка",
-                Some("development-standard"),
-                &cancellation,
-            ),
-            canonical_v13_docs_search(&context, "https://kb.1ci.com/x/", None, &cancellation),
-        ] {
-            // Предупреждение есть только у прочитанной политики: отказ разбора
-            // его бы не дал.
-            assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
-            assert_eq!(result.warnings[0]["code"], "retired_provider");
-            let message = result.warnings[0]["message"].as_str().expect("message");
-            assert!(
-                message.contains("unica.toml")
-                    && message.contains("поставщик kb-1ci удалён, ключ можно убрать"),
-                "{message}"
-            );
-        }
-    }
-
     /// Источник поставщика справки конфигурации — source-set'ы рабочего
     /// пространства: выгрузка с `Configuration.xml` в корне обязана дать
     /// секцию с попаданием без какой-либо настройки проекта.
@@ -2561,7 +2478,7 @@ mod medium_tests {
             cache_root: workspace.join(".build/unica"),
             workspace_epoch: 1,
         };
-        let (registry, _) = documentation_registry(
+        let registry = documentation_registry(
             &context,
             &unica_work_control::cancellation::CancellationToken::default(),
             false,
