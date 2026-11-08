@@ -366,6 +366,13 @@ repository `muratcankoylan/Agent-Skills-for-Context-Engineering`, ref `main`,
 [реестра приёмочных сценариев](https://ingvarconsulting.github.io/unica/acceptance-scenarios.html). Локально его печатает
 `python scripts/ci/render-acceptance-registry.py`.
 
+Каждое семейство операций `apply` объявлено отдельным файлом
+`tests/ci/fixtures/apply-registry/<семейство>.json`: вариант Rust, имя
+операции, владелец и аргументы в порядке семейства. Тест реестра сверяет
+объявления с таблицами Rust по ключу операции: операция без объявления,
+объявление без операции и расхождение владельца или аргументов его роняют.
+Новая операция дописывается в файл своего семейства, общих списков нет.
+
 Идеи новых задач и операций, которых поверхность ещё не решает, — самый
 полезный вклад: откройте issue по форме
 [«Новая операция»](https://github.com/IngvarConsulting/unica/issues/new?template=new_operation.yml)
