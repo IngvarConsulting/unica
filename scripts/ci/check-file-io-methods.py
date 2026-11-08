@@ -32,6 +32,8 @@ import sys
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cargo_target import cargo_target_dir  # noqa: E402
 CONFIG = Path(".config/clippy/file-io-free")
 PROBE = Path("scripts/ci/fixtures/file-io-probe")
 LINT = "clippy::disallowed_methods"
@@ -128,7 +130,7 @@ def main() -> int:
     parser.add_argument("--target-dir", type=Path, default=None)
     args = parser.parse_args()
     root = args.repo_root.resolve()
-    target_dir = (args.target_dir or root / "target").resolve()
+    target_dir = (args.target_dir or cargo_target_dir(root)).resolve()
     problems = check_probe(root, target_dir / "file-io-probe")
     if not problems:
         problems = check_packages(root, boundary_packages(root), target_dir)

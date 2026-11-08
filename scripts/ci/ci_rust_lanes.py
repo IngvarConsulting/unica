@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results
+from cargo_target import cargo_target_dir, vendor_target_dir
 import prepared_binary
 import ci_shadow_selector
 from workflow_routing import ADMITTED
@@ -98,7 +99,7 @@ def archive_command(lane: str, archive: Path, root: Path = ROOT, target: str | N
     # list/run, never silently discarded from the execution plan.
     return ["cargo", "nextest", "archive", *selected, *([] if "--locked" in selected else ["--locked"]),
             *(["--target", target] if target is not None else []),
-            "--target-dir", str(root / "target"), "--archive-file", str(archive)]
+            "--target-dir", str(cargo_target_dir(root)), "--archive-file", str(archive)]
 
 
 def doctest_command(root: Path = ROOT, target: str | None = None) -> list[str]:
@@ -107,7 +108,7 @@ def doctest_command(root: Path = ROOT, target: str | None = None) -> list[str]:
     # the ordinary build, against the target directory the archive just filled.
     return ["cargo", "test", "--doc", "--workspace", "--locked",
             *(["--target", target] if target is not None else []),
-            "--target-dir", str(root / "target")]
+            "--target-dir", str(cargo_target_dir(root))]
 
 
 DOCTEST_OUTPUT_LIMIT = 16_000
@@ -169,6 +170,7 @@ def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: st
         selected_filters = ["-E", candidate]
     command = ["cargo", "nextest", action, "--archive-file", str(archive),
                "--extract-to", str(root), "--extract-overwrite", "--workspace-remap", str(workspace),
+               "--target-dir-remap", str(cargo_target_dir(root)),
                "--profile", nextest_profile(profile, lane, host), *selected_filters]
     if lane == "vendor":
         command += ["--config-file", str(workspace / ".config/nextest.toml")]
@@ -269,7 +271,7 @@ def fixture_binary_descriptor(root: Path, listed: dict, identity: dict) -> dict:
     metadata = listed.get("rust-build-meta", {})
     platforms = metadata.get("platforms", {})
     target = identity["target"]
-    if (metadata.get("target-directory") != str(root / "target")
+    if (metadata.get("target-directory") != str(cargo_target_dir(root))
         or platforms.get("host", {}).get("platform", {}).get("triple") != target
         or [item.get("platform", {}).get("triple") for item in platforms.get("targets", [])] != [target]):
         raise ValueError("fixture binary metadata does not describe the native archive target")
@@ -288,7 +290,7 @@ def fixture_binary_descriptor(root: Path, listed: dict, identity: dict) -> dict:
         ("kind", "bin-exe"), ("build-platform", "target"),
     )) or described_path != relative:
         raise ValueError("archive must contain exactly one target unica non-test fixture binary")
-    binary = root.resolve() / "target" / relative
+    binary = cargo_target_dir(root.resolve()) / relative
     if not binary.is_file() or binary.resolve() != binary or binary.stat().st_size <= 0:
         raise ValueError("archive fixture binary is missing, empty or linked")
     return {"path": relative, "sha256": prepared_binary.digest(binary), "bytes": binary.stat().st_size}
@@ -304,7 +306,7 @@ def fixture_binary_environment(root: Path, document: dict) -> dict[str, str]:
     # Nextest extracts the checked archive before starting tests. The parent and
     # isolated child verify these exact extracted bytes before using the fixture.
     return {**os.environ,
-            "UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY": str(root.resolve() / "target" / descriptor["path"]),
+            "UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY": str(cargo_target_dir(root.resolve()) / descriptor["path"]),
             "UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256": descriptor["sha256"]}
 
 
@@ -598,7 +600,8 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
         # not take the doctest outcome out of the report.
         allure_results.write(destination, doctest_record(document, profile, host))
     nextest_profile = document["nextestProfile"]
-    candidates = {root / "target/nextest" / nextest_profile / "junit.xml", root / "vendor/ureq/target/nextest" / nextest_profile / "junit.xml"}
+    candidates = {cargo_target_dir(root) / "nextest" / nextest_profile / "junit.xml",
+                  vendor_target_dir(root, "ureq") / "nextest" / nextest_profile / "junit.xml"}
     for path in candidates:
         path.unlink(missing_ok=True)
     command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", host=host)
@@ -722,7 +725,7 @@ def run_medium(root: Path, prepared: Path, destination: Path, host: str, shadow:
         "runId": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     }
     if any(not case["ignored"] for case in plan):
-        junit = root / "target/nextest" / MEDIUM_PROFILE / "junit.xml"
+        junit = cargo_target_dir(root) / "nextest" / MEDIUM_PROFILE / "junit.xml"
         junit.unlink(missing_ok=True)
         command = reuse_command("run", root, archive, "ordinary", MEDIUM_PROFILE, candidate=expression)
         completed, seconds = timed(command, root, env=capability_environment(destination, fixture_binary_environment(root, document)))
