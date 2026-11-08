@@ -1,11 +1,11 @@
 use super::*;
-use unica_bsl::profile::PlatformProfile;
-use unica_workspace::test_support::tree_snapshot;
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 use unica_address::address::QualifiedAddress;
+use unica_bsl::profile::PlatformProfile;
 use unica_operations::OperationFamily;
 use unica_source_contract::proposal::ApplyPlanError;
+use unica_workspace::test_support::tree_snapshot;
 
 const OP_INDEX: usize = 7;
 
@@ -430,7 +430,9 @@ fn medium_fill_shape_uses_the_same_owner_and_tabular_context_as_the_productive_r
 
 #[test]
 fn hidden_host_envelope_consumes_the_same_member_field_shapes() {
-    let schema = unica_metadata::request::metadata_input_schema(unica_metadata::request::MetadataOperation::Edit);
+    let schema = unica_metadata::request::metadata_input_schema(
+        unica_metadata::request::MetadataOperation::Edit,
+    );
     let oracle = jsonschema::validator_for(&schema).unwrap();
     for verb in ["add", "update"] {
         for (field, value, expected) in [
@@ -455,7 +457,10 @@ fn hidden_host_envelope_consumes_the_same_member_field_shapes() {
                 "operations":[{"op":verb,"collection":"resources","elements":[element]}],
                 "dryRun":true,
             });
-            let parsed = unica_metadata::request::parse_metadata_request(unica_metadata::request::MetadataOperation::Edit, args.as_object().unwrap());
+            let parsed = unica_metadata::request::parse_metadata_request(
+                unica_metadata::request::MetadataOperation::Edit,
+                args.as_object().unwrap(),
+            );
             assert_eq!(oracle.is_valid(&args), expected, "host schema: {args}");
             assert_eq!(parsed.is_ok(), expected, "host parser: {args}: {parsed:?}");
         }
@@ -478,7 +483,11 @@ fn hidden_host_envelope_consumes_the_same_member_field_shapes() {
                 "the host envelope stays open: {args}"
             );
             assert!(
-                unica_metadata::request::parse_metadata_request(unica_metadata::request::MetadataOperation::Edit, args.as_object().unwrap()).is_err(),
+                unica_metadata::request::parse_metadata_request(
+                    unica_metadata::request::MetadataOperation::Edit,
+                    args.as_object().unwrap()
+                )
+                .is_err(),
                 "the decoder refuses malformed or unknown fields: {args}"
             );
         }
