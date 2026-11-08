@@ -341,7 +341,7 @@ class UnicaObserverTests(unittest.TestCase):
             # фикстуры один набор данных: имена надо брать из узла.
             "dataSetLink": "contract example names data sets absent from the node",
             # У корня фикстуры нет Ext/CommandInterface.xml: документа
-            # интерфейса нет, и операция невыполнима (#2010).
+            # интерфейса нет, и операция невыполнима.
             "subsystemOrder": "root interface without a stored subsystem order",
         }
         root = self.view()

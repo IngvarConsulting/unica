@@ -147,7 +147,7 @@ class RustLaneTests(unittest.TestCase):
             write_configurations(root)
             report = lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
             self.assertTrue(report["mandatoryComplete"])
-            # Один вердикт на все ОС: второго, «рекомендательного» списка нет (#2152).
+            # Один вердикт на все ОС: второго, «рекомендательного» списка нет.
             self.assertNotIn("fullMatrixPassed", report)
             self.assertNotIn("advisoryFailures", report)
             self.assertFalse(report["affectedAdmission"])
@@ -854,7 +854,7 @@ class PreviousInventoryTests(unittest.TestCase):
             with self.subTest(outcome=outcome), \
                  self.assertRaisesRegex(ValueError, rf"Rust \(macos-15\) did not finish as success: {outcome}"):
                 self.verify(self.previous(), jobs=jobs)
-        # In the nightly Windows blocks like macOS (#2152).
+        # In the nightly Windows blocks like macOS.
         hosts = ["ubuntu-latest", "macos-15", "windows-latest"]
         previous = self.previous("large", hosts=hosts)
         self.assertTrue(self.verify(previous, "large", hosts=hosts)["mandatoryComplete"])

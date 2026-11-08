@@ -116,7 +116,7 @@ class GitEventClassificationTests(unittest.TestCase):
         self.assertEqual([], list((repo / "report").rglob("*-result.json")))
 
     def test_windows_clippy_job_routes_a_docs_only_queue_on_its_own(self) -> None:
-        """Джоба `Clippy (windows-latest)` маршрутизирует себя тем же классификатором (#2152)."""
+        """Джоба `Clippy (windows-latest)` маршрутизирует себя тем же классификатором."""
         repo, base = self.repository()
         (repo / "README.md").write_text("After\n")
         head = self.commit(repo)

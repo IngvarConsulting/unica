@@ -356,9 +356,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         ):
             self.assertIn(argument, script(proof))
         # Единственный режим proof — dry: сценарии жизненного цикла доказываются
-        # на опубликованных байтах, а эта джоба идёт до публикации (#697).
+        # на опубликованных байтах, а эта джоба идёт до публикации.
         self.assertNotIn("--mode", script(proof))
-        # Идентичность пакета включает бит исполнения (#700), а
+        # Идентичность пакета включает бит исполнения, а
         # actions/download-artifact режимы не сохраняет: пакет для сверки
         # приходит через `gh run download`, которому нужно `actions: read`.
         self.assertEqual(proof["permissions"], {"contents": "read", "actions": "read"})
@@ -368,7 +368,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             self.assertNotEqual((step.get("with") or {}).get("name"), "unica-thin-marketplace")
         self.assertEqual(steps_using(proof, "softprops/action-gh-release"), [])
         # Read-only-ность proof живёт здесь, в устройстве джобы, а не в
-        # самоотчётных полях JSON (#696): нет прав на запись, нет шагов
+        # самоотчётных полях JSON: нет прав на запись, нет шагов
         # публикации, нет ни тега, ни push, ни бампа версии.
         self.assertNotIn("git tag", script(proof))
         self.assertNotIn("git push", script(proof))
@@ -542,14 +542,14 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             normalized(other["strategy"]["matrix"]["runner"]),
             "${{ fromJSON(inputs.profile == 'large' && '[\"macos-15\", \"windows-latest\"]' || '[\"macos-15\"]') }}",
         )
-        # Ни одна ОС не рекомендательная: красная джоба красит прогон (#2152).
+        # Ни одна ОС не рекомендательная: красная джоба красит прогон.
         self.assertNotIn("continue-on-error", other)
         self.assertIn("rust_required == 'true'", condition(os_clippy))
         self.assertIn("--workspace --all-targets --all-features --locked -- -D warnings", os_clippy["run"])
         self.assertNotIn("continue-on-error", os_clippy)
 
     def test_os_job_lints_first_and_a_red_clippy_still_runs_the_tests(self) -> None:
-        """Clippy джобы ОС — до сборки тестов; его отказ не отменяет сборку и прогон (#2152)."""
+        """Clippy джобы ОС — до сборки тестов; его отказ не отменяет сборку и прогон."""
         other = job(self.release, "rust-os")
         order = steps(other)
         clippy, build, run = (step_by_id(other, step_id) for step_id in ("clippy", "rust-build", "rust-run"))
@@ -564,7 +564,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
                 self.assertIn("!cancelled()", condition(step))
 
     def test_windows_clippy_runs_beside_the_main_profile_and_gates_it(self) -> None:
-        """Ошибка Clippy, видимая только на Windows, не проходит кнопку `main` (#2152)."""
+        """Ошибка Clippy, видимая только на Windows, не проходит кнопку `main`."""
         lint = job(self.release, "windows-clippy")
         self.assertEqual(lint["name"], "Clippy (windows-latest)")
         self.assertEqual(lint["runs-on"], "windows-latest")
@@ -1270,7 +1270,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertIn("unica-runtime-*.json", release["with"]["files"])
         # Паттерн скачивания `unica-runtime-*` обязан совпадать только с
         # артефактами выпуска: побочные артефакты (метаданные, верификация)
-        # носят имена вне него, а не полагаются на фильтр `files:` (#701, п. 4).
+        # носят имена вне него, а не полагаются на фильтр `files:` (п. 4).
         upload_names = {
             upload["name"]
             for job_id in jobs(self.release)

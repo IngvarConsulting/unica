@@ -143,7 +143,7 @@ class RemovedTestsTests(unittest.TestCase):
         self.assertEqual(len(self.check(rest + "Removes-test-target: demo::contract\n")), 1)
 
     def test_patterns_the_queue_reads_literally_are_refused(self):
-        # The queue gate has no braces or wildcards inside a name (#1955 used `{a,b}`).
+        # The queue gate has no braces or wildcards inside a name (`{a,b}` is not one).
         rest = self.DECLARED.replace("Removes-test: demo::model::codec::tests::goes_away\r\n", "")
         for pattern in ("demo::model::{codec,other}::*", "demo::model::codec::tests::goes_?way",
                         "demo::model::*::goes_away", "demo::model::codec::tests::[ag]*"):
@@ -221,7 +221,7 @@ class RemovedTestsTests(unittest.TestCase):
                                *args], cwd=REPO_ROOT, env=environment, capture_output=True, timeout=120)
 
     def test_reads_git_output_as_utf8_whatever_the_locale(self):
-        # #2445: under cp1251 a non-ASCII manifest broke the read of `git show`,
+        # Under cp1251 a non-ASCII manifest broke the read of `git show`,
         # and the check fell with an AttributeError instead of a verdict.
         with tempfile.TemporaryDirectory() as temporary:
             arguments = ("--repo-root", str(self.repository(temporary)), "--base", "main", "--head", "change",
