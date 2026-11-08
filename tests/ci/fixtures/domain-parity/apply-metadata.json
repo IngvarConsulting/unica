@@ -78,7 +78,7 @@
       "caseId": "batch1-apply-template-add",
       "entry": "apply",
       "mode": "template.add",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S196.json",
       "expected": {
         "scenario": "S196",
         "class": "ok"
@@ -89,7 +89,7 @@
       "caseId": "batch1-apply-template-remove",
       "entry": "apply",
       "mode": "template.remove",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S198.json",
       "expected": {
         "scenario": "S198",
         "class": "ok"
@@ -100,7 +100,7 @@
       "caseId": "batch1-apply-help-create",
       "entry": "apply",
       "mode": "help.create;lang=ru",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S116.json",
       "expected": {
         "scenario": "S116",
         "class": "ok"
@@ -112,7 +112,7 @@
       "entry": "apply",
       "operation": "object.remove",
       "mode": "preview",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S111.json",
       "expected": {
         "scenario": "S111",
         "wireStep": 3,
@@ -124,7 +124,7 @@
       "entry": "apply",
       "operation": "object.remove",
       "mode": "preview;referenced",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S112.json",
       "expected": {
         "scenario": "S112",
         "wireStep": 3,

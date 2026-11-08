@@ -903,8 +903,8 @@ class V013ParityInventoryTest(unittest.TestCase):
         """A case that cites the acceptance corpus must cite a scenario that
         exists and freezes the same answer; a dangling or mismatched citation
         would let a parity shard claim evidence the corpus never gives."""
-        # The corpus header file names the whole corpus, every scenario file
-        # loaded with it; a case may also cite a scenario by its own path.
+        # Every scenario lives in its own file; the corpus header names no
+        # scenario, so a case cites the file of the scenario it relies on.
         corpus_path = "tests/fixtures/acceptance/scenario-corpus.json"
         scenario_dir = "tests/fixtures/acceptance/scenarios/"
         corpus = load_acceptance_corpus()
@@ -914,7 +914,10 @@ class V013ParityInventoryTest(unittest.TestCase):
         for shard, document in documents.items():
             for case in document.get("cases", []):
                 fixture = case.get("fixture") or ""
-                if fixture != corpus_path and not fixture.startswith(scenario_dir):
+                if fixture == corpus_path:
+                    offenders.append(f"{shard}:{case['caseId']} cites the corpus header; cite {scenario_dir}<id>.json")
+                    continue
+                if not fixture.startswith(scenario_dir):
                     continue
                 if fixture.startswith(scenario_dir) and fixture != f"{scenario_dir}{case['expected'].get('scenario')}.json":
                     offenders.append(f"{shard}:{case['caseId']} cites {fixture} for {case['expected'].get('scenario')!r}")

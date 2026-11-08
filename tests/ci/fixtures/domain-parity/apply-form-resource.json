@@ -76,7 +76,7 @@
       "caseId": "batch1-apply-form-add-list",
       "entry": "apply",
       "mode": "form.add;type=ListForm",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S125.json",
       "expected": {
         "scenario": "S125",
         "class": "ok"
@@ -87,7 +87,7 @@
       "caseId": "batch1-apply-form-add-object",
       "entry": "apply",
       "mode": "form.add;type=ObjectForm",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S126.json",
       "expected": {
         "scenario": "S126",
         "class": "ok"
@@ -98,7 +98,7 @@
       "caseId": "batch1-apply-form-create",
       "entry": "apply",
       "mode": "form.add;type=ChoiceForm",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S129.json",
       "expected": {
         "scenario": "S129",
         "class": "ok"
@@ -109,7 +109,7 @@
       "caseId": "batch1-apply-form-add-newer-export-refuses",
       "entry": "apply",
       "mode": "form.add;export=2.21",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S273.json",
       "expected": {
         "scenario": "S273",
         "class": "refused",
@@ -121,7 +121,7 @@
       "caseId": "batch1-apply-support-capability-off",
       "entry": "apply",
       "mode": "supportCapability.set;enabled=false",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S246.json",
       "expected": {
         "scenario": "S246",
         "class": "ok"
@@ -132,7 +132,7 @@
       "caseId": "batch1-apply-support-rule-editable",
       "entry": "apply",
       "mode": "supportRule.set;rule=editable",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S247.json",
       "expected": {
         "scenario": "S247",
         "class": "ok"
@@ -143,7 +143,7 @@
       "caseId": "batch1-apply-support-rule-newer-export-refuses",
       "entry": "apply",
       "mode": "supportRule.set;export=2.21",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S274.json",
       "expected": {
         "scenario": "S274",
         "class": "refused",
@@ -155,7 +155,7 @@
       "caseId": "batch1-apply-support-without-vendor-support-refuses",
       "entry": "apply",
       "mode": "supportCapability.set;no ParentConfigurations.bin",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S280.json",
       "expected": {
         "scenario": "S280",
         "class": "refused",
