@@ -421,6 +421,44 @@ class GateProfileCompositionTests(unittest.TestCase):
                         self.assertIn(probe["if"].strip("${} ").removeprefix("{{").strip(),
                                       step["if"].strip("${} ").removeprefix("{{").strip())
 
+    def test_the_nextest_probe_runs_under_actions_bash_and_never_fails(self) -> None:
+        """Под `bash -e -o pipefail` отсутствующий nextest не роняет шаг: иначе установка пропускается."""
+        import os
+        import shutil
+        import subprocess
+        import tempfile
+        import yaml
+
+        bash = shutil.which("bash")
+        if bash is None:
+            self.skipTest("bash is not available")
+        probes = []
+        for name in ("ci.yml", "release.yml"):
+            workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))
+            probes += [step["run"] for job in workflow["jobs"].values()
+                       for step in job.get("steps", []) if step.get("id") == "nextest-present"]
+        self.assertEqual(len(probes), 3)
+        cases = (
+            ("echo 'error: no such command: `nextest`' >&2; exit 101", ""),
+            ("echo 'cargo-nextest 0.9.148 (cd1d6d546 2026-10-07)'", "present=true"),
+            ("echo 'cargo-nextest 0.9.147 (abc 2026-09-01)'", ""),
+        )
+        for script in probes:
+            for cargo, expected in cases:
+                with self.subTest(cargo=cargo), tempfile.TemporaryDirectory() as temporary:
+                    fake = Path(temporary) / "cargo"
+                    fake.write_text(f"#!/usr/bin/env bash\n{cargo}\n", encoding="utf-8", newline="\n")
+                    fake.chmod(0o755)
+                    output = Path(temporary) / "output"
+                    output.write_text("", encoding="utf-8")
+                    environment = {**os.environ, "PATH": temporary + os.pathsep + os.environ.get("PATH", ""),
+                                   "GITHUB_OUTPUT": str(output)}
+                    # The shell Actions uses for `shell: bash`.
+                    result = subprocess.run([bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", script],
+                                            cwd=REPO_ROOT, env=environment, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(encoding="utf-8").strip(), expected)
+
     def test_default_profile_carries_the_small_deadline_for_everyone(self) -> None:
         """Срок на тест — то, чем размер держится честным; пока он один на всех."""
         default = self.config["profile"]["default"]
