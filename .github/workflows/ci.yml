@@ -148,7 +148,7 @@ jobs:
       - name: Статические проверки Python (запуск)
         if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
         run: python scripts/ci/background_step.py start static-python -- python scripts/ci/run-static-tests.py
-      - name: Удалённые тесты Rust (запуск)
+      - name: Удалённые тесты (запуск)
         if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -226,7 +226,7 @@ jobs:
         run: python scripts/ci/background_step.py wait static-python --timeout 900
       # Тест Rust, снятый без объявления `Removes-test`, иначе впервые виден
       # в учёте ночи. Случаи строятся по исходникам, без сборки.
-      - name: Удалённые тесты Rust объявлены
+      - name: Удалённые тесты объявлены
         if: ${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}
         run: python scripts/ci/background_step.py wait removed-tests --timeout 600
 

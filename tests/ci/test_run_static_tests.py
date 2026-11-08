@@ -94,10 +94,10 @@ class PullRequestLevelTests(unittest.TestCase):
                 self.assertGreater(wait, names.index("Clippy"))
 
     def test_the_pull_request_checks_removed_rust_tests_against_its_base(self) -> None:
-        removed = self.step("Удалённые тесты Rust объявлены")
+        removed = self.step("Удалённые тесты объявлены")
         self.assertEqual(removed["if"], "${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}")
         self.assertEqual(removed["run"], "python scripts/ci/background_step.py wait removed-tests --timeout 600")
-        started = self.step("Удалённые тесты Rust (запуск)")
+        started = self.step("Удалённые тесты (запуск)")
         self.assertEqual(started["run"], 'python scripts/ci/background_step.py start removed-tests -- '
                                          'python scripts/ci/removed_tests.py --base "$BASE_SHA"')
         self.assertEqual(started["env"]["BASE_SHA"], "${{ github.event.pull_request.base.sha }}")
