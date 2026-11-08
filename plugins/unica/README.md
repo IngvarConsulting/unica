@@ -169,7 +169,7 @@ version:
 
 | File | Key | What to do |
 | --- | --- | --- |
-| `unica.toml`, `unica.local.toml` | `[providers.kb-1ci]` | delete the section; the provider was removed |
+| `unica.toml`, `unica.local.toml`, the file named by `UNICA_DOCUMENTATION_POLICY_FILE` | `[providers.kb-1ci]` | delete the section; the provider was removed |
 | `unica.toml`, `unica.local.toml` | `search_rlm_timeout_seconds` in `[operational.code_intelligence]` | rename to `search_semantic_timeout_seconds` |
 | `unica.toml`, `unica.local.toml` | `search_git_grep_timeout_seconds` in `[operational.code_intelligence]` | delete; literal search has no separate deadline |
 

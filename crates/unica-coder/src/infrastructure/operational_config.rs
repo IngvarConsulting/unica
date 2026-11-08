@@ -463,6 +463,11 @@ analyze_timeout_seconds = 30
             minimum.code_intelligence().search_total_timeout(),
             Duration::from_secs(1)
         );
+        // Срок git grep из файлов не задаётся и не выходит за общий срок поиска.
+        assert_eq!(
+            minimum.code_intelligence().search_git_grep_timeout(),
+            Duration::from_secs(1)
+        );
         assert_eq!(
             minimum.code_diagnostics().analyze_timeout(),
             Some(Duration::from_secs(30))
@@ -557,6 +562,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn structure_errors_are_typed_with_exact_paths() {
         let cases = [
