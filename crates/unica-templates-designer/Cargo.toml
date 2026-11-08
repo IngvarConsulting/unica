@@ -24,6 +24,7 @@ roxmltree.workspace = true
 unica-templates = { path = "../unica-templates" }
 
 [package.metadata.unica]
+version-literal-baseline = 1
 component = "codec"
 file-io = "none"
 inputs = [

@@ -20,5 +20,6 @@ regex.workspace = true
 jsonschema.workspace = true
 
 [package.metadata.unica]
+version-literal-baseline = 4
 component = "family"
 file-io = "domain"

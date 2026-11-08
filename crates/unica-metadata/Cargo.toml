@@ -23,5 +23,6 @@ uuid.workspace = true
 jsonschema.workspace = true
 
 [package.metadata.unica]
+version-literal-baseline = 40
 component = "family"
 file-io = "domain"

@@ -20,5 +20,6 @@ unica-xml-format = { path = "../unica-xml-format" }
 roxmltree.workspace = true
 
 [package.metadata.unica]
+version-literal-baseline = 7
 component = "codec"
 file-io = "none"
