@@ -265,6 +265,21 @@ class GateProfileCompositionTests(unittest.TestCase):
             else:
                 self.assertNotIn("--no-tests=pass", command, "full nightly inventory must never be empty")
 
+    def test_pr_gate_excludes_the_shared_medium_and_large_expressions(self) -> None:
+        # Одно выражение `medium` на два места: ворота `pr` его исключают,
+        # срок `medium` по нему даётся. Расхождение пустило бы `medium` в `pr`
+        # или оставило бы его на сроке `small`.
+        profiles = self.config["profile"]
+        medium_deadline = next(
+            o for o in profiles["default"]["overrides"]
+            if o.get("slow-timeout", {}).get("period") == "300s"
+        )
+        medium = medium_deadline["filter"].strip()
+        large = profiles["large"]["default-filter"].strip()
+        self.assertEqual(profiles["pr"]["default-filter"].strip(), f"not (\n{medium}\n) & not (\n{large}\n)")
+        self.assertEqual(medium_deadline["slow-timeout"], {"period": "300s", "terminate-after": 2})
+        self.assertTrue(medium.startswith("kind(test)"))
+
     def test_dependency_regressions_have_a_standalone_config_and_no_retry_at_admitting_gates(self) -> None:
         config = tomllib.loads((REPO_ROOT / "vendor/ureq/.config/nextest.toml").read_text(encoding="utf-8"))
         profile = config["profile"]["ureq-recycling"]
