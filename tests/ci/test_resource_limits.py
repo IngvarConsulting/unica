@@ -5,6 +5,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+PR_SKIP = "дольше бюджета модуля уровня PR"
+
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("resource_limits", ROOT / "scripts/ci/check-resource-limits.py")
 limits = importlib.util.module_from_spec(SPEC)

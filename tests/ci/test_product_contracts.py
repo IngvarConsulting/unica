@@ -21,6 +21,10 @@ from unittest.mock import patch
 from tree_sitter import Language, Parser
 import tree_sitter_rust
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Контракт продукта: тест зовёт `cargo metadata`.
+MEDIUM = ("ProductContractTests.test_rmcp_transport_is_confined_to_mcp_interface",)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RMCP_OWNER = "crates/unica-coder-daemon/src/interfaces/mcp.rs"

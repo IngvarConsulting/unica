@@ -9,6 +9,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+PR_SKIP = "дольше бюджета модуля уровня PR"
+
 
 def load_classifier_module():
     module_path = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "classify-workflow-changes.py"

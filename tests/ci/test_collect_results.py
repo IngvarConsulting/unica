@@ -13,6 +13,9 @@ from pathlib import Path
 
 import yaml
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+PR_SKIP = "дольше бюджета модуля уровня PR"
+
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "ci"
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"

@@ -10,6 +10,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+PR_SKIP = "дольше бюджета модуля уровня PR"
+
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "ci"
 RUNNER = SCRIPTS / "run-unittest.py"

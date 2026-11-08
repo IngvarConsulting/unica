@@ -28,6 +28,10 @@ from typing import Any
 from unittest import mock
 from xml.sax.saxutils import escape
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Паритет скриптов: собирает и запускает исполняемый файл.
+MEDIUM = ("UnicaMcpScriptParityTests",)
+
 MODULE_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(MODULE_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_REPO_ROOT))
