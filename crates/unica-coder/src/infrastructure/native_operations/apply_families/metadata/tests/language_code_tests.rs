@@ -104,12 +104,10 @@ fn language_code_final_guard_sees_late_created_sources_and_original_dependencies
             b"Procedure Run()\nA = NStr(\"en='late'\");\nEndProcedure".to_vec(),
         )
         .unwrap();
-    assert!(
-        validate(&mut staged)
-            .unwrap_err()
-            .to_string()
-            .contains("NStr")
-    );
+    assert!(validate(&mut staged)
+        .unwrap_err()
+        .to_string()
+        .contains("NStr"));
     let xml = "<Title xmlns:v8=\"http://v8.1c.ru/8.1/data/core\"><v8:item><v8:lang>en</v8:lang><v8:content>text</v8:content></v8:item></Title>";
     let used = make_fixture(&[("Catalogs/Unused.xml", xml)]);
     let mut staged = prepare(&used, "de");
@@ -117,12 +115,10 @@ fn language_code_final_guard_sees_late_created_sources_and_original_dependencies
         .proposal()
         .replace("Catalogs/Unused.xml", xml.as_bytes(), b"<Title/>".to_vec())
         .unwrap();
-    assert!(
-        validate(&mut staged)
-            .unwrap_err()
-            .to_string()
-            .contains("XML translations")
-    );
+    assert!(validate(&mut staged)
+        .unwrap_err()
+        .to_string()
+        .contains("XML translations"));
     let independent = make_fixture(&[]);
     let mut staged = prepare(&independent, "de");
     staged
@@ -139,12 +135,10 @@ fn language_code_final_guard_sees_late_created_sources_and_original_dependencies
 fn language_code_refuses_default_conflict_or_unregistered_owner() {
     let fixture = make_fixture(&[]);
     let mut conflicting = prepare(&fixture, "RU");
-    assert!(
-        validate(&mut conflicting)
-            .unwrap_err()
-            .to_string()
-            .contains("conflicts")
-    );
+    assert!(validate(&mut conflicting)
+        .unwrap_err()
+        .to_string()
+        .contains("conflicts"));
     let configuration = RU_CONFIGURATION_XML.to_string();
     let orphan = MetadataFixture::with_files(&[
         ("Configuration.xml", &configuration),
@@ -171,12 +165,10 @@ fn language_code_refuses_default_conflict_or_unregistered_owner() {
         )],
     )
     .unwrap();
-    assert!(
-        validate(&mut default)
-            .unwrap_err()
-            .to_string()
-            .contains("DefaultLanguage")
-    );
+    assert!(validate(&mut default)
+        .unwrap_err()
+        .to_string()
+        .contains("DefaultLanguage"));
 }
 
 #[test]
@@ -199,7 +191,10 @@ fn language_comment_and_code_change_together_and_comment_alone_keeps_the_code() 
         staged_texts(&staged)[Path::new("Languages/English.xml")],
         before
             .replace("<Comment/>", "<Comment>Второй язык</Comment>")
-            .replace("<LanguageCode>en</LanguageCode>", "<LanguageCode>de</LanguageCode>")
+            .replace(
+                "<LanguageCode>en</LanguageCode>",
+                "<LanguageCode>de</LanguageCode>"
+            )
     );
     // The default language changes its Comment too; only its code is fixed.
     let staged = plan_all(
@@ -212,7 +207,10 @@ fn language_comment_and_code_change_together_and_comment_alone_keeps_the_code() 
     .unwrap();
     let russian = &staged_texts(&staged)[Path::new("Languages/Русский.xml")];
     assert!(russian.contains("<Comment>Основной</Comment>"), "{russian}");
-    assert!(russian.contains("<LanguageCode>ru</LanguageCode>"), "{russian}");
+    assert!(
+        russian.contains("<LanguageCode>ru</LanguageCode>"),
+        "{russian}"
+    );
 }
 
 #[test]
@@ -268,10 +266,16 @@ fn an_unregistered_language_refuses_comment_with_an_unchanged_code() {
     ] {
         let error = plan_all(
             &orphan,
-            &[("props.set", json!({"at":"main:Language.English","values":values}))],
+            &[(
+                "props.set",
+                json!({"at":"main:Language.English","values":values}),
+            )],
         )
         .map(|_| ())
         .expect_err("an unregistered language is not a property target");
-        assert!(error.to_string().contains("not registered"), "{values}: {error}");
+        assert!(
+            error.to_string().contains("not registered"),
+            "{values}: {error}"
+        );
     }
 }
