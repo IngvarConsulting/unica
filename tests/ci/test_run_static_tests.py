@@ -68,7 +68,7 @@ class PullRequestLevelTests(unittest.TestCase):
         for name in ("Тесты Rust", "Тесты Python", "Продукт для Python"):
             with self.subTest(name=name):
                 self.assertIn("github.event_name == 'merge_group'", self.step(name)["if"])
-        nextest = next(step for step in self.steps if "cargo-nextest" in str(step.get("with", {}).get("tool")))
+        nextest = next(step for step in self.steps if step.get("uses") == "./.github/actions/install-nextest")
         self.assertIn("github.event_name == 'merge_group'", nextest["if"])
 
     def test_the_pull_request_keeps_format_contract_clippy_and_static_tests(self) -> None:
@@ -102,8 +102,9 @@ class PullRequestLevelTests(unittest.TestCase):
                                          'python scripts/ci/removed_tests.py --base "$BASE_SHA" --nightly-profile large')
         self.assertEqual(started["env"]["BASE_SHA"], "${{ github.event.pull_request.base.sha }}")
         # The description is read fresh through the API: the job may read pull requests.
+        # Reading actions is for the queue's nightly path, which finds the last night's inventory.
         job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]["unica-ci"]
-        self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "read"})
+        self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "read", "actions": "read"})
 
 
 if __name__ == "__main__":

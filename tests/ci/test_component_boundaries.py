@@ -126,7 +126,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-daemon-protocol", "unica-process"),
             ("unica-daemon-protocol", "unica-lsp-contract"),
             ("unica-adapter-v8-runner", "unica-execution"),
-            ("unica-coder-daemon", "rmcp"),
+            ("unica-daemon", "rmcp"),
             ("unica-bsl-parser", "bsl-syntax"),
         ):
             with self.subTest(owner=owner, target=target):
@@ -172,7 +172,7 @@ class ComponentBoundaryTests(unittest.TestCase):
         refused = (
             ("unica-lsp", "unica-daemon-protocol"),
             ("unica-lsp", "unica-coder"),
-            ("unica-lsp", "unica-coder-daemon"),
+            ("unica-lsp", "unica-daemon"),
             ("unica-lsp", "unica-execution"),
             ("unica-lsp", "unica-forms"),
             ("unica-lsp", "unica-adapter-bsl-analyzer"),
@@ -206,7 +206,7 @@ class ComponentBoundaryTests(unittest.TestCase):
     def test_only_the_product_composition_depends_on_the_composition(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         for kind in ("dependencies", "dev-dependencies"):
-            for owner, target in (("unica-product", "unica-coder-daemon"), ("unica-coder-daemon", "unica-coder")):
+            for owner, target in (("unica-product", "unica-daemon"), ("unica-daemon", "unica-coder")):
                 with self.subTest(kind=kind, owner=owner, target=target):
                     self.assertEqual(checker.edge_errors(owner, target, kind), [])
 

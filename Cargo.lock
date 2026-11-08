@@ -2656,7 +2656,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "unica-coder-daemon"
+name = "unica-configuration"
+version = "0.15.0-rc.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "toml",
+ "unica-code-intelligence",
+ "unica-diagnostics",
+]
+
+[[package]]
+name = "unica-daemon"
 version = "0.15.0-rc.1"
 dependencies = [
  "chrono",
@@ -2714,17 +2725,6 @@ dependencies = [
  "unica-xml-format",
  "url",
  "uuid",
-]
-
-[[package]]
-name = "unica-configuration"
-version = "0.15.0-rc.1"
-dependencies = [
- "serde",
- "serde_json",
- "toml",
- "unica-code-intelligence",
- "unica-diagnostics",
 ]
 
 [[package]]
@@ -3098,7 +3098,7 @@ dependencies = [
  "unica-analysis-services",
  "unica-artifact-delivery",
  "unica-bootstrap",
- "unica-coder-daemon",
+ "unica-daemon",
  "unica-daemon-protocol",
  "unica-execution",
  "unica-metadata-designer",

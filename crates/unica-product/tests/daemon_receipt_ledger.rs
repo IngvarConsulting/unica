@@ -21,7 +21,7 @@ use sha2::{Digest as _, Sha256};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Read as _;
-use unica_coder_daemon::receipt_ledger_test_support::{
+use unica_daemon::receipt_ledger_test_support::{
     canonical_v5_terminal_for_test, execute_scenario_json, receipt_key_digest_for_test,
     request_scope_hash_for_test, task_link_digest_for_test,
 };
