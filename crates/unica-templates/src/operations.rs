@@ -90,13 +90,6 @@ impl unica_operations::FamilyOperation for MxlOperation {
     fn admits_observation(self, observation: Option<&Self::Observation>) -> bool {
         observation == Some(&crate::TemplateFormat::SpreadsheetDocument)
     }
-
-    fn creator(self) -> Option<&'static str> {
-        match self {
-            Self::Set => Some("area.add"),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]

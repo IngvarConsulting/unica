@@ -12,7 +12,6 @@ unica-metadata = { path = "../unica-metadata" }
 unica-source-contract = { path = "../unica-source-contract" }
 unica-source-designer = { path = "../unica-source-designer" }
 unica-operation-contract = { path = "../unica-operation-contract" }
-unica-operations = { path = "../unica-operations" }
 unica-xml-format = { path = "../unica-xml-format" }
 roxmltree.workspace = true
 serde.workspace = true

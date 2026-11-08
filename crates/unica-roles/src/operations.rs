@@ -158,13 +158,6 @@ impl unica_operations::FamilyOperation for RoleOperation {
     fn content_resource(self) -> Option<&'static str> {
         self.content_resource()
     }
-
-    fn creator(self) -> Option<&'static str> {
-        match self {
-            Self::RightSet => Some("right.add"),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]

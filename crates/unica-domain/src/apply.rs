@@ -2307,9 +2307,6 @@ mod tests {
         );
     }
 
-    /// Операции пакета П4 (#1355): элемент и событие формы задаются адресом.
-    const FORM_OPERATIONS: &[&str] = &["item.add", "item.remove", "event.bind"];
-
     /// Роль элемента формы сужает словарь: в поле не добавить вложенный
     /// элемент, автоматическую командную панель не удалить отдельно.
     /// rule: INV.SOURCE.FORM-OPERATION-TARGETS
@@ -2350,20 +2347,6 @@ mod tests {
         }
     }
 
-    /// Операции пакета П3 (#1354): подузел, прежде названный аргументом на
-    /// владельце, задаётся адресом.
-    const SUBNODE_OPERATIONS: &[&str] = &[
-        "right.set",
-        "mxl.set",
-        "variant.set",
-        "variant.remove",
-        "parameter.set",
-        "parameter.rename",
-        "field.set",
-        "fieldRole.set",
-        "code.insert",
-    ];
-
     /// Операции пакета П6 (#1357): источник, вычисляемое поле, итог и
     /// элемент структуры варианта задаются адресом.
     const DCS_NODE_OPERATIONS: &[&str] = &[
@@ -2395,10 +2378,9 @@ mod tests {
         "structure.remove",
     ];
 
-    /// Новые узлы схемы (#1357): операция исполнима ровно на своём узле, а
-    /// прежний аргумент, называвший источник, вычисляемое поле, итог или
-    /// контейнер настроек, отказывает с адресом узла. Без схемы элемент
-    /// структуры, названный аргументом, — элемент верхнего уровня варианта.
+    /// Узлы схемы — источник, вычисляемое поле, итог, контейнер настроек —
+    /// адресуются сами: операция исполнима ровно на своём узле и не на
+    /// соседнем.
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn dcs_schema_nodes_and_structure_items_take_their_subject_from_the_address() {
@@ -2513,17 +2495,6 @@ mod tests {
             }
         }
     }
-
-    /// Операции пакета П2 (#1353): их снятый аргумент дублировал `at` или
-    /// называл узел в обход адреса, а сами они не переезжали.
-    const DUPLICATE_ARGUMENT_OPERATIONS: &[&str] = &[
-        "query.set",
-        "query.patch",
-        "structure.set",
-        "structure.patch",
-        "childSubsystem.remove",
-        "code.replace",
-    ];
 
     /// Ветвь коллекции (`Interface.Group`, `Type.T.Property`) — не узел
     /// операции, и подсказка не выдумывает узел `…Group.Query` из вида

@@ -73,9 +73,6 @@ pub trait FamilyOperation: Copy + fmt::Debug + Send + Sync + 'static {
         None
     }
 
-    fn creator(self) -> Option<&'static str> {
-        None
-    }
     fn additional_recovery_candidates(self, _site: &OperationSite<'_>) -> Vec<QualifiedAddress> {
         Vec::new()
     }
@@ -115,7 +112,6 @@ trait ErasedOperation: Sync {
         lookup: ObservationLookup<'_>,
     ) -> Option<OperationContract>;
     fn content_resource(&self) -> Option<&'static str>;
-    fn creator(&self) -> Option<&'static str>;
     fn additional_recovery_candidates(&self, site: &OperationSite<'_>) -> Vec<QualifiedAddress>;
     fn operation(&self) -> &dyn Any;
     fn observation_type(&self) -> ObservationType;
@@ -163,10 +159,6 @@ impl<O: FamilyOperation> ErasedOperation for TypedOperationBundle<O> {
     fn content_resource(&self) -> Option<&'static str> {
         self.operation.content_resource()
     }
-    fn creator(&self) -> Option<&'static str> {
-        self.operation.creator()
-    }
-
     fn additional_recovery_candidates(&self, site: &OperationSite<'_>) -> Vec<QualifiedAddress> {
         self.operation.additional_recovery_candidates(site)
     }
@@ -232,9 +224,6 @@ impl OperationDescriptor {
     }
     pub fn content_resource(self) -> Option<&'static str> {
         self.binding.content_resource()
-    }
-    pub fn creator(self) -> Option<&'static str> {
-        self.binding.creator()
     }
     pub fn argument_contract(self) -> Option<OperationContract> {
         self.binding.contract()

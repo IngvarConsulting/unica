@@ -223,17 +223,17 @@ pub fn parse_code_anchor(value: &Value, path: &str) -> Result<String, ApplyPlanE
     }
     let (name, value) = object.iter().next().expect("one selector field");
     let field_path = format!("{path}.{name}");
-    let value = value
-        .as_str()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| bad_code_arg(&field_path, "selector value must be a non-empty string"))?;
-    match name.as_str() {
-        "anchor" => Ok(canonicalize_eol(value)),
-        _ => Err(bad_code_arg(
+    if name != "anchor" {
+        return Err(bad_code_arg(
             field_path,
             "unknown argument; selector accepts only anchor",
-        )),
+        ));
     }
+    value
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .map(canonicalize_eol)
+        .ok_or_else(|| bad_code_arg(&field_path, "selector value must be a non-empty string"))
 }
 
 pub fn parse_code_position(value: &Value, path: &str) -> Result<CodePosition, ApplyPlanError> {

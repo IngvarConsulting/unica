@@ -11,7 +11,6 @@ test-support = []
 
 [dependencies]
 unica-address = { path = "../unica-address" }
-unica-operations = { path = "../unica-operations" }
 serde_json.workspace = true
 unica-operation-contract = { path = "../unica-operation-contract" }
 unica-bsl-parser = { path = "../unica-bsl-parser" }
