@@ -93,6 +93,9 @@ class TempLedgerTests(unittest.TestCase):
             self.assertIn("module.Class.test_leaks: left-by-test", stream.getvalue())
             self.assertNotIn("test_clean", stream.getvalue())
             self.assertFalse(ledger.root.exists())
+            # The run's TEMP was its own: the caller's comes back.
+            self.assertEqual(tempfile.tempdir, saved_tempdir)
+            self.assertEqual(os.environ.get("TEMP"), saved["TEMP"])
         finally:
             tempfile.tempdir = saved_tempdir
             for name, value in saved.items():

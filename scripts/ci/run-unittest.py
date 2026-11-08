@@ -69,6 +69,8 @@ class TempLedger:
     def __init__(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="unittest-run-"))
         self.left: dict[str, list[str]] = {}
+        # A test may run a whole suite in-process: the outer TEMP comes back on close.
+        self.saved = ({name: os.environ.get(name) for name in ("TEMP", "TMP", "TMPDIR")}, tempfile.tempdir)
         for name in ("TEMP", "TMP", "TMPDIR"):
             os.environ[name] = str(self.root)
         tempfile.tempdir = str(self.root)
@@ -86,6 +88,12 @@ class TempLedger:
         return new
 
     def close(self, stream) -> None:
+        environment, tempfile.tempdir = self.saved
+        for name, value in environment.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         for test_id, names in self.left.items():
             print(f"временные каталоги не убраны: {test_id}: {', '.join(names)}", file=stream)
         for _ in range(5):
