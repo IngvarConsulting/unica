@@ -1,5 +1,5 @@
 [package]
-name = "unica-daemon"
+name = "unica-daemon-protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

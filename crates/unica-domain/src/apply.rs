@@ -1961,9 +1961,8 @@ mod tests {
             ("supportCapability.set", "main:Configuration", true),
             ("supportCapability.set", "main:Catalog.Items", false),
             ("supportRule.set", "main:Catalog.Items", true),
-            // Запрос — узел набора без имени; прежний псевдоним набора
-            // `Template.T.Query.D` снят, и остальные операции набора
-            // на запросе не исполнимы.
+            // Запрос — узел набора без имени; адрес `Template.T.Query.<имя>`
+            // и остальные операции набора на запросе не исполнимы.
             (
                 "query.set",
                 "main:Report.Sales.Template.Schema.DataSet.Main",

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::time::timeout;
-use unica_daemon::protocol_v5::V5ClientRequest;
+use unica_daemon_protocol::protocol_v5::V5ClientRequest;
 use unica_execution::invocation::{INVOCATION_HANDOFF_WINDOW, RESPONSE_SERIALIZATION_MARGIN};
 use unica_workspace::cache::CacheReport;
 
@@ -2113,7 +2113,7 @@ fn working_task_fake(
             if !response_delay.is_zero() {
                 std::thread::sleep(response_delay);
             }
-            Step::Reply(unica_daemon::protocol_v5::V5ServerResponse::Task {
+            Step::Reply(unica_daemon_protocol::protocol_v5::V5ServerResponse::Task {
                 snapshot: canonical_snapshot(
                     task_id,
                     unica_execution_contract::invocation::InvocationStatus::Working,
@@ -2194,7 +2194,7 @@ async fn compatibility_ready_result_at_wait_zero_survives_a_slow_connect() {
                 }
             );
             std::thread::sleep(Duration::from_millis(200));
-            Step::Reply(unica_daemon::protocol_v5::V5ServerResponse::Task {
+            Step::Reply(unica_daemon_protocol::protocol_v5::V5ServerResponse::Task {
                 snapshot: canonical_snapshot(
                     task_id,
                     unica_execution_contract::invocation::InvocationStatus::Completed,
@@ -2256,7 +2256,7 @@ fn compatibility_wait_frontend_cutoff_is_not_rebased_case() {
     };
     assert_eq!(
         observation.stage,
-        unica_daemon::client_v5::TaskObservationStage::AcquirePeer
+        unica_daemon_protocol::client_v5::TaskObservationStage::AcquirePeer
     );
     assert!(observation.cutoff_expired);
     assert!(observation.endpoint_generation_hash.is_none());
@@ -2359,7 +2359,7 @@ fn compatibility_get_and_cancel_share_one_absolute_cutoff_across_connect_and_exc
 /// A payload that arrives after the operation cutoff is never published,
 /// valid or not, and the operation session is closed for reuse.
 fn compatibility_wait_late_payload_case(valid_near_limit: bool) {
-    use unica_daemon::protocol_v5::{V5ServerResponse, MAX_V5_RESPONSE_LINE_BYTES};
+    use unica_daemon_protocol::protocol_v5::{V5ServerResponse, MAX_V5_RESPONSE_LINE_BYTES};
     use unica_execution_contract::result_size::MAX_CANONICAL_RESULT_BYTES;
 
     let task_id = unica_execution_contract::invocation::TaskId::new();
@@ -2648,7 +2648,7 @@ async fn compatibility_task_get_and_result_preserve_each_closed_failure_reason()
     }
 }
 
-use unica_daemon::protocol_v5::task_frame_fixtures::{
+use unica_daemon_protocol::protocol_v5::task_frame_fixtures::{
     completed_task_response as daemon_task_frame_value, frame as daemon_frame_bytes,
     malformed_task_frames as malformed_daemon_task_frames, RESULT_MARKER,
 };
@@ -2782,8 +2782,8 @@ async fn task_reads_report_complete_malformed_daemon_frames_as_protocol_failures
 /// handshake: every later operation connection is refused.
 fn anchor_of_vanished_daemon() -> (V5DaemonProcessOwner, std::net::TcpStream) {
     use std::net::{Ipv4Addr, TcpListener};
-    use unica_daemon::identity::CoreIdentity;
-    use unica_daemon::protocol_v5::{
+    use unica_daemon_protocol::identity::CoreIdentity;
+    use unica_daemon_protocol::protocol_v5::{
         read_bounded_v5_request_frame, V5EndpointRecord, V5HandshakeServerResponse,
     };
 
@@ -5816,7 +5816,7 @@ async fn canonical_manual_cancellation_direct_first_call_reaches_executor() {
 /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn canonical_manual_cancellation_eof_before_handler_preserves_registered_intent() {
-    use unica_daemon::protocol_v5::V5ServerResponse;
+    use unica_daemon_protocol::protocol_v5::V5ServerResponse;
     use unica_execution::receipt_runtime::response::{V5InvocationPhase, V5InvocationResponse};
     let service = ManualDaemonService::new(false);
     let daemon = ManualDaemonOwner::start(service.clone());
@@ -6059,7 +6059,7 @@ async fn canonical_manual_cancellation_eof_preserves_accepted_work_and_exact_rec
             };
             if matches!(
                 &response,
-                unica_daemon::protocol_v5::V5ServerResponse::Invocation {
+                unica_daemon_protocol::protocol_v5::V5ServerResponse::Invocation {
                     outcome:
                         unica_execution::receipt_runtime::response::V5InvocationResponse::Task {
                             snapshot: V5DaemonTaskSnapshot::Completed { .. }
@@ -6100,7 +6100,7 @@ async fn canonical_manual_cancellation_lost_cancel_answer_reconciles_original_ke
 }
 
 async fn manual_before_submit_exact_cancel(lost_reply: bool) {
-    use unica_daemon::protocol_v5::V5ServerResponse;
+    use unica_daemon_protocol::protocol_v5::V5ServerResponse;
     use unica_execution::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
     use unica_execution::receipt_runtime::response::{V5InvocationPhase, V5InvocationResponse};
     let service = ManualDaemonService::new(false);
@@ -6223,7 +6223,7 @@ async fn manual_before_submit_exact_cancel(lost_reply: bool) {
 /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn canonical_manual_cancellation_stdio_drain_does_not_cancel_held_daemon_admission() {
-    use unica_daemon::protocol_v5::V5ServerResponse;
+    use unica_daemon_protocol::protocol_v5::V5ServerResponse;
     use unica_execution::receipt_runtime::response::V5InvocationResponse;
     let service = ManualDaemonService::new(false);
     let daemon = ManualDaemonOwner::start(service.clone());
@@ -6411,7 +6411,7 @@ async fn manual_cancellation_during_send(partial: bool) {
     let neighbor_cancelled = service.cancelled("flush-neighbor");
     let target_key = keys.lock().unwrap().get(1).cloned();
     let cancel_recorded = target_key.is_some_and(|key| {
-            matches!(observer_owner.recover_invocation_receipt_before(key, Instant::now() + TEST_STEP), Ok(unica_daemon::protocol_v5::V5ServerResponse::Invocation { outcome: unica_execution::receipt_runtime::response::V5InvocationResponse::Task { snapshot } }) if snapshot.cancel_requested())
+            matches!(observer_owner.recover_invocation_receipt_before(key, Instant::now() + TEST_STEP), Ok(unica_daemon_protocol::protocol_v5::V5ServerResponse::Invocation { outcome: unica_execution::receipt_runtime::response::V5InvocationResponse::Task { snapshot } }) if snapshot.cancel_requested())
         });
     gate.release();
     let target_response = client.receive().await;
@@ -6631,7 +6631,7 @@ async fn canonical_manual_cancellation_shared_index_stops_only_its_consumer() {
 /// rule: INV.WIRE.COOPERATIVE-CANCELLATION
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn canonical_manual_cancellation_after_completed_before_flush_preserves_exact_terminal() {
-    use unica_daemon::protocol_v5::V5ServerResponse;
+    use unica_daemon_protocol::protocol_v5::V5ServerResponse;
     use unica_execution::receipt_runtime::response::V5InvocationResponse;
     let service = ManualDaemonService::new(false);
     let hooks = Arc::new(ManualCancelReplyHooks::default());
@@ -7669,8 +7669,8 @@ fn compatibility_final_projection_preserves_exchange_failure_stage_and_generatio
     let task_id = unica_execution_contract::invocation::TaskId::new();
     let start = Instant::now();
     let timing = TaskObservationTimer::since(start, start + Duration::from_millis(225));
-    let record = unica_daemon::protocol_v5::V5EndpointRecord::new(
-        unica_daemon::identity::CoreIdentity::production_v5(),
+    let record = unica_daemon_protocol::protocol_v5::V5EndpointRecord::new(
+        unica_daemon_protocol::identity::CoreIdentity::production_v5(),
         41001,
     )
     .unwrap();

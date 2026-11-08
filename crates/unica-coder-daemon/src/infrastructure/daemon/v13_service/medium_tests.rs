@@ -3952,31 +3952,6 @@ fn walk_pages_end_by_time_and_continue_without_loss() {
     assert_eq!(last["fileCoverage"]["scanComplete"], true);
 }
 
-/// The former `lexical` deadline key stays accepted in `unica.toml` for
-/// one release and no longer limits the literal search: even a value the
-/// configuration would refuse leaves the search whole.
-/// rule: INV.APP.LITERAL-SEARCH
-#[test]
-fn literal_search_ignores_the_retired_git_grep_timeout_key() {
-    let workspace = text_engine_workspace();
-    let expected = text_search_matches(&text_search_pages(
-        workspace.path(),
-        TextEngine::Git,
-        json!({"query":"Needle"}),
-    ));
-    for value in ["1", "0"] {
-        std::fs::write(
-            workspace.path().join("unica.toml"),
-            format!("[operational.code_intelligence]\nsearch_git_grep_timeout_seconds = {value}\n"),
-        )
-        .unwrap();
-        for engine in [TextEngine::Git, TextEngine::Walk] {
-            let pages = text_search_pages(workspace.path(), engine, json!({"query":"Needle"}));
-            assert_eq!(text_search_matches(&pages), expected, "{value} {engine:?}");
-        }
-    }
-}
-
 /// A line that is not UTF-8 and cannot hold a match is no gap: the
 /// first page read through Git and the walk that continues it agree on
 /// the file, and the continuation reaches every later match.

@@ -822,7 +822,6 @@ flags/layout/оформление/companions/события общий), плю�
 |-----------|-------------|---------------|----------------|
 | `spreadsheet` | SpreadSheetDocumentField | `mxl:SpreadsheetDocument` | `output` (Disable/Enable), `protection`, `verticalScrollBar`/`horizontalScrollBar`, `viewScalingMode`, `selectionShowMode`, `pointerType`, `showGrid`/`showGroups`/`showHeaders`/`showRowAndColumnNames`/`showCellNames`, `edit`, `enableDrag`/`enableStartDrag` (фактическое значение) |
 | `html` | HTMLDocumentField | `string` | Нативная поддержка: `path`, `title`, `tooltip`, `titleLocation`, `width`/`height`, `autoMaxWidth`/`autoMaxHeight`, `skipOnInput`, общие флаги видимости/доступности/чтения и `on`/`handlers` |
-| `textDoc` | TextDocumentField | `d5p1:TextDocument` | `editMode` |
 | `formattedDoc` | FormattedDocumentField | `fd:FormattedDocument` | `editMode` |
 | `progressBar` | ProgressBarField | число | `showPercent`, `minValue`/`maxValue` (без `xsi:type`, ≠ типизированных у `input`) |
 | `trackBar` | TrackBarField | число | `minValue`/`maxValue`/`largeStep`/`markingStep`/`step` (числовые), `markingAppearance` |
@@ -832,6 +831,9 @@ flags/layout/оформление/companions/события общий), плю�
 | `planner` | PlannerField | `pl:Planner` (Планировщик) | — |
 | `periodField` | PeriodField | `v8:StandardPeriod` (Период) | — |
 | `dendrogram` | DendrogramField | (Дендрограмма) | — |
+
+Поле текстового документа (TextDocumentField) описание формы не создаёт: ключ `textDoc`
+отклоняется как неизвестный ключ элемента. Такое поле добавляет операция `item.add`.
 
 ```json
 { "spreadsheet": "ТаблицаОтчета", "path": "ТаблицаОтчета", "titleLocation": "none", "readOnly": true, "output": "Disable", "protection": true }

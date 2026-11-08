@@ -23,16 +23,16 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
-use unica_daemon::client_v5::{V5DaemonProcessOwner, V5RawHandshake};
-use unica_daemon::identity::{CoreIdentity, DaemonStateDirectory};
-use unica_daemon::protocol_v5::encode_strict_v5_response_jsonl;
-use unica_daemon::protocol_v5::{
+use unica_daemon_protocol::client_v5::{V5DaemonProcessOwner, V5RawHandshake};
+use unica_daemon_protocol::identity::{CoreIdentity, DaemonStateDirectory};
+use unica_daemon_protocol::protocol_v5::encode_strict_v5_response_jsonl;
+use unica_daemon_protocol::protocol_v5::{
     decode_v5_request_frame, decode_v5_server_response, strict_envelope_case_frame,
     StrictV5EnvelopeCase, V5ClientRequest, V5DaemonErrorCode, V5InvocationRequest,
     V5ServerResponse, DAEMON_PROTOCOL_VERSION, MAX_V5_RESPONSE_LINE_BYTES,
 };
-use unica_daemon::transport::test_support::daemon_error_code;
-use unica_daemon::transport::test_support::run_daemon_configured_until;
+use unica_daemon_protocol::transport::test_support::daemon_error_code;
+use unica_daemon_protocol::transport::test_support::run_daemon_configured_until;
 use unica_execution::invocation::normalized_arguments_hash;
 use unica_execution::invocation_store::EpochMillisClock;
 use unica_execution::invocation_store::SystemEpochMillisClock;
@@ -775,7 +775,7 @@ fn run_cross_store_crash_cases(
 
         let telemetry = V5ReceiptRuntimeTelemetry::start();
         let control = ReceiptScenarioControl::new(Arc::new(
-            unica_daemon::transport::test_support::encode_lifecycle_response,
+            unica_daemon_protocol::transport::test_support::encode_lifecycle_response,
         ));
         let mut snapshot = snapshot_from_state(
             state.path(),
@@ -911,7 +911,7 @@ fn bind_seeded_handoff_without_completion(
     key: &ReceiptKey,
 ) -> Result<(), String> {
     let control = Arc::new(ReceiptScenarioControl::new(Arc::new(
-        unica_daemon::transport::test_support::encode_lifecycle_response,
+        unica_daemon_protocol::transport::test_support::encode_lifecycle_response,
     )));
     control.arm_skip_next_startup_reconciliation();
     let daemon_state = DaemonStateDirectory::open(state_root, identity)?;
@@ -947,7 +947,7 @@ fn seed_staged_cross_store_terminal(
     key: ReceiptKey,
 ) -> Result<(Vec<Value>, Vec<Value>), String> {
     let control = Arc::new(ReceiptScenarioControl::new(Arc::new(
-        unica_daemon::transport::test_support::encode_lifecycle_response,
+        unica_daemon_protocol::transport::test_support::encode_lifecycle_response,
     )));
     let daemon_state = DaemonStateDirectory::open(state_root, identity)?;
     let receipts = daemon_state.create_private_retained_subdirectory("receipts")?;
@@ -1576,7 +1576,10 @@ fn run_lazy_cancel_storm(
         );
         let response = runtime
             .submit_invocation(
-                unica_daemon::protocol_v5::DecodedSubmitAdapter::new(decoded, identity.clone()),
+                unica_daemon_protocol::protocol_v5::DecodedSubmitAdapter::new(
+                    decoded,
+                    identity.clone(),
+                ),
                 accepted_epoch_ms,
                 operation_deadline,
                 runtime.capture_submit_deadline(7_000),
@@ -1667,7 +1670,7 @@ fn retirement_snapshot(
 ) -> Result<Value, String> {
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let control = ReceiptScenarioControl::new(Arc::new(
-        unica_daemon::transport::test_support::encode_lifecycle_response,
+        unica_daemon_protocol::transport::test_support::encode_lifecycle_response,
     ));
     let listener = running.then(|| telemetry.listener_lease());
     if !running {
@@ -4458,7 +4461,7 @@ fn retired_v3_identity() -> Result<CoreIdentity, String> {
 /// The retired protocol-v3 JSONL frames, spelled out byte for byte: the same
 /// tags, camelCase fields and field order the serde types produced.
 mod v3_wire {
-    use unica_daemon::identity::CoreIdentity;
+    use unica_daemon_protocol::identity::CoreIdentity;
     use unica_execution_contract::invocation::{DomainResult, TaskId};
 
     pub(super) const RETIRED_V3_IDENTITY: &str =

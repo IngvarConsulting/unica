@@ -1,7 +1,7 @@
 //! Public calls whose format gate must block before any handler runs. The
-//! integration target runs them as tests; the format guard's own unit test
-//! calls them as part of its proof that every native mutator enters the gate.
-//! Each includer gives `super::application()`: the application on the
+//! format guard's unit test calls them to prove that every native mutator
+//! enters the gate; the daemon's `medium_application` target runs each as its
+//! own test. Each includer gives `super::application()`: the application on the
 //! infrastructure ports.
 
 use serde_json::{json, Map, Value};

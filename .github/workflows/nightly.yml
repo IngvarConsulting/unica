@@ -63,6 +63,12 @@ jobs:
       pages: write
       id-token: write
     uses: $/.github/workflows/release.yml
+    # Секрет окружения доходит до задания вызванного workflow, только если вызов
+    # передаёт его по имени: иначе в `alpha-tag` он пуст, хотя задание объявляет
+    # `environment: alpha`. Здесь у вызова окружения нет, и значение берёт задание.
+    # Остальные секреты, в том числе токен маркетплейса, вызову не передаются.
+    secrets:
+      RELEASE_TAG_KEY: ${{ secrets.RELEASE_TAG_KEY }}
     with:
       profile: large
       alpha: ${{ github.ref == 'refs/heads/main' }}

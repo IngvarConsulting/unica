@@ -1,4 +1,4 @@
-use unica_daemon::identity::CoreIdentity;
+use unica_daemon_protocol::identity::CoreIdentity;
 use unica_execution::receipt_runtime::ports::V5CanonicalPrepareError;
 use unica_refusal::{RefusalCode, RefusalDetail};
 #[path = "invocation_service.rs"]
@@ -513,7 +513,7 @@ impl unica_execution::receipt_runtime::ports::InvocationHost for CanonicalInvoca
     // review: #1119 PR9
     const MAX_SUPPORTED_BODY_RESPONSE_BYTES: usize = unica_bootstrap::MAX_RESPONSE_BUDGET;
 
-    type Request = unica_daemon::protocol_v5::V5InvocationRequest;
+    type Request = unica_daemon_protocol::protocol_v5::V5InvocationRequest;
     type Bound = V5ActorBoundCanonicalInvocation;
     type Prepared = V5PreparedCanonicalInvocation;
 
@@ -1552,7 +1552,7 @@ impl DaemonServerConfig {
         // as stale daemon state. Without that directory a root check starts
         // from the beginning each time.
         let root_check_continuations = Arc::new(
-            match unica_daemon::identity::DaemonStateDirectory::open(
+            match unica_daemon_protocol::identity::DaemonStateDirectory::open(
                 &self.state_root,
                 &self.core_identity,
             )
@@ -1563,7 +1563,7 @@ impl DaemonServerConfig {
                 Ok(directory) => {
                     unica_project_health::inspection::resources::RootCheckContinuationStore::in_directory(
                         directory,
-                        unica_daemon::state_collection::STALE_DAEMON_STATE_IDLE,
+                        unica_daemon_protocol::state_collection::STALE_DAEMON_STATE_IDLE,
                     )
                 }
                 Err(_) => {
@@ -1602,10 +1602,12 @@ impl DaemonServerConfig {
 
     pub(crate) fn into_transport_config(
         self,
-    ) -> unica_daemon::transport::DaemonServerConfig<CanonicalInvocationHost, CapacityObservation>
-    {
+    ) -> unica_daemon_protocol::transport::DaemonServerConfig<
+        CanonicalInvocationHost,
+        CapacityObservation,
+    > {
         let runtime = self.receipt_runtime_config();
-        unica_daemon::transport::DaemonServerConfig {
+        unica_daemon_protocol::transport::DaemonServerConfig {
             state_root: self.state_root,
             core_identity: self.core_identity,
             idle_grace: self.idle_grace,
@@ -1620,11 +1622,11 @@ pub(crate) struct CapacityObservation(
     Arc<crate::infrastructure::capacity_observation::CapacityObserver>,
 );
 
-impl unica_daemon::transport::ObservationLifecycle for CapacityObservation {
+impl unica_daemon_protocol::transport::ObservationLifecycle for CapacityObservation {
     type Guard = crate::infrastructure::capacity_observation::CapacityWriterGuard;
     fn start(
         &self,
-        state: &unica_daemon::identity::DaemonStateDirectory,
+        state: &unica_daemon_protocol::identity::DaemonStateDirectory,
         authority_valid: Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> std::io::Result<Self::Guard> {
         crate::infrastructure::capacity_observation::start_background_writer(

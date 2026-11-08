@@ -135,3 +135,33 @@ fn temp_root(name: &str) -> crate::infrastructure::temp_test_root::TempTestRoot 
         "",
     )
 }
+
+/// The facade's own shape: reads this crate's sources, not a workspace.
+mod medium_facade {
+    use std::path::PathBuf;
+
+    #[test]
+    fn native_operations_rs_is_thin_facade_not_xml_dsl_monolith() {
+        let infrastructure_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("infrastructure");
+        let path = infrastructure_dir.join("native_operations.rs");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let line_count = text.lines().count();
+
+        assert!(
+            line_count < 200,
+            "native_operations.rs must stay a thin facade; got {line_count} lines"
+        );
+        assert!(
+            !text.contains("match operation"),
+            "operation-specific XML/DSL dispatch belongs in backend modules"
+        );
+        assert!(
+            !infrastructure_dir
+                .join("native_operations_backend.rs")
+                .exists(),
+            "native_operations_backend.rs must not return; split operation logic by family under native_operations/"
+        );
+    }
+}

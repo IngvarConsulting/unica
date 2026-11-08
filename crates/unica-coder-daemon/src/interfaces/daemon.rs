@@ -3,8 +3,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
-use unica_daemon::client_v5::{V5DaemonClient, V5DaemonProcessOwner};
-use unica_daemon::identity::CoreIdentity;
+use unica_daemon_protocol::client_v5::{V5DaemonClient, V5DaemonProcessOwner};
+use unica_daemon_protocol::identity::CoreIdentity;
 
 /// Сколько демон ждёт работы, прежде чем выйти. Тёплый индекс BSL стоит минут,
 /// поэтому пауза между задачами не должна стоить пользователю повторной сборки.
@@ -47,7 +47,7 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
     // The frontend passed its own build identity. A daemon started from a
     // replaced executable is another build and must not serve that identity.
     if CoreIdentity::install_build()? != core_identity {
-        return Err(unica_daemon::identity::EXECUTABLE_CHANGED.to_string());
+        return Err(unica_daemon_protocol::identity::EXECUTABLE_CHANGED.to_string());
     }
     let idle_grace = parsed.idle_grace;
     // Other builds' daemons leave their state directories behind. Removing
@@ -55,7 +55,7 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
     let collection_root = state_root.clone();
     let own_identity = core_identity.clone();
     let _ = std::thread::Builder::new().spawn(move || {
-        use unica_daemon::state_collection::{
+        use unica_daemon_protocol::state_collection::{
             collect_stale_daemon_states, STALE_DAEMON_STATE_IDLE,
         };
         let _ = collect_stale_daemon_states(
@@ -66,7 +66,7 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
         );
     });
     let config = DaemonServerConfig::new(state_root, core_identity, idle_grace);
-    unica_daemon::transport::run_daemon(config.into_transport_config())
+    unica_daemon_protocol::transport::run_daemon(config.into_transport_config())
 }
 
 /// Print the existing local aggregate without starting the daemon or creating state.
@@ -84,8 +84,10 @@ pub fn print_capacity_report_from_args(args: &[String]) -> Result<(), String> {
 }
 
 fn capacity_report_at_root(root: &Path) -> Result<Option<String>, String> {
-    let identity =
-        unica_daemon::identity::DaemonStateDirectory::path_for(root, &CoreIdentity::production());
+    let identity = unica_daemon_protocol::identity::DaemonStateDirectory::path_for(
+        root,
+        &CoreIdentity::production(),
+    );
     crate::infrastructure::capacity_observation::read_existing_snapshot_json(&identity)
         .map_err(|_| "cannot read local capacity observations securely".to_string())
 }
@@ -195,7 +197,7 @@ pub fn print_core_identity() -> Result<(), String> {
 #[doc(hidden)]
 pub fn endpoint_path_for_protocol_test(state_root: &Path, core_identity: &str) -> PathBuf {
     let identity_path = CoreIdentity::from_str(core_identity).ok().map(|identity| {
-        unica_daemon::identity::DaemonStateDirectory::path_for(state_root, &identity)
+        unica_daemon_protocol::identity::DaemonStateDirectory::path_for(state_root, &identity)
     });
     identity_path
         .unwrap_or_else(|| state_root.join(format!("daemon-p5-{core_identity}")))
@@ -296,7 +298,7 @@ mod tests {
         DEFAULT_IDLE_GRACE, IDLE_GRACE_ENV, MAX_IDLE_GRACE_MS,
     };
     use std::time::Duration;
-    use unica_daemon::identity::CoreIdentity;
+    use unica_daemon_protocol::identity::CoreIdentity;
 
     #[test]
     fn capacity_report_does_not_create_state() {

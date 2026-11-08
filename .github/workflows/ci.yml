@@ -115,9 +115,9 @@ jobs:
     name: Unica CI
     needs: admission
     if: ${{ needs.admission.outputs.admitted == 'true' }}
-    # Очередь использует общий пул PVE, включая GPU-ВМ. PR и ручные повторы — GitHub.
+    # Очередь и её повторы используют общий пул PVE, включая GPU-ВМ. PR — GitHub.
     # UNICA_SELF_HOSTED=false (или отсутствие переменной) возвращает новые прогоны на GitHub.
-    runs-on: ${{ fromJSON(github.event_name == 'merge_group' && github.run_attempt == 1 && vars.UNICA_SELF_HOSTED == 'true' && '["self-hosted","Linux","X64","unica-pve"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ fromJSON(github.event_name == 'merge_group' && vars.UNICA_SELF_HOSTED == 'true' && '["self-hosted","Linux","X64","unica-pve"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 60
     # Проверка удалений тестов читает описание pull request: объявление,
     # поправленное после push, должно засчитаться при повторе.
@@ -130,12 +130,36 @@ jobs:
     env:
       KEPT: ${{ needs.admission.outputs.kept }}
     steps:
+      # На PVE сохраняем сборку на время очистки checkout. При исполнении target
+      # остаётся обычным каталогом: тесты ищут плагин относительно пути бинаря.
+      - name: Сохранить локальную сборку перед очисткой
+        id: park-target
+        if: ${{ runner.environment == 'self-hosted' && env.KEPT != 'true' }}
+        run: |
+          cache_dir="$(dirname "$GITHUB_WORKSPACE")/.unica-ci-target"
+          if [ -d target ] && [ ! -L target ]; then
+            test ! -e "$cache_dir"
+            test ! -L "$cache_dir"
+            mv target "$cache_dir"
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.KEPT != 'true'
         with:
           persist-credentials: false
           # Python-проверки читают историю репозитория.
           fetch-depth: 0
+      - name: Вернуть локальную сборку в checkout
+        id: local-target
+        if: ${{ runner.environment == 'self-hosted' && env.KEPT != 'true' }}
+        run: |
+          cache_dir="$(dirname "$GITHUB_WORKSPACE")/.unica-ci-target"
+          if [ -e "$cache_dir" ] || [ -L "$cache_dir" ]; then
+            test -d "$cache_dir"
+            test ! -L "$cache_dir"
+            test ! -e target
+            test ! -L target
+            mv "$cache_dir" target
+          fi
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: env.KEPT != 'true'
         with:
@@ -177,9 +201,10 @@ jobs:
         timeout-minutes: 5
         with:
           tool: cargo-nextest@0.9.148
-      # Только чтение: pull request и очередь берут кэш области `main`.
+      # На GitHub читаем кэш main; при промахе все команды работают с пустым target.
+      # На PVE сохраняем локальные артефакты workspace, не заменяя их архивом GitHub.
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; pull request и очередь читают область main и ничего не пишут
-        if: env.KEPT != 'true'
+        if: ${{ runner.environment == 'github-hosted' && env.KEPT != 'true' }}
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: ci-rust-ordinary

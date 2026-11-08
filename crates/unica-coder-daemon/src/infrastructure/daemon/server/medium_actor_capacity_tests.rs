@@ -9,9 +9,9 @@ use super::super::runner_015::VERSION as RUNNER_VERSION;
 use super::*;
 use unica_analysis_services::provider_host::ProviderHostKey;
 use unica_artifact_delivery::shared::{ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey};
-use unica_daemon::client_v5::V5DaemonProcessOwner;
-use unica_daemon::identity::DaemonStateDirectory;
-use unica_daemon::protocol_v5::{V5InvocationRequest, V5ServerResponse};
+use unica_daemon_protocol::client_v5::V5DaemonProcessOwner;
+use unica_daemon_protocol::identity::DaemonStateDirectory;
+use unica_daemon_protocol::protocol_v5::{V5InvocationRequest, V5ServerResponse};
 use unica_execution::invocation::INVOCATION_HANDOFF_WINDOW;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_execution::receipt_ledger::{ReceiptTerminalOutcome, V5ToolIdentity};
@@ -2603,11 +2603,11 @@ impl LiveV5Daemon {
         owned_stop: Option<Arc<AtomicBool>>,
     ) -> std::thread::JoinHandle<Result<(), String>> {
         std::thread::spawn(move || match owned_stop {
-            Some(stop) => unica_daemon::transport::run_daemon_until_for_test(
+            Some(stop) => unica_daemon_protocol::transport::run_daemon_until_for_test(
                 config.into_transport_config(),
                 stop,
             ),
-            None => unica_daemon::transport::run_daemon(config.into_transport_config()),
+            None => unica_daemon_protocol::transport::run_daemon(config.into_transport_config()),
         })
     }
 

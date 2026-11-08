@@ -10,7 +10,7 @@ use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
 use std::sync::{mpsc, Condvar};
-use unica_daemon::lsp_lane::MAX_LSP_LANE_WORKERS;
+use unica_daemon_protocol::lsp_lane::MAX_LSP_LANE_WORKERS;
 use unica_execution::invocation_store::ToolIdentity;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
