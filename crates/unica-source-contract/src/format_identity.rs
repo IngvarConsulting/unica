@@ -105,6 +105,10 @@ impl PlatformLine {
         <[u32; 3]>::try_from(parts).ok().map(Self)
     }
 
+    pub const fn parts(self) -> [u32; 3] {
+        self.0
+    }
+
     /// Whether the four-part build `8.3.27.2342` belongs to this line.
     pub fn contains_build(self, build: &[u32; 4]) -> bool {
         build[..3] == self.0

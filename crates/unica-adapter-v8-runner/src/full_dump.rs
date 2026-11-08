@@ -17,11 +17,12 @@ use unica_process::runner::{
     system_process_runner, ProcessCommand, ProcessOutput, ProcessRunner, ProcessStreamFailure,
 };
 use unica_redaction::redactor;
+use unica_source_contract::format_identity::PlatformLine;
 use unica_source_contract::{
     read::full_dump::DumpSemanticValidator, workspace::WorkspaceContext, SourceSetKind,
 };
 use unica_source_designer::format_profile::{
-    build_in_platform_line, platform_line_for_export_format, ACTIVE_FORMAT_PROFILE,
+    platform_xml_identity, platform_xml_line, ACTIVE_FORMAT_PROFILE,
 };
 use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::full_dump::{
@@ -37,8 +38,8 @@ const TARGET_EXPORT_FORMAT: &str = ACTIVE_FORMAT_PROFILE.export_format;
 
 /// The platform line a full dump runs: the line that writes the export format
 /// the dump produces (INV.RUNTIME.PLATFORM-LINE), not a line of its own.
-fn target_platform_line() -> &'static str {
-    platform_line_for_export_format(TARGET_EXPORT_FORMAT)
+fn target_platform_line() -> PlatformLine {
+    platform_xml_line(&platform_xml_identity(TARGET_EXPORT_FORMAT))
         .expect("the writable export format has a platform line")
 }
 const EFFECTIVE_CONFIG_NAME: &str = "v8project.yaml";
@@ -176,7 +177,7 @@ impl PlatformResolver for SystemPlatformResolver {
 /// The refusal when no verified installation of `line` is found; it names the
 /// line and the builds of other lines that were found (INV.RUNTIME.PLATFORM-LINE).
 fn platform_line_not_installed(
-    line: &str,
+    line: PlatformLine,
     utility: PlatformUtility,
     mut other_lines: Vec<String>,
     last_rejection: Option<String>,
@@ -196,9 +197,9 @@ fn platform_line_not_installed(
     )
 }
 
-fn platform_in_line(platform: &VerifiedPlatform, line: &str) -> bool {
+fn platform_in_line(platform: &VerifiedPlatform, line: PlatformLine) -> bool {
     parse_exact_platform_version(&platform.exact_version)
-        .is_some_and(|build| build_in_platform_line(&build, line))
+        .is_some_and(|build| line.contains_build(&build))
 }
 
 impl SystemPlatformResolver {
@@ -222,7 +223,7 @@ impl SystemPlatformResolver {
             }
             let version = parse_exact_platform_version(&exact_version)
                 .ok_or("selected local platform version is not exact")?;
-            if !build_in_platform_line(&version, target_platform_line()) {
+            if !target_platform_line().contains_build(&version) {
                 return Err(format!(
                     "selected local platform must be {}.x",
                     target_platform_line()
@@ -697,7 +698,7 @@ fn prepare_selected(
             platform_resolver.resolve(&effective, config_dir, utility, runner, cancellation)?;
         let version = parse_exact_platform_version(&platform.exact_version)
             .ok_or("resolved platform version is not an exact four-part version")?;
-        if !build_in_platform_line(&version, target_platform_line()) {
+        if !target_platform_line().contains_build(&version) {
             return Err(format!(
                 "resolved platform {} is not supported; required {}.x",
                 platform.exact_version,
@@ -1378,11 +1379,7 @@ fn validate_configured_platform_line(version: &str) -> Result<(), String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| format!("invalid tools.platform.version `{version}`"))?;
     let line = target_platform_line();
-    let line_parts = line
-        .split('.')
-        .map(str::parse::<u32>)
-        .collect::<Result<Vec<_>, _>>()
-        .expect("a platform line is numeric");
+    let line_parts = line.parts();
     // `8.3`, `8.3.27` and `8.3.27.<build>` all name the required line.
     let named = parts.len().min(line_parts.len());
     if !(2..=4).contains(&parts.len()) || parts[..named] != line_parts[..named] {
@@ -1813,7 +1810,7 @@ mod tests {
     /// rule: INV.RUNTIME.PLATFORM-LINE
     #[test]
     fn a_full_dump_runs_the_line_that_writes_its_export_format() {
-        assert_eq!(target_platform_line(), "8.3.27");
+        assert_eq!(target_platform_line(), PlatformLine::new(8, 3, 27));
         assert!(validate_configured_platform_line("8.3").is_ok());
         assert!(validate_configured_platform_line("8.3.27").is_ok());
         assert!(validate_configured_platform_line("8.3.27.2342").is_ok());
@@ -1827,7 +1824,7 @@ mod tests {
     #[test]
     fn a_missing_line_is_refused_naming_the_line_and_the_other_installations() {
         let error = platform_line_not_installed(
-            "8.3.27",
+            PlatformLine::new(8, 3, 27),
             PlatformUtility::Ibcmd,
             vec!["8.5.4.1878".into(), "8.3.24.1819".into()],
             None,
@@ -1839,7 +1836,12 @@ mod tests {
             "{error}"
         );
 
-        let error = platform_line_not_installed("8.3.27", PlatformUtility::Ibcmd, Vec::new(), None);
+        let error = platform_line_not_installed(
+            PlatformLine::new(8, 3, 27),
+            PlatformUtility::Ibcmd,
+            Vec::new(),
+            None,
+        );
         assert!(error.contains("other lines: none"), "{error}");
     }
     #[test]
