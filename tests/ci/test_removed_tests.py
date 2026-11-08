@@ -362,10 +362,6 @@ class RemovedPythonTestsTests(unittest.TestCase):
         self.assertEqual(removed_tests.python_moved(lost, ["tests.ci.test_b.Other.test_x"]), set())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class NightlyInventoryTests(unittest.TestCase):
     """Pull request: removals counted also from the night's older inventory commit."""
 
@@ -393,3 +389,6 @@ class NightlyInventoryTests(unittest.TestCase):
             with mock.patch.dict(os.environ, environment),                  mock.patch.object(removed_tests.baseline, "baseline", side_effect=RuntimeError("gh api failed")):
                 self.assertEqual(removed_tests.nightly_problems(root, "large", "HEAD"), [])
 
+
+if __name__ == "__main__":
+    unittest.main()
