@@ -2904,7 +2904,7 @@ fn text_document_binding_uses_the_qname_namespace_and_requires_a_path() {
 }
 
 #[test]
-fn retired_form_compiler_does_not_accept_text_document_field() {
+fn form_compiler_refuses_text_doc_as_an_unknown_element_key() {
     let error = form_compile_xml(
         &json!({
             "attributes":[{"name":"Protocol","type":"d5p1:TextDocument"}],
@@ -2913,7 +2913,10 @@ fn retired_form_compiler_does_not_accept_text_document_field() {
         "2.20",
     )
     .unwrap_err();
-    assert!(error.contains("only by item.add"), "{error}");
+    assert!(
+        error.contains("unknown element key `textDoc`") && !error.contains("item.add"),
+        "{error}"
+    );
 }
 
 #[test]
