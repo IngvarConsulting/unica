@@ -3,7 +3,7 @@
   "name": "form-element-add-into-routes-to-the-container-address",
   "issue": 1355,
   "area": "Формы",
-  "task": "Прежний items[].into у item.add отказывает без записи; next ведёт к адресу контейнера по его пути в форме (командная панель таблицы — через таблицу), его can содержит item.add, и вызов на этом адресе строит предпросмотр",
+  "task": "Неизвестный items[].into у item.add отказывает без записи; next ведёт к контракту item.add на форме, а вызов на адресе контейнера (командная панель таблицы — через таблицу) строит предпросмотр",
   "wire": [
     {
       "tool": "unica.view",
@@ -43,7 +43,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `item.add` names its subject by address, not by `items[0].into`; call it at `main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar`",
+      "refusal": "bad_value: ops[0].args.items[0].into: unknown argument; `item.add` writes only the arguments listed at `main:Catalog.Валюты.Form.ФормаСписка.Can.item.add`",
       "assertions": [
         {
           "pointer": "/at",
@@ -51,11 +51,7 @@
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item.ListCommandBar.Can.item.add"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "main:Catalog.Валюты.Form.ФормаСписка.Item.List.Item"
+          "eq": "main:Catalog.Валюты.Form.ФормаСписка.Can.item.add"
         }
       ],
       "fileAssertions": [

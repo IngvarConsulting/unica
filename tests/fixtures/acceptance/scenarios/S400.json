@@ -3,7 +3,7 @@
   "name": "retired-member-selectors-route-to-the-member",
   "issue": 1352,
   "area": "Реквизиты и состав",
-  "task": "Член метаданных, названный аргументом на владельце, получает отказ с адресом члена и ветвью владельца в next; предопределённый элемент, названный идентификатором, — с коллекцией, где видно его имя; занятое имя предопределённого элемента не принимается",
+  "task": "Операции члена метаданных и предопределённого элемента на владельце отказывают без записи: операция не относится к владельцу, next ведёт к его словарю; занятое имя предопределённого элемента не принимается",
   "wire": [
     {
       "tool": "unica.apply",
@@ -24,15 +24,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `dimension.set` names its subject by address, not by `values.name`; call it at `main:InformationRegister.АдминистративнаяИерархия.Dimension.Идентификатор`",
+      "refusal": "bad_value: apply operation `dimension.set` does not apply to InformationRegister `main:InformationRegister.АдминистративнаяИерархия`; it addresses `Kind.Name.Dimension.D` ",
       "assertions": [
         {
-          "pointer": "/next/0/args/at",
-          "eq": "main:InformationRegister.АдминистративнаяИерархия.Dimension.Идентификатор.Can.dimension.set"
+          "pointer": "/at",
+          "eq": "ops[0].at"
         },
         {
-          "pointer": "/next/1/args/at",
-          "eq": "main:InformationRegister.АдминистративнаяИерархия.Dimension"
+          "pointer": "/next/0/args/at",
+          "eq": "main:InformationRegister.АдминистративнаяИерархия"
         }
       ]
     },
@@ -54,15 +54,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `predefinedItem.remove` names its subject by address, not by `values.id`; call it at `main:Catalog.Валюты.PredefinedItem.<Name>`, reading the name in `main:Cata",
+      "refusal": "bad_value: apply operation `predefinedItem.remove` does not apply to Catalog `main:Catalog.Валюты`; it addresses `Kind.Name.PredefinedItem.P`",
       "assertions": [
         {
-          "pointer": "/next/0/tool",
-          "eq": "unica.view"
+          "pointer": "/at",
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:Catalog.Валюты.PredefinedItem"
+          "eq": "main:Catalog.Валюты"
         }
       ]
     },

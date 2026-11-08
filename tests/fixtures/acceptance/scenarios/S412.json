@@ -3,7 +3,7 @@
   "name": "retired-duplicate-arguments-route-to-the-address",
   "issue": 1353,
   "area": "СКД",
-  "task": "Аргумент, который дублировал адрес или называл узел в обход него (набор запроса, вариант структуры, дочерняя подсистема), получает отказ без записи, next ведёт к узлу или к ветви его вида, а исправленный вызов строит предпросмотр; запрос правится только по адресу DataSet.<набор>.Query, прежний адрес Template.T.Query.<набор> и вызов на самом наборе отвергаются с next к запросу набора; снятая form.create ведёт к form.add на владельце, и форма создаётся там",
+  "task": "Аргумент, которого нет в контракте (набор запроса, вариант структуры), отказывает без записи с next к контракту операции на адресе; операция не на своём узле (дочерняя подсистема на владельце, запрос по адресу Template.T.Query.<набор>) отказывает с next к словарю адресованного узла; операция вне реестра (form.create) отвечает unsupported_operation с next к словарю узла; исправленные вызовы строят предпросмотр, форма создаётся form.add на владельце",
   "wire": [
     {
       "tool": "unica.view",
@@ -39,7 +39,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `query.set` takes its subject from `at`; remove `values.dataSet` and call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet",
+      "refusal": "bad_value: ops[0].args.values.dataSet: unknown argument",
       "assertions": [
         {
           "pointer": "/at",
@@ -48,10 +48,6 @@
         {
           "pointer": "/next/0/args/at",
           "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query.Can.query.set"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet"
         }
       ],
       "fileAssertions": [
@@ -154,7 +150,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: a query is addressed through its dataset: `query.set` applies at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Q",
+      "refusal": "bad_value: apply operation `query.set` does not apply to Query `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Query.НаборДанных1`; it addresses `",
       "assertions": [
         {
           "pointer": "/at",
@@ -162,7 +158,7 @@
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Query.Can.query.set"
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Query.НаборДанных1"
         }
       ]
     },
@@ -187,7 +183,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `structure.set` takes its subject from `at`; remove `values.variant` and call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Set",
+      "refusal": "bad_value: ops[0].args.values.variant: unknown argument",
       "assertions": [
         {
           "pointer": "/at",
@@ -215,25 +211,16 @@
         ]
       },
       "expect": [
-        "refused"
+        "unsupported"
       ],
-      "refusal": "bad_value: apply operation `form.create` is retired: call `form.add` at `main:Catalog.Валюты`; `items: [{name, type}]` names the form and its type",
       "assertions": [
         {
           "pointer": "/at",
           "eq": "ops[0].op"
         },
         {
-          "pointer": "/next",
-          "eq": [
-            {
-              "tool": "unica.view",
-              "args": {
-                "at": "main:Catalog.Валюты"
-              },
-              "reason": "какие операции применимы к этому узлу"
-            }
-          ]
+          "pointer": "/next/0/args/at",
+          "eq": "main:Catalog.Валюты.Form.ФормаПодбора"
         }
       ],
       "fileAssertions": [
@@ -292,19 +279,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `childSubsystem.remove` names its subject by address, not by `items[0].name`; call it at `main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей",
+      "refusal": "bad_value: apply operation `childSubsystem.remove` does not apply to Subsystem `main:Subsystem.Администрирование`; it addresses `Subsystem.Parent.Subsystem.Child`",
       "assertions": [
         {
           "pointer": "/at",
-          "eq": "ops[0].args.items[0].name"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:Subsystem.Администрирование.Subsystem.КонтрольРаботыПользователей.Can.childSubsystem.remove"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "main:Subsystem.Администрирование.Subsystem"
+          "eq": "main:Subsystem.Администрирование"
         }
       ]
     },

@@ -13,8 +13,6 @@ use unica_templates::TemplateFormat;
 pub(super) struct ReadModeError {
     code: RefusalCode,
     message: String,
-    /// Адрес, к которому ведёт `next` отказа, когда он не словарь узла.
-    next: Option<String>,
 }
 
 impl ReadModeError {
@@ -22,7 +20,6 @@ impl ReadModeError {
         Self {
             code: RefusalCode::BadValue,
             message: message.into(),
-            next: None,
         }
     }
 
@@ -30,7 +27,6 @@ impl ReadModeError {
         Self {
             code: RefusalCode::UnsupportedSection,
             message: message.into(),
-            next: None,
         }
     }
 
@@ -38,16 +34,11 @@ impl ReadModeError {
         Self {
             code: RefusalCode::UnsupportedScope,
             message: message.into(),
-            next: None,
         }
     }
 
     pub(super) const fn code(&self) -> RefusalCode {
         self.code
-    }
-
-    pub(super) fn next(&self) -> Option<&str> {
-        self.next.as_deref()
     }
 }
 
@@ -210,18 +201,15 @@ pub(super) fn operation_node(
     at: &str,
     context: CanContext,
 ) -> Result<Value, ReadModeError> {
-    operation_node_with(data, operation, at, context, &|_| None, &|_| None)
+    operation_node_with(data, operation, at, context, &|_| None)
 }
 
-/// The same with the role of an ancestor form item, read by the caller: a
-/// retired operation's route skips an ancestor field that does not accept
-/// the replacement, as `apply` preflight does.
+/// The same with the style item properties the caller reads.
 pub(super) fn operation_node_with(
     data: &Value,
     operation: &str,
     at: &str,
     context: CanContext,
-    ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
     color: StyleItemPropertiesLookup<'_>,
 ) -> Result<Value, ReadModeError> {
     let data = data
@@ -237,14 +225,11 @@ pub(super) fn operation_node_with(
         .expect("node_site proved the operation site");
     let Some(descriptor) = crate::domain::apply::operation_registry().lookup_at(operation, &site)
     else {
-        return Err(retired_operation_contract(
-            operation,
-            &site,
-            (format, item.and_then(FormObservation::item_role)),
-            inherited_node(data),
-            ancestor_role,
-            color,
-        ));
+        // Операция вне словаря узла — неизвестная, прежнее имя особо не
+        // узнаётся (INV.WIRE.OPERATION-TARGET-ADDRESS).
+        return Err(ReadModeError::bad_value(format!(
+            "unknown operation `{operation}`; inspect the node can dictionary"
+        )));
     };
     if inherited_node(data) && descriptor.content_resource().is_some() {
         return Err(ReadModeError::bad_value(format!(
@@ -303,65 +288,6 @@ pub(super) fn operation_node_with(
             "contract": contract.map(|contract| contract.details()),
         },
     }))
-}
-
-/// The refusal of `<node>.Can.<op>` for an operation outside the registry.
-/// A retired operation names its replacement and leads `next` to the
-/// replacement's contract at the nearest node where it is executable
-/// (#1465); an unknown name leads to the node's own dictionary.
-fn retired_operation_contract(
-    operation: &str,
-    site: &unica_source_contract::context::OperationSite<'_>,
-    (format, item): (Option<TemplateFormat>, Option<FormItemRole>),
-    inherited: bool,
-    ancestor_role: &dyn Fn(&QualifiedAddress) -> Option<FormItemRole>,
-    color: StyleItemPropertiesLookup<'_>,
-) -> ReadModeError {
-    let Some(retired) = crate::domain::apply::retired_operation(operation) else {
-        return ReadModeError::bad_value(format!(
-            "unknown operation `{operation}`; inspect the node can dictionary"
-        ));
-    };
-    // Содержимое заимствованного узла принадлежит родителю: заменившая,
-    // которая его пишет, здесь не исполнима, и `next` ведёт к словарю узла.
-    let writes_inherited = retired
-        .descriptor()
-        .is_some_and(|replacement| replacement.content_resource().is_some());
-    if inherited && writes_inherited {
-        return ReadModeError::bad_value(format!(
-            "operation `{operation}` is retired: `{}` replaces it, but it writes content this borrowed node inherits from the parent; read the parent named by props.extends",
-            retired.replacement()
-        ));
-    }
-    // Формат известен только у прочитанного узла; роль предка-элемента
-    // читает вызывающий, как предварительная проверка `apply`.
-    let owner = site.at();
-    let format_of = |at: &QualifiedAddress| if at == owner { format } else { None };
-    let role_of = |at: &QualifiedAddress| {
-        if at == owner { item } else { ancestor_role(at) }.map(FormObservation::Item)
-    };
-    let observations =
-        crate::domain::apply::observation_lookup_with_style_properties(&format_of, &role_of, color);
-    let replacement = retired.replacement_with_observations(
-        site,
-        crate::domain::apply::operation_registry().context(),
-        &observations,
-    );
-    match replacement {
-        Some(target) => {
-            let contract = format!("{target}.Can.{}", retired.replacement());
-            let mut error = ReadModeError::bad_value(format!(
-                "operation `{operation}` is retired: read `{}` at `{contract}`; {}",
-                retired.replacement(), retired.arguments
-            ));
-            error.next = Some(contract);
-            error
-        }
-        None => ReadModeError::bad_value(format!(
-            "operation `{operation}` is retired: `{}` replaces it and does not apply here; inspect the node can dictionary",
-            retired.replacement()
-        )),
-    }
 }
 
 /// `diff` compares what the sources say. The dictionary is computed from the
@@ -515,98 +441,10 @@ mod operation_dictionary_tests {
     /// её таблица; у заимствованного узла с содержимым родителя `next`
     /// ведёт к словарю узла, а не к контракту, который там не исполним.
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
-    #[test]
-    fn a_retired_operation_route_follows_roles_and_inherited_content() {
-        use unica_address::address::QualifiedAddress;
-        use unica_forms::FormItemRole;
-        let form = "cf:Catalog.Items.Form.Choice";
-        let field = format!("{form}.Item.Header.Item.Code");
-        let bar = format!("{form}.Item.List.Item.ListCommandBar");
-        let roles = |at: &QualifiedAddress| {
-            (at.to_string() == field)
-                .then_some(FormItemRole::Leaf)
-                .or(Some(FormItemRole::Container))
-        };
-        let context = super::configuration_context();
-        let event = format!("{field}.Event.OnChange");
-        let data = json!({"at": event, "kind": "Event"});
-        let error =
-            super::operation_node_with(&data, "element.add", &event, context, &roles, &|_| None)
-                .expect_err("a retired operation has no contract");
-        assert_eq!(
-            error.next(),
-            Some(format!("{form}.Item.Header.Can.item.add").as_str()),
-            "{error}"
-        );
-        let data = json!({"at": bar, "kind": "Item", "props": {"tag": "[AutoCommandBar]"}});
-        let error =
-            super::operation_node_with(&data, "element.remove", &bar, context, &roles, &|_| None)
-                .expect_err("a retired operation has no contract");
-        assert_eq!(error.next(), None, "{error}");
-        let data = json!({
-            "at": form,
-            "kind": "Form",
-            "props": {"content": crate::infrastructure::v13_read::INHERITED_CONTENT},
-        });
-        let error = operation_node(&data, "element.add", form, context)
-            .expect_err("a retired operation has no contract");
-        assert_eq!(error.code(), RefusalCode::BadValue);
-        assert_eq!(error.next(), None, "{error}");
-        assert!(error.to_string().contains("props.extends"), "{error}");
-    }
-
     /// Контракт снятой операции не читается: отказ называет заменившую,
     /// а `next` ведёт к её контракту на ближайшем узле, где она исполнима
     /// (#1465). Неизвестное имя по-прежнему ведёт к словарю узла.
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
-    #[test]
-    fn a_retired_operation_contract_names_its_replacement() {
-        let form = "cf:Catalog.Items.Form.Choice";
-        for (at, kind, op, expected) in [
-            (
-                form.to_string(),
-                "Form",
-                "element.add",
-                Some(format!("{form}.Can.item.add")),
-            ),
-            (
-                format!("{form}.Item.Code"),
-                "Item",
-                "element.remove",
-                Some(format!("{form}.Item.Code.Can.item.remove")),
-            ),
-            (
-                format!("{form}.Item.Code.Event.OnChange"),
-                "Event",
-                "element.add",
-                Some(format!("{form}.Item.Code.Can.item.add")),
-            ),
-            (
-                form.to_string(),
-                "Form",
-                "form.create",
-                Some("cf:Catalog.Items.Can.form.add".to_string()),
-            ),
-            (form.to_string(), "Form", "element.remove", None),
-            (form.to_string(), "Form", "element.unknown", None),
-        ] {
-            let data = json!({"at": at, "kind": kind});
-            let error = operation_node(&data, op, &at, super::configuration_context())
-                .expect_err("a retired operation has no contract");
-            assert_eq!(error.code(), RefusalCode::BadValue, "{op} at {at}");
-            assert_eq!(error.next(), expected.as_deref(), "{op} at {at}");
-            if let Some(contract) = expected {
-                let replacement = contract.rsplit_once(".Can.").unwrap().1;
-                assert!(
-                    error
-                        .to_string()
-                        .contains(&format!("read `{replacement}` at `{contract}`")),
-                    "{error}"
-                );
-            }
-        }
-    }
-
     /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn detailed_dcs_can_publishes_structured_operands_and_refuses_retired_schema_input() {

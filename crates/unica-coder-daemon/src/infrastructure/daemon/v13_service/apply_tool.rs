@@ -126,11 +126,6 @@ impl CanonicalV13ReadService {
                 &admission, &binding, template,
             )
         };
-        let member_path = |container: &QualifiedAddress, name: &str| {
-            crate::infrastructure::native_operations::apply_families::staged_member_path(
-                &admission, &binding, container, name,
-            )
-        };
         let form_observation = |item: &QualifiedAddress| {
             crate::infrastructure::native_operations::apply_families::staged_form_observation(
                 &admission, &binding, item,
@@ -146,15 +141,14 @@ impl CanonicalV13ReadService {
             traits,
             &template_format,
             &form_observation,
-            &member_path,
             &color,
         ) {
-            return *refusal;
+            return with_unknown_argument_contract(*refusal, &request, traits);
         }
         if let Err(refusal) =
             validate_style_item_apply_capabilities(&request, traits, &admission, &binding)
         {
-            return *refusal;
+            return with_unknown_argument_contract(*refusal, &request, traits);
         }
         admission.bind_request_identity(
             &request.at().to_string(),
@@ -184,7 +178,8 @@ impl CanonicalV13ReadService {
                         &admission, &binding, at,
                     )
                 };
-                return with_missing_target_parent(refusal, &request, &error, &node_exists);
+                let refusal = with_missing_target_parent(refusal, &request, &error, &node_exists);
+                return with_unknown_argument_contract(refusal, &request, traits);
             }
             Ok(planned) => planned,
         };
@@ -317,6 +312,168 @@ impl CanonicalV13ReadService {
                 RefusalCode::InvalidState,
                 error.to_string(),
             ),
+        }
+    }
+}
+
+/// Аргумент, которого нет в контракте операции на адресованном узле,
+/// отклоняется `bad_value`, и `next` ведёт к этому контракту,
+/// `<адрес>.Can.<op>`, либо к словарю узла, если подробного контракта нет
+/// (INV.WIRE.OPERATION-TARGET-ADDRESS). Отказ любого слоя — предварительной
+/// проверки, разбора семейства или планировщика — получает один и тот же путь.
+pub(in crate::infrastructure::daemon) fn with_unknown_argument_contract(
+    refusal: DomainResult,
+    request: &crate::domain::apply::ApplyRequest,
+    source: unica_source_contract::context::SourceSetTraits,
+) -> DomainResult {
+    let bad_value = refusal
+        .diagnostics
+        .first()
+        .and_then(|diagnostic| diagnostic["code"].as_str())
+        == Some(RefusalCode::BadValue.as_str());
+    if refusal.ok || !bad_value {
+        return refusal;
+    }
+    let Some((index, segments)) = refusal.at.as_deref().and_then(argument_place) else {
+        return refusal;
+    };
+    let Some(operation) = request.ops().get(index) else {
+        return refusal;
+    };
+    let Some(site) = crate::domain::apply::operation_site(operation.at(), source) else {
+        return refusal;
+    };
+    let Some(descriptor) =
+        crate::domain::apply::operation_registry().lookup_at(operation.name(), &site)
+    else {
+        return refusal;
+    };
+    // Ключ из контракта — плохое значение, а не лишний аргумент; другой
+    // слой, уже назвавший продолжение, не дополняется. Без подробного
+    // контракта `next` ведёт к словарю узла.
+    let published = descriptor
+        .argument_contract_at(&site)
+        .is_some_and(|contract| published_path(&contract.schema, &segments));
+    if published || !refusal.next.is_empty() {
+        return refusal;
+    }
+    with_operation_dictionary(refusal, &operation.at().to_string(), descriptor)
+}
+
+/// `ops[<i>].args.<путь>` → номер операции и шаги пути: ключи и номера.
+fn argument_place(path: &str) -> Option<(usize, Vec<Option<&str>>)> {
+    let (index, rest) = path.strip_prefix("ops[")?.split_once(']')?;
+    let rest = rest.strip_prefix(".args.")?;
+    let mut segments = Vec::new();
+    for part in rest.split('.') {
+        let (key, indexes) = part
+            .split_once('[')
+            .map_or((part, ""), |(key, tail)| (key, tail));
+        if !key.is_empty() {
+            segments.push(Some(key));
+        }
+        segments.extend(
+            indexes
+                .split('[')
+                .filter(|tail| !tail.is_empty())
+                .map(|_| None),
+        );
+    }
+    Some((index.parse().ok()?, segments))
+}
+
+/// Путь, который схема контракта публикует: ключ — свойство уровня (любой
+/// ветви `oneOf` или `anyOf`) или его псевдоним, номер — элемент `items`.
+/// Открытый уровень (`additionalProperties`) и уровень без описания
+/// принимают любой путь: лишним ключ признаётся, только если схема его
+/// уровня закрыта и ключа не называет.
+fn published_path(schema: &Value, segments: &[Option<&str>]) -> bool {
+    let Some((step, rest)) = segments.split_first() else {
+        return true;
+    };
+    let levels = schema_branches(schema);
+    match step {
+        None => {
+            let items = levels
+                .iter()
+                .filter_map(|level| level.get("items"))
+                .collect::<Vec<_>>();
+            items.is_empty() || items.iter().any(|item| published_path(item, rest))
+        }
+        Some(key) => {
+            if levels.iter().any(|level| {
+                level
+                    .get("additionalProperties")
+                    .is_some_and(|open| open != &Value::Bool(false))
+                    || level["x-unica-aliases"]
+                        .as_array()
+                        .is_some_and(|aliases| aliases.iter().any(|alias| alias == key))
+            }) || levels.iter().all(|level| level.get("properties").is_none())
+            {
+                return true;
+            }
+            levels
+                .iter()
+                .filter_map(|level| level["properties"].get(*key))
+                .any(|child| published_path(child, rest))
+        }
+    }
+}
+
+/// Уровень схемы вместе с ветвями `oneOf` и `anyOf` на любой глубине.
+fn schema_branches(schema: &Value) -> Vec<&Value> {
+    let mut levels = vec![schema];
+    for choice in ["oneOf", "anyOf"] {
+        for branch in schema[choice].as_array().into_iter().flatten() {
+            levels.extend(schema_branches(branch));
+        }
+    }
+    levels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{argument_place, published_path};
+    use serde_json::json;
+
+    #[test]
+    fn an_argument_path_names_the_operation_keys_and_items() {
+        assert_eq!(
+            argument_place("ops[2].args.scope"),
+            Some((2, vec![Some("scope")]))
+        );
+        assert_eq!(
+            argument_place("ops[0].args.items[0].into"),
+            Some((0, vec![Some("items"), None, Some("into")]))
+        );
+        assert_eq!(argument_place("ops[0].at"), None);
+        assert_eq!(argument_place("ops[x].args.a"), None);
+    }
+
+    /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
+    #[test]
+    fn a_key_is_unknown_only_where_its_level_is_closed_and_does_not_name_it() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "values": {"type": "object", "properties": {"name": {"type": "string"}}},
+                "items": {"type": "array", "items": {"properties": {"name": {}}}},
+                "meta": {"type": "object", "additionalProperties": true},
+            },
+            "oneOf": [{"properties": {"scope": {}}}],
+            "x-unica-aliases": ["alias"],
+        });
+        for (path, published) in [
+            (vec![Some("values"), Some("name")], true),
+            (vec![Some("values"), Some("dataSet")], false),
+            (vec![Some("items"), None, Some("name")], true),
+            (vec![Some("items"), None, Some("group")], false),
+            (vec![Some("meta"), Some("anything")], true),
+            (vec![Some("scope")], true),
+            (vec![Some("alias")], true),
+            (vec![Some("unknown")], false),
+        ] {
+            assert_eq!(published_path(&schema, &path), published, "{path:?}");
         }
     }
 }

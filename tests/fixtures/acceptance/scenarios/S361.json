@@ -3,7 +3,7 @@
   "name": "dcs-compose-query-object-union",
   "issue": 1310,
   "area": "СКД",
-  "task": "Создать СКД примитивами: источник, Query/Object/Union и вложенный набор; проверить чтение, XML, отсутствие скрытой выборки и итоговый check; снятый dataSet, названный членом объединения, ведёт next к вложенному запросу этого члена",
+  "task": "Создать СКД примитивами: источник, Query/Object/Union и вложенный набор; проверить чтение, XML, отсутствие скрытой выборки и итоговый check; dataSet в values у query.set — неизвестный аргумент: отказ без записи, next ведёт к контракту query.set на адресе запроса",
   "workspace": "tests/fixtures/acceptance/workspace-dcs",
   "wire": [
     {
@@ -632,7 +632,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `query.set` names its subject by address, not by `values.dataSet`; call it at `cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Query",
+      "refusal": "bad_value: ops[0].args.values.dataSet: unknown argument",
       "assertions": [
         {
           "pointer": "/at",
@@ -640,11 +640,7 @@
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet.Nested.Query.Can.query.set"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "cf:Report.F05Report.Template.PrimitiveData.DataSet.UnionData.DataSet"
+          "eq": "cf:Report.F05Report.Template.PrimitiveData.DataSet.ObjectData.Query.Can.query.set"
         }
       ]
     },

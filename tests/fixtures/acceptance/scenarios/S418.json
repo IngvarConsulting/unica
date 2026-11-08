@@ -4,7 +4,7 @@
   "issue": 1354,
   "area": "Макеты",
   "workspace": "tests/fixtures/acceptance/workspace-mxl",
-  "task": "Область в аргументах вместо адреса Area отказывает без записи; mxl.set правит только существующую область по её адресу, отсутствующая отвечает not_found с next к макету; новую область с начальными ячейками создаёт area.add на макете, повтор имени существующей области отказывает",
+  "task": "mxl.set на макете отказывает без записи: операция не относится к макету, next ведёт к его словарю; mxl.set правит только существующую область по её адресу, отсутствующая отвечает not_found с next к макету; новую область с начальными ячейками создаёт area.add на макете, повтор имени существующей области отказывает",
   "wire": [
     {
       "tool": "unica.view",
@@ -51,19 +51,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `mxl.set` names its subject by address, not by `values.area`; call it at `cf:Report.F06Report.Template.F06Template.Area.B`; a missing one is created by `area.ad",
+      "refusal": "bad_value: apply operation `mxl.set` does not apply to Template `cf:Report.F06Report.Template.F06Template`; it addresses `Kind.Name.Template.T.Area.A` of a spreadsheet",
       "assertions": [
         {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
           "pointer": "/next/0/args/at",
-          "eq": "cf:Report.F06Report.Template.F06Template.Area.B.Can.mxl.set"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "cf:Report.F06Report.Template.F06Template.Area"
-        },
-        {
-          "pointer": "/next/2/args/at",
-          "eq": "cf:Report.F06Report.Template.F06Template.Can.area.add"
+          "eq": "cf:Report.F06Report.Template.F06Template"
         }
       ],
       "fileAssertions": [

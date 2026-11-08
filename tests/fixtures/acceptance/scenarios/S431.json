@@ -3,7 +3,7 @@
   "name": "dcs-schema-nodes-and-structure-items-by-address",
   "issue": 1357,
   "area": "СКД",
-  "task": "Источник данных и именованная группа варианта читаются своими адресами и правятся на них; прежние values.name и group отказывают без записи с next к адресу узла, исправленный вызов проходит предпросмотр и публикуется",
+  "task": "Источник данных и именованная группа варианта читаются своими адресами и правятся на них; операции на чужом узле отказывают без записи с next к словарю узла, неизвестный group — с next к контракту filter.add, исправленный вызов проходит предпросмотр и публикуется",
   "workspace": "tests/fixtures/acceptance/workspace-dcs",
   "wire": [
     {
@@ -65,19 +65,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `dataSource.set` names its subject by address, not by `values.name`; call it at `cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource`",
+      "refusal": "bad_value: apply operation `dataSource.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSource.S`",
       "assertions": [
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.name"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "cf:Report.F05Report.Template.F05Schema.DataSource.LocalSource.Can.dataSource.set"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "cf:Report.F05Report.Template.F05Schema.DataSource"
+          "eq": "cf:Report.F05Report.Template.F05Schema"
         }
       ],
       "fileAssertions": [
@@ -162,19 +158,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `structure.patch` names its subject by address, not by `values.name`; call it at `cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group`",
+      "refusal": "bad_value: apply operation `structure.patch` does not apply to Setting `cf:Report.F05Report.Template.F05Schema.Setting.F05Variant`; it addresses `Kind.Name.Template.T.Sett",
       "assertions": [
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.name"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group.Can.structure.patch"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item"
+          "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant"
         }
       ],
       "fileAssertions": [
@@ -206,7 +198,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `filter.add` names its subject by address, not by `items[0].group`; call it at `cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group`",
+      "refusal": "bad_value: ops[0].args.items[0].group: unknown argument",
       "assertions": [
         {
           "pointer": "/at",
@@ -214,7 +206,7 @@
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group.Can.filter.add"
+          "eq": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Can.filter.add"
         }
       ],
       "fileAssertions": [
