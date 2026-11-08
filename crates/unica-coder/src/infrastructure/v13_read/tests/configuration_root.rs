@@ -1,10 +1,9 @@
 use super::*;
 
-/// The root projection carries what the retired `unica.cf.info` reported:
-/// vendor facts, the support state, the closed root properties and the
+/// The root projection carries vendor facts, the support state, the closed root properties and the
 /// object total, every declared key present even when its value is null.
 #[test]
-fn configuration_root_carries_the_retired_cf_info_facts() {
+fn configuration_root_carries_vendor_support_and_closed_root_properties() {
     let fixture = RealReaderFixture::new();
     let cancellation = CancellationToken::new();
     let source_root =

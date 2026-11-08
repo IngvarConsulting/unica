@@ -1038,7 +1038,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn retired_dsl_scalar_typed_properties_round_trip_through_template_writer_and_info() {
+    fn scalar_typed_properties_round_trip_through_template_writer_and_info() {
         use unica_metadata::MetadataKind::*;
 
         let cases: &[(
