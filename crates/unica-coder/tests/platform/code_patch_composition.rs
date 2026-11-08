@@ -2464,15 +2464,12 @@ fn addressed_replacement_refuses_missing_ambiguous_and_nonwritable_nodes() {
     duplicate.cleanup();
 }
 
-/// Метод целиком задаёт адрес `…Method.M`: селектор метода у замены снят
-/// и отказывает в своём поле, называя адрес (#1353). Якорь остаётся.
+/// Метод целиком задаёт адрес `…Method.M`, селектор у замены — только якорь:
+/// другой ключ селектора — неизвестный аргумент в своём поле. Якорь остаётся.
 /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
 #[test]
-fn code_replace_refuses_a_method_selector_and_names_the_method_address() {
-    let fixture = staged_code_fixture(
-        "retired-method-selector",
-        b"Procedure Base()\nEndProcedure\n",
-    );
+fn code_replace_refuses_a_method_selector_as_an_unknown_argument() {
+    let fixture = staged_code_fixture("method-selector", b"Procedure Base()\nEndProcedure\n");
     let error = parse_code_plan_operation(
             "code.replace",
             &json!({"at":"main:CommonModule.Sample", "selector":{"method":"Base"}, "text":"Procedure Base()\nEndProcedure"}),
@@ -2483,10 +2480,7 @@ fn code_replace_refuses_a_method_selector_and_names_the_method_address() {
     assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
     assert_eq!(error.path(), Some("ops[0].args.selector.method"));
     let message = error.to_string();
-    assert!(
-        message.contains("`main:CommonModule.Sample.Method.Base`"),
-        "{message}"
-    );
+    assert!(message.contains("unknown argument"), "{message}");
     let anchored = parse_code_plan_operation(
             "code.replace",
             &json!({"at":"main:CommonModule.Sample", "selector":{"anchor":"EndProcedure"}, "text":"EndProcedure"}),
