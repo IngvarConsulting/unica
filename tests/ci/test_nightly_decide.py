@@ -19,7 +19,10 @@ SPEC.loader.exec_module(nightly)
 
 class NightlyDecideTests(unittest.TestCase):
     def test_a_moved_tip_runs_and_a_checked_tip_skips(self) -> None:
-        self.assertTrue(nightly.decide("b" * 40, {"sha": "a" * 40})[0])
+        run, reason = nightly.decide("b" * 40, {"sha": "a" * 40})
+        self.assertTrue(run)
+        # Сводка называет обе вершины: по ней видно, что именно гонит ночь.
+        self.assertIn("aaaaaaa → bbbbbbb", reason)
         run, reason = nightly.decide("a" * 40, {"sha": "a" * 40, "at": "вчера"})
         self.assertFalse(run)
         self.assertIn("вчера", reason)

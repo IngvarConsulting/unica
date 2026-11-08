@@ -1043,6 +1043,55 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         for found in (build, deploy):
             self.assertEqual(found["concurrency"], {"group": "unica-pages", "cancel-in-progress": False})
 
+    def test_pages_footer_names_the_tree_and_a_failed_deploy_retries_once(self) -> None:
+        """Подвал ведёт на дерево страниц; список джоб читается целиком; гонка деплоев повторяется."""
+        build, deploy = job(self.release, "pages-build"), job(self.release, "pages-deploy")
+        # У тега и релизной линии коммит дерева и прогон разные: подвал
+        # называет дерево, а прогоны линий подписаны на своих карточках.
+        rebuild = step_named(build, "Пересобрать страницы с итоговым статусом")
+        self.assertIn('--sha "$(git rev-parse HEAD)"', rebuild["run"])
+        self.assertNotIn("--run-url", rebuild["run"])
+        # Джоб у прогона больше тридцати — страницы API по умолчанию.
+        self.assertIn("jobs?per_page=100", script(build))
+        # Pages принимает один деплой за раз: неудачный повторяется один раз.
+        attempts = steps_using(deploy, "actions/deploy-pages")
+        self.assertEqual(len(attempts), 2)
+        self.assertIs(attempts[0].get("continue-on-error"), True)
+        self.assertEqual(attempts[0]["id"], "deployment")
+        self.assertEqual(normalized(attempts[1]["if"]), "steps.deployment.outcome == 'failure'")
+        self.assertNotIn("continue-on-error", attempts[1])
+
+    def test_os_jobs_run_beside_linux_and_hand_over_only_their_report(self) -> None:
+        """Джоба ОС идёт параллельно `Unica CI`, тот ждёт её по API и берёт только её отчёт."""
+        gate, other = job(self.release, "unica-ci"), job(self.release, "rust-os")
+        self.assertEqual(gate["runs-on"], "ubuntu-latest")
+        self.assertNotIn("strategy", gate)
+        self.assertEqual(needs(other), [])
+        # Между джобами не ходят ни архивы полос, ни продукт: только отчёт ОС.
+        for found in (gate, other):
+            for upload in uploads(found):
+                with self.subTest(upload=upload["name"]):
+                    self.assertNotIn("ci-rust-archive", upload["name"])
+                    self.assertNotIn("ci-python-ordinary", upload["name"])
+        self.assertEqual(
+            [download.get("pattern") for download in downloads(gate)],
+            ["{plan,results}-{macos-15,windows-latest}"],
+        )
+        self.assertIn("python scripts/ci/await_os_jobs.py", step_by_id(gate, "os-jobs")["run"])
+
+    def test_validation_jobs_name_their_runners_and_share_shell_and_encoding(self) -> None:
+        """Раннеры прогона: Linux и macOS, в `large` ещё Windows; оболочка и кодировка общие."""
+        gate, other = job(self.release, "unica-ci"), job(self.release, "rust-os")
+        self.assertEqual(gate["outputs"]["runners"], "${{ steps.runners.outputs.runners }}")
+        runners = step_by_id(gate, "runners")
+        self.assertIn('runners=["ubuntu-latest", "macos-15", "windows-latest"]', runners["run"])
+        self.assertIn('runners=["ubuntu-latest", "macos-15"]', runners["run"])
+        self.assertIn('"$PROFILE" = "large"', runners["run"])
+        for found in (gate, other):
+            self.assertEqual(found["defaults"]["run"]["shell"], "bash")
+            # Консоль Windows — cp1252.
+            self.assertEqual(found["env"]["PYTHONUTF8"], "1")
+
     def test_publication_queue_keeps_every_admitted_release(self) -> None:
         """Прогоны тегов ждут в одной очереди, проверки веток в неё не входят.
 
