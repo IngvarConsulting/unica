@@ -958,7 +958,7 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             # nextest ставится до восстановления: rust-cache исключает уже
             # лежащие в ~/.cargo/bin файлы из записи и не подменяет их.
             order = steps(found)
-            nextest = next(step for step in steps_using(found, "taiki-e/install-action") if "cargo-nextest@" in step["with"]["tool"])
+            nextest = next(step for step in steps_using(found, "./.github/actions/install-nextest"))
             self.assertLess(order.index(nextest), order.index(cache[0]))
         # CI sets no `CARGO_TARGET_DIR`: the archive goes to `<root>/target`.
         with mock.patch.dict(os.environ):
@@ -980,7 +980,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         gate = job(self.release, "unica-ci")
         installed = {tool.split("@", 1)[0] for step in steps_using(gate, "taiki-e/install-action")
                      for tool in step["with"]["tool"].split(",")}
-        self.assertEqual(installed, {"zizmor", "cargo-nextest", "clippy-sarif", "sarif-fmt"})
+        self.assertEqual(installed, {"zizmor", "clippy-sarif", "sarif-fmt"})
+        self.assertEqual(len(steps_using(gate, "./.github/actions/install-nextest")), 1)
 
     def test_release_assessment_uses_affected_mechanism_contour(self) -> None:
         assessment = job(self.release, "release-assessment")

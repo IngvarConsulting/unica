@@ -1,12 +1,12 @@
 [package]
-name = "unica-coder-daemon"
+name = "unica-daemon"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "unica_coder_daemon"
+name = "unica_daemon"
 path = "src/lib.rs"
 
 [features]

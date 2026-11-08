@@ -36,6 +36,7 @@ def tearDownModule() -> None:
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+NEXTEST_ACTION = REPO_ROOT / ".github" / "actions" / "install-nextest" / "action.yml"
 GATES = ("pr", "queue", "main", "release")
 # Library modules whose named tests may enter the large tier, keyed by
 # (binary, module prefix), with the source file and module that declare them.
@@ -181,7 +182,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         # Тела проверок обвязки — в библиотеке без `#[test]`; тест каждой из
         # них разворачивает бинарь контракта одним макросом. Список в макросе
         # единственный, и обе известные проверки в нём есть.
-        coder = REPO_ROOT / "crates/unica-coder-daemon"
+        coder = REPO_ROOT / "crates/unica-daemon"
         harness = (coder / "tests/support/receipt_scenario/tests.rs").read_text(encoding="utf-8")
         self.assertEqual(attributed_test_functions(harness), set())
         listed = re.search(r"(?m)^harness_checks!\((.*?)\);", harness, re.S)
@@ -193,7 +194,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         ledger = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
         self.assertIn('#[path = "daemon_receipt_ledger/receipt_scenario_harness.rs"]\nmod receipt_scenario_harness;', ledger)
         wrapper = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger/receipt_scenario_harness.rs").read_text(encoding="utf-8")
-        self.assertIn("unica_coder_daemon::receipt_scenario_harness_tests!();", wrapper)
+        self.assertIn("unica_daemon::receipt_scenario_harness_tests!();", wrapper)
         # Бинарь контракта — `kind(test)`: размер `medium` идёт из каталога,
         # особой переразметки у запускателя для обвязки нет.
         self.assertIn("kind(test)", self.config["profile"]["pr"]["default-filter"])
@@ -337,7 +338,7 @@ class GateProfileCompositionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     nightly_only_groups(expression.replace(exact, replacement, 1))
         with self.assertRaises(ValueError):
-            nightly_only_groups(expression.replace("binary(v13_workspace_bootstrap)", "binary(unica_coder_daemon)", 1))
+            nightly_only_groups(expression.replace("binary(v13_workspace_bootstrap)", "binary(unica_daemon)", 1))
         self.assertEqual(test_function_attributes('#[test]\n#[ignore = "why"]\nfn quiet() {}\n#[test]\nfn loud() {}'),
                          {"quiet": ["#[test]", '#[ignore="why"]'], "loud": ["#[test]"]})
 
@@ -388,11 +389,10 @@ class GateProfileCompositionTests(unittest.TestCase):
         """Одна версия исполнителя для CI и локального прогона."""
         import yaml
 
-        release = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8"))
+        action = yaml.safe_load(NEXTEST_ACTION.read_text(encoding="utf-8"))
         tools = next(
             step["with"]["tool"]
-            for job in ("unica-ci", "rust-os")
-            for step in release["jobs"][job]["steps"]
+            for step in action["runs"]["steps"]
             if step.get("uses", "").startswith("taiki-e/install-action@") and "cargo-nextest@" in step["with"]["tool"]
         )
         installed = next(part.split("@")[1] for part in tools.split(",") if part.startswith("cargo-nextest@"))
@@ -400,27 +400,32 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(self.config["nextest-version"], {"recommended": installed})
 
     def test_tool_installs_are_bounded_and_nextest_is_reused_where_present(self) -> None:
-        """Зависшая загрузка выпуска GitHub не съедает запись; готовый nextest не ставится заново."""
+        """Зависшая загрузка выпуска GitHub не съедает запись; готовый nextest не ставится заново.
+
+        nextest ставит одно общее действие: очередь и ночь проходят одну установку."""
         import yaml
 
+        users = []
         for name in ("ci.yml", "release.yml"):
             workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))
             for job_name, job in workflow["jobs"].items():
-                steps = job.get("steps", [])
-                for index, step in enumerate(steps):
-                    if not step.get("uses", "").startswith("taiki-e/install-action@"):
+                for step in job.get("steps", []):
+                    uses = step.get("uses", "")
+                    if uses == "./.github/actions/install-nextest":
+                        users.append((name, job_name))
+                    elif not uses.startswith("taiki-e/install-action@"):
                         continue
-                    with self.subTest(workflow=name, job=job_name, tool=step["with"]["tool"]):
+                    with self.subTest(workflow=name, job=job_name, uses=uses):
                         self.assertLessEqual(step.get("timeout-minutes", 0), 10)
                         self.assertGreater(step.get("timeout-minutes", 0), 0)
-                        if "cargo-nextest@" not in step["with"]["tool"]:
-                            continue
-                        probe = steps[index - 1]
-                        self.assertEqual(probe.get("id"), "nextest-present")
-                        self.assertIn("steps.nextest-present.outputs.present != 'true'", step["if"])
-                        # The probe runs exactly when the install would.
-                        self.assertIn(probe["if"].strip("${} ").removeprefix("{{").strip(),
-                                      step["if"].strip("${} ").removeprefix("{{").strip())
+                        if uses.startswith("taiki-e/"):
+                            self.assertNotIn("cargo-nextest@", step["with"]["tool"])
+        self.assertEqual(users, [("ci.yml", "unica-ci"), ("release.yml", "unica-ci"), ("release.yml", "rust-os")])
+        probe, install = yaml.safe_load(NEXTEST_ACTION.read_text(encoding="utf-8"))["runs"]["steps"]
+        self.assertEqual(probe["shell"], "bash")
+        self.assertTrue(install["uses"].startswith("taiki-e/install-action@"))
+        self.assertIn("cargo-nextest@", install["with"]["tool"])
+        self.assertEqual(install["if"], f"steps.{probe['id']}.outputs.present != 'true'")
 
     def test_the_nextest_probe_runs_under_actions_bash_and_never_fails(self) -> None:
         """Под `bash -e -o pipefail` отсутствующий nextest не роняет шаг: иначе установка пропускается."""
@@ -433,12 +438,9 @@ class GateProfileCompositionTests(unittest.TestCase):
         bash = shutil.which("bash")
         if bash is None:
             self.skipTest("bash is not available")
-        probes = []
-        for name in ("ci.yml", "release.yml"):
-            workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))
-            probes += [step["run"] for job in workflow["jobs"].values()
-                       for step in job.get("steps", []) if step.get("id") == "nextest-present"]
-        self.assertEqual(len(probes), 3)
+        probes = [step["run"] for step in yaml.safe_load(NEXTEST_ACTION.read_text(encoding="utf-8"))["runs"]["steps"]
+                  if "run" in step]
+        self.assertEqual(len(probes), 1)
         cases = (
             ("echo 'error: no such command: `nextest`' >&2; exit 101", ""),
             ("echo 'cargo-nextest 0.9.148 (cd1d6d546 2026-10-07)'", "present=true"),
@@ -524,7 +526,7 @@ FACADE_GUARDS = (
 
 class FacadeGuardInventoryTests(unittest.TestCase):
     def test_facade_guards_are_contract_tests_the_receipt_lane_runs(self) -> None:
-        coder = REPO_ROOT / "crates/unica-coder-daemon"
+        coder = REPO_ROOT / "crates/unica-daemon"
         guards = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger/facade_guards.rs").read_text(encoding="utf-8")
         self.assertEqual(sorted(attributed_test_functions(guards)), sorted(FACADE_GUARDS))
         # Страж исполняется, а не только объявлен: ни `#[ignore]`, ни `cfg`

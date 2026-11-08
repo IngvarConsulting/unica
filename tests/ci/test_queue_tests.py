@@ -170,8 +170,8 @@ class ChoiceTests(unittest.TestCase):
             ["pr", "--workspace", "-E", "not (package(unica-a) | package(unica-b))", "--no-tests=pass"],
             ["queue", "--workspace", "-E", "package(unica-a) | package(unica-b)", "--no-tests=pass"],
         ])
-        planned = queue.commands(("unica-coder-daemon", "ureq"), runner)
-        self.assertEqual(planned[1], ["queue", "--workspace", "-E", "package(unica-coder-daemon)", "--no-tests=pass"])
+        planned = queue.commands(("unica-daemon", "ureq"), runner)
+        self.assertEqual(planned[1], ["queue", "--workspace", "-E", "package(unica-daemon)", "--no-tests=pass"])
         self.assertEqual(planned[2:], [["queue", "ledger"], ["queue", "ureq"]])
         # Фасад журнала живёт в демоне: правка нижнего слоя его не запускает.
         self.assertNotIn(["queue", "ledger"], queue.commands(("unica-coder",), runner))

@@ -63,7 +63,7 @@ def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Pat
 #
 # Проверки обвязки сценариев идут в том же бинаре: их тела живут в библиотеке
 # под признаком, а `#[test]` им приставляет контракт. Поэтому вызову не нужен
-# `--lib` — тестовая сборка всего `unica-coder-daemon` ради них. Библиотека
+# `--lib` — тестовая сборка всего `unica-daemon` ради них. Библиотека
 # собирается один раз, обычной, для контракта и бинаря `unica`.
 LEDGER_FEATURE_SELECTION = (
     "-p", "unica-product", "--features", "receipt-ledger-test-support",
@@ -321,9 +321,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--runners", default="[]", help="JSON runner matrix for complete inventory verification")
     parser.add_argument("--shadow", type=Path, help="shadow decision; mandatory selection remains full")
     parser.add_argument("--baseline", type=Path, help="previous Rust inventory of the same configuration")
+    parser.add_argument("--lane", help="build one lane of the runner's plan (--phase build)")
     args = parser.parse_args(argv)
     args.docs_only = args.docs_only == "true"
     only_size = args.only_size or None
+    if args.lane is not None and args.phase != "build":
+        parser.error("--lane applies to --phase build only")
 
     if args.phase:
         import ci_rust_lanes
@@ -338,7 +341,8 @@ def main(argv: list[str] | None = None) -> int:
         # Every lane of this runner, in the job that runs it: archives stay in
         # `--prepared`, plans and results go to the report directory.
         if args.phase == "build":
-            return ci_rust_lanes.build_host(REPO_ROOT, args.prepared, args.results, args.profile, args.runner, args.line)
+            return ci_rust_lanes.build_host(REPO_ROOT, args.prepared, args.results, args.profile, args.runner, args.line,
+                                            args.lane)
         if args.phase == "medium":
             return ci_rust_lanes.run_medium(REPO_ROOT, args.prepared / "ordinary", args.results / "ci-rust-medium", args.runner, args.shadow)
         return ci_rust_lanes.run_host(REPO_ROOT, args.prepared, args.results, args.profile, args.runner, args.line, args.shadow)

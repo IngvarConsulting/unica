@@ -1,6 +1,6 @@
 #[test]
 fn public_meta_surface_is_the_exact_four_typed_operations() {
-    let tools = unica_coder_daemon::application::tools();
+    let tools = unica_daemon::application::tools();
     let meta = tools
         .iter()
         .filter(|tool| tool.name.starts_with("unica.meta."))
@@ -14,6 +14,6 @@ fn public_meta_surface_is_the_exact_four_typed_operations() {
     assert!(meta[1..].iter().all(|tool| tool.execution.is_mutating()));
     assert!(meta.iter().all(|tool| matches!(
         tool.handler,
-        unica_coder_daemon::application::ToolHandler::Metadata { .. }
+        unica_daemon::application::ToolHandler::Metadata { .. }
     )));
 }
