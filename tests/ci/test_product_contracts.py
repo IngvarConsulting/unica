@@ -1922,10 +1922,16 @@ class ProductContractTests(unittest.TestCase):
         "esac\n"
     )
 
-    def test_local_corpus_directory_stays_ignored(self) -> None:
-        """Каталог остаётся игнорируемым: снят контракт корпуса, а не каталог."""
-        ignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
-        self.assertIn("docs-local/", ignore.splitlines())
+    def test_local_research_material_is_ignored_by_git(self) -> None:
+        """`docs-local/` — местные материалы: git не берёт в индекс ничего оттуда."""
+        for probe in ("docs-local/note.md", "docs-local/nested/page.html"):
+            with self.subTest(probe=probe):
+                ignored = subprocess.run(
+                    ["git", "check-ignore", "--quiet", "--no-index", probe],
+                    cwd=REPO_ROOT,
+                    check=False,
+                )
+                self.assertEqual(ignored.returncode, 0, f"{probe} is not ignored")
 
     def test_marketplace_card_uses_unica_product_legal_links(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
