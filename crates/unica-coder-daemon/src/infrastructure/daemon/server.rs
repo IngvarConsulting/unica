@@ -233,67 +233,6 @@ fn reject_workspace_admission(
     V5CanonicalPrepareError::Rejected(Box::new(result))
 }
 
-/// `filter` снят с `view` и `diff` (#1374): предмет вопроса задаёт адрес.
-/// Это всё ещё отказ неизвестного аргумента, но он называет, куда ушло то,
-/// что фильтр делал: словарь — в каждом ответе узла, контракт операции —
-/// по адресу `<узел>.Can.<op>`, сравнение части — по адресу этой части.
-fn retired_read_filter(request: &InvocationRequest) -> Option<DomainResult> {
-    use unica_execution::invocation_store::ToolIdentity;
-    let arguments = request.arguments();
-    let filter = arguments.get("filter")?;
-    let text = |name: &str| {
-        arguments
-            .get(name)
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-    };
-    let mut next = Vec::new();
-    let summary = match request.tool() {
-        ToolIdentity::View => {
-            if let Some(at) = text("at") {
-                if let Some(op) = filter
-                    .get("can")
-                    .and_then(|can| can.get("op"))
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|op| !op.trim().is_empty())
-                {
-                    next.push(serde_json::json!({
-                        "tool": "unica.view",
-                        "args": {"at": format!("{at}.Can.{op}")},
-                        "reason": "контракт аргументов одной операции",
-                    }));
-                }
-                next.push(serde_json::json!({
-                    "tool": "unica.view",
-                    "args": {"at": at},
-                    "reason": "ответ узла несёт его словарь операций can",
-                }));
-            } else {
-                next.push(serde_json::json!({
-                    "tool": "unica.view",
-                    "args": {},
-                    "reason": "рабочее пространство и его наборы исходников",
-                }));
-            }
-            "canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `<node>.Can.<op>`, and page collections with limit"
-        }
-        ToolIdentity::Diff => {
-            if let (Some(left), Some(right)) = (text("left"), text("right")) {
-                next.push(serde_json::json!({
-                    "tool": "unica.diff",
-                    "args": {"left": left, "right": right},
-                    "reason": "сравнение сужается адресом сравниваемых узлов",
-                }));
-            }
-            "canonical invocation has unknown argument `filter`: unica.diff narrows a comparison by address; compare the member nodes themselves"
-        }
-        _ => return None,
-    };
-    let mut result = DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary);
-    result.next = next;
-    Some(result)
-}
-
 /// Адрес `<узел>.Can.<op>` называет операцию словаря узла, а не узел
 /// исходников: его читает только `unica.view`. Остальные инструменты
 /// отвечают на него одним отказом с переходом к этому чтению, а не тем,
@@ -1017,9 +956,6 @@ impl V5CanonicalInvocationRuntime {
         admission_cancellation: &CancellationToken,
     ) -> Result<V5ActorBoundCanonicalInvocation, V5CanonicalPrepareError> {
         request.normalize_omitted_options();
-        if let Some(refusal) = retired_read_filter(&request) {
-            return Err(V5CanonicalPrepareError::Rejected(Box::new(refusal)));
-        }
         if let Err(summary) = validate_hidden_v13_request(&request) {
             return Err(V5CanonicalPrepareError::Rejected(Box::new(
                 DomainResult::canonical_rejection(None, RefusalCode::BadValue, summary),

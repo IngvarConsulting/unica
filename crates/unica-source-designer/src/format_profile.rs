@@ -13,6 +13,39 @@ pub const ACTIVE_FORMAT_PROFILE: FormatProfile = FormatProfile {
     export_format: ACTIVE_SERIALIZATION_FORMAT,
 };
 
+/// Which platform line writes each version of the Designer export format
+/// (INV.RUNTIME.PLATFORM-LINE). A line writes exactly one version, so the
+/// line follows from the version of the dump. 2.17, 2.20, 2.21 and 2.22 are
+/// measured exports of 8.3.24, 8.3.27, 8.5.1 and 8.5.4; 2.18 and 2.19 come
+/// from the platform vendor's pairing and have no measured corpus yet.
+pub const EXPORT_FORMAT_PLATFORM_LINES: &[(&str, &str)] = &[
+    ("2.17", "8.3.24"),
+    ("2.18", "8.3.25"),
+    ("2.19", "8.3.26"),
+    ("2.20", "8.3.27"),
+    ("2.21", "8.5.1"),
+    ("2.22", "8.5.4"),
+];
+
+/// The platform line that writes `export_format`, or `None` for a version
+/// outside the table.
+pub fn platform_line_for_export_format(export_format: &str) -> Option<&'static str> {
+    EXPORT_FORMAT_PLATFORM_LINES
+        .iter()
+        .find(|(format, _)| *format == export_format)
+        .map(|(_, line)| *line)
+}
+
+/// Whether the four-part platform build `build` belongs to `line`
+/// (`8.3.27.2342` to `8.3.27`).
+pub fn build_in_platform_line(build: &[u32; 4], line: &str) -> bool {
+    let line = line
+        .split('.')
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>();
+    matches!(line, Ok(parts) if parts.len() == 3 && build[..3] == parts[..])
+}
+
 #[derive(Debug, Clone)]
 pub struct ExportFormatVersion {
     components: Vec<u32>,
@@ -215,8 +248,35 @@ pub fn format_compatibility_warning(compatibility: &FormatCompatibility) -> Stri
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_root_version, ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+        build_in_platform_line, classify_root_version, platform_line_for_export_format,
+        ExportFormatVersion, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
+        EXPORT_FORMAT_PLATFORM_LINES,
     };
+
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn each_export_format_is_written_by_one_platform_line_and_back() {
+        assert_eq!(
+            platform_line_for_export_format(ACTIVE_FORMAT_PROFILE.export_format),
+            Some(ACTIVE_FORMAT_PROFILE.platform_line)
+        );
+        for (index, (format, line)) in EXPORT_FORMAT_PLATFORM_LINES.iter().enumerate() {
+            for (other_format, other_line) in &EXPORT_FORMAT_PLATFORM_LINES[index + 1..] {
+                assert_ne!(format, other_format);
+                assert_ne!(line, other_line);
+            }
+        }
+        assert_eq!(platform_line_for_export_format("2.22"), Some("8.5.4"));
+        assert_eq!(platform_line_for_export_format("2.16"), None);
+    }
+
+    #[test]
+    fn a_build_belongs_to_its_three_part_line_only() {
+        assert!(build_in_platform_line(&[8, 3, 27, 2342], "8.3.27"));
+        assert!(!build_in_platform_line(&[8, 3, 26, 1656], "8.3.27"));
+        assert!(!build_in_platform_line(&[8, 5, 4, 1878], "8.5.1"));
+        assert!(!build_in_platform_line(&[8, 3, 27, 2342], "8.3"));
+    }
 
     #[test]
     fn active_profile_is_platform_8_3_27_format_2_20() {
