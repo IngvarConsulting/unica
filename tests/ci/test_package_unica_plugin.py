@@ -63,7 +63,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
 
     def test_package_tree_hash_frames_the_executable_bit(self) -> None:
         # Тот же кадр, что у proof: бит исполнения входит в идентичность
-        # пакета, иначе потерянный `+x` у bootstrap пройдёт сверку (#700).
+        # пакета, иначе потерянный `+x` у bootstrap пройдёт сверку.
         module = load_package_module()
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         plain = root / "plain"
@@ -1470,7 +1470,7 @@ class PackageUnicaPluginTests(unittest.TestCase):
             self.assertEqual(package_evidence["sourceCommit"], "a" * 40)
             # Свидетельство пакета несёт только наблюдённое: версию, коммит и
             # дайджесты. Флаги «не бампали, не публиковали, тега нет» были
-            # литералами продюсера и сняты (#696).
+            # литералами продюсера и сняты.
             for key in ("versionBumped", "published", "tag"):
                 self.assertNotIn(key, package_evidence)
 

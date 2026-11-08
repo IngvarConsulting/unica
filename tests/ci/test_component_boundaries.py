@@ -133,7 +133,7 @@ class ComponentBoundaryTests(unittest.TestCase):
                 self.assertEqual(checker.edge_errors(owner, target, "dependencies"), [])
 
     def test_dcs_family_and_its_codec_keep_their_own_boundary(self) -> None:
-        # Пилот семейного порта (#1826): семейство не видит свой кодек, раскладку,
+        # Пилот семейного порта: семейство не видит свой кодек, раскладку,
         # workspace, другие семейства и composition; кодек — только своё
         # семейство и нейтральные порты. Workspace и кодек вместе видит лишь
         # пакет межкомпонентных тестов семьи.

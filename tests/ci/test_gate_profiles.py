@@ -219,7 +219,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(set(self.run_tests.PROFILES), {"all", "large", *GATES})
         self.assertEqual(self.run_tests.nextest_profile("large"), "nightly-full")
         self.assertEqual(profiles["nightly-full"]["default-filter"], "all()")
-        # Ночью Windows гоняет весь набор, без исключений по платформе (#1879).
+        # Ночью Windows гоняет весь набор, без исключений по платформе.
         self.assertNotIn("overrides", profiles["nightly-full"])
         self.assertNotIn("overrides", profiles["large"])
         # Ночной ярус на ubuntu и macOS — только названные тесты своих целей;
@@ -231,7 +231,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         self.assertEqual(deadline["threads-required"], "num-cpus")
         # Nextest берёт для каждой настройки первое совпавшее переопределение,
         # а интеграционные цели `large` входят и в `kind(test)` срока `medium`:
-        # срок `large` обязан стоять раньше, иначе они получают 600 с (#1879).
+        # срок `large` обязан стоять раньше, иначе они получают 600 с.
         deadlines = [o for o in profiles["default"]["overrides"] if "slow-timeout" in o]
         self.assertIs(deadlines[0], deadline)
         for command in self.run_tests.rust_commands("large"):

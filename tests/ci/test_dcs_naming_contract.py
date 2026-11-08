@@ -76,7 +76,7 @@ class DcsNamingContractTests(unittest.TestCase):
 
     def test_every_dcs_primitive_has_content_checked_publication(self) -> None:
         registered, _ = load_dcs_registry()
-        # Owner-approved scope of #1310: deleting both implementation and wire
+        # Scope: deleting both implementation and wire
         # must not silently narrow the promised set.
         self.assertEqual(len(registered), 53)
         scenarios = load_acceptance_corpus()["scenarios"]

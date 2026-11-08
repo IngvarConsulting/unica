@@ -1387,7 +1387,7 @@ class UnicaSkillRoutingTests(unittest.TestCase):
                         self.assertIn("object", item)
                         self.assertTrue(item["rights"])
                     continue
-                # Объект записи называет её адрес, а не аргумент (#1354).
+                # Объект записи называет её адрес, а не аргумент.
                 self.assertRegex(
                     operation["args"]["at"], r"^[^:]+:Role\.[^.]+\.Right\.[^.]+_[^.]+$"
                 )

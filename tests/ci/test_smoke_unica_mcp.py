@@ -260,7 +260,7 @@ def assert_processes_exit(test: unittest.TestCase, module, pids, message: str) -
 class SmokeUnicaMcpTests(unittest.TestCase):
     def test_v13_contract_allows_path_only_as_the_resolve_bridge_input(self) -> None:
         # `unica.resolve` — аварийный мост между адресом и раскладкой, и путь на
-        # входе разрешён только ему (#801, решение зонтика #871). Остальные схемы
+        # входе разрешён только ему. Остальные схемы
         # ключ `path` по-прежнему не несут; дым обязан различать эти два случая.
         module = load_module()
 
