@@ -88,3 +88,6 @@ crates/unica-forms-designer/tests/platform/dump_parity/*.xml -text -whitespace
 /tests/fixtures/platform_8_3_27/mxl/** -text -whitespace
 /tests/fixtures/unica_mcp_script_parity/dcs-validate/** -text -whitespace
 
+
+# The meta.add source snapshot keeps the BOM and CRLF its writer produced.
+crates/unica-coder/tests/fixtures/meta-add-sources/** -text -whitespace
