@@ -27,7 +27,9 @@ class SelectionTests(unittest.TestCase):
         selected = static.modules()
         self.assertIn("tests.ci.test_rule_marks", selected)
         self.assertIn("tests.dev.test_host_preflight", selected)
-        self.assertNotIn("tests.ci.test_product_contracts", selected)
+        # A module whose only cargo test is `medium` runs: its small tests are static.
+        self.assertIn("tests.ci.test_product_contracts", selected)
+        self.assertNotIn("tests.ci.test_acceptance_scenarios", selected)
         self.assertEqual(set(selected) & static.skipped_modules(), set())
         self.assertGreater(len(selected), 80)
 
