@@ -364,3 +364,32 @@ class RemovedPythonTestsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NightlyInventoryTests(unittest.TestCase):
+    """Pull request: removals counted also from the night's older inventory commit."""
+
+    def test_the_night_inventory_names_what_the_pull_request_base_cannot_see(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as temporary:
+            root = RemovedTestsTests.repository(self, temporary)
+            night = subprocess.run(["git", "rev-parse", "main"], cwd=root, check=True,
+                                   capture_output=True, text=True).stdout.strip()
+            environment = {"GITHUB_REPOSITORY": "o/r", "GITHUB_REPOSITORY_ID": "1"}
+
+            def document(removed):
+                return {"source": {"headSha": night}, "explanations": {"removedTests": removed}}
+
+            with mock.patch.dict(os.environ, environment),                  mock.patch.object(removed_tests.baseline, "baseline", return_value=document([])):
+                problems = removed_tests.nightly_problems(root, "large", "HEAD")
+            self.assertTrue(problems)
+            self.assertTrue(all(problem.startswith("since the large inventory: ") for problem in problems))
+            # Declarations merged since the night (or this pull request's own) explain it.
+            declared = [line.split("Removes-test: ", 1)[1].split("'", 1)[0]
+                        for line in problems if "Removes-test: " in line]
+            with mock.patch.dict(os.environ, environment),                  mock.patch.object(removed_tests.baseline, "baseline", return_value=document(declared)):
+                self.assertEqual(removed_tests.nightly_problems(root, "large", "HEAD"), [])
+            # No inventory found: a warning, not a verdict.
+            with mock.patch.dict(os.environ, environment),                  mock.patch.object(removed_tests.baseline, "baseline", side_effect=RuntimeError("gh api failed")):
+                self.assertEqual(removed_tests.nightly_problems(root, "large", "HEAD"), [])
+

@@ -863,6 +863,29 @@ def declared_after_move(lost: list[str], old_cases: set[str], new_cases: set[str
             if lost_names[name(case)] == 1 and len(declared.get(name(case), ())) == 1}
 
 
+def declared_in_another_target(lost: list[str], binaries: list[str], tests: list[str]) -> dict[str, str]:
+    """Lost cases an exact declaration names in another test target.
+
+    One source file can compile into several targets: a crate that includes
+    another crate's modules runs their tests as its own cases. When the
+    previous inventory had such a twin and the source later left one of the
+    targets, the pull request that removed the test sees only the target that
+    still had it and declares that one. The declaration explains every lost
+    case with the same module path and function name, whatever its target.
+    """
+    def path_in_target(case: str) -> str | None:
+        binary = binary_of(case, binaries)
+        return None if binary is None else case[len(binary) + 2:]
+    declared = {}
+    for pattern in tests:
+        if not pattern.endswith("*"):
+            path = path_in_target(pattern)
+            if path:
+                declared.setdefault(path, pattern)
+    return {case: declared[path] for case in lost
+            if (path := path_in_target(case)) in declared and declared[path] != case}
+
+
 def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[str]) -> bool:
     """A lost case is explained by its own vanished target or a declaration naming that target."""
     binary = binary_of(case, binaries)
@@ -979,6 +1002,8 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
         moved = moved_cases(lost, sorted(set(new["cases"]) - set(old["cases"])))
         late = declared_after_move([case for case in lost if case not in moved],
                                    set(old["cases"]), set(new["cases"]), tests)
+        late |= declared_in_another_target([case for case in lost if case not in moved and case not in late],
+                                           sorted(set(old["binaries"]) | set(new["binaries"])), tests)
         unexplained = [case for case in lost
                        if case not in moved and case not in late
                        and not explained_case(case, old["binaries"], gone, tests)]
