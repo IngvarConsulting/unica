@@ -211,7 +211,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
     def test_direct_write_slot_can_only_be_minted_by_store_or_codec(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            rogue_path = Path("crates/unica-coder-daemon/src/infrastructure/daemon/server.rs")
+            rogue_path = Path("crates/unica-daemon/src/infrastructure/daemon/server.rs")
             write_tree(
                 root,
                 {
@@ -314,7 +314,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
     def test_direct_json_literals_are_forbidden_in_every_production_module(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            rogue_path = Path("crates/unica-coder-daemon/src/infrastructure/daemon/server.rs")
+            rogue_path = Path("crates/unica-daemon/src/infrastructure/daemon/server.rs")
             write_tree(
                 root,
                 {
@@ -346,7 +346,7 @@ class ReceiptTerminalCodecBoundaryTests(unittest.TestCase):
     def test_direct_json_macros_are_forbidden_in_every_production_module(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
-            rogue_path = Path("crates/unica-coder-daemon/src/infrastructure/daemon/server.rs")
+            rogue_path = Path("crates/unica-daemon/src/infrastructure/daemon/server.rs")
             write_tree(
                 root,
                 {

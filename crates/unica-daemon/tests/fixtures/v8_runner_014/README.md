@@ -94,7 +94,7 @@ declared the same infobase by its absolute path. Then:
 ## Use after the move to 0.15.1
 
 The pinned runner is 0.15.1. Its push and create envelopes are recaptured in
-`crates/unica-coder-daemon/tests/fixtures/v8_runner_015`, including `push-other-copy-*`. These 0.14.0
+`crates/unica-daemon/tests/fixtures/v8_runner_015`, including `push-other-copy-*`. These 0.14.0
 captures stay only where a test checks a path whose shape 0.15.1 did not change
 and that could not be recaptured on the capture machine (no Designer licence,
 the agent refused the empty infobase user): `push-infobase-busy-apply.json`,

@@ -181,7 +181,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         # Тела проверок обвязки — в библиотеке без `#[test]`; тест каждой из
         # них разворачивает бинарь контракта одним макросом. Список в макросе
         # единственный, и обе известные проверки в нём есть.
-        coder = REPO_ROOT / "crates/unica-coder-daemon"
+        coder = REPO_ROOT / "crates/unica-daemon"
         harness = (coder / "tests/support/receipt_scenario/tests.rs").read_text(encoding="utf-8")
         self.assertEqual(attributed_test_functions(harness), set())
         listed = re.search(r"(?m)^harness_checks!\((.*?)\);", harness, re.S)
@@ -193,7 +193,7 @@ class GateProfileCompositionTests(unittest.TestCase):
         ledger = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
         self.assertIn('#[path = "daemon_receipt_ledger/receipt_scenario_harness.rs"]\nmod receipt_scenario_harness;', ledger)
         wrapper = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger/receipt_scenario_harness.rs").read_text(encoding="utf-8")
-        self.assertIn("unica_coder_daemon::receipt_scenario_harness_tests!();", wrapper)
+        self.assertIn("unica_daemon::receipt_scenario_harness_tests!();", wrapper)
         # Бинарь контракта — `kind(test)`: размер `medium` идёт из каталога,
         # особой переразметки у запускателя для обвязки нет.
         self.assertIn("kind(test)", self.config["profile"]["pr"]["default-filter"])
@@ -337,7 +337,7 @@ class GateProfileCompositionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     nightly_only_groups(expression.replace(exact, replacement, 1))
         with self.assertRaises(ValueError):
-            nightly_only_groups(expression.replace("binary(v13_workspace_bootstrap)", "binary(unica_coder_daemon)", 1))
+            nightly_only_groups(expression.replace("binary(v13_workspace_bootstrap)", "binary(unica_daemon)", 1))
         self.assertEqual(test_function_attributes('#[test]\n#[ignore = "why"]\nfn quiet() {}\n#[test]\nfn loud() {}'),
                          {"quiet": ["#[test]", '#[ignore="why"]'], "loud": ["#[test]"]})
 
@@ -524,7 +524,7 @@ FACADE_GUARDS = (
 
 class FacadeGuardInventoryTests(unittest.TestCase):
     def test_facade_guards_are_contract_tests_the_receipt_lane_runs(self) -> None:
-        coder = REPO_ROOT / "crates/unica-coder-daemon"
+        coder = REPO_ROOT / "crates/unica-daemon"
         guards = (REPO_ROOT / "crates/unica-product/tests/daemon_receipt_ledger/facade_guards.rs").read_text(encoding="utf-8")
         self.assertEqual(sorted(attributed_test_functions(guards)), sorted(FACADE_GUARDS))
         # Страж исполняется, а не только объявлен: ни `#[ignore]`, ни `cfg`

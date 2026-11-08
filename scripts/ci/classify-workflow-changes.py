@@ -168,7 +168,7 @@ SEARCH_INTEGRATION_PATHS = {
     "crates/unica-coder/src/infrastructure/platform_xml_source_targets.rs",
     "crates/unica-coder/src/infrastructure/source_roots.rs",
     "crates/unica-coder/src/infrastructure/workspace_services.rs",
-    "crates/unica-coder-daemon/src/interfaces/mcp.rs",
+    "crates/unica-daemon/src/interfaces/mcp.rs",
 }
 # The long BSP assessment runs the packaged runtime end to end, so it follows
 # the search contour it exercises. These paths add what that contour does not

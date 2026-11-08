@@ -11,7 +11,7 @@ fn task_restart_daemon_process_fixture() {
         .expect("helper process: the parent test sets the daemon state");
     let control = std::env::var_os("UNICA_TASK_RESTART_CONTROL").unwrap();
     let identity = std::env::var("UNICA_TASK_RESTART_IDENTITY").unwrap();
-    unica_coder_daemon::frontend_restart_test_support::run_daemon(
+    unica_daemon::frontend_restart_test_support::run_daemon(
         Path::new(&state),
         &identity,
         Path::new(&control),
