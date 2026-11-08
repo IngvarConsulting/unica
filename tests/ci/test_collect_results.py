@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import tarfile
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -36,6 +37,7 @@ class CollectResultsTests(unittest.TestCase):
         self.collect = load("collect-results")
         without_repository_rule_index(self, self.collect)
         self.root = Path(tempfile.mkdtemp(prefix="collect-"))
+        self.addCleanup(shutil.rmtree, self.root)
         self.artifacts = self.root / "artifacts"
         self.run = {
             "sha": "abcdef0123456789", "ref": "release-v0.12", "run_id": "42", "run_attempt": "2",

@@ -6,6 +6,7 @@ Split out of `test_acceptance_scenarios.py`, whose helpers it uses.
 # The helpers stay in `test_acceptance_scenarios`: tests elsewhere patch them
 # there by module path, so they keep one home.
 from tests.ci.test_acceptance_scenarios import *  # noqa: F401,F403
+from scripts.ci.temp_tree import temp_tree
 # Their own tests run in their own module, not again here.
 del AcceptanceCorpusRunTests, AcceptanceCorpusScheduleTests  # noqa: F821
 
@@ -32,7 +33,7 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
         """
         import sys
         corpus = select_profile(self.corpus, "delivery")
-        with tempfile.TemporaryDirectory(prefix="unica-analyzer-delivery-") as raw:
+        with temp_tree("unica-analyzer-delivery-") as raw:
             plugin = Path(raw).resolve() / "plugin"
             subprocess.run([sys.executable, "-m", "tests.ci.acceptance_profiles", "--stage-analyzer", str(plugin)],
                            cwd=REPO_ROOT, timeout=90, check=True)
@@ -47,7 +48,7 @@ class AcceptanceDeliveryCorpusRunTests(unittest.TestCase):
         from tests.ci.acceptance_profiles import stage_analyzer, host_target
         from tests.ci.acceptance_diagnostics import resident_filter_evidence
         import platform
-        with tempfile.TemporaryDirectory(prefix="unica-resident-filter-") as raw:
+        with temp_tree("unica-resident-filter-") as raw:
             root=Path(raw).resolve()
             plugin=stage_analyzer(root / "plugin")
             lock=json.loads((plugin / "third-party/tools.lock.json").read_text())
@@ -75,7 +76,7 @@ class AcceptanceFaultCorpusRunTests(unittest.TestCase):
     def test_controlled_jsonl_faults_preserve_public_reason_without_provider_input(self):
         """rule: INV.APP.DIAGNOSTIC-PROVIDERS"""
         from tests.ci.acceptance_faults import stage_fault_producer, fault_driver
-        with tempfile.TemporaryDirectory(prefix="unica-jsonl-fault-") as raw:
+        with temp_tree("unica-jsonl-fault-") as raw:
             plugin = Path(raw).resolve() / "plugin"
             manifest = stage_fault_producer(plugin)
             self.assertFalse(manifest["testFixture"]["publishedArtifact"])
@@ -87,7 +88,7 @@ class AcceptanceFaultCorpusRunTests(unittest.TestCase):
 
     def test_call_graph_branch_names_a_failed_analyzer_delivery(self):
         from tests.ci.acceptance_faults import stage_missing_analyzer, delivery_failure_driver
-        with tempfile.TemporaryDirectory(prefix="unica-delivery-failure-") as raw:
+        with temp_tree("unica-delivery-failure-") as raw:
             plugin = Path(raw).resolve() / "plugin"
             manifest = stage_missing_analyzer(plugin)
             self.assertFalse(manifest["testFixture"]["publishedArtifact"])

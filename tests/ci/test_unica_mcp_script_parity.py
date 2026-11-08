@@ -37,6 +37,7 @@ if str(MODULE_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_REPO_ROOT))
 
 from scripts.ci import donor_parity_contract as donor_contract
+from scripts.ci.temp_tree import temp_tree
 
 
 REPO_ROOT = MODULE_REPO_ROOT
@@ -452,7 +453,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         self.assertLessEqual(len(russian_text("ListPresentation")), 38)
 
     def test_event_subscription_fixture_exports_its_declared_handler(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="unica-event-handler-fixture-") as temp:
+        with temp_tree("unica-event-handler-fixture-") as temp:
             source_root = Path(temp) / "src" / "cf"
             source_root.mkdir(parents=True)
             (source_root / "Configuration.xml").write_text(
@@ -770,7 +771,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         cached = type(self)._input_schemas
         if cached is not None:
             return cached
-        with tempfile.TemporaryDirectory(prefix="unica-tool-schemas-") as temp:
+        with temp_tree("unica-tool-schemas-") as temp:
             responses = self.call_mcp_messages(
                 [
                     {
@@ -2535,7 +2536,7 @@ class WindowsParityNormalizationTests(unittest.TestCase):
         self.assertTrue(original.startswith(b"\xef\xbb\xbf"))
         self.assertIn(b"\r\n", original)
 
-        with tempfile.TemporaryDirectory(prefix="unica-exact-byte-snapshot-") as temp:
+        with temp_tree("unica-exact-byte-snapshot-") as temp:
             workspace = Path(temp)
             target = workspace / "XDTOPackages/P/Ext/Package.bin"
             target.parent.mkdir(parents=True)
@@ -2570,7 +2571,7 @@ class WindowsParityNormalizationTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows path separator equivalence")
     def test_known_workspace_paths_normalize_separators(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="unica-normalize-path-") as tmp:
+        with temp_tree("unica-normalize-path-") as tmp:
             workspace = Path(tmp)
             windows_path = f"output={workspace}\\src\\Template.xml"
             slash_path = f"output={workspace.as_posix()}/src/Template.xml"

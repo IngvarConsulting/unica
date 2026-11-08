@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import sys
+import tempfile
+import time
 import traceback
 import unittest
 from pathlib import Path
@@ -52,6 +56,46 @@ class Sizes:
         return self.default
 
 
+class TempLedger:
+    """Своё TEMP на прогон и учёт того, что каждый тест в нём оставил.
+
+    Прогон получает пустой каталог и ставит его в `TEMP`/`TMP`/`TMPDIR`:
+    туда пишут и тесты, и запущенные ими процессы, а соседние прогоны — нет.
+    После теста новые записи в нём — оставленное этим тестом; их имена
+    называют тест в выводе. В конце каталог удаляется с повтором: на Windows
+    файл держит процесс, который ещё не вышел.
+    """
+
+    def __init__(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="unittest-run-"))
+        self.left: dict[str, list[str]] = {}
+        for name in ("TEMP", "TMP", "TMPDIR"):
+            os.environ[name] = str(self.root)
+        tempfile.tempdir = str(self.root)
+
+    def entries(self) -> set[str]:
+        try:
+            return {entry.name for entry in self.root.iterdir()}
+        except OSError:
+            return set()
+
+    def record(self, test_id: str, before: set[str]) -> list[str]:
+        new = sorted(self.entries() - before)
+        if new:
+            self.left[test_id] = new
+        return new
+
+    def close(self, stream) -> None:
+        for test_id, names in self.left.items():
+            print(f"временные каталоги не убраны: {test_id}: {', '.join(names)}", file=stream)
+        for _ in range(5):
+            shutil.rmtree(self.root, ignore_errors=True)
+            if not self.root.exists():
+                return
+            time.sleep(1)
+        print(f"временный каталог прогона не удалён (занят процессом): {self.root}", file=stream)
+
+
 class AllureResult(unittest.TextTestResult):
     """Пишет запись в момент завершения теста; текстовый вывод не трогает."""
 
@@ -60,10 +104,19 @@ class AllureResult(unittest.TextTestResult):
     profile = "all"
     suite_name = ""
     sizes = Sizes([])
+    temp: TempLedger | None = None
 
     def startTest(self, test):
         super().startTest(test)
         self._started = (test, allure_results.now_ms())
+        self._temp_before = self.temp.entries() if self.temp is not None else set()
+
+    def stopTest(self, test):
+        super().stopTest(test)
+        if self.temp is not None:
+            left = self.temp.record(test.id(), getattr(self, "_temp_before", set()))
+            if left:
+                self.stream.writeln(f"\nоставил во временном каталоге: {test.id()}: {', '.join(left)}")
 
     def _emit(self, test, status, message=None, trace=None, *, scope_skip=False):
         if self.out is None:
@@ -198,7 +251,11 @@ def main(argv: list[str] | None = None) -> int:
     options = {"resultclass": AllureResult, "verbosity": 1}
     if args.durations is not None:
         options["durations"] = args.durations
-    result = unittest.TextTestRunner(**options).run(suite)
+    AllureResult.temp = TempLedger()
+    try:
+        result = unittest.TextTestRunner(**options).run(suite)
+    finally:
+        AllureResult.temp.close(sys.stderr)
     return 0 if result.wasSuccessful() else 1
 
 

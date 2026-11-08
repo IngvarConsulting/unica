@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 
 from tests.ci.acceptance_profiles import REPO, host_target, select_profile
+from scripts.ci.temp_tree import temp_tree
 
 WORKSPACE = "tests/fixtures/acceptance/workspace-pull-validation"
 CASES = {"unsupported-root", "wrong-version", "invalid-xml", "missing-owner", "empty-dump"}
@@ -109,7 +110,7 @@ def main():
     platform_executable()  # Absence is an explicit error, never a host skip.
     corpus = select_profile(harness.load_acceptance_corpus(), "runtime-fault")
     harness.ensure_binary(REPO)
-    with tempfile.TemporaryDirectory(prefix="unica-pull-fault-") as raw:
+    with temp_tree("unica-pull-fault-") as raw:
         plugin = Path(raw).resolve() / "plugin"
         stage_producer(plugin)
         harness.run_corpus(unittest.TestCase(), corpus, plugin, scenario_driver=prepare_case)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import tempfile
 import unittest
 from argparse import Namespace
@@ -26,6 +27,7 @@ class UnwindHistoryTests(unittest.TestCase):
         """Вершина истории — пересобираемый прогон; Allure положит его заново."""
         module = load_module()
         history = Path(tempfile.mkdtemp(prefix="history-"))
+        self.addCleanup(shutil.rmtree, history)
         (history / "history-trend.json").write_text(json.dumps([{"buildOrder": 2}, {"buildOrder": 1}]), encoding="utf-8")
         (history / "duration-trend.json").write_text(json.dumps([{"buildOrder": 2}]), encoding="utf-8")
         (history / "history.json").write_text(json.dumps({
@@ -57,6 +59,7 @@ class MergeResultsTests(unittest.TestCase):
     def test_latest_record_wins_and_retry_attempts_travel_together(self) -> None:
         module = load_module()
         root = Path(tempfile.mkdtemp(prefix="merge-"))
+        self.addCleanup(shutil.rmtree, root)
         fresh, stored = root / "fresh", root / "stored"
         self.record(fresh, "a", 200, "a-fresh")
         self.record(fresh, "b", 200, "b-fresh")
@@ -78,6 +81,7 @@ class MergeResultsTests(unittest.TestCase):
     def test_stored_results_fall_back_to_the_legacy_archive_as_main(self) -> None:
         module = load_module()
         root = Path(tempfile.mkdtemp(prefix="stored-"))
+        self.addCleanup(shutil.rmtree, root)
         legacy = root / "legacy"
         self.record(legacy, "a", 1, "a")
         import tarfile
@@ -187,6 +191,7 @@ class LargeMemoryTests(unittest.TestCase):
     def test_only_a_large_run_writes_memory_and_others_keep_the_site_copy(self) -> None:
         module = load_module()
         root = Path(tempfile.mkdtemp(prefix="memory-"))
+        self.addCleanup(shutil.rmtree, root)
         results = root / "results"
         results.mkdir()
         (results / "run.json").write_text(json.dumps({

@@ -806,8 +806,7 @@ fn target_triple_for_id(target_id: &str) -> Result<&'static str, String> {
 mod medium_tests {
     use super::*;
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::Path;
 
     #[test]
     fn resolves_windows_binary_from_manifest_without_script_wrapper() {
@@ -993,13 +992,13 @@ mod medium_tests {
         }
     }
 
-    pub(super) fn temp_plugin_root(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("unica-bundled-tools-{name}-{nanos}"));
-        let plugin_root = root.join("plugins/unica");
+    pub(super) fn temp_plugin_root(
+        name: &str,
+    ) -> crate::infrastructure::temp_test_root::TempTestRoot {
+        let plugin_root = crate::infrastructure::temp_test_root::TempTestRoot::new(
+            &format!("unica-bundled-tools-{name}"),
+            "plugins/unica",
+        );
         fs::create_dir_all(plugin_root.join("third-party")).unwrap();
         fs::create_dir_all(plugin_root.join("skills")).unwrap();
         plugin_root

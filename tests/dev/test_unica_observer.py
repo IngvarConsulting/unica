@@ -25,6 +25,7 @@ import urllib.request
 from collections import deque
 from pathlib import Path
 from scripts.ci.prepared_binary import ensure_binary
+from scripts.ci.temp_tree import remove_tree
 
 # Размер тестов модуля (scripts/ci/python_sizes.py).
 # Наблюдатель адресов: процесс продукта и страница на 127.0.0.1.
@@ -67,9 +68,10 @@ class UnicaObserverTests(unittest.TestCase):
             raise unittest.SkipTest(f"UNICA_OBSERVER_BINARY не указывает на файл: {cls.binary}")
 
     def setUp(self) -> None:
-        scratch = tempfile.TemporaryDirectory(prefix="unica-observer-")
-        self.addCleanup(scratch.cleanup)
-        root = Path(scratch.name).resolve()
+        # The daemon outlives the observer by its idle grace with its state
+        # open; the removal waits for it instead of leaving the directory.
+        root = Path(tempfile.mkdtemp(prefix="unica-observer-")).resolve()
+        self.addCleanup(remove_tree, root, 30)
         self.workspace = root / "workspace"
         shutil.copytree(FIXTURE, self.workspace)
         state = root / "state"

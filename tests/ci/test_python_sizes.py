@@ -14,6 +14,7 @@ import io
 import contextlib
 import re
 import sys
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -124,6 +125,7 @@ class PythonSizeManifestTests(unittest.TestCase):
         """Ворота `pr` не видят `medium`: тест исключён из плана, а не пропущен."""
         runner = load_runner()
         root = Path(tempfile.mkdtemp(prefix="sizes-"))
+        self.addCleanup(shutil.rmtree, root)
         (root / "test_alpha.py").write_text(
             "import unittest\n"
             'MEDIUM = ("Heavy", "Cheap.test_missing")\n'
@@ -149,6 +151,7 @@ class PythonSizeManifestTests(unittest.TestCase):
         """Строка вместо кортежа или пустая причина молча сняли бы размер."""
         sizes = load_sizes()
         root = Path(tempfile.mkdtemp(prefix="sizes-"))
+        self.addCleanup(shutil.rmtree, root)
         for source in ('MEDIUM = "Heavy"\n', "MEDIUM = (1,)\n", 'MEDIUM = ("",)\n', "MEDIUM = HEAVY\n",
                        'PR_SKIP = ""\n', "PR_SKIP = True\n", 'QUEUE_KEEPS_MEDIUM = ["Heavy"]\n'):
             with self.subTest(source=source):

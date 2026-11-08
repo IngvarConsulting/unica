@@ -36,6 +36,7 @@ the environment legitimately selects from.
 from __future__ import annotations
 
 from scripts.ci.prepared_binary import binary_path, ensure_binary
+from scripts.ci.temp_tree import remove_tree, temp_tree
 
 import importlib.util
 import itertools
@@ -780,7 +781,7 @@ class AcceptanceCorpusRunTests(unittest.TestCase):
         self.assertTrue(scenario_publishes(scenario), "the comment-writing task must execute its plan")
         planning = next(s["args"] for s in scenario["wire"] if "ops" in s["args"])
         expected = planning["ops"][0]["args"]["values"]["Comment"]
-        with tempfile.TemporaryDirectory(prefix="unica-s047-") as raw:
+        with temp_tree("unica-s047-") as raw:
             root = Path(raw).resolve()
             workspace = root / "workspace"
             shutil.copytree(REPO_ROOT / self.corpus["workspace"], workspace)
@@ -1123,9 +1124,10 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
 
     mismatches: list[tuple[int, str]] = []
     attempted: list[int] = []
-    with tempfile.TemporaryDirectory(
-        prefix="unica-acceptance-", ignore_cleanup_errors=True
-    ) as raw:
+    # Daemons outlive their servers by the idle grace with state files open;
+    # the removal below waits them out instead of leaving the directory.
+    raw = tempfile.mkdtemp(prefix="unica-acceptance-")
+    try:
         root = Path(raw).resolve()
         roots = [root / f"worker-{index}" for index in range(len(batches))]
         try:
@@ -1143,6 +1145,8 @@ def run_corpus(test_case, corpus, plugin=None, scenario_driver=None, fixture_cle
             # Servers are closed; owned fixtures go before their workspaces.
             if fixture_cleanup is not None:
                 fixture_cleanup()
+    finally:
+        remove_tree(raw, 30)
     # Every scenario of the selection runs exactly once, whatever the deal:
     # a lost worker or a dropped scenario fails here, not as a silent pass.
     test_case.assertEqual(sorted(attempted), list(range(len(corpus["scenarios"]))),
