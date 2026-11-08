@@ -6570,10 +6570,7 @@ pub fn form_compile_xml(
         }
     }
     if contains_text_document_field(defn) {
-        return Err(
-            "unknown element key `textDoc`"
-                .to_string(),
-        );
+        return Err("unknown element key `textDoc`".to_string());
     }
     if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
         form_edit_validate_attribute_columns(attributes)?;

@@ -61,10 +61,7 @@ pub fn validate_form_edit_definition(definition: &Value) -> Result<(), String> {
         }
     }
     if contains_text_document_field(definition) {
-        return Err(
-            "FORM_EDIT_UNKNOWN_ELEMENT_KEY: unknown element key `textDoc`"
-                .to_string(),
-        );
+        return Err("FORM_EDIT_UNKNOWN_ELEMENT_KEY: unknown element key `textDoc`".to_string());
     }
 
     for (name, value) in object {
