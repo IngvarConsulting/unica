@@ -10,11 +10,13 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 
@@ -708,9 +710,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             nextest = next(step for step in steps_using(found, "taiki-e/install-action") if "cargo-nextest@" in step["with"]["tool"])
             self.assertEqual(nextest["with"]["tool"], "cargo-nextest@0.9.148")
             self.assertLess(order.index(nextest), order.index(cache[0]))
-        for lane in ("ordinary", "receipt", "vendor"):
-            archive = lanes.archive_command(lane, Path("tests.tar.zst"))
-            self.assertEqual(Path(archive[archive.index("--target-dir") + 1]), lanes.ROOT / "target")
+        # CI sets no `CARGO_TARGET_DIR`: the archive goes to `<root>/target`.
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CARGO_TARGET_DIR", None)
+            for lane in ("ordinary", "receipt", "vendor"):
+                archive = lanes.archive_command(lane, Path("tests.tar.zst"))
+                self.assertEqual(Path(archive[archive.index("--target-dir") + 1]), lanes.ROOT / "target")
         # Продукт для Python собирается в тот же target и копируется вне него.
         product = step_by_id(job(self.release, "unica-ci"), "product")
         self.assertIn("python scripts/ci/prepared_binary.py build --destination .build/ci-product --target-dir target", product["run"])
