@@ -185,11 +185,13 @@ jobs:
 
       # Постоянные раннеры PVE уже держат nextest: установка с выпусков GitHub
       # там не нужна и зависает на их 5xx. Версия — из `.config/nextest.toml`.
+      # Шаг не падает: Actions гоняет bash с -e -o pipefail, а отсутствующий
+      # nextest — это обычный исход, после которого установка идёт как раньше.
       - id: nextest-present
         if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
         run: |
-          want=$(grep -o 'recommended = "[^"]*"' .config/nextest.toml | cut -d '"' -f 2)
-          have=$(cargo nextest --version 2>/dev/null | awk 'NR == 1 { print $2 }')
+          want=$(grep -o 'recommended = "[^"]*"' .config/nextest.toml | cut -d '"' -f 2) || want=
+          have=$(cargo nextest --version 2>/dev/null | awk 'NR == 1 { print $2 }') || have=
           echo "nextest: нужен $want, стоит ${have:-нет}"
           if [ -n "$want" ] && [ "$have" = "$want" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; fi
       - if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' && steps.nextest-present.outputs.present != 'true' }}
@@ -460,11 +462,13 @@ jobs:
           components: clippy
       # Постоянные раннеры PVE уже держат nextest: установка с выпусков GitHub
       # там не нужна и зависает на их 5xx. Версия — из `.config/nextest.toml`.
+      # Шаг не падает: Actions гоняет bash с -e -o pipefail, а отсутствующий
+      # nextest — это обычный исход, после которого установка идёт как раньше.
       - id: nextest-present
         if: steps.classify.outputs.rust_required == 'true'
         run: |
-          want=$(grep -o 'recommended = "[^"]*"' .config/nextest.toml | cut -d '"' -f 2)
-          have=$(cargo nextest --version 2>/dev/null | awk 'NR == 1 { print $2 }')
+          want=$(grep -o 'recommended = "[^"]*"' .config/nextest.toml | cut -d '"' -f 2) || want=
+          have=$(cargo nextest --version 2>/dev/null | awk 'NR == 1 { print $2 }') || have=
           echo "nextest: нужен $want, стоит ${have:-нет}"
           if [ -n "$want" ] && [ "$have" = "$want" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; fi
       - if: steps.classify.outputs.rust_required == 'true' && steps.nextest-present.outputs.present != 'true'
