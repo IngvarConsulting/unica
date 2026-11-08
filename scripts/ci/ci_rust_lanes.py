@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results
-from cargo_target import cargo_target_dir, vendor_target_dir
+from cargo_target import cargo_target_dir
 import prepared_binary
 import ci_shadow_selector
 from workflow_routing import ADMITTED
@@ -157,6 +157,15 @@ def doctest_record(manifest: dict, profile: str, host: str) -> dict:
     )
 
 
+def extracted_target(root: Path) -> Path:
+    """Where reuse puts the archive's binaries and nextest its store: `<extract-to>/target`.
+
+    An archive carries its own build directory; `--archive-file` takes no
+    `--target-dir-remap`, so `CARGO_TARGET_DIR` does not move it.
+    """
+    return root.resolve() / "target"  # cargo-target: extracted archive
+
+
 def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: str, partition: str | None = None, *, candidate: str | None = None, host: str | None = None) -> list[str]:
     workspace = root / "vendor/ureq" if lane == "vendor" else root
     selected_filters = filters(lane)
@@ -170,7 +179,6 @@ def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: st
         selected_filters = ["-E", candidate]
     command = ["cargo", "nextest", action, "--archive-file", str(archive),
                "--extract-to", str(root), "--extract-overwrite", "--workspace-remap", str(workspace),
-               "--target-dir-remap", str(cargo_target_dir(root)),
                "--profile", nextest_profile(profile, lane, host), *selected_filters]
     if lane == "vendor":
         command += ["--config-file", str(workspace / ".config/nextest.toml")]
@@ -290,7 +298,8 @@ def fixture_binary_descriptor(root: Path, listed: dict, identity: dict) -> dict:
         ("kind", "bin-exe"), ("build-platform", "target"),
     )) or described_path != relative:
         raise ValueError("archive must contain exactly one target unica non-test fixture binary")
-    binary = cargo_target_dir(root.resolve()) / relative
+    # Reuse extracts the archive into `<root>/target`, whatever built it.
+    binary = root.resolve() / "target" / relative  # cargo-target: extracted archive
     if not binary.is_file() or binary.resolve() != binary or binary.stat().st_size <= 0:
         raise ValueError("archive fixture binary is missing, empty or linked")
     return {"path": relative, "sha256": prepared_binary.digest(binary), "bytes": binary.stat().st_size}
@@ -306,7 +315,7 @@ def fixture_binary_environment(root: Path, document: dict) -> dict[str, str]:
     # Nextest extracts the checked archive before starting tests. The parent and
     # isolated child verify these exact extracted bytes before using the fixture.
     return {**os.environ,
-            "UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY": str(cargo_target_dir(root.resolve()) / descriptor["path"]),
+            "UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY": str(extracted_target(root) / descriptor["path"]),
             "UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256": descriptor["sha256"]}
 
 
@@ -605,8 +614,8 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
         # not take the doctest outcome out of the report.
         allure_results.write(destination, doctest_record(document, profile, host))
     nextest_profile = document["nextestProfile"]
-    candidates = {cargo_target_dir(root) / "nextest" / nextest_profile / "junit.xml",
-                  vendor_target_dir(root, "ureq") / "nextest" / nextest_profile / "junit.xml"}
+    candidates = {extracted_target(root) / "nextest" / nextest_profile / "junit.xml",
+                  root / "vendor" / "ureq" / "target" / "nextest" / nextest_profile / "junit.xml"}  # cargo-target: extracted archive
     for path in candidates:
         path.unlink(missing_ok=True)
     command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", host=host)
@@ -730,7 +739,7 @@ def run_medium(root: Path, prepared: Path, destination: Path, host: str, shadow:
         "runId": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     }
     if any(not case["ignored"] for case in plan):
-        junit = cargo_target_dir(root) / "nextest" / MEDIUM_PROFILE / "junit.xml"
+        junit = extracted_target(root) / "nextest" / MEDIUM_PROFILE / "junit.xml"
         junit.unlink(missing_ok=True)
         command = reuse_command("run", root, archive, "ordinary", MEDIUM_PROFILE, candidate=expression)
         completed, seconds = timed(command, root, env=capability_environment(destination, fixture_binary_environment(root, document)))
@@ -868,6 +877,22 @@ def declared_after_move(lost: list[str], old_cases: set[str], new_cases: set[str
             if lost_names[name(case)] == 1 and len(declared.get(name(case), ())) == 1}
 
 
+def twin_declaration(case_path: str, pattern: str, binaries: list[str] = ()) -> bool:
+    """Whether an exact declaration names this case as compiled into another target.
+
+    A crate that includes another crate's modules runs their tests under its
+    own module path: `unica-domain::apply::tests::x` was also
+    `unica-coder::domain::apply::tests::x`. The declaration's binary is a known
+    target ID, else its package alone; what follows it — at least a module and
+    the function — must end the case's path in its target.
+    """
+    if pattern.endswith("*"):
+        return False
+    binary = binary_of(pattern, list(binaries)) or pattern.split("::", 1)[0]
+    tail = pattern[len(binary) + 2:].split("::")
+    return len(tail) >= 2 and case_path.split("::")[-len(tail):] == tail
+
+
 def declared_in_another_target(lost: list[str], binaries: list[str], tests: list[str]) -> dict[str, str]:
     """Lost cases an exact declaration names in another test target.
 
@@ -875,20 +900,20 @@ def declared_in_another_target(lost: list[str], binaries: list[str], tests: list
     another crate's modules runs their tests as its own cases. When the
     previous inventory had such a twin and the source later left one of the
     targets, the pull request that removed the test sees only the target that
-    still had it and declares that one. The declaration explains every lost
-    case with the same module path and function name, whatever its target.
+    still had it and declares that one. The declaration explains the lost case
+    whose path in its target ends with the declared module path and function.
     """
-    def path_in_target(case: str) -> str | None:
+    explained = {}
+    for case in lost:
         binary = binary_of(case, binaries)
-        return None if binary is None else case[len(binary) + 2:]
-    declared = {}
-    for pattern in tests:
-        if not pattern.endswith("*"):
-            path = path_in_target(pattern)
-            if path:
-                declared.setdefault(path, pattern)
-    return {case: declared[path] for case in lost
-            if (path := path_in_target(case)) in declared and declared[path] != case}
+        if binary is None:
+            continue
+        path = case[len(binary) + 2:]
+        found = [pattern for pattern in tests
+                 if pattern != case and twin_declaration(path, pattern, binaries)]
+        if found:
+            explained[case] = found[0]
+    return explained
 
 
 def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[str]) -> bool:

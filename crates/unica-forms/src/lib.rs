@@ -49,8 +49,8 @@ pub fn validate_form_edit_definition(definition: &Value) -> Result<(), String> {
         "FORM_EDIT_DEFINITION_NOT_OBJECT: form edit definition must be an object".to_string()
     })?;
 
-    // Поле текстового документа принадлежит только закрытой операции
-    // `item.add`; снятое JSON-описание формы не должно получать новый вид.
+    // `textDoc` — внутренний ключ построения поля текстового документа;
+    // JSON-описание формы такого ключа элемента не знает.
     fn contains_text_document_field(value: &Value) -> bool {
         match value {
             Value::Object(object) => {
@@ -61,10 +61,7 @@ pub fn validate_form_edit_definition(definition: &Value) -> Result<(), String> {
         }
     }
     if contains_text_document_field(definition) {
-        return Err(
-            "FORM_EDIT_RETIRED_TEXT_DOCUMENT_FIELD: use item.add with type TextDocumentField; legacy form edit definitions do not accept textDoc"
-                .to_string(),
-        );
+        return Err("FORM_EDIT_UNKNOWN_ELEMENT_KEY: unknown element key `textDoc`".to_string());
     }
 
     for (name, value) in object {
@@ -174,15 +171,16 @@ mod tests {
     }
 
     #[test]
-    fn retired_form_edit_definition_rejects_text_document_field_recursively() {
+    fn form_edit_definition_refuses_text_doc_as_an_unknown_element_key_at_any_depth() {
         for definition in [
             json!({"elements": [{"textDoc": "Protocol", "path": "ProtocolValue"}]}),
             json!({"elements": [{"group": "Main", "children": [{"textDoc": "Protocol"}]}]}),
         ] {
             let error = validate_form_edit_definition(&definition).unwrap_err();
             assert!(
-                error.contains("FORM_EDIT_RETIRED_TEXT_DOCUMENT_FIELD")
-                    && error.contains("item.add"),
+                error.contains("FORM_EDIT_UNKNOWN_ELEMENT_KEY")
+                    && error.contains("unknown element key `textDoc`")
+                    && !error.contains("item.add"),
                 "{error}"
             );
         }

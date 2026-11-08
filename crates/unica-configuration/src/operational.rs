@@ -84,11 +84,6 @@ impl OperationalConfig {
             local.and_then(|layer| layer.search_semantic_timeout),
             defaults.code_intelligence.search_semantic_timeout(),
         );
-        let mut git_grep = resolve_deadline(
-            shared.and_then(|layer| layer.search_git_grep_timeout),
-            local.and_then(|layer| layer.search_git_grep_timeout),
-            defaults.code_intelligence.search_git_grep_timeout(),
-        );
         let provider_read = resolve_deadline(
             shared.and_then(|layer| layer.provider_read_timeout),
             local.and_then(|layer| layer.provider_read_timeout),
@@ -107,9 +102,12 @@ impl OperationalConfig {
         if semantic.source == OperationalConfigDiagnosticSource::CompiledDefault {
             semantic.value = semantic.value.min(total.value);
         }
-        if git_grep.source == OperationalConfigDiagnosticSource::CompiledDefault {
-            git_grep.value = git_grep.value.min(total.value);
-        }
+        // Срок git grep прежнего `code.search` в файлах не задаётся: значение
+        // по умолчанию, не выше общего срока поиска.
+        let git_grep = defaults
+            .code_intelligence
+            .search_git_grep_timeout()
+            .min(total.value);
 
         validate_relationship(
             total,
@@ -117,18 +115,12 @@ impl OperationalConfig {
             OperationalConfigField::SearchTotal,
             OperationalConfigField::SearchSemantic,
         )?;
-        validate_relationship(
-            total,
-            git_grep,
-            OperationalConfigField::SearchTotal,
-            OperationalConfigField::SearchGitGrep,
-        )?;
 
         Ok(Self {
             code_intelligence: CodeIntelligenceDeadlines::from_timeouts(
                 total.value,
                 semantic.value,
-                git_grep.value,
+                git_grep,
                 provider_read.value,
             ),
             code_diagnostics: CodeDiagnosticsDeadlines::from_timeout(analyze),
@@ -258,7 +250,6 @@ impl std::error::Error for OperationalConfigDiagnostic {}
 pub enum OperationalConfigField {
     SearchTotal,
     SearchSemantic,
-    SearchGitGrep,
     ProviderRead,
     DiagnosticsAnalyze,
 }
@@ -268,7 +259,6 @@ impl OperationalConfigField {
         match self {
             Self::SearchTotal => "operational.code_intelligence.search_total_timeout_seconds",
             Self::SearchSemantic => "operational.code_intelligence.search_semantic_timeout_seconds",
-            Self::SearchGitGrep => "operational.code_intelligence.search_git_grep_timeout_seconds",
             Self::ProviderRead => "operational.code_intelligence.provider_read_timeout_seconds",
             Self::DiagnosticsAnalyze => "operational.code_diagnostics.analyze_timeout_seconds",
         }
@@ -283,7 +273,6 @@ impl OperationalConfigField {
 pub struct OperationalConfigLayer {
     search_total_timeout: Option<Duration>,
     search_semantic_timeout: Option<Duration>,
-    search_git_grep_timeout: Option<Duration>,
     provider_read_timeout: Option<Duration>,
     diagnostics_analyze_timeout: Option<Duration>,
 }
@@ -314,7 +303,6 @@ impl OperationalConfigLayer {
         match field {
             OperationalConfigField::SearchTotal => self.search_total_timeout = Some(timeout),
             OperationalConfigField::SearchSemantic => self.search_semantic_timeout = Some(timeout),
-            OperationalConfigField::SearchGitGrep => self.search_git_grep_timeout = Some(timeout),
             OperationalConfigField::ProviderRead => self.provider_read_timeout = Some(timeout),
             OperationalConfigField::DiagnosticsAnalyze => {
                 self.diagnostics_analyze_timeout = Some(timeout)
@@ -401,7 +389,6 @@ mod tests {
         for (field, seconds) in [
             (OperationalConfigField::SearchTotal, 7_200),
             (OperationalConfigField::SearchSemantic, 3_600),
-            (OperationalConfigField::SearchGitGrep, 1_800),
             (OperationalConfigField::ProviderRead, 7_200),
             (OperationalConfigField::DiagnosticsAnalyze, 7_200),
         ] {

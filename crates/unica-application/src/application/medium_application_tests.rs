@@ -3530,3 +3530,90 @@ fn test_workspace_root(prefix: &str) -> std::path::PathBuf {
     std::fs::create_dir_all(&root).unwrap();
     root
 }
+
+#[test]
+fn tool_specs_match_reviewed_result_contracts() {
+    let review: Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/v013/tool-surface-review.json"
+    ))
+    .expect("tool-surface review is valid JSON");
+    let review = review
+        .as_object()
+        .expect("tool-surface review is a tool-name object");
+    let catalog = crate::application::v13::tool_catalog::catalog_for(
+        crate::application::tool_contracts::SurfaceRelease::V13,
+    )
+    .expect("canonical v0.13 catalog exists");
+    let registered = catalog
+        .tools
+        .iter()
+        .map(|tool| format!("unica.{}", tool.name))
+        .chain(
+            crate::application::v13::task_tools::compatibility_tool_contracts()
+                .into_iter()
+                .map(|tool| format!("unica.{}", tool.name)),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(review.len(), registered.len());
+    assert_eq!(
+        review
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        registered
+    );
+
+    for name in registered {
+        let entry = review
+            .get(&name)
+            .unwrap_or_else(|| panic!("{name} has no tool-surface review"));
+        assert_eq!(entry["scope"], "in", "{name}");
+        assert_eq!(entry["result"]["contract"], "typed", "{name}");
+    }
+}
+
+#[test]
+fn native_operation_descriptors_drive_canonical_required_schema_paths() {
+    for tool in tools() {
+        let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
+            continue;
+        };
+        let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
+        let schema = input_schema_for_tool(&tool);
+        let path_groups = operation_descriptors::native_path_alias_groups(operation);
+        let required = schema["required"]
+            .as_array()
+            .expect("schema required is array")
+            .iter()
+            .map(|value| value.as_str().expect("required item is string"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            required, descriptor.required_args,
+            "{operation} canonical required arguments"
+        );
+        assert!(
+            schema.get("allOf").is_none(),
+            "{operation} must not hide required paths in schema composition"
+        );
+        let properties = schema["properties"].as_object().unwrap();
+        for required in &required {
+            assert!(
+                properties.contains_key(*required),
+                "{operation} requires unpublished argument {required}"
+            );
+        }
+        for group in path_groups {
+            assert!(properties.contains_key(group.canonical));
+            for alias in group
+                .aliases
+                .iter()
+                .filter(|alias| **alias != group.canonical)
+            {
+                assert!(
+                    !properties.contains_key(*alias),
+                    "{operation} publishes compatibility path alias {alias}"
+                );
+            }
+        }
+    }
+}

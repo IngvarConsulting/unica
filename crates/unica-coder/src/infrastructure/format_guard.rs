@@ -964,7 +964,7 @@ fn application() -> crate::application::UnicaApplication {
 }
 
 #[cfg(test)]
-#[path = "../../tests/medium_application/format_gate.rs"]
+#[path = "format_gate.rs"]
 mod format_gate;
 
 #[cfg(test)]
