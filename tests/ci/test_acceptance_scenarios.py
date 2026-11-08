@@ -38,6 +38,7 @@ from __future__ import annotations
 from scripts.ci.prepared_binary import binary_path, ensure_binary
 
 import importlib.util
+import itertools
 import json
 import queue
 import re
@@ -895,6 +896,11 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
     XDTO_ROWS = declared_rows("Xdto")
     XDTO_REGISTRATIONS = declared_registrations("XdtoOperation", "Xdto")
     ROLE_REGISTRATIONS = declared_registrations("RoleOperation", "Role")
+    # Runs of one family in the composition table of `apply.rs`, in order.
+    FAMILY_RUNS = [
+        "Metadata", "Properties", "Metadata", "Form", "Metadata", "Form", "Role", "Dcs", "Mxl",
+        "Xdto", "Subsystem", "Support", "Interface", "Code", "Event",
+    ]
 
     def renderer(self):
         module_path = REPO_ROOT / "scripts" / "ci" / "render-acceptance-registry.py"
@@ -1040,6 +1046,18 @@ class AcceptanceRegistryDocumentTests(unittest.TestCase):
         for family in module.TYPED_FAMILIES:
             with self.subTest(family=family):
                 self.assertEqual([row for row in registry if row[1] == family], declared_rows(family))
+                # The Rust variant behind each declared operation is the one
+                # its family's typed metadata names.
+                self.assertEqual(
+                    {variant: name for variant, name, _, _ in declared_variants(family)},
+                    {variant: entry[0] for variant, entry in module._registration_metadata(family).items()},
+                )
+        # Where each family sits in the composition table: consecutive runs of
+        # one family, an operation added inside its run leaves them as they are.
+        self.assertEqual(
+            [family for family, _ in itertools.groupby(row[1] for row in registry)],
+            self.FAMILY_RUNS,
+        )
 
     def test_every_registered_apply_operation_has_a_published_integration_case(self) -> None:
         # The inventory is the closed `apply` registry of all typed families
