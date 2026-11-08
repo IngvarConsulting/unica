@@ -40,7 +40,7 @@
           "eq": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376"
         }
       ],
-      "refusal": "bad_value: code.replace addresses a whole method: `main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции`"
+      "refusal": "bad_value: unknown argument; selector accepts only anchor"
     },
     {
       "tool": "unica.apply",
