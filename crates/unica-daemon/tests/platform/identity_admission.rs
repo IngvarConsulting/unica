@@ -72,7 +72,7 @@ fn missing_provider_state_root_is_created_before_private_identity_child() {
     );
 }
 
-/// #2252: a link among the ancestors of the state root (macOS `/var` →
+/// A link among the ancestors of the state root (macOS `/var` →
 /// `/private/var`) does not stop the daemon state from opening once the root
 /// is resolved, while a state root that is itself a link is refused.
 #[test]

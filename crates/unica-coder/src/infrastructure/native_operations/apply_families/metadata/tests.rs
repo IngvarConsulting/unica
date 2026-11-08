@@ -1075,13 +1075,13 @@ fn object_create_stages_the_template_files_and_registers_the_child() {
     );
 }
 
-/// #1332: registers of one batch share the registrar document. Each
+/// Registers of one batch share the registrar document. Each
 /// operation adds its record to the image the previous one staged
 /// instead of refusing because the disk preimage no longer matches.
 #[test]
 fn object_create_places_each_register_record_on_its_line_in_register_uuid_order() {
     // 8.3.27 lists a registrar's records one per line in the order of the
-    // registers' UUIDs, whatever order they were created in (#1404).
+    // registers' UUIDs, whatever order they were created in.
     let order = ORDER_XML.replace(
             "<Properties><Name>Order</Name><Synonym/><Comment/><BasedOn/></Properties>",
             "<Properties>\n\t\t\t<Name>Order</Name>\n\t\t\t<BasedOn/>\n\t\t\t<RegisterRecords/>\n\t\t</Properties>",
@@ -1314,7 +1314,7 @@ fn object_create_guards_a_registrar_changed_earlier_in_the_batch() {
     }
 }
 
-/// #1385: on a platform-shaped CRLF document the new header attribute
+/// On a platform-shaped CRLF document the new header attribute
 /// lands before the tabular sections and forms, the new template before
 /// the commands, and every inserted line keeps the descriptor's CRLF.
 /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
@@ -1696,7 +1696,7 @@ fn member_collections_relations_and_help_plan_through_the_typed_engine() {
     }
 }
 
-/// Табличная часть адресуется (#1352): реквизит, добавленный на адресе
+/// Табличная часть адресуется: реквизит, добавленный на адресе
 /// новой табличной части в том же пакете, попадает внутрь неё, а не в
 /// шапку; соседние реквизиты и сгенерированные типы части остаются.
 /// Переименование члена — `newName` на его адресе.
@@ -1926,7 +1926,7 @@ fn medium_member_operation_contracts_and_the_planner_agree_on_structure() {
     let mut site_dependent = std::collections::BTreeSet::new();
     for descriptor in registry.descriptors() {
         let op = descriptor.name();
-        // Реквизит и команда формы носят то же имя (#1465): здесь сверяются
+        // Реквизит и команда формы носят то же имя: здесь сверяются
         // члены метаданных.
         // Копия реквизита берёт содержимое из источника, а не из полей
         // члена; её договор проверяют сценарий S-1704 и тесты копии.

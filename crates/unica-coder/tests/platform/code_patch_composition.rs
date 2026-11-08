@@ -1280,7 +1280,7 @@ fn code_patch_separates_an_appended_method_from_a_module_without_a_trailing_eol(
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
-/// #420. The writer must not be the source of a dirty diff: content that
+/// The writer must not be the source of a dirty diff: content that
 /// carries no trailing whitespace must not gain any on the way in, and the
 /// separator the writer adds itself is a bare EOL, never an indented blank
 /// line. What the caller wrote is preserved verbatim — the writer neither
@@ -1606,7 +1606,7 @@ fn inserted_method_spacing_recognizes_an_existing_method_without_separators() {
 }
 
 /// Модуль кончается вставляемым методом без перевода строки: повтор вставки
-/// в конец модуля его не дублирует (#1911). Комментарий в том же положении —
+/// в конец модуля его не дублирует. Комментарий в том же положении —
 /// тоже повтор, а чужой хвост, лишь кончающийся теми же байтами, — нет.
 #[test]
 fn a_repeat_into_an_unterminated_module_end_is_a_noop() {
@@ -2140,7 +2140,7 @@ fn method_text_that_does_not_parse_is_refused_as_the_input_text() {
         .expect_err("a broken method text must not reach the module");
     assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue);
     assert_eq!(error.path(), Some("ops[0].args.text"));
-    // #2229: the refusal names the place of the error in the sent text.
+    // The refusal names the place of the error in the sent text.
     assert!(error.to_string().contains("of text"), "{error}");
     // The parser stops at `;` of `Value = 2;`; the method opens the module,
     // so the text and the module agree on the place.
@@ -2161,7 +2161,7 @@ fn method_text_that_does_not_parse_is_refused_as_the_input_text() {
     fixture.cleanup();
 }
 
-/// #2229: a text that breaks a parsing module is refused as the call's
+/// A text that breaks a parsing module is refused as the call's
 /// value, at its path; the message names the first error, and every error
 /// follows with its place in the module and in the sent text. Nothing is
 /// written.
@@ -2218,7 +2218,7 @@ fn a_text_that_breaks_the_module_names_every_syntax_error_by_its_place() {
     fixture.cleanup();
 }
 
-/// #2229: an inserted method the planner separates from its neighbour with
+/// An inserted method the planner separates from its neighbour with
 /// blank lines is still found in the module: its errors keep their place in
 /// the sent text.
 #[test]
@@ -2244,7 +2244,7 @@ fn an_inserted_text_keeps_its_error_places_across_added_blank_lines() {
     fixture.cleanup();
 }
 
-/// #2229: a module that did not parse before the patch stays the source's/// #2229: a module that did not parse before the patch stays the source's
+/// A module that did not parse before the patch stays the source's//: a module that did not parse before the patch stays the source's
 /// fault, and names its errors the same way, without a place in the text.
 /// rule: INV.SOURCE.CODE-TEXT-SYNTAX-ERRORS
 #[test]
@@ -2465,7 +2465,7 @@ fn addressed_replacement_refuses_missing_ambiguous_and_nonwritable_nodes() {
 }
 
 /// Метод целиком задаёт адрес `…Method.M`: селектор метода у замены снят
-/// и отказывает в своём поле, называя адрес (#1353). Якорь остаётся.
+/// и отказывает в своём поле, называя адрес. Якорь остаётся.
 /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
 #[test]
 fn code_replace_refuses_a_method_selector_and_names_the_method_address() {
@@ -2507,7 +2507,7 @@ fn code_replace_refuses_a_method_selector_and_names_the_method_address() {
 /// rule: INV.SOURCE.IDEMPOTENT-PRECHECK
 #[test]
 fn whole_method_replacement_extracts_helpers_and_repeats_as_noop() {
-    // #895: the "extract method" refactor replaces a method with itself
+    // The "extract method" refactor replaces a method with itself
     // plus new helpers; the repeat finds the method and its helpers in
     // place instead of planning the helpers a second time.
     let target = "Function Target()\r\n    Return 1 + 2;\r\nEndFunction\r\n";
@@ -2721,7 +2721,7 @@ fn code_patch_replace_with_extracted_helpers_repeats_as_noop() {
     fs::remove_dir_all(&context.workspace_root).unwrap();
 }
 
-/// Метод, названный адресом, — место вставки до или после него (#1354):
+/// Метод, названный адресом, — место вставки до или после него:
 /// текст встаёт рядом с методом, повтор ничего не меняет, а
 /// отсутствующий метод отвечает `not_found` по адресу.
 /// rule: INV.SOURCE.CODE-INSERT-POSITION
@@ -2979,7 +2979,7 @@ fn staged_code_args_report_exact_paths_and_reject_legacy_fields() {
             json!({"at": "main:CommonModule.Sample", "text": "x", "selector": {"anchor": "Run"}}),
             "ops[1].args.position",
         ),
-        // Метод называет адрес (#1354): селектор метода снят, а у
+        // Метод называет адрес: селектор метода снят, а у
         // адресованного метода место — обязательная `position`.
         (
             "code.insert",
@@ -3149,7 +3149,7 @@ fn staged_code_rejects_raw_policy_and_same_root_foreign_binding_substitution() {
     writer.cleanup();
 }
 
-/// #955: a registered owner's module exists logically without its file.
+/// A registered owner's module exists logically without its file.
 /// A dumped empty common module keeps an empty `Ext/` without the file;
 /// `object.borrow` registers a common module without its directory.
 /// The first write materializes the missing chain on publication only.
@@ -3874,7 +3874,7 @@ fn staged_code_v12_parity_rejects_malformed_postimage_and_owner_evidence() {
         )],
     )
     .unwrap_err();
-    // #2229: the sent text broke the module; the call is what to fix.
+    // The sent text broke the module; the call is what to fix.
     assert_eq!(c1.kind(), ApplyPlanErrorKind::BadValue);
     assert_eq!(c1.path(), Some("ops[0].args.text"));
     malformed_v12.cleanup();

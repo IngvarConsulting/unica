@@ -8284,7 +8284,7 @@ mod medium_tests {
         }
     }
 
-    /// #1119: a whole-file read takes chunks and stops at the checkpoint
+    /// A whole-file read takes chunks and stops at the checkpoint
     /// between them instead of finishing a large file past its deadline.
     /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
@@ -8347,7 +8347,7 @@ mod medium_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// #1119: the preimage comparison reads in chunks against the retained
+    /// The preimage comparison reads in chunks against the retained
     /// image and tells equal, changed, shorter and longer files apart.
     /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
@@ -8866,7 +8866,7 @@ mod medium_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// Issue #1463: a retained-apply cleanup may run while another owner (a
+    /// A retained-apply cleanup may run while another owner (a
     /// pending saved plan, a reader) still holds the file or directory. Its
     /// name must leave the parent at once; on Windows a delete-pending name
     /// stayed until the daemon exited and could not be opened by anyone.

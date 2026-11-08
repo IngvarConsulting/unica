@@ -367,7 +367,7 @@ fn daemon_idle_disconnected_inline_invocation_preserves_attempt_then_retires() {
     assert!(daemon.endpoint().is_none());
 }
 
-/// #980: the client leaves before the response window closes, and the begun
+/// The client leaves before the response window closes, and the begun
 /// inline attempt passes into its Task while nobody is connected. Every owner
 /// set read from the client's departure through the handoff holds the
 /// daemon by the attempt's cancellation registration, so the attempt never
@@ -455,7 +455,7 @@ fn daemon_idle_inline_attempt_handed_over_at_the_cutoff_keeps_an_owner_throughou
     assert!(daemon.endpoint().is_none());
 }
 
-/// #980: the response window closes while the call still waits for its
+/// The response window closes while the call still waits for its
 /// workspace actor, before the attempt begins. Its Task is promised without
 /// an actor and the client leaves. With no workspace work retained, the Task
 /// alone holds the daemon through its cancellation registration; once bound,
@@ -482,7 +482,7 @@ fn daemon_idle_task_promised_during_admission_holds_without_an_actor_then_retire
     let invocation = view_catalog_request_within(TaskId::new(), &workspace, 100);
     let mut owner = daemon.owner();
     let submitted = Instant::now();
-    // The answer that names the promised Task may be lost (#2089): the
+    // The answer that names the promised Task may be lost: the
     // durable promise can outlast its write window. Nothing reads it here;
     // the Task is read by its reserved id below.
     write_json_line(

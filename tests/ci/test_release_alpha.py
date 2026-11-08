@@ -140,16 +140,16 @@ class PublishTests(unittest.TestCase):
 
 
 class PruneTests(unittest.TestCase):
+    """`prune` удаляет только релизы старых alpha; теги остаются."""
+
     def setUp(self) -> None:
         self.module = load_module()
 
-    def gh(self, tags, releases, refuse=False):
+    def gh(self, tags, releases):
         calls = []
 
         def gh(path, method="GET"):
             calls.append((method, path))
-            if method == "DELETE" and refuse and "git/refs" in path:
-                raise self.module.RuleRefused("HTTP 422 Repository rule violations")
             if "matching-refs" in path:
                 return [{"ref": f"refs/tags/{tag}"} for tag in tags]
             if path.endswith("/releases"):
@@ -158,51 +158,33 @@ class PruneTests(unittest.TestCase):
 
         return gh, calls
 
-    def test_two_newest_published_stay_and_only_alphas_go(self) -> None:
+    def test_two_newest_published_stay_and_only_releases_of_older_alphas_go(self) -> None:
         tags = ["v0.15.0-rc.1", "v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3", "v0.15.0-alpha.10"]
         gh, calls = self.gh(tags, tags)
         self.assertEqual(self.module.prune("o/r", keep=2, dry_run=False, gh=gh), ["v0.15.0-alpha.1", "v0.15.0-alpha.2"])
         deleted = [path for method, path in calls if method == "DELETE"]
-        self.assertEqual(deleted[0], "repos/o/r/git/refs/tags/v0.15.0-alpha.1")
-        self.assertEqual(deleted[1], "repos/o/r/releases/1")
-        self.assertFalse(any("rc.1" in path for path in deleted))
+        self.assertEqual(deleted, ["repos/o/r/releases/1", "repos/o/r/releases/2"])
+        # Tags stay: nothing under git/refs is touched.
+        self.assertFalse(any("git/refs" in path for path in deleted))
 
     def test_a_tag_still_building_does_not_push_out_a_published_alpha(self) -> None:
         tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]
         self.assertEqual(self.module.stale_alphas(tags, {"v0.15.0-alpha.1", "v0.15.0-alpha.2"}, 2), [])
 
-    def test_an_old_tag_without_a_release_goes_with_the_rest(self) -> None:
+    def test_an_old_tag_whose_release_is_already_gone_needs_nothing(self) -> None:
         tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]
-        self.assertEqual(self.module.stale_alphas(tags, {"v0.15.0-alpha.2", "v0.15.0-alpha.3"}, 2), ["v0.15.0-alpha.1"])
+        gh, calls = self.gh(tags, tags[1:])
+        self.assertEqual(self.module.prune("o/r", keep=2, dry_run=False, gh=gh), [])
+        self.assertFalse(any(method == "DELETE" for method, _ in calls))
 
-    def test_a_rule_refusal_names_the_fix_and_keeps_the_release(self) -> None:
-        tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]
-        gh, calls = self.gh(tags, tags, refuse=True)
-        with self.assertRaisesRegex(self.module.RuleRefused, r"refs/tags/v\*-alpha"):
-            self.module.prune("o/r", keep=2, dry_run=False, gh=gh)
-        self.assertFalse(any(method == "DELETE" and "/releases/" in path for method, path in calls))
-
-    def test_an_immutable_release_goes_even_if_its_tag_stays(self) -> None:
-        tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]
-        calls = []
-
-        def gh(path, method="GET"):
-            calls.append((method, path))
-            if "matching-refs" in path:
-                return [{"ref": f"refs/tags/{tag}"} for tag in tags]
-            if path.endswith("/releases"):
-                return [{"tag_name": tag, "id": index, "draft": False, "immutable": True} for index, tag in enumerate(tags)]
-            if method == "DELETE" and "git/refs" in path:
-                raise self.module.AlphaError("HTTP 422 tag of an immutable release")
-            return None
-
-        self.assertEqual(self.module.prune("o/r", keep=2, dry_run=False, gh=gh), ["v0.15.0-alpha.1"])
-        self.assertIn(("DELETE", "repos/o/r/releases/0"), calls)
-
-    def test_a_leftover_tag_without_a_release_does_not_fail_the_cleanup(self) -> None:
-        tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]
-        gh, _ = self.gh(tags, tags[1:], refuse=True)
-        self.assertEqual(self.module.prune("o/r", keep=2, dry_run=False, gh=gh), ["v0.15.0-alpha.1"])
+    def test_after_a_prune_the_next_number_still_grows_from_the_tags(self) -> None:
+        # Releases of alpha.1..alpha.3 are gone, their tags stay: the number grows past them.
+        tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3", "v0.15.0-alpha.4", "v0.15.0-alpha.5"]
+        plan = self.module.plan_next("0.15.0", "f" * 40, tags, lambda tag: "e" * 40)
+        self.assertEqual(plan.tag, "v0.15.0-alpha.6")
+        # The released slice is read from the newest tag too.
+        plan = self.module.plan_next("0.15.0", "e" * 40, tags, lambda tag: "e" * 40)
+        self.assertIsNone(plan.tag)
 
     def test_a_dry_run_deletes_nothing(self) -> None:
         tags = ["v0.15.0-alpha.1", "v0.15.0-alpha.2", "v0.15.0-alpha.3"]

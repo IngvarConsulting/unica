@@ -7815,7 +7815,7 @@ fn exact_duplicate_preserves_cutoff_without_second_domain_callback() {
     );
 }
 
-/// #1384: once a known-long call has passed into its Task, the receipt
+/// Once a known-long call has passed into its Task, the receipt
 /// ledger forgets its key and the Task link remembers it. An exact duplicate
 /// after that reads the same Task; the key is never reserved again.
 /// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
@@ -10329,7 +10329,7 @@ fn bound_actor_lease_is_retained_until_terminal_even_past_a_cancel() {
     let blocked = checkpoint(&report, "noncooperative-before-cancel");
     assert_eq!(blocked.actor_leases, 1);
     assert!(blocked.daemon_running);
-    // #1251: past the former two-second grace the cancelled attempt keeps
+    // Past the former two-second grace the cancelled attempt keeps
     // its lease and the daemon keeps running; no fail-stop releases it.
     let waiting = checkpoint(&report, "noncooperative-past-former-grace");
     assert!(waiting.daemon_running);
@@ -11429,7 +11429,7 @@ fn thirty_two_lazy_cancel_actor_batch_finishes_within_125ms() {
     assert_eq!(load.listener, ListenerState::Listening);
 }
 
-/// #1251, owner decision: an attempt that does not answer its cancel keeps
+/// An attempt that does not answer its cancel keeps
 /// only its own receipt. Far past the former two-second grace the daemon
 /// keeps listening, and the late attempt still ends as cancelled.
 /// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
@@ -13360,7 +13360,7 @@ fn oversized_result_and_uncertain_store_commit_fail_closed() {
         0
     );
 }
-/// #984: fail-stop delivers its closed error and nothing more. A known-long
+/// Fail-stop delivers its closed error and nothing more. A known-long
 /// call whose Task creation is commit-uncertain stops the daemon before its
 /// long phase: the provider is never entered, no other attempt runs, and
 /// the stopped daemon continues nothing after the closed answer.

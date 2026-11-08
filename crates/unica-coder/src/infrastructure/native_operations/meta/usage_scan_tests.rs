@@ -416,7 +416,7 @@ fn an_unrequested_section_is_absent_rather_than_empty() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// #1119: a descriptor larger than the former 8 MiB read limit is read whole
+/// A descriptor larger than the former 8 MiB read limit is read whole
 /// instead of silently dropped from the section.
 #[test]
 fn a_functional_option_larger_than_eight_mebibytes_is_still_read() {
@@ -452,7 +452,7 @@ fn a_functional_option_larger_than_eight_mebibytes_is_still_read() {
     fs::remove_dir_all(root).unwrap();
 }
 
-/// #1119: a descriptor the scan cannot read or parse is named as an error of
+/// A descriptor the scan cannot read or parse is named as an error of
 /// its section; the rest of the list is still returned.
 #[test]
 fn an_unreadable_descriptor_is_reported_as_a_gap_of_its_section() {

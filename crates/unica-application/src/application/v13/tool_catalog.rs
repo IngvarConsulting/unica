@@ -563,7 +563,7 @@ mod tests {
     fn diff_limits_follow_read_pages_on_both_branches() {
         let schema = super::schema_for_plan_diff();
         assert_eq!(schema["then"]["properties"]["limit"]["maximum"], 50);
-        // #1210: form clients may copy defaults without selecting a branch.
+        // Form clients may copy defaults without selecting a branch.
         // The runtime default stays 20; its schema annotation is omitted.
         assert!(schema["then"]["properties"]["limit"]
             .get("default")
@@ -574,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn target_upload_does_not_advertise_the_legacy_implicit_database_apply() {
+    fn target_upload_does_not_advertise_an_implicit_database_apply() {
         let catalog =
             super::catalog_for(crate::application::tool_contracts::SurfaceRelease::V13).unwrap();
         let upload = catalog
@@ -907,7 +907,7 @@ mod tests {
             assert_eq!(limit["minimum"], 1);
         }
         // A form client sends a schema default, and view or check refuse limit
-        // without at (#1210): their limit keeps its default in prose only.
+        // without at: their limit keeps its default in prose only.
         for tool in ["view", "check"] {
             let limit = input_field(&catalog.tools, tool, "limit");
             assert!(
@@ -1171,7 +1171,7 @@ mod tests {
     // DEC.2026-09-15.SOURCE-CONVERT-LEAVES-THE-DICTIONARY. Переименовать нельзя —
     // на это имя ссылаются принятые записи реестра как на доказательство, а
     // переименование там читается как правка обещания. Счёт в имени проверки
-    // устаревает так же, как счёт в прозе правила (#798).
+    // устаревает так же, как счёт в прозе правила.
     fn v13_run_dictionary_has_twelve_directional_runtime_intents() {
         let catalog =
             catalog_for(SurfaceRelease::V13).expect("v0.13 catalog must be test-loadable");

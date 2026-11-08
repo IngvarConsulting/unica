@@ -125,7 +125,7 @@ class AcceptanceCorpusShapeTests(unittest.TestCase):
 
         # The harness reads the closed dictionary instead of keeping a copy:
         # every variant is found, and a legitimate caller-side refusal such
-        # as `view`'s foreign cursor (#1340) is a `refused`, not a gap.
+        # as `view`'s foreign cursor is a `refused`, not a gap.
         dictionary = refusal_dictionary()
         declared = re.search(
             r"pub const ALL: \[Self; (\d+)\]",

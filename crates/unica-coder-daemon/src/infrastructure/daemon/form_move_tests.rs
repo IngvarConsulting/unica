@@ -419,7 +419,7 @@ fn column_group_and_its_columns_are_addressable_through_the_wire() {
     assert!(can.contains("item.remove"), "{column:?}");
     assert!(!can.contains("item.add"), "{column:?}");
 
-    // #2323: an existing column group is a sibling, including when the
+    // An existing column group is a sibling, including when the
     // next insertion follows the field added earlier in the same list.
     let before = unica_workspace::test_support::tree_snapshot(&source);
     for (target, after) in [

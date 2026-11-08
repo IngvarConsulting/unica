@@ -252,7 +252,7 @@ class MetaSurfaceContractTests(unittest.TestCase):
             evidence.index(".open_retained_read("),
             evidence.index("crate::subsystem_topology::read_registered_subsystem_topology"),
         )
-        # #1119: only the depth bounds the registered walk; its size does not.
+        # Only the depth bounds the registered walk; its size does not.
         self.assertIn("maximum_depth: SUBSYSTEM_ADDRESS_MAX_DEPTH * 2", evidence)
         for retired in ("maximum_entries", "maximum_files", "maximum_bytes"):
             self.assertNotIn(retired, evidence)

@@ -603,7 +603,7 @@ fn a_session_the_daemon_no_longer_serves_ends_the_frontend() {
     wait_until(|| editor.lost.load(Ordering::Acquire));
 }
 
-/// Приёмка #2173: поток hover не задерживает параллельный вызов MCP.
+/// Поток hover не задерживает параллельный вызов MCP.
 ///
 /// Сначала полоса LSP занята целиком и стоит: вызов MCP той же рабочей
 /// области отвечает, не дожидаясь её. Затем полоса непрерывно занята
@@ -690,7 +690,7 @@ fn medium_an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call() {
     });
 }
 
-/// Приёмка #2173: устаревший запрос отменяется и его результат не выдаётся.
+/// Устаревший запрос отменяется и его результат не выдаётся.
 #[test]
 fn a_stale_lsp_request_is_cancelled_and_its_answer_withheld() {
     let host = Arc::new(HeldHost::default());
@@ -729,7 +729,7 @@ fn a_stale_lsp_request_is_cancelled_and_its_answer_withheld() {
     assert_eq!(host.answered.load(Ordering::Acquire), 1);
 }
 
-/// Приёмка #2173: редактор, пропавший посреди запроса, не роняет демон и MCP.
+/// Редактор, пропавший посреди запроса, не роняет демон и MCP.
 #[test]
 fn a_vanished_lsp_client_leaves_the_daemon_and_mcp_serving() {
     let host = Arc::new(HeldHost::default());

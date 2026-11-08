@@ -1740,7 +1740,7 @@ mod tests {
 
     /// One topology answers every object of a source state: it is reused
     /// while every file it was built from keeps its stamp, and built again
-    /// once a subsystem descriptor changes (#2235).
+    /// once a subsystem descriptor changes.
     /// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
     #[test]
     fn retained_subsystem_topology_is_reused_until_a_descriptor_changes() {

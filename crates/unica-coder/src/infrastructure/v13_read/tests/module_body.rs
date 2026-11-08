@@ -1,7 +1,7 @@
 use super::*;
 
 /// `Body` отдаёт исходные строки с их номерами: среза по контексту у `view`
-/// нет (#1374), и клиентский код формы остаётся в ответе.
+/// нет, и клиентский код формы остаётся в ответе.
 /// rule: INV.SOURCE.MODULE-COMPILATION-AND-BODY
 #[test]
 fn module_body_returns_the_source_text_byte_for_byte() {

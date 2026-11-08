@@ -4137,7 +4137,7 @@ fn main() {
         (context, runtime, pid_file, log_file)
     }
 
-    /// #2189: a call out of time is cancelled at the analyzer, and the next
+    /// A call out of time is cancelled at the analyzer, and the next
     /// call is answered by the same warm process.
     /// rule: INV.LSP.MCP-PRIORITY
     #[test]
@@ -4166,7 +4166,7 @@ fn main() {
         cleanup(&context);
     }
 
-    /// #2189, mcp-priority: an editor's call holding the analyzer gives way to
+    /// An editor's call holding the analyzer gives way to
     /// an MCP call, which is answered without waiting for it to finish.
     /// rule: INV.LSP.MCP-PRIORITY
     #[test]
@@ -6210,7 +6210,7 @@ fn main() {
 
     /// Проводка продуктового запуска: сервисом стартует этот тестовый бинарь,
     /// libtest не понимает `--workspace-service` и сразу выходит. Запуск обязан
-    /// назвать выход до готовности, не досиживая срок готовности (#1920).
+    /// назвать выход до готовности, не досиживая срок готовности.
     #[test]
     fn spawned_service_that_exits_is_reported_before_the_readiness_timeout() {
         assert!(
@@ -6236,7 +6236,7 @@ fn main() {
     }
 
     /// Сервис, умерший до готовности, записи не напишет: ожидание обязано
-    /// прекратиться по его выходу, а не досиживать весь срок (#1920).
+    /// прекратиться по его выходу, а не досиживать весь срок.
     #[test]
     fn spawn_wait_stops_once_the_spawned_service_has_exited() {
         let context = test_context("spawn-wait-exited");

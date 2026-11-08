@@ -3662,7 +3662,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// #318. `v8-runner make` requires `--output`, and cfe export additionally
+    /// `v8-runner make` requires `--output`, and cfe export additionally
     /// requires `--extension`. The internal mapper already forwards both, but
     /// the published schema carried neither and is closed, so no MCP caller
     /// could ever pass them and the tool could not do its one job.
@@ -3690,7 +3690,7 @@ pub(crate) mod tests {
         validate_tool_arguments(tool, &args, false).expect("the documented make call is accepted");
     }
 
-    /// #319. `make` exports an artifact out of an infobase; it does not build
+    /// `make` exports an artifact out of an infobase; it does not build
     /// one from sources. The description read as the latter, so an agent
     /// reached for `make` where `build` then `make` was needed.
     #[test]
@@ -3709,7 +3709,7 @@ pub(crate) mod tests {
             tool.description
         );
 
-        // Review of #447: a description that sends the caller to a tool that
+        // A description that sends the caller to a tool that
         // does not exist is worse than the vague one it replaced. Every
         // `unica.*` name it mentions must be in the registry.
         let published = tools()
@@ -3727,14 +3727,14 @@ pub(crate) mod tests {
         }
     }
 
-    /// #315. A published argument that no handler reads is noise in every
+    /// A published argument that no handler reads is noise in every
     /// schema that carries the shared native list, and a caller who passes it
     /// gets silence instead of a rejection. The descriptions already say which
     /// ones those are, so the check reads them rather than repeating a list
     /// that would drift.
     #[test]
     fn no_published_argument_is_described_as_unread() {
-        // Review of #451: the previous oracle was built from the descriptions
+        // The previous oracle was built from the descriptions
         // this change removes, so after the removal it was empty and the test
         // held nothing. The names are pinned here instead — the table is the
         // contract, and it does not vanish with the descriptions.
@@ -3785,7 +3785,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// #290, требование 1: у каждого мутатора есть объявленная стратегия
+    /// У каждого мутатора есть объявленная стратегия
     /// предпросмотра, и она выводится из реестра, а не из растущего набора
     /// исключений по имени операции. Читатель стратегии не имеет — предпросмотр
     /// ему не адресован.
@@ -4678,7 +4678,7 @@ pub(crate) mod tests {
             .unwrap()
             .contains(&json!("build")));
         // Загрузка зависимостей стороннему исполнителю не делегируется:
-        // маршрута `tools-download` в схеме нет (#871, B-2).
+        // маршрута `tools-download` в схеме нет (B-2).
         assert!(!schema["properties"]["operation"]["enum"]
             .as_array()
             .unwrap()

@@ -483,7 +483,7 @@ mod tabular_standard_attribute_property_tests {
     #[test]
     fn tabular_standard_properties_keep_a_closed_utf8_bound_and_independent_values() {
         for extra in [0, 1] {
-            // The text wrapper is removed (#2031): the bound applies to the
+            // The text wrapper is removed: the bound applies to the
             // published string itself, counted in UTF-8 bytes.
             let room = MAX_COMPACT_PROP_BYTES + extra;
             let text = format!("{}{}", "я".repeat(room / 2), "a".repeat(room % 2));

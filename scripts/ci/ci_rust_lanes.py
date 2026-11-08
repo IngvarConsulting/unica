@@ -839,6 +839,27 @@ def moved_cases(lost: list[str], arrived: list[str]) -> dict[str, str]:
             if lost_names[name(case)] == 1 and len(arrivals.get(name(case), ())) == 1}
 
 
+def declared_after_move(lost: list[str], old_cases: set[str], new_cases: set[str],
+                        tests: list[str]) -> dict[str, str]:
+    """Lost cases a declaration names by the ID they had after a later move.
+
+    A test can move to another crate or module after the previous inventory
+    and then be removed before the next one. The pull request that removed it
+    declares the ID it had then, which the previous inventory never saw. Such
+    an exact declaration explains the lost case with the same function name
+    when that name is lost once and the declared ID is in neither inventory.
+    """
+    def name(case: str) -> str:
+        return case.rsplit("::", 1)[-1]
+    lost_names = Counter(name(case) for case in lost)
+    declared: dict[str, list[str]] = {}
+    for pattern in tests:
+        if not pattern.endswith("*") and pattern not in old_cases and pattern not in new_cases:
+            declared.setdefault(name(pattern), []).append(pattern)
+    return {case: declared[name(case)][0] for case in lost
+            if lost_names[name(case)] == 1 and len(declared.get(name(case), ())) == 1}
+
+
 def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[str]) -> bool:
     """A lost case is explained by its own vanished target or a declaration naming that target."""
     binary = binary_of(case, binaries)
@@ -953,8 +974,11 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
             continue
         lost = sorted(set(old["cases"]) - set(new["cases"]))
         moved = moved_cases(lost, sorted(set(new["cases"]) - set(old["cases"])))
+        late = declared_after_move([case for case in lost if case not in moved],
+                                   set(old["cases"]), set(new["cases"]), tests)
         unexplained = [case for case in lost
-                       if case not in moved and not explained_case(case, old["binaries"], gone, tests)]
+                       if case not in moved and case not in late
+                       and not explained_case(case, old["binaries"], gone, tests)]
         if lost:
             drift["removedCases"][label] = lost
         if moved:

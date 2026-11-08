@@ -2029,7 +2029,7 @@ fn hit_module(at: &str) -> &str {
         .map_or(owner, |(module, _)| module)
 }
 
-/// #1298: a text hit names the logical module it was found in, and `view` of
+/// A text hit names the logical module it was found in, and `view` of
 /// that module's `Body` shows the same line, also on a first line after a BOM.
 /// A file without a proven module owner keeps its hit, named by the scan
 /// ordinal and the reason, never by its path.
@@ -2233,7 +2233,7 @@ fn text_hits_name_their_module_and_view_reads_the_same_line() {
     mcp.finish();
 }
 
-/// #1416: however broad the request scope — a metadata kind, an object with
+/// However broad the request scope — a metadata kind, an object with
 /// several modules, the whole source set or no scope at all — every text hit
 /// names the module it was found in. The broad answer gives the same `at`,
 /// line, column and snippet as the search scoped to that very module, keeps
@@ -2424,7 +2424,7 @@ fn text_search_keeps_nested_module_order_across_pages() {
     mcp.finish();
 }
 
-/// #1119: the literal search is not a window of its first 200 matches,
+/// The literal search is not a window of its first 200 matches,
 /// with Git and without it. Every match stays reachable through cursors in
 /// traversal order, a cursor replays its page while the delivered part is
 /// unchanged, and an edit before the cursor makes it stale instead of

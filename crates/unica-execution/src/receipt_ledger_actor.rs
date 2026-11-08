@@ -3943,7 +3943,7 @@ mod tests {
         }
     }
 
-    /// #1387: a step queued behind a slow one starts with little of its
+    /// A step queued behind a slow one starts with little of its
     /// caller's deadline left. Once begun it is held to the actor's running
     /// floor from its own start, not to the caller's remainder: overrunning
     /// the caller's deadline is neither uncertain nor a fail-stop.

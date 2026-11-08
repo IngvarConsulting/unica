@@ -89,7 +89,7 @@ class VerifyReleaseAssetsTests(unittest.TestCase):
 
     def test_report_checks_are_observations_of_the_verifier_not_literals(self) -> None:
         # Четыре ключа `checks` обязаны отвечать за четыре шага верификатора:
-        # проверка, которой не было, в отчёте остаётся `false` (#701, п. 1).
+        # проверка, которой не было, в отчёте остаётся `false` (п. 1).
         verifier = load_module(REPO_ROOT / "scripts/ci/verify-release-assets.py", "asset_verifier")
 
         def only_composition(asset_dir: Path, target: str, checks: dict) -> str:

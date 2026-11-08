@@ -1242,7 +1242,7 @@ mod medium_tests {
         let first = first.execute(CancellationToken::new()).unwrap();
         // A step stopped by the test hook leaves the inspection incomplete;
         // without automatic deadlines the answer no longer invites a repeat
-        // with a fresh deadline (#1251), yet a repeat still resumes.
+        // with a fresh deadline, yet a repeat still resumes.
         assert!(!first
             .next
             .iter()
@@ -1518,7 +1518,7 @@ mod medium_tests {
                 let data = result.data.unwrap();
                 if tool == ToolIdentity::Check {
                     // Past the handoff moment the inspection still runs to
-                    // its end: no handoff-sized portion (#1251).
+                    // its end: no handoff-sized portion.
                     assert_eq!(data["readinessState"], "complete", "{data}");
                 } else {
                     assert_eq!(data["sourceSets"][0]["name"], "main");
@@ -1659,7 +1659,7 @@ mod medium_tests {
         assert_eq!(target.source, Some("v8project.local.yaml"));
     }
 
-    /// #2155: a top-level `connection`, the former runner format, configures
+    /// A top-level `connection`, the former runner format, configures
     /// nothing, and both root answers name the key and where it belongs.
     #[test]
     fn a_top_level_connection_is_named_with_the_place_it_belongs() {

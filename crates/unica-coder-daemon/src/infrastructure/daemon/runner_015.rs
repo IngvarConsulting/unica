@@ -1093,7 +1093,7 @@ mod tests {
 
     #[test]
     fn a_file_connection_is_read_the_way_the_runner_reads_it() {
-        // #2007: the runner strips one pair of double or single quotes and
+        // The runner strips one pair of double or single quotes and
         // reads the key without case or spaces; the projection agrees.
         let layer = |connection: &str| {
             format!(

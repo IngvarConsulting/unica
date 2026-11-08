@@ -185,7 +185,7 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
     std::fs::write(source.join(module), retained_bsl).unwrap();
     std::fs::create_dir_all(source.join(sidecar).parent().unwrap()).unwrap();
     std::fs::write(source.join(sidecar), b"\0\xffform sidecar\r\n").unwrap();
-    // #2144: the owner is a CRLF file whose text value holds a bare LF, as the
+    // The owner is a CRLF file whose text value holds a bare LF, as the
     // platform writes multi-line texts; form.set changes only its own slot.
     // Every element sits on its own CRLF line, as in a platform export.
     let owner = source.join("Documents/Order.xml");
@@ -219,7 +219,7 @@ fn canonical_form_lifecycle_preserves_companions_and_removes_the_entire_resource
     assert_eq!(slots["DefaultObjectForm"], "Document.Order.Form.Main");
     assert_eq!(slots["DefaultChoiceForm"], "Document.Order.Form.Main");
 
-    // #2144: an empty string clears the slot to `<DefaultChoiceForm/>`, as an
+    // An empty string clears the slot to `<DefaultChoiceForm/>`, as an
     // export writes it, and leaves every other byte; a slot the owner kind
     // does not have is refused at its key.
     apply_pair(

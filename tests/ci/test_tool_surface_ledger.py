@@ -78,7 +78,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
 
     def test_plugin_examples_pass_only_published_arguments(self) -> None:
         # A skill example is copied by the agent as is: an argument the
-        # schema does not publish is refused as unknown (#2006, `cwd`).
+        # schema does not publish is refused as unknown (`cwd`).
         # The server checks top-level `properties` only (`validate_hidden_v13_request`).
         published = {tool["name"]: set(tool["inputSchema"].get("properties", {})) for tool in self.tools}
         examples = 0
@@ -133,7 +133,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
         self.assertIn(" нет |", row("cwd"))
 
     def test_nullable_argument_types_render_as_alternatives(self) -> None:
-        # The live surface publishes one type per argument (#1211); the
+        # The live surface publishes one type per argument; the
         # renderer still names a type array honestly if one ever appears.
         schema = {
             "type": "object",
@@ -240,7 +240,7 @@ class ToolSurfaceLedgerTests(unittest.TestCase):
             "unica.search": {"query", "corpus", "kind", "role", "scope", "regex", "ignoreCase", "limit", "cursor"},
             "unica.check": {"at", "limit", "cursor"},
             # Курсор есть только у чтения сохранённого плана; сравнение
-            # left/right по-прежнему не публикует продолжение (#1218).
+            # left/right по-прежнему не публикует продолжение.
             "unica.diff": {"left", "right", "limit", "executionToken", "cursor"},
             "unica.run": {"op", "args", "dryRun", "infobase"},
             "unica.docs": {"query", "source", "limit", "cursor"},

@@ -153,7 +153,7 @@ fn failed_and_cancelled_direct_terminals_answer_closed_errors_after_acknowledgem
     let cancelled = call(&router, None).expect_err("cancelled terminal is an error");
 
     // A read-only call changed nothing: the refusal says so and offers
-    // the same call as a new one (#1804).
+    // the same call as a new one.
     assert_eq!(uncertain.code, ErrorCode::INTERNAL_ERROR);
     assert_eq!(
             uncertain.message,
@@ -1259,7 +1259,7 @@ fn live_daemon_executes_once_and_compacts_the_acknowledged_receipt_to_a_tombston
     daemon.finish();
 }
 
-/// #1309: a call far above the former 16 KiB frame reaches the service and
+/// A call far above the former 16 KiB frame reaches the service and
 /// runs; one above the request bound never leaves the frontend and is
 /// refused with the limit and its own size, not a bare `invalid_request`.
 /// rule: INV.WIRE.DAEMON-REQUEST-FRAMING
@@ -1331,7 +1331,7 @@ fn live_daemon_runs_a_large_call_and_refuses_one_above_the_bound_unsent() {
 #[test]
 fn live_daemon_failure_is_delivered_as_the_closed_reason_without_its_text() {
     // A workspace that changed under the call keeps that cause and its
-    // remedy (#1338); any other failure stays the internal one.
+    // remedy; any other failure stays the internal one.
     for (failure_code, code, message) in [
             (
                 "provider_exploded",
