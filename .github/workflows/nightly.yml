@@ -67,3 +67,24 @@ jobs:
       profile: large
       alpha: ${{ github.ref == 'refs/heads/main' }}
       force_alpha: ${{ inputs.force || false }}
+
+  # Исследовательский крейт вне рабочего пространства, и ворота его не
+  # собирают. Ночь только собирает его цели на зависимостях продукта: копия
+  # корневого Cargo.lock и сверка общих версий, тесты не запускаются.
+  research-build:
+    name: Сборка исследовательских тестов
+    needs: decide
+    if: ${{ needs.decide.outputs.run == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - run: python scripts/dev/run-research.py --profile build
