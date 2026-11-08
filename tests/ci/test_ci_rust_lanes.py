@@ -1014,6 +1014,17 @@ class PreviousInventoryTests(unittest.TestCase):
         self.assertEqual(lanes.declared_after_move(lost, old_cases, set(),
                                                    tests + ["unica-workspace::x::moved_then_removed"]), {})
 
+    def test_a_declaration_explains_the_same_case_compiled_into_another_target(self):
+        binaries = ["unica-application", "unica-coder", "unica-coder::role_registration"]
+        lost = ["unica-coder::application::v13::tool_catalog::tests::retired",
+                "unica-coder::application::v13::other::tests::retired",
+                "unica-coder::role_registration::kept"]
+        tests = ["unica-application::application::v13::tool_catalog::tests::retired",
+                 "unica-application::application::*", "unknown-target::kept"]
+        self.assertEqual(lanes.declared_in_another_target(lost, binaries, tests),
+                         {"unica-coder::application::v13::tool_catalog::tests::retired":
+                          "unica-application::application::v13::tool_catalog::tests::retired"})
+
     def test_cases_belong_to_the_longest_nested_target_id(self):
         binaries = ["unica-coder", "unica-coder::daemon_receipt_ledger"]
         self.assertEqual(lanes.binary_of("unica-coder::daemon_receipt_ledger::t1", binaries), "unica-coder::daemon_receipt_ledger")

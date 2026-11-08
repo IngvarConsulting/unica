@@ -486,6 +486,31 @@ def baseline_scope(document: dict) -> tuple[str, str] | None:
     return source["headSha"], "\n".join(declared)
 
 
+def nightly_problems(root: Path, profile: str, head: str) -> list[str]:
+    """Removals the night would report: a pull request base is recent, the night's
+    inventory may be days old.
+
+    Between them a test may have moved to another target or left a second
+    target that compiled the same source; the pull request then declares the
+    ID it sees at its base, while the night still knows the older one. The same
+    source check from the night's inventory commit, with every declaration
+    merged since and this pull request's own, names that ID here.
+    """
+    try:
+        document = baseline.baseline(root, os.environ["GITHUB_REPOSITORY"], int(os.environ["GITHUB_REPOSITORY_ID"]),
+                                     profile, baseline.own_pull_request(), [])
+    except Exception as error:  # noqa: BLE001 - a lookup failure only skips this extra comparison
+        message = f"the {profile} inventory was not found, removals were not compared with it: {error}"
+        print(f"::warning::{message}" if os.environ.get("GITHUB_ACTIONS") else message, file=sys.stderr)
+        return []
+    scope = baseline_scope(document)
+    if scope is None:
+        return []
+    revision, declared = scope
+    return [f"since the {profile} inventory: {problem}"
+            for problem in check(root, revision, declared, head, python=False)]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     origin = parser.add_mutually_exclusive_group(required=True)
@@ -496,6 +521,9 @@ def main() -> int:
     source.add_argument("--description-file", type=Path, help="pull request description text")
     source.add_argument("--description", help="pull request description text")
     parser.add_argument("--repo-root", type=Path, default=ROOT)
+    parser.add_argument("--nightly-profile", default=None,
+                        help="with --base on a pull request: also compare from that profile's previous "
+                             "inventory, as the night will, with the declarations merged since and this one")
     args = parser.parse_args()
     if args.baseline is not None:
         scope = baseline_scope(json.loads(args.baseline.read_text(encoding="utf-8")))
@@ -513,6 +541,9 @@ def main() -> int:
             parser.error("give --description-file or --description outside a pull request run")
     try:
         problems = check(args.repo_root, args.base, description, args.head, python=args.baseline is None)
+        if args.nightly_profile is not None and args.baseline is None:
+            problems += [problem for problem in nightly_problems(args.repo_root, args.nightly_profile, args.head)
+                         if problem not in problems]
     except subprocess.CalledProcessError as error:
         # No verdict: git could not read the revisions, so nothing was checked.
         detail = error.stderr.decode("utf-8", "replace").strip()
