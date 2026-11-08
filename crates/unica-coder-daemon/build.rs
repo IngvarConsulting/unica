@@ -9,10 +9,16 @@
 use std::path::{Path, PathBuf};
 
 /// The directory of a module and the file its declarations are written to.
-const MODULES: &[(&str, &str)] = &[(
-    "src/infrastructure/daemon/metadata_can_tests",
-    "metadata_can_tests_modules.rs",
-)];
+const MODULES: &[(&str, &str)] = &[
+    (
+        "src/infrastructure/daemon/metadata_can_tests",
+        "metadata_can_tests_modules.rs",
+    ),
+    (
+        "src/infrastructure/daemon/server/medium_actor_capacity_tests",
+        "medium_actor_capacity_tests_modules.rs",
+    ),
+];
 /// Lowercase Rust keywords, strict and reserved, and `_`: `mod <keyword>;` does
 /// not compile. `gen` is reserved from edition 2024; rejecting it now keeps the
 /// module names valid across an edition change.
