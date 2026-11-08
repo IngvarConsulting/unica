@@ -473,48 +473,31 @@ pub(crate) mod medium_tests {
     }
 
     impl Fixture {
+        /// Пустая конфигурация 8.3.27 со справочником `Catalog.Editable`.
         fn new(label: &str) -> Self {
+            Self::from_snapshot(label, "metadata-editable")
+        }
+
+        /// Набор из снимка `crates/unica-coder/tests/fixtures/<snapshot>`:
+        /// результат однажды выполненных добавлений писателем, байт в байт.
+        fn from_snapshot(label: &str, snapshot: &str) -> Self {
             let root = std::env::temp_dir().join(format!(
                 "unica-meta-edit-typed-{label}-{}-{}",
                 std::process::id(),
                 uuid::Uuid::new_v4()
             ));
-            fs::create_dir_all(&root).unwrap();
+            crate::infrastructure::test_fixtures::copy_tree(
+                &std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests/fixtures")
+                    .join(snapshot),
+                &root,
+            );
             let context = WorkspaceContext {
                 cwd: root.clone(),
                 workspace_root: root.clone(),
                 cache_root: root.join(".build/unica"),
                 workspace_epoch: 0,
             };
-            crate::infrastructure::test_fixtures::copy_empty_configuration(&root);
-            fs::write(
-                root.join("v8project.yaml"),
-                concat!(
-                    "format: DESIGNER\n",
-                    "source-set:\n",
-                    "  - name: main\n",
-                    "    type: CONFIGURATION\n",
-                    "    path: src\n",
-                ),
-            )
-            .unwrap();
-            let cancellation = CancellationToken::new();
-            MetadataOperations::prepare_mutation(
-                &unica_metadata::request::MetadataRequest::Add(
-                    unica_metadata::request::MetaAddRequest {
-                        source_set: "main".into(),
-                        kind: MetadataKind::Catalog,
-                        name: "Editable".into(),
-                        operations: Vec::new(),
-                        dry_run: false,
-                    },
-                ),
-                &context,
-                &cancellation,
-            )
-            .unwrap()
-            .publish(&cancellation)
-            .unwrap();
             Self {
                 descriptor: root.join("src/Catalogs/Editable.xml"),
                 owner: root.join("src/Configuration.xml"),
@@ -3158,9 +3141,8 @@ pub(crate) mod medium_tests {
     }
 
     fn ordinary_form_read_fixture() -> Fixture {
-        let fixture = Fixture::new("ordinary-form-read");
-        fixture.publish_form_add("Ordinary");
-        fixture.publish_form_add("ManagedSibling");
+        // Управляемые формы `Ordinary` и `ManagedSibling`, добавленные писателем.
+        let fixture = Fixture::from_snapshot("ordinary-form-read", "metadata-editable-forms");
         let forms = fixture.root.join("src/Catalogs/Editable/Forms");
         let descriptor = forms.join("Ordinary.xml");
         let text = fs::read_to_string(&descriptor).unwrap();
