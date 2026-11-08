@@ -1253,6 +1253,53 @@ fn check_unknown_argument_is_named(
     }
 }
 
+/// Ошибка значения опубликованного аргумента — повтор имени — продолжения
+/// не получает: лишним такой ключ не признаётся. Тот же отказ по ключу,
+/// которого контракт не называет, ведёт к контракту операции на узле.
+/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
+#[test]
+fn a_value_error_gets_no_next_and_an_unknown_key_leads_to_the_contract() {
+    let traits = crate::domain::apply::source_set_traits_of_source(
+        SourceSetKind::Configuration,
+        SourceFormat::PlatformXml,
+        SourceProfile::platform_xml_8_3_27_format_2_20(),
+    );
+    let at = "main:Catalog.Валюты";
+    let request = apply_request(at, "attribute.add", json!({"items": [{"name": "Код"}]}));
+    let refusal = |path: &str, message: &str| {
+        DomainResult::canonical_rejection(
+            Some(path.to_string()),
+            unica_refusal::RefusalCode::BadValue,
+            message,
+        )
+    };
+    let duplicate = super::v13_service::with_unknown_argument_contract(
+        refusal(
+            "ops[0].args.items[0].name",
+            "attribute `Код` already exists",
+        ),
+        &request,
+        traits,
+    );
+    assert_eq!(duplicate.next, Vec::<Value>::new());
+    let unknown = super::v13_service::with_unknown_argument_contract(
+        refusal(
+            "ops[0].args.items[0].unicaUnknownArgument",
+            "unknown argument",
+        ),
+        &request,
+        traits,
+    );
+    assert_eq!(
+        unknown
+            .next
+            .iter()
+            .map(|next| next["args"]["at"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(format!("{at}.Can.attribute.add"))]
+    );
+}
+
 /// Отказ планировщика на запросе, как его отдаёт `apply`; `None`, если план
 /// построен.
 fn plan_error(checked: &Checked<'_>, request: &ApplyRequest) -> Option<DomainResult> {
