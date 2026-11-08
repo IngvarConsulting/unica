@@ -2680,6 +2680,7 @@ dependencies = [
  "unica-adapter-v8-runner",
  "unica-address",
  "unica-analysis-services",
+ "unica-application",
  "unica-artifact-delivery",
  "unica-bootstrap",
  "unica-bsl",
