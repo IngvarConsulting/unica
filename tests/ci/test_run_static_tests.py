@@ -79,6 +79,15 @@ class PullRequestLevelTests(unittest.TestCase):
         self.assertEqual(checks["if"], "${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}")
         self.assertEqual(checks["run"], "python scripts/ci/run-static-tests.py")
 
+    def test_the_pull_request_checks_removed_rust_tests_against_its_base(self) -> None:
+        removed = self.step("Удалённые тесты Rust объявлены")
+        self.assertEqual(removed["if"], "${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}")
+        self.assertEqual(removed["run"], 'python scripts/ci/removed_tests.py --base "$BASE_SHA"')
+        self.assertEqual(removed["env"]["BASE_SHA"], "${{ github.event.pull_request.base.sha }}")
+        # The description is read fresh through the API: the job may read pull requests.
+        job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]["unica-ci"]
+        self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "read"})
+
 
 if __name__ == "__main__":
     unittest.main()
