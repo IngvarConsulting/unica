@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 
+from collector_rules import without_repository_rule_index
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "ci"
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
@@ -33,6 +34,7 @@ class CollectResultsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.allure = load("allure_results")
         self.collect = load("collect-results")
+        without_repository_rule_index(self, self.collect)
         self.root = Path(tempfile.mkdtemp(prefix="collect-"))
         self.artifacts = self.root / "artifacts"
         self.run = {
