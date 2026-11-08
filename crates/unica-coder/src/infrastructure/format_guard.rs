@@ -78,7 +78,7 @@ pub(crate) fn evaluate_format_guard(
 /// run the same owner resolution the retired `*.validate` tools ran before
 /// their handler: a root outside the active profile answers a warning
 /// diagnostic, never a silent pass (`DEC.2026-08-21.SINGLE-WRITABLE-PLATFORM-XML-PROFILE`).
-pub(crate) fn evaluate_read_format_guard(
+pub fn evaluate_read_format_guard(
     operation: &str,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -142,7 +142,7 @@ pub(crate) fn evaluate_retained_template_format_guard(
 
 /// Mutation-side guard by operation name, for tests that prove a writer
 /// refuses before its handler without a public v0.12 tool record.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn evaluate_mutation_format_guard(
     operation: &str,
     args: &Map<String, Value>,

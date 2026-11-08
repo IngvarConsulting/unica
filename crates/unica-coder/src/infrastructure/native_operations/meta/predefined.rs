@@ -1,10 +1,10 @@
 //! Trusted binding for the existing bounded source-contained predefined read.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::infrastructure::platform_xml_source_targets::ClosedPlatformXmlTarget;
 use std::path::Path;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_address::source_target::MetadataAddress;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata::*;
 use unica_metadata_designer::predefined::*;
 pub(crate) struct PredefinedResourceReadBinding;
@@ -23,7 +23,7 @@ impl PredefinedResourceRead for PredefinedResourceReadBinding {
             .map(|observed| observed.bytes)
     }
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn plan_predefined_resource(
     source_root: &Path,
     descriptor_path: &Path,

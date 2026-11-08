@@ -1,4 +1,4 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_adapter_bsl_analyzer::adapter::{
     AnalyzerRunFailureKind, BslAnalyzerMcpAdapter, BslAnalyzerOutcome, BslMcpCommand, BslMcpOutput,
     BslMcpRunner,
@@ -7,10 +7,10 @@ use unica_adapter_bsl_analyzer::adapter::{
 use crate::application::RuntimeJobAction;
 use crate::infrastructure::bundled_tools::resolve_bundled_tool;
 use crate::infrastructure::plugin_runtime::find_plugin_root;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_adapter_bsl_analyzer::jsonl::MAX_DIAGNOSTICS_JSONL_LINE_BYTES;
 use unica_adapter_v8_runner::adapter::runtime_args;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_adapter_v8_runner::adapter::{validate_runtime_mapper_payload, RuntimeAdapter};
 use unica_adapter_v8_runner::preflight::RuntimeBuildPreflight;
 use unica_adapter_v8_runner::request::RuntimeJobRequest;
@@ -22,28 +22,28 @@ use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_process::arguments::process_timeout_error;
 use unica_process::arguments::{kebab_case, reported_cli_value};
 use unica_process::runner::{system_process_runner, ProcessCommand, ProcessRunner};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_process::runner::{ProcessOutput, ProcessStreamFailure, ProcessStreamOutput};
 use unica_redaction::redactor;
 use unica_runner::operation::RuntimeJobOperation;
 use unica_source_contract::workspace::WorkspaceContext;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_workspace::paths::path_lock_identity;
 type RuntimeJobService = runtime_jobs::RuntimeJobService<RuntimeJobRequest>;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::infrastructure::source_roots::resolve_source_root;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use std::time::Duration;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_process::StreamControl;
 use unica_work_control::cancellation::{CancellationToken, CANCELLED_PREFIX};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_workspace::paths::normalize_path_identity;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_process::ProcessLineReply;
 
 // resource-limit: analysis.internal-adapter-process-ms
@@ -134,7 +134,7 @@ impl<'a> CliAdapter<'a> {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn with_runner(
         tool_name: &'static str,
         default_command: &'static [&'static str],
@@ -270,7 +270,7 @@ impl<'a> CliAdapter<'a> {
 }
 
 impl RuntimeJobAdapter {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn invoke(
         action: RuntimeJobAction,
         tool_name: &str,
@@ -639,13 +639,13 @@ fn runtime_job_snapshot_value(snapshot: &runtime_jobs::RuntimeJobSnapshot) -> Va
     })
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn process_exit_code_is(status: &str, code: i32) -> bool {
     let status = status.trim();
     status == code.to_string() || status.ends_with(&format!(": {code}"))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn resolve_source_dir(
     context: &WorkspaceContext,
     args: &Map<String, Value>,

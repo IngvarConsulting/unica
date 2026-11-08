@@ -46,19 +46,19 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::cache::{CacheAccess, CacheReport};
 use unica_workspace::state::WorkspaceStateRepository;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     /// A test's diagnostic provider in place of the bundled analyzer, read on
     /// the thread that resolves the registry.
-    pub(crate) static DIAGNOSTIC_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Arc<dyn DiagnosticProvider>>> =
+    pub static DIAGNOSTIC_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Arc<dyn DiagnosticProvider>>> =
         const { std::cell::RefCell::new(None) };
     /// A test's code intelligence providers in place of the bundled ones, read
     /// on the thread that resolves the registry.
-    pub(crate) static CODE_INTELLIGENCE_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Vec<Arc<dyn CodeIntelligenceProvider>>>> =
+    pub static CODE_INTELLIGENCE_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Vec<Arc<dyn CodeIntelligenceProvider>>>> =
         const { std::cell::RefCell::new(None) };
     /// A test's symbol provider in place of the bundled analyzer, read on the
     /// thread that answers the symbol request.
-    pub(crate) static SYMBOL_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Arc<dyn unica_code_intelligence::symbols::SymbolProvider>>> =
+    pub static SYMBOL_PROVIDER_OVERRIDE: std::cell::RefCell<Option<Arc<dyn unica_code_intelligence::symbols::SymbolProvider>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -108,22 +108,28 @@ pub(crate) fn engine_for(spec: ToolSpec) -> Option<&'static str> {
     }
 }
 
-pub(crate) struct InfrastructureApplicationPorts {
+pub struct InfrastructureApplicationPorts {
     support_state_readers: Arc<dyn SupportStateReaderFactory>,
     /// Идущие доставки. Стол принадлежит серверу: доставка переживает вызов,
     /// который её начал, и достаётся следующему.
     deliveries: unica_artifact_delivery::desk::DeliveryDesk,
 }
 
+impl Default for InfrastructureApplicationPorts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InfrastructureApplicationPorts {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             support_state_readers: Arc::new(WorkspaceSupportStateReaderFactory),
             deliveries: Default::default(),
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn with_support_reader_factory(
         support_state_readers: Arc<dyn SupportStateReaderFactory>,
     ) -> Self {
@@ -329,7 +335,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
     }
 
     fn code_intelligence_registry(&self) -> Result<CodeIntelligenceRegistry, String> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(providers) =
             CODE_INTELLIGENCE_PROVIDER_OVERRIDE.with(|slot| slot.borrow().clone())
         {
@@ -343,7 +349,7 @@ impl ApplicationPorts for InfrastructureApplicationPorts {
     }
 
     fn diagnostic_provider_registry(&self) -> Result<DiagnosticProviderRegistry, String> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(provider) = DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| slot.borrow().clone()) {
             return DiagnosticProviderRegistry::new(vec![provider])
                 .map_err(|error| error.to_string());
@@ -935,7 +941,7 @@ fn documentation_registry(
 > {
     use std::sync::Arc;
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         let _ = cancellation;
         if let Some(stand_in) = documentation_registry_stand_in() {
@@ -1001,7 +1007,7 @@ fn documentation_registry(
 /// Поставщики выдают идентификатор со схемой — `configuration-help:<набор>:<путь>`
 /// — или ссылкой. Ни имя метода, ни фраза на языке такой формы не имеют,
 /// поэтому разделение детерминированно и не гадает.
-pub(crate) fn documentation_locator(query: &str) -> Option<&str> {
+pub fn documentation_locator(query: &str) -> Option<&str> {
     let trimmed = query.trim();
     // Синтакс-помощник выдаёт пути вроде `objects/Global context/...`.
     // Пробелы внутри такого пути не превращают локатор во фразу для поиска.
@@ -1071,7 +1077,7 @@ fn open_documentation_page(
     result
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn canonical_v13_docs_search(
     workspace: &WorkspaceContext,
     query: &str,
@@ -1081,7 +1087,7 @@ pub(crate) fn canonical_v13_docs_search(
     canonical_v13_docs_search_with_limit(workspace, query, source, 20, false, cancellation)
 }
 
-pub(crate) fn canonical_v13_docs_search_with_limit(
+pub fn canonical_v13_docs_search_with_limit(
     workspace: &WorkspaceContext,
     query: &str,
     source: Option<&str>,
@@ -1183,20 +1189,20 @@ pub(crate) fn canonical_v13_docs_search_with_limit(
 /// проверить: настоящий поставщик отвечает по установкам МАШИНЫ, и тест не
 /// выбирает ни их состав, ни их наличие, поэтому наблюдать через него, что
 /// аргументы вызова дошли до запроса и контекста, нельзя.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static DOCUMENTATION_REGISTRY_STAND_IN: std::sync::Mutex<
     Option<std::sync::Arc<dyn unica_documentation::model::DocumentationProvider>>,
 > = std::sync::Mutex::new(None);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static DOCUMENTATION_REGISTRY_STAND_IN_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-#[cfg(test)]
-pub(crate) struct DocumentationRegistryStandInGuard {
+#[cfg(any(test, feature = "test-support"))]
+pub struct DocumentationRegistryStandInGuard {
     _serial: std::sync::MutexGuard<'static, ()>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for DocumentationRegistryStandInGuard {
     fn drop(&mut self) {
         *DOCUMENTATION_REGISTRY_STAND_IN
@@ -1205,8 +1211,8 @@ impl Drop for DocumentationRegistryStandInGuard {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn install_documentation_registry_stand_in(
+#[cfg(any(test, feature = "test-support"))]
+pub fn install_documentation_registry_stand_in(
     provider: std::sync::Arc<dyn unica_documentation::model::DocumentationProvider>,
 ) -> DocumentationRegistryStandInGuard {
     let serial = DOCUMENTATION_REGISTRY_STAND_IN_SERIAL
@@ -1218,7 +1224,7 @@ pub(crate) fn install_documentation_registry_stand_in(
     DocumentationRegistryStandInGuard { _serial: serial }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn documentation_registry_stand_in(
 ) -> Option<std::sync::Arc<dyn unica_documentation::model::DocumentationProvider>> {
     DOCUMENTATION_REGISTRY_STAND_IN
@@ -1351,9 +1357,7 @@ fn documentation_context(
 
 /// The platform installation `unica.docs` reads for `workspace`: the
 /// project's pin, otherwise the newest installation found.
-pub(crate) fn platform_installation_root(
-    workspace: &WorkspaceContext,
-) -> Option<std::path::PathBuf> {
+pub fn platform_installation_root(workspace: &WorkspaceContext) -> Option<std::path::PathBuf> {
     documentation_context(
         &unica_adapter_v8_runner::full_dump::default_platform_roots(),
         None,

@@ -7,9 +7,9 @@
 
 use crate::domain::engine::MissingEngineRefusal;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_artifact_delivery::desk::DELIVERY_PROGRESS_META_KEY;
 use unica_artifact_delivery::desk::{CanonicalDeliveryProgress, DeliveryDesk, EngineOrder};
 
@@ -20,7 +20,7 @@ use unica_artifact_delivery::shared::{DeliveryFailureClass, EngineDeliveryState}
 use unica_execution_contract::invocation::DomainResult;
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_work_control::cancellation::CancellationToken;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_work_control::progress::ProgressEvent;
 use unica_work_control::progress::ProgressSink;
 
@@ -45,7 +45,7 @@ pub(crate) fn order_for(plugin_root: &Path, tool_name: &str) -> Option<EngineOrd
 /// Both inspect the same installed location and join an exact delivery in
 /// their coordinator, so a request never starts a second download under
 /// another key in one process.
-pub(crate) fn deliver_if_missing(
+pub fn deliver_if_missing(
     desk: &DeliveryDesk,
     plugin_root: &Path,
     tool_name: &str,
@@ -71,7 +71,7 @@ pub(crate) fn deliver_if_missing(
 /// delivery is a retryable refusal, never a successful result for an operation
 /// that has not run. The bootstrap error text can contain a remote URL or
 /// filesystem path, so only its closed class is projected onto the response.
-pub(crate) fn canonical_delivery_result(
+pub fn canonical_delivery_result(
     state: EngineDeliveryState,
     progress: &CanonicalDeliveryProgress,
 ) -> Option<DomainResult> {
@@ -157,7 +157,7 @@ pub(crate) fn canonical_delivery_result(
 /// поставляемого движка»: рядом с классом сбоя доставки `data` несёт поля
 /// движка на шаге `delivery` (#549). Срок и внутренний сбой остаются своими
 /// кодами и полей движка не получают.
-pub(crate) fn canonical_engine_delivery_result(
+pub fn canonical_engine_delivery_result(
     state: EngineDeliveryState,
     progress: &CanonicalDeliveryProgress,
     plugin_root: &Path,

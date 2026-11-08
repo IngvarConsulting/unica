@@ -72,10 +72,10 @@ pub(crate) const NAME_INDEX_BUDGET_BYTES: usize = 256 * 1024 * 1024;
 static FOREGROUND_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 /// Held while an MCP call executes; the name index build waits meanwhile.
-pub(crate) struct ForegroundCall(());
+pub struct ForegroundCall(());
 
 impl ForegroundCall {
-    pub(crate) fn begin() -> Self {
+    pub fn begin() -> Self {
         FOREGROUND_CALLS.fetch_add(1, Ordering::AcqRel);
         Self(())
     }
@@ -180,7 +180,7 @@ impl SourceNameIndex {
     }
 
     /// An estimate of the heap the index holds.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn approximate_bytes(&self) -> usize {
         self.index
             .read()
@@ -188,7 +188,7 @@ impl SourceNameIndex {
             .approximate_bytes()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn wait_ready_for_test(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;
         loop {

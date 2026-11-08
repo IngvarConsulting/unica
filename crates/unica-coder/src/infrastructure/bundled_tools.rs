@@ -100,7 +100,7 @@ struct LockTool {
 /// предупреждения предпросмотра.
 type ManifestBinaryError = (EngineStage, String);
 
-pub(crate) fn bundled_tool_version(plugin_root: &Path, tool_name: &str) -> Result<String, String> {
+pub fn bundled_tool_version(plugin_root: &Path, tool_name: &str) -> Result<String, String> {
     let manifest_path = plugin_root.join("third-party").join("manifest.json");
     if let Ok(text) = fs::read_to_string(&manifest_path) {
         let manifest: BundledManifest = serde_json::from_str(&text)
@@ -131,7 +131,7 @@ pub(crate) fn bundled_tool_version(plugin_root: &Path, tool_name: &str) -> Resul
 /// рядом с плагином.
 const ARTIFACT_CACHE_ENV: &str = "UNICA_ARTIFACT_CACHE";
 
-pub(crate) fn resolve_bundled_tool(
+pub fn resolve_bundled_tool(
     plugin_root: &Path,
     tool_name: &str,
     verify: bool,
@@ -154,7 +154,7 @@ pub(crate) fn resolve_bundled_tool(
 ///
 /// Нужна там, где запуск уже не удался, а причину надо назвать типом: хеш
 /// считается только на этом пути, а не на каждом вызове.
-pub(crate) fn engine_absence(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
+pub fn engine_absence(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
     match resolve_bundled_tool(plugin_root, tool_name, true) {
         Err(BundledToolError::Missing(engine)) => Some(*engine),
         Ok(_) | Err(BundledToolError::Io(_)) => None,
@@ -163,11 +163,7 @@ pub(crate) fn engine_absence(plugin_root: &Path, tool_name: &str) -> Option<Miss
 
 /// Движок проверен, но его процесс не запустился. Без корня плагина пин и
 /// режим установки неизвестны: следующий шаг от них на этом шаге не зависит.
-pub(crate) fn start_failure(
-    plugin_root: Option<&Path>,
-    tool_name: &str,
-    program: &Path,
-) -> MissingEngine {
+pub fn start_failure(plugin_root: Option<&Path>, tool_name: &str, program: &Path) -> MissingEngine {
     let target = current_target_id()
         .map(str::to_owned)
         .unwrap_or_else(|_| host_label());
@@ -193,7 +189,7 @@ pub(crate) fn start_failure(
 /// Причина незапуска движка для ответа: текст ОС без служебного префикса,
 /// без пути к самому движку и после общей редакции секретов. Другие пути,
 /// если ОС их назвала, редакция не обещает убрать.
-pub(crate) fn launch_failure_cause(error: &str, tool_name: &str, program: &Path) -> String {
+pub fn launch_failure_cause(error: &str, tool_name: &str, program: &Path) -> String {
     let error = error.strip_prefix("process_failed: ").unwrap_or(error);
     unica_redaction::redactor(&error.replace(&program.display().to_string(), tool_name))
 }
@@ -209,7 +205,7 @@ pub(crate) fn launch_failure_cause(error: &str, tool_name: &str, program: &Path)
 /// неудачное подключение процесса к дереву — не незапуск движка (#549).
 ///
 /// [`ManagedSpawnFailure::Launch`]: unica_process::ManagedSpawnFailure::Launch
-pub(crate) fn launch_probe_failure(
+pub fn launch_probe_failure(
     plugin_root: &Path,
     tool_name: &str,
 ) -> Option<(MissingEngine, String)> {
@@ -274,7 +270,7 @@ pub(crate) fn delivery_failure(plugin_root: &Path, tool_name: &str) -> MissingEn
 }
 
 /// Корень плагина не найден: поставки, из которой взялся бы движок, нет.
-pub(crate) fn plugin_root_missing(tool_name: &str) -> MissingEngine {
+pub fn plugin_root_missing(tool_name: &str) -> MissingEngine {
     let target = current_target_id()
         .map(str::to_owned)
         .unwrap_or_else(|_| host_label());
@@ -406,7 +402,7 @@ pub(crate) fn artifact_for(plugin_root: &Path, tool_name: &str) -> Option<String
 /// Проверяется наличие файла, а не его сумма: сумму сверит запуск, а доставке
 /// довольно знать, чего ещё нет. Считать хеш десятков мегабайт на каждый вызов
 /// значит платить за ответ, который уже дала файловая система.
-pub(crate) fn installed_engine_path(plugin_root: &Path, tool_name: &str) -> Option<PathBuf> {
+pub fn installed_engine_path(plugin_root: &Path, tool_name: &str) -> Option<PathBuf> {
     engine_path_for(plugin_root, tool_name, current_target_id().ok()?)
 }
 
@@ -432,7 +428,7 @@ fn engine_path_for(plugin_root: &Path, tool_name: &str, target_id: &str) -> Opti
 /// от режима: исходный чекаут собирает инструменты сам, опубликованная
 /// поставка их доставляет. Контрольная сумма здесь не считается: её сверяет
 /// [`engine_absence`] на пути отказа.
-pub(crate) fn missing_engine(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
+pub fn missing_engine(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
     let Ok(target_id) = current_target_id() else {
         return Some(describe_missing(
             plugin_root,

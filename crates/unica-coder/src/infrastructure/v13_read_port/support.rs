@@ -11,7 +11,7 @@ use unica_refusal::RefusalDetail;
 use unica_source_contract::SourceSetKind;
 
 impl ProviderReadAuthority {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn support_state_read_count(&self) -> usize {
         self.support_state_reads
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -135,7 +135,7 @@ impl ProviderReadAuthority {
         let (stamp, state) =
             self.artifacts
                 .support_state(&self.root, checkpoint, |file, checkpoint| {
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     self.support_state_reads
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     parse_support_state(file, checkpoint)

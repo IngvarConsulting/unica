@@ -28,7 +28,7 @@ use unica_bindings::projection::{
 use unica_source_designer::module_layout::module_source_address as shared_module_source_address;
 
 use crate::infrastructure::logical_tree::{route_logical_address, LogicalReader, LogicalTreeRoute};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::infrastructure::platform_xml_source_targets::{
     resolve_platform_xml_target, TargetKindPolicy,
 };
@@ -40,40 +40,40 @@ use std::sync::{Arc, Mutex};
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
 use unica_address::module_routes::ModuleRole;
 use unica_address::module_routes::ModuleRouteKind;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_address::source_target::SourceTarget;
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
 use unica_bsl::profile::{ModuleCapability, PlatformProfile};
 use unica_forms::facts::{FormEventEvidence, FormInfoData};
 use unica_refusal::{RefusalCode, RefusalDetail};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_source_contract::read::SourceDirectory;
 use unica_source_contract::SourceSetKind;
 use unica_source_designer::owner::PlatformXmlSourceSetOwnerEvidence;
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 std::thread_local! {
     static COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST: std::cell::RefCell<Option<(String, Vec<String>)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Counts successful complete typed projections of one address on this thread.
-#[cfg(test)]
-pub(crate) struct CompletedViewProjectionProbeForTest {
+#[cfg(any(test, feature = "test-support"))]
+pub struct CompletedViewProjectionProbeForTest {
     previous: Option<(String, Vec<String>)>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl CompletedViewProjectionProbeForTest {
-    pub(crate) fn start(at: &str) -> Self {
+    pub fn start(at: &str) -> Self {
         Self {
             previous: COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST
                 .with(|slot| slot.replace(Some((at.to_owned(), Vec::new())))),
         }
     }
 
-    pub(crate) fn revisions(&self) -> Vec<String> {
+    pub fn revisions(&self) -> Vec<String> {
         COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST.with(|slot| {
             slot.borrow()
                 .as_ref()
@@ -84,7 +84,7 @@ impl CompletedViewProjectionProbeForTest {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for CompletedViewProjectionProbeForTest {
     fn drop(&mut self) {
         COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST.with(|slot| {
@@ -93,7 +93,7 @@ impl Drop for CompletedViewProjectionProbeForTest {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn observe_completed_view_projection_for_test(at: &QualifiedAddress, revision: &str) {
     COMPLETED_VIEW_PROJECTION_PROBE_FOR_TEST.with(|slot| {
         if let Some((target, revisions)) = slot.borrow_mut().as_mut() {
@@ -106,7 +106,7 @@ fn observe_completed_view_projection_for_test(at: &QualifiedAddress, revision: &
 
 /// Logical read adapter over one actor-issued source capability. Its read
 /// identity is fixed at admission; the adapter never snapshots the tree.
-pub(crate) struct LogicalViewReadAuthority<'a> {
+pub struct LogicalViewReadAuthority<'a> {
     cancellation: &'a CancellationToken,
     read: ProviderReadAuthority,
     profile: PlatformProfile,
@@ -158,7 +158,7 @@ struct OwnerEdgeCacheKey {
 }
 
 impl<'a> LogicalViewReadAuthority<'a> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn new(
         cancellation: &'a CancellationToken,
         source_set: impl Into<String>,
@@ -182,7 +182,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// The exact platform profile the reader serves; a logical reader exists
     /// only for such a profile.
-    pub(crate) const fn platform_profile(&self) -> PlatformProfile {
+    pub const fn platform_profile(&self) -> PlatformProfile {
         self.profile
     }
 
@@ -201,7 +201,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         )
     }
 
-    pub(crate) fn with_read_authority_and_registration_cache(
+    pub fn with_read_authority_and_registration_cache(
         cancellation: &'a CancellationToken,
         read: ProviderReadAuthority,
         profile: PlatformProfile,
@@ -225,7 +225,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// Only the path resolver supplies this placement; subsequent owner and
     /// child-registration checks still consume the target's actual XML.
-    pub(crate) fn with_external_point_binding(
+    pub fn with_external_point_binding(
         mut self,
         binding: unica_source_designer::external_artifact::ExternalArtifactBinding,
     ) -> Self {
@@ -235,7 +235,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// A capability comes from the same retained owner proof as its value,
     /// never from a truncated property projection or a guessed object name.
-    pub(crate) fn style_item_properties_observation(
+    pub fn style_item_properties_observation(
         &self,
         at: &QualifiedAddress,
     ) -> Result<Option<unica_metadata::style_color::StyleItemPropertiesObservation>, ViewError>
@@ -290,7 +290,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok(Some(observed))
     }
 
-    pub(crate) fn object_borrowing(
+    pub fn object_borrowing(
         &self,
         at: &QualifiedAddress,
     ) -> Result<Option<unica_metadata::borrowing::MetaBorrowing>, ViewError> {
@@ -319,7 +319,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// Resolve only registered, readable objects under this retained source.
     /// A matching filename or name alone is not parent identity evidence.
-    pub(crate) fn borrowed_parent_matches(
+    pub fn borrowed_parent_matches(
         &self,
         parent_uuid: &str,
         kind: &str,
@@ -412,7 +412,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     /// Resolve can reuse the typed identity locator only after reading the
     /// exact node. View treats an absent BSL file as empty; a source location
     /// must distinguish that case from an existing empty file.
-    pub(crate) fn existing_export_path(
+    pub fn existing_export_path(
         &self,
         at: &QualifiedAddress,
         requested_path: Option<&str>,
@@ -494,7 +494,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     /// and its `Body` the lines `view` returns as its text: the doc comment
     /// above the method through the closing line. The module `Body` counts the
     /// file stream like the view fast path, without projecting the module.
-    pub(crate) fn source_lines(
+    pub fn source_lines(
         &self,
         at: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
@@ -651,7 +651,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     /// whose own range holds it — the range `resolve` names for `Method`,
     /// from its first annotation through the closing line — outside every
     /// method, or past the end of the file. One projection answers all lines.
-    pub(crate) fn module_lines(
+    pub fn module_lines(
         &self,
         module: &QualifiedAddress,
         lines: &[usize],
@@ -682,7 +682,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// Resolves semantic containment from the same projection as Method
     /// views. Provider symbols are never accepted as boundary evidence.
-    pub(crate) fn narrowest_body_for_lines(
+    pub fn narrowest_body_for_lines(
         &self,
         module: &QualifiedAddress,
         from: usize,
@@ -703,7 +703,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     }
 
     /// The saved text of a module, read by the same projection as `view`.
-    pub(crate) fn module_text(&self, module: &QualifiedAddress) -> Result<String, ViewError> {
+    pub fn module_text(&self, module: &QualifiedAddress) -> Result<String, ViewError> {
         self.with_module_projection(module, |_, projections| {
             Ok(projections.source_text().to_string())
         })
@@ -769,7 +769,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             .is_ok()
     }
 
-    pub(crate) fn module_address_for_source_target(
+    pub fn module_address_for_source_target(
         &self,
         target: &MetadataAddress,
     ) -> Option<QualifiedAddress> {
@@ -786,7 +786,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         )
     }
 
-    pub(crate) fn body_for_search_hit(
+    pub fn body_for_search_hit(
         &self,
         module: &QualifiedAddress,
         from: usize,
@@ -812,37 +812,37 @@ impl<'a> LogicalViewReadAuthority<'a> {
         })
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn module_source_read_count(&self, target: &str) -> usize {
         self.read.module_source_read_count(target)
     }
 
-    #[cfg(test)]
-    pub(crate) fn configuration_payload_read_count(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn configuration_payload_read_count(&self) -> usize {
         self.read.configuration_payload_read_count()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn metadata_descriptor_read_count(&self, target: &str) -> usize {
         self.read.metadata_descriptor_read_count(target)
     }
 
-    #[cfg(test)]
-    pub(crate) fn support_state_read_count(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn support_state_read_count(&self) -> usize {
         self.read.support_state_read_count()
     }
 
-    #[cfg(test)]
-    pub(crate) const fn source_set_kind_for_test(&self) -> SourceSetKind {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn source_set_kind_for_test(&self) -> SourceSetKind {
         self.read.source_set_kind()
     }
 
-    #[cfg(test)]
-    pub(crate) const fn deadline_for_test(&self) -> ProviderDeadline {
+    #[cfg(any(test, feature = "test-support"))]
+    pub const fn deadline_for_test(&self) -> ProviderDeadline {
         self.deadline
     }
 
-    pub(crate) fn diagnostic_mapping(
+    pub fn diagnostic_mapping(
         &self,
         at: &QualifiedAddress,
         workspace: &unica_source_contract::workspace::WorkspaceContext,
@@ -877,7 +877,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     /// Mapping of a metadata object or the configuration root, proved by the
     /// same typed read as `view`. Findings on its own elements keep their
     /// metadata focus; separately addressable children stay their own targets.
-    pub(crate) fn diagnostic_node_mapping(
+    pub fn diagnostic_node_mapping(
         &self,
         at: &QualifiedAddress,
         workspace: &unica_source_contract::workspace::WorkspaceContext,
@@ -955,7 +955,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// One retained read prepares the complete package verdict. A separate
     /// public view would parse and validate the same XDTO model a second time.
-    pub(crate) fn check_xdto(
+    pub fn check_xdto(
         &self,
         at: &QualifiedAddress,
     ) -> Result<
@@ -995,7 +995,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
         Ok((admitted, Some(outcome)))
     }
 
-    pub(crate) fn validate_subsystem(
+    pub fn validate_subsystem(
         &self,
         at: &QualifiedAddress,
     ) -> Result<crate::application::v13::check::NativeCheckOutcome, ViewError> {
@@ -1012,7 +1012,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
     }
 
     /// Проверка формы использует ту же регистрацию и удержанный корень, что view.
-    pub(crate) fn form_validation_input(
+    pub fn form_validation_input(
         &self,
         at: &QualifiedAddress,
     ) -> Result<crate::infrastructure::v13_read_port::FormValidationInput, ViewError> {
@@ -1031,7 +1031,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// Proves a DCS template through the same registration and descriptor
     /// authority as view, then reads its body through the retained source root.
-    pub(crate) fn dcs_validation_input(
+    pub fn dcs_validation_input(
         &self,
         at: &QualifiedAddress,
     ) -> Result<crate::infrastructure::v13_read_port::TemplateValidationInput, ViewError> {
@@ -1064,7 +1064,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
 
     /// Proves a MXL template through the same registration and descriptor
     /// authority as view, then reads its body through the retained source root.
-    pub(crate) fn mxl_validation_input(
+    pub fn mxl_validation_input(
         &self,
         at: &QualifiedAddress,
     ) -> Result<crate::infrastructure::v13_read_port::TemplateValidationInput, ViewError> {
@@ -2786,7 +2786,7 @@ impl ViewReadAuthority for LogicalViewReadAuthority<'_> {
                 "source revision changed during the typed read",
             ));
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         observe_completed_view_projection_for_test(at, &admitted.revision);
         Ok(projected)
     }
@@ -2796,7 +2796,7 @@ impl LogicalViewReadAuthority<'_> {
     /// Search needs the named owner's registration and descriptor, but not a
     /// projected collection of its children. An unnamed kind branch is a
     /// valid logical scope even when it currently contains no objects.
-    pub(crate) fn validate_search_scope_owner(
+    pub fn validate_search_scope_owner(
         &self,
         scope: &QualifiedAddress,
         admitted: &ViewSourceSnapshot,
@@ -3051,7 +3051,7 @@ fn child_parent_reason(at: &QualifiedAddress) -> Option<String> {
 }
 
 /// Значение `props.content` узла, чьё содержимое расширение не несёт.
-pub(crate) const INHERITED_CONTENT: &str = "inherited";
+pub const INHERITED_CONTENT: &str = "inherited";
 
 /// Узел заимствованного объекта без своего сопутствующего файла.
 ///
@@ -3191,7 +3191,7 @@ fn module_owner_address(
 /// Ветка `Module` узла, которому профиль платформы даёт модули. Корень
 /// конфигурации и расширения ведёт к модулям приложения; у корня внешней
 /// обработки и отчёта их нет.
-pub(crate) fn module_branch_for_parent(
+pub fn module_branch_for_parent(
     parent: &QualifiedAddress,
     profile: PlatformProfile,
     source_kind: SourceSetKind,
@@ -3832,7 +3832,7 @@ fn named_segment(address: &QualifiedAddress, kind: NodeKind) -> Option<&str> {
         .and_then(AddressSegment::name)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use crate::infrastructure::v13_read_projection::project_known_suffix;
 use crate::infrastructure::v13_read_projection::project_typed_payload;
 
