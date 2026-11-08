@@ -10,9 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# Размер тестов модуля (scripts/ci/python_sizes.py).
-PR_SKIP = "дольше бюджета модуля уровня PR"
-
+from collector_rules import without_repository_rule_index
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts" / "ci"
 RUNNER = SCRIPTS / "run-unittest.py"
@@ -31,6 +29,7 @@ class PythonScopeSkipTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.collector = load_collector()
+        without_repository_rule_index(self, self.collector)
         self.signature = {
             "sha": "b" * 40, "ref": "main", "run_id": "42", "run_attempt": "1",
             "run_url": "https://github.com/IngvarConsulting/unica/actions/runs/42",

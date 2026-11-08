@@ -9,9 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-# Размер тестов модуля (scripts/ci/python_sizes.py).
-PR_SKIP = "дольше бюджета модуля уровня PR"
-
+from collector_rules import without_repository_rule_index
 
 def load_classifier_module():
     module_path = Path(__file__).resolve().parents[2] / "scripts" / "ci" / "classify-workflow-changes.py"
@@ -107,6 +105,7 @@ class GitEventClassificationTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("collect_event_results", collector_path)
         collector = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(collector)
+        without_repository_rule_index(self, collector)
         jobs = repo / "jobs.json"
         jobs.write_text(json.dumps({"jobs": [{"name": "Rust tests (complete inventory)", "conclusion": "skipped"}]}))
         collector.collect(repo / "routing", repo / "report", jobs, "", "")
