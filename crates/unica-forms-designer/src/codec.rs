@@ -6571,7 +6571,7 @@ pub fn form_compile_xml(
     }
     if contains_text_document_field(defn) {
         return Err(
-            "TextDocumentField is created only by item.add; the retired form compiler does not support it"
+            "unknown element key `textDoc`"
                 .to_string(),
         );
     }
