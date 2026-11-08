@@ -6,7 +6,7 @@ use std::sync::Arc;
 use unica_analysis_services::backend::ServiceEnvironment;
 use unica_artifact_delivery::engine::{BundledTool, BundledToolError, MissingEngine};
 use unica_code_intelligence::source_locations::SearchSourceBindings;
-use unica_daemon::identity::{verify_executable_build, CoreIdentity};
+use unica_daemon_protocol::identity::{verify_executable_build, CoreIdentity};
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_source_contract::workspace::{ResolvedSourceRoot, WorkspaceContext};
 use unica_workspace::policies::WorkspacePolicies;

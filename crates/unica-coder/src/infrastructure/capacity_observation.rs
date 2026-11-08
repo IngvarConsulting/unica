@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use unica_daemon::identity::DaemonStateDirectory;
+use unica_daemon_protocol::identity::DaemonStateDirectory;
 use unica_navigation::result_store::ViewCapacityObserver;
 use unica_process::process_peak_rss_bytes;
 use unica_workspace::state_fs::StateHandle as File;
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn snapshot_replacement_is_atomic_and_bounded() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn report_reader_rejects_symlink_without_following_it() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
         use unica_workspace::test_support::{
             create_directory_link_fixture_for_test, FileLinkFixtureOutcome,
         };
@@ -615,7 +615,7 @@ mod tests {
 
     #[test]
     fn report_reader_rejects_linked_snapshot_and_storage_failure_is_fail_open() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
         use unica_workspace::test_support::{
             create_file_link_fixture_for_test, FileLinkFixtureOutcome,
         };
@@ -653,7 +653,7 @@ mod tests {
 
     #[test]
     fn short_lived_daemon_flushes_on_shutdown() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -670,7 +670,7 @@ mod tests {
 
     #[test]
     fn shutdown_without_authority_preserves_snapshot_and_reports_unauthorized() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn one_state_directory_admits_only_one_capacity_writer() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();
@@ -743,7 +743,7 @@ mod tests {
 
     #[test]
     fn acknowledged_shutdown_releases_ownership_before_the_worker_returns() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         for expected in [
             CapacityFlushResult::Saved,
@@ -798,7 +798,7 @@ mod tests {
 
     #[test]
     fn unsupported_snapshot_version_is_preserved_and_disables_observation() {
-        use unica_daemon::identity::CoreIdentity;
+        use unica_daemon_protocol::identity::CoreIdentity;
 
         let root = tempfile::tempdir().unwrap();
         let root = root.path().canonicalize().unwrap();

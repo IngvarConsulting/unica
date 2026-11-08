@@ -78,12 +78,12 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-project-health", "unica-metadata-designer"),
             ("unica-project-health", "unica-adapter-bsl-analyzer"),
             ("unica-execution", "unica-adapter-v8-runner"),
-            ("unica-execution", "unica-daemon"),
+            ("unica-execution", "unica-daemon-protocol"),
             ("unica-execution", "unica-bootstrap"),
             ("unica-execution", "unica-metadata-designer"),
-            ("unica-daemon", "unica-forms"),
-            ("unica-daemon", "unica-adapter-bsl-analyzer"),
-            ("unica-daemon", "unica-project-health"),
+            ("unica-daemon-protocol", "unica-forms"),
+            ("unica-daemon-protocol", "unica-adapter-bsl-analyzer"),
+            ("unica-daemon-protocol", "unica-project-health"),
             ("unica-bsl-parser", "unica-bsl"),
             ("unica-roles", "unica-coder"),
             ("unica-bootstrap", "rmcp"),
@@ -119,12 +119,12 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-execution", "unica-runner"),
             ("unica-execution", "unica-workspace"),
             ("unica-execution", "unica-execution-contract"),
-            ("unica-daemon", "unica-execution"),
-            ("unica-daemon", "unica-workspace"),
-            ("unica-daemon", "unica-bootstrap"),
-            ("unica-daemon", "unica-artifact-delivery"),
-            ("unica-daemon", "unica-process"),
-            ("unica-daemon", "unica-lsp-contract"),
+            ("unica-daemon-protocol", "unica-execution"),
+            ("unica-daemon-protocol", "unica-workspace"),
+            ("unica-daemon-protocol", "unica-bootstrap"),
+            ("unica-daemon-protocol", "unica-artifact-delivery"),
+            ("unica-daemon-protocol", "unica-process"),
+            ("unica-daemon-protocol", "unica-lsp-contract"),
             ("unica-adapter-v8-runner", "unica-execution"),
             ("unica-coder-daemon", "rmcp"),
             ("unica-bsl-parser", "bsl-syntax"),
@@ -170,7 +170,7 @@ class ComponentBoundaryTests(unittest.TestCase):
     def test_lsp_service_and_its_contract_keep_their_own_boundary(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""
         refused = (
-            ("unica-lsp", "unica-daemon"),
+            ("unica-lsp", "unica-daemon-protocol"),
             ("unica-lsp", "unica-coder"),
             ("unica-lsp", "unica-coder-daemon"),
             ("unica-lsp", "unica-execution"),
@@ -179,10 +179,10 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-lsp", "unica-code-intelligence"),
             ("unica-code-model", "unica-bsl-parser"),
             ("unica-code-model", "unica-code-intelligence"),
-            ("unica-lsp-contract", "unica-daemon"),
+            ("unica-lsp-contract", "unica-daemon-protocol"),
             ("unica-lsp-contract", "unica-workspace"),
             ("unica-lsp-contract", "unica-address"),
-            ("unica-daemon", "unica-lsp"),
+            ("unica-daemon-protocol", "unica-lsp"),
         )
         for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
             for owner, target in refused:
@@ -270,7 +270,7 @@ class ComponentBoundaryTests(unittest.TestCase):
                 self.assertTrue(checker.edge_errors("unica-workspace", "unica-process", kind))
         # Components that did not exist when the list was written are refused too.
         for target in ("unica-runner", "unica-bootstrap", "unica-artifact-delivery", "unica-project-health",
-                       "unica-operations", "unica-adapter-bsl-analyzer", "unica-execution", "unica-daemon",
+                       "unica-operations", "unica-adapter-bsl-analyzer", "unica-execution", "unica-daemon-protocol",
                        "unica-coder", "unica-future-index"):
             for kind in ("dependencies", "build-dependencies", "dev-dependencies"):
                 with self.subTest(target=target, kind=kind):
