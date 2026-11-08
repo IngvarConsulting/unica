@@ -341,7 +341,8 @@ fn external_plan(prepared: &PreparedArtifactBuild) -> Result<Option<ExternalPlan
             "make sourceSet kind does not match the external output",
         ));
     }
-    if !source.source_set.source_format.is_supported() {
+    if !unica_coder::infrastructure::format_families::is_supported(source.source_set.source_format)
+    {
         return Err(reject(
             RefusalCode::InvalidState,
             "external make requires readable Designer platform XML sources",
