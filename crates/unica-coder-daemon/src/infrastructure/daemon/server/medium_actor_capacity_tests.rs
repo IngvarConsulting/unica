@@ -753,7 +753,7 @@ fn canonical_first_command_edit_creates_interface_of_new_subsystem() {
     assert!(!source.join("Subsystems/Новая").exists());
 
     // Порядок переставляет хранимый состав: без файла он отказывает
-    // и ничего не создаёт (#2010).
+    // и ничего не создаёт.
     let workspace = interface_order_workspace();
     publish(
         workspace.path(),
@@ -3011,7 +3011,7 @@ fn canonical_selected_engine_routes_request_delivery_before_provider_start() {
     assert!(output.status.success(), "{stdout}\n{stderr}");
 }
 
-/// #549: «нет поставляемого движка» — один отказ на всех четырёх
+/// «нет поставляемого движка» — один отказ на всех четырёх
 /// маршрутах. `run` (раннер), `search` с ролью (поставщик поиска), `check`
 /// модуля (анализ BSL) и `view` со сводкой графа (анализатор) отвечают
 /// `provider_unavailable` с уточнением `provider_absent` и одинаковыми
@@ -3236,7 +3236,7 @@ fn every_route_refuses_a_missing_engine_with_one_typed_refusal() {
     assert!(output.status.success(), "{stdout}\n{stderr}");
 }
 
-/// #406: канонический `run` создания базы в рабочей области без
+/// Канонический `run` создания базы в рабочей области без
 /// поставляемого раннера отвечает одним типизированным отказом и не
 /// раскрывает ни путь рабочей области, ни строку подключения из
 /// `v8project.yaml`, ни значения, переданные в аргументах.
@@ -4417,7 +4417,7 @@ fn groups(page: &DomainResult) -> Vec<serde_json::Value> {
         .clone()
 }
 
-/// #1119 (9c): a root check pages its diagnostic groups by count and by
+/// A root check pages its diagnostic groups by count and by
 /// encoded size. Every page carries the whole verdict and the number of
 /// groups; the walk returns every group once, in the first answer's order,
 /// and a continuation reads the saved verdict without inspecting again.
@@ -4489,7 +4489,7 @@ fn root_check_pages_its_groups_by_count_and_bytes_with_the_whole_verdict() {
     }
 }
 
-/// #1119 (9c): a root check cursor answers only its own question. A forged
+/// A root check cursor answers only its own question. A forged
 /// cursor, another workspace or another limit refuse it; an empty cursor
 /// opens page one, and a limit over 50 is refused.
 /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
@@ -4560,7 +4560,7 @@ fn root_check_cursor_answers_only_the_question_that_issued_it() {
     assert_eq!(refused.diagnostics[0]["code"], "bad_value", "{refused:?}");
 }
 
-/// #1119 (9c): a workspace verdict is saved in the check snapshot store.
+/// A workspace verdict is saved in the check snapshot store.
 /// A cursor whose verdict that store does not hold — as after a daemon
 /// restart — is refused, never answered as a complete page; a verdict the
 /// store cannot hold is refused before any cursor is promised.
@@ -4597,7 +4597,7 @@ fn a_root_check_cursor_without_its_saved_verdict_is_refused() {
     assert!(refused.cursor.is_none(), "{refused:?}");
 }
 
-/// #1119 (9c): the product runtime saves the workspace verdict in the read
+/// The product runtime saves the workspace verdict in the read
 /// service's check snapshots, so one retention budget covers both.
 #[test]
 fn the_root_check_shares_the_read_service_check_snapshots() {
@@ -4612,7 +4612,7 @@ fn the_root_check_shares_the_read_service_check_snapshots() {
     );
 }
 
-/// #1119 (9c): a cursor answers only the check that issued it. A
+/// A cursor answers only the check that issued it. A
 /// workspace verdict cursor does not continue a node check, and a node
 /// check cursor does not continue the workspace verdict, although both
 /// live in one store.
@@ -4642,7 +4642,7 @@ fn root_and_node_check_cursors_do_not_continue_each_other() {
         )
     };
     // Ветвь и пакет выбираются по виду и имени: корень перечисляет и
-    // пустые виды (#2153), а коллекция идёт в порядке `ChildObjects`.
+    // пустые виды, а коллекция идёт в порядке `ChildObjects`.
     let packages = "main:XDTOPackage".to_owned();
     assert!(view("main:Configuration").data.unwrap()["branches"]
         .as_array()
@@ -6162,7 +6162,7 @@ pub(crate) fn actor_read_source_capability_is_sealed_after_binding() {
     audit_text_search_walk(include_str!("../text_search.rs"))
         .unwrap_or_else(|error| panic!("{error}"));
     // Проверки независимы и в сумме идут секунды: каждая разбирает
-    // исходник заново, часть зовёт rustc. Параллельно, с той же паникой (#1920).
+    // исходник заново, часть зовёт rustc. Параллельно, с той же паникой.
     let checks: [fn(); 34] = [
         actor_read_source_capability_ast_audit_rejects_unordered_literal_enumeration,
         ordered_search_names_audit_rejects_ambient_or_foreign_listing,
@@ -8005,7 +8005,7 @@ fn production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools
     let first_match = &object_search.data.as_ref().unwrap()["matches"][0];
     assert_eq!(first_match["scope"], "main:Catalog.Items");
     assert!(first_match.get("file").is_none());
-    // Область поиска и читаемый адрес совпадения — разные поля (#1298).
+    // Область поиска и читаемый адрес совпадения — разные поля.
     assert_eq!(
         first_match["at"],
         "main:Catalog.Items.Module.Object.Method.Проверка.Body#L2"
@@ -8173,7 +8173,7 @@ fn production_daemon_configuration_executes_useful_modes_for_all_eight_v13_tools
                 "right": "main:Catalog.Items",
                 "cursor": "opaque"
             }),
-            // A cursor no first page issued continues nothing (#977).
+            // A cursor no first page issued continues nothing.
             "invalid_cursor",
         ),
         (
@@ -8272,7 +8272,7 @@ fn empty_cursor_and_diff_fixture() -> (
     (state_root, workspace, runtime, workspace_hint)
 }
 
-/// #1216: a form client sends an untouched optional string as `""`. For
+/// A form client sends an untouched optional string as `""`. For
 /// every tool that publishes `cursor`, the empty string asks for the
 /// first page exactly like an omitted cursor, and a first page that has
 /// more still issues a real continuation.
@@ -8585,7 +8585,7 @@ fn saved_plan_diff_projects_its_continuation_in_the_canonical_envelope() {
     );
 }
 
-/// #977: a cut left/right comparison continues on the canonical route.
+/// A cut left/right comparison continues on the canonical route.
 /// Pages walk the whole difference once, in order; the cursor answers
 /// only the same pair and page size and keeps the pair the first page
 /// read; nothing is published.
@@ -8743,7 +8743,7 @@ fn diff_pages_continue_the_saved_pair_on_the_canonical_route() {
     );
 }
 
-/// #977: nodes of different kinds are not compared, and an unreadable
+/// Nodes of different kinds are not compared, and an unreadable
 /// side is a refusal, never an empty node.
 /// rule: INV.WIRE.DIFF-REVISION-BOUND-PAGES
 #[test]
@@ -10876,7 +10876,7 @@ fn canonical_html_field_creation_binding_and_neighbor_edit_preserve_form_contrac
         ]),
     );
     // События нового элемента привязывает `event.bind` на их адресах с
-    // явным именем обработчика (Р2, Р4 #1447).
+    // явным именем обработчика (Р2, Р4).
     apply_pair(
         item_at,
         serde_json::json!([
@@ -11849,7 +11849,7 @@ fn assert_logical_read_files_do_not_grow_with_unrelated_objects(parent_publicati
     );
 }
 
-/// #1251, criterion 1: the default paths of `view`, an addressed `check`
+/// The default paths of `view`, an addressed `check`
 /// of a module body and an `apply` preview reach their providers through
 /// the daemon's real admission and invocation service without any
 /// operation deadline.
@@ -11941,7 +11941,7 @@ fn default_operation_paths_reach_providers_without_a_deadline() {
     );
 }
 
-/// #1338: only a binding that left the workspace actor is a changed
+/// Only a binding that left the workspace actor is a changed
 /// workspace the caller may repeat; an invariant failure at the
 /// execution boundary stays an internal failure, and neither carries the
 /// boundary's text.
@@ -11975,7 +11975,7 @@ fn execution_boundary_names_a_changed_workspace_only_for_a_lost_binding() {
     }
 }
 
-/// #1338: an addressed module `check` whose analyzer gave no result
+/// An addressed module `check` whose analyzer gave no result
 /// names the engine, what happened to it and how to recover, through the
 /// daemon's real admission and invocation service. An absent engine is
 /// `provider_absent`; the engine's own text never reaches the answer.
@@ -12059,7 +12059,7 @@ fn module_check_names_why_the_analyzer_gave_no_result() {
         }
 }
 
-/// #1966, INV.APP.DIAGNOSTIC-FOCUS, INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY:
+/// INV.APP.DIAGNOSTIC-FOCUS, INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY:
 /// `check` справочника спрашивает находки у поставщика, который объявил цель
 /// «объект метаданных». Находка на свойстве реквизита приходит цепочкой
 /// коллекция → элемент → свойство и язык; недоказанный элемент — находкой
@@ -12295,7 +12295,7 @@ fn object_check_shows_the_metadata_focus_chain_of_a_provider_finding() {
     );
 }
 
-/// #2177: порт символов на настоящей службе. Справочник и метод модуля
+/// Порт символов на настоящей службе. Справочник и метод модуля
 /// отвечает сам Unica: читатель и текст модуля; остальное — поставщик,
 /// которого тест подменяет без изменения службы. Ответ называет места
 /// адресами Unica и не несёт путей поставщика; изменённый буфер
@@ -12494,7 +12494,7 @@ fn symbol_port_answers_in_unica_places_with_a_substituted_provider() {
     ));
 }
 
-/// #1460: платформа не компилирует модуль, где `Перем` стоит после
+/// Платформа не компилирует модуль, где `Перем` стоит после
 /// методов, а анализатор такой модуль пропускает. `check` модуля через
 /// настоящий сервис вызова проваливается находкой с текстом платформы и
 /// местом объявления; тот же модуль с объявлением в начале проходит.
@@ -12583,7 +12583,7 @@ fn module_check_fails_a_variable_declared_after_methods() {
     );
 }
 
-/// #1338: an addressed module `check` whose analyzer is still being
+/// An addressed module `check` whose analyzer is still being
 /// delivered answers through the daemon's real invocation service with a
 /// retryable `working` delivery state, not with an analysis verdict. The
 /// delivery is already in flight, so this call joins it as a follower and
@@ -13127,7 +13127,7 @@ fn saved_call_graph_pages_survive_deleted_owner_without_analyzer_reads() {
     );
 }
 
-/// #1373: ветвь графа вызовов, чей анализатор ещё поставляется, отвечает
+/// Ветвь графа вызовов, чей анализатор ещё поставляется, отвечает
 /// через настоящую службу вызова повторяемым состоянием поставки
 /// `working`, а не графом. Поставка уже идёт, поэтому чтение ветви
 /// присоединяется к ней ведомым и возвращается сразу.
@@ -14408,7 +14408,7 @@ fn v5_infobase_exports_prepare_before_source_admission_and_run_without_a_revisio
 /// rule: INV.WIRE.TERMINAL-RUN-HAS-NO-FENCE
 #[test]
 fn v5_client_run_binds_before_source_admission_without_a_revision_gate() {
-    // Вариант А развилки A-1 (#871): терминальная операция запускается
+    // Вариант А развилки A-1: терминальная операция запускается
     // сразу, превью необязательно, `ifRev` не принимается.
     let workspace = tempfile::tempdir().expect("temporary infobase workspace");
     std::fs::write(
@@ -14515,7 +14515,7 @@ fn assert_development_cycle_admission(selected: &str) {
 }
 
 /// Адаптер раннера 0.15 не загружает CF/CFE без применения и не исполняет `apply`
-/// и `reset` (#1246): операции остаются в словаре недоступными, и вызов получает
+/// и `reset`: операции остаются в словаре недоступными, и вызов получает
 /// типизированный отказ при bind — до рабочего пространства, PlatformXml и
 /// раннера.
 /// rule: INV.RUNTIME.RUNNER-ONE-CAPABILITIES
@@ -14638,7 +14638,7 @@ fn v5_artifact_build_prepares_before_source_admission_and_runs_without_a_revisio
             panic!(".epf on make returned infrastructure failure: {other:?}")
         }
     };
-    // EPF/ERF build only from a named external source set (#1866).
+    // EPF/ERF build only from a named external source set.
     assert_eq!(external.diagnostics[0]["code"], "bad_value");
     assert!(
         external.diagnostics[0]["message"]
@@ -16166,7 +16166,7 @@ fn canonical_whole_graphical_template_removal_preserves_the_exact_neighbor_and_r
         let post = own_removal_snapshot(&source);
         assert_eq!(own_removal_file_bytes(&post), expected);
         // The selected payload leaves no directory behind; the collection
-        // still holds the neighbor (#1997).
+        // still holds the neighbor.
         assert!(post.keys().all(|path| !path.starts_with(OWN_REMOVAL_BASE)));
         assert_eq!(
             post.get(std::path::Path::new("Reports/OwnRemovalReport/Templates")),
@@ -16727,7 +16727,7 @@ fn canonical_borrowed_template_without_type_removes_only_local_registration_and_
 #[test]
 fn canonical_borrowed_sole_template_without_payload_takes_its_empty_collection() {
     // Without the borrowed neighbor the selected descriptor is the last
-    // entry of `Templates`, so the collection goes with it (#1997); the
+    // entry of `Templates`, so the collection goes with it; the
     // sibling `Forms` collection and the owner directory stay.
     let workspace = borrowed_removal_workspace_without_local_type();
     let source = workspace.path().join("src");
@@ -17268,7 +17268,7 @@ fn canonical_dcs_template_removal_clears_only_the_real_reference_and_replays() {
         let after = own_removal_snapshot(&source);
         assert_eq!(own_removal_file_bytes(&after), expected_files);
         // The payload directories and the `Templates` collection the sole
-        // template leaves empty go with it (#1997); the report directory
+        // template leaves empty go with it; the report directory
         // and every other entry outside them stay.
         assert!(!after.contains_key(std::path::Path::new(PAYLOAD)));
         assert!(!after.contains_key(std::path::Path::new(TEMPLATES)));

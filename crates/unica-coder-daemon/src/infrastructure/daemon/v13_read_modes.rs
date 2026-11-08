@@ -386,7 +386,7 @@ mod operation_dictionary_tests {
     }
 
     /// Реквизит и команда формы названы по своему узлу, как у объекта
-    /// метаданных (#1465): одно имя, а контракт выбирает адрес — у формы
+    /// метаданных: одно имя, а контракт выбирает адрес — у формы
     /// контракт писателя формы, у объекта — члена метаданных.
     #[test]
     fn column_type_can_and_contract_require_a_verified_valuetable_parent() {
@@ -765,7 +765,7 @@ mod operation_dictionary_tests {
         let can = configuration["can"].as_array().expect("root can entries");
         assert!(can.iter().any(|entry| entry["op"] == "subsystem.create"));
         assert!(can.iter().any(|entry| entry["op"] == "object.create"));
-        // The root's own properties are edited at the root itself (#1644).
+        // The root's own properties are edited at the root itself.
         assert!(can.iter().any(|entry| entry["op"] == "props.set"));
         // A configuration root is not an extension: nothing to borrow into.
         assert!(can.iter().all(|entry| entry["op"] != "object.borrow"));
@@ -978,7 +978,7 @@ mod inherited_can_tests {
             .collect()
     }
 
-    /// #1381: словарь заимствованного узла без своего файла — и в каждом
+    /// Словарь заимствованного узла без своего файла — и в каждом
     /// ответе `view`, и по адресу `.Can.<op>` — не предлагает операций,
     /// которые пишут унаследованное содержимое; описание объекта пишется.
     /// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT

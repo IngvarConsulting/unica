@@ -476,7 +476,7 @@ fn root_check_completes_the_whole_inspection_in_its_task() {
     root_inspection_survives_response_cutoff(V5ToolIdentity::Check);
 }
 
-/// #1119 (9c): a root check page is the same whether the daemon answers
+/// A root check page is the same whether the daemon answers
 /// directly or hands the call to a Task, and a cursor from either path
 /// continues on the other. Each page is one call; the Task stores that page.
 /// rule: INV.WIRE.CHECK-DIAGNOSTIC-PAGES
@@ -2242,7 +2242,7 @@ fn startup_materializes_handoff_without_replaying_begun_work() {
     }
 }
 
-/// #1360: the predecessor died after the lifecycle link became `TaskBound`
+/// The predecessor died after the lifecycle link became `TaskBound`
 /// and before the handoff receipt was completed. The successor must adopt
 /// that exact link, finish the Task with a recovery terminal and start; it
 /// must neither refuse to start nor replay the work. The second crash point
@@ -3916,7 +3916,7 @@ fn startup_rejects_preexisting_handoff_task_without_prior_link_reservation() {
     };
     assert!(error.contains("preexisting handoff Task has no exact prior link reservation"));
 
-    // The daemon process records the refusal for its frontend (#1360).
+    // The daemon process records the refusal for its frontend.
     let error = run_daemon((config.clone()).into_transport_config())
         .expect_err("daemon refuses the persisted state");
     assert!(error.contains("preexisting handoff Task has no exact prior link reservation"));
@@ -5607,7 +5607,7 @@ impl CanonicalInvocationService for NoncooperativeStuckService {
     }
 }
 
-/// #1251, owner decision: an executor that does not answer its cancel keeps
+/// An executor that does not answer its cancel keeps
 /// only its own Task. The Task shows the requested cancel, the daemon keeps
 /// serving other calls past the former two-second fail-stop, and the late
 /// executor still ends as cancelled.
@@ -5711,7 +5711,7 @@ fn noncooperative_cancel_keeps_only_its_task_while_the_daemon_serves_others() {
         .expect("daemon exits cleanly");
 }
 
-/// #1251: a cancel that reaches an inline call still in admission, before
+/// A cancel that reaches an inline call still in admission, before
 /// the handoff moment, ends it. Without an admission deadline the token is
 /// the only stop; the attempt publishes its own cancelled terminal.
 /// rule: INV.APP.ADMISSION-FAILURE-ISOLATION
@@ -6693,7 +6693,7 @@ impl unica_code_intelligence::model::CodeIntelligenceProvider for ColdIndexSearc
     }
 }
 
-/// #1216: through the daemon a search whose cursor is not a continuation of
+/// Through the daemon a search whose cursor is not a continuation of
 /// the question, or whose limit is out of range, is answered directly with a
 /// `fixCall` refusal. It creates no task and does not wait for the cold index
 /// of the selected provider.
@@ -6862,7 +6862,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for StepOrderHooks {
     }
 }
 
-/// #980: with a zero direct-response budget the call passes into its durable
+/// With a zero direct-response budget the call passes into its durable
 /// Task before the provider runs: the TaskStore record and its binding are
 /// committed before the provider is entered, and the same attempt then ends
 /// that Task, once.
@@ -6905,7 +6905,7 @@ fn zero_budget_call_is_a_durable_task_before_the_provider_runs() {
     )
     .expect("a zero response budget is valid");
     let mut owner = daemon.owner();
-    // The answer may be lost (#2089); the Task is read by its reserved id.
+    // The answer may be lost; the Task is read by its reserved id.
     write_json_line(
         &mut owner.0,
         &serde_json::to_value(V5ClientRequest::SubmitInvocation {
@@ -7084,7 +7084,7 @@ fn held_prepare_service(
     (service, prepared, executed)
 }
 
-/// #984: fail-stop latched by another call stops subject work that has not
+/// Fail-stop latched by another call stops subject work that has not
 /// begun. The call is held in its prepare while the process latches
 /// fail-stop; released, it never enters its provider, and the daemon stops.
 /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
@@ -7117,7 +7117,7 @@ fn fail_stop_by_another_call_during_prepare_never_enters_the_provider() {
     );
 }
 
-/// #984: fail-stop asks running subject work to stop. A known-long Task is
+/// Fail-stop asks running subject work to stop. A known-long Task is
 /// already executing when another call latches fail-stop; its cancellation
 /// is signalled before the daemon stops.
 /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
@@ -7189,7 +7189,7 @@ fn submit_or_recover_task(
     }
 }
 
-/// #1384: the exact repeat of a submit whose receipt already passed into its
+/// The exact repeat of a submit whose receipt already passed into its
 /// Task reads that Task — while it runs and after it ends. The key is never
 /// reserved again, nothing is prepared a second time, and the daemon keeps
 /// serving. Another key that claims the same Task id is refused.
@@ -7369,7 +7369,7 @@ impl ReceiptLedgerPort for StoreDeadlineObservingPort {
     }
 }
 
-/// #1387: a submit whose caller budget is a single millisecond still gives
+/// A submit whose caller budget is a single millisecond still gives
 /// every receipt-store step of the request the daemon's own step budget,
 /// counted from the step's start. A commit the store began is therefore not
 /// cut short by the caller.
@@ -7451,7 +7451,7 @@ fn tiny_submit_budget_gives_the_receipt_store_its_own_step_budget() {
     assert_eq!(server_result, Ok(()));
 }
 
-/// #1387 on the real receipt ledger: an early cancel and then a submit of the
+/// On the real receipt ledger: an early cancel and then a submit of the
 /// same key with a budget far below one durable commit end as the cancelled
 /// direct terminal, readable by recovery; the daemon never fail-stops.
 /// rule: INV.APP.DAEMON-STORE-FAIL-STOP
@@ -7621,7 +7621,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for ExactRepeatRaceHooks {
     }
 }
 
-/// #1384: the receipt row leaves the ledger when the handoff completes, and
+/// The receipt row leaves the ledger when the handoff completes, and
 /// the Task link alone remembers the key from then on. An exact repeat that
 /// found no link yet must not reserve the key after the row is gone: it reads
 /// the one Task, and the attempt is prepared once.
@@ -7838,7 +7838,7 @@ fn exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing() {
     assert!(!runtime.restart_required());
 }
 
-/// #1384: the staged handoff completion removes the call's receipt row only
+/// The staged handoff completion removes the call's receipt row only
 /// under the key's lock, the same lock an exact repeat holds between its Task
 /// link lookup and its reservation. While the lock is held the row stays.
 /// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
@@ -7917,7 +7917,7 @@ fn staged_handoff_completion_waits_for_the_key_lock() {
     assert_eq!(service.prepares.load(Ordering::SeqCst), 0);
 }
 
-/// #1384, cancel side: a cancel of the exact key that found no Task link yet
+/// A cancel of the exact key that found no Task link yet
 /// must not write a cancel row after the handoff completion moved the key to
 /// the link. It reaches the call itself: the Task sees the cancel, recovery
 /// reads the Task, and no stray cancel row is left behind.
@@ -8049,7 +8049,7 @@ fn exact_cancel_racing_the_handoff_completion_cancels_the_task() {
         .expect("daemon exits cleanly");
 }
 
-/// #1384: every bound handoff completion that does not already hold the
+/// Every bound handoff completion that does not already hold the
 /// key's lock takes it before the receipt row leaves the ledger.
 /// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
 #[test]
@@ -8779,7 +8779,7 @@ fn exact_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled() {
     cancel_during_task_materialization(MaterializationRace::PromotedActorBound, true);
 }
 
-/// #1399: a cancel by `taskId` alone, landing in the same handoff windows,
+/// A cancel by `taskId` alone, landing in the same handoff windows,
 /// waits for the handoff completion like the exact-key cancel: it reaches
 /// the Task, an unstarted attempt never starts, and the daemon keeps serving.
 /// rule: INV.APP.DAEMON-INVOCATION-OWNERSHIP
@@ -8871,7 +8871,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for StagedLinkWindowHooks {
     }
 }
 
-/// #1399: a staged handoff has published its Task link, not yet its staged
+/// A staged handoff has published its Task link, not yet its staged
 /// terminal, and a cancel names only the `taskId`. The cancel waits for the
 /// completion under the key's lock: the staged terminal wins, the cancel
 /// reads it, and the daemon keeps serving. Without the lock the cancel ended
@@ -8994,7 +8994,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for CutoffClaimRaceHooks {
     }
 }
 
-/// #1399: the begun attempt looked for a materialized Task before the
+/// The begun attempt looked for a materialized Task before the
 /// handler made one, then the cutoff passed and the handler materialized
 /// the working Task and answered with it. The attempt, claiming the cutoff
 /// only now, takes that Task and executes it once; the daemon keeps serving.
@@ -9132,7 +9132,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for PublicationDelayHooks {
     }
 }
 
-/// #984: preparing a direct answer, waiting in the store queue and the store
+/// Preparing a direct answer, waiting in the store queue and the store
 /// step spend one publication deadline fixed before the preparation. A
 /// preparation that outlasts it leaves no budget for the store: the terminal is
 /// not written, no new budget is granted at the queue, and the daemon keeps
@@ -9364,7 +9364,7 @@ impl V5RuntimeHooks<CanonicalInvocationHost> for ExecutorEntryDelayHooks {
     }
 }
 
-/// #984: the call's deadline is fixed once, when the daemon accepts the
+/// The call's deadline is fixed once, when the daemon accepts the
 /// frame, and every stage measures against it on one clock. A frame that
 /// waits two seconds between the transport and the executor has spent them:
 /// the handoff moment the executor sees is the caller's budget from the

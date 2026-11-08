@@ -354,7 +354,7 @@ fn canonical_props_set_refuses_what_the_form_does_not_take() {
 }
 
 /// The document form `form.add` makes is the form 1C 8.3.27 exports after
-/// loading it: the platform always writes the posting properties (#1994).
+/// loading it: the platform always writes the posting properties.
 #[test]
 fn canonical_form_add_writes_a_document_form_as_1c_exports_it() {
     let fixture = catalog_form();

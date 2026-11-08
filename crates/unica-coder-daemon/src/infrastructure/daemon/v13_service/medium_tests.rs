@@ -72,7 +72,7 @@ fn saved_apply_execution_refusal_distinguishes_token_from_internal_state() {
     }
 }
 
-/// #955, #1332: a staging failure names the violated precondition and
+/// A staging failure names the violated precondition and
 /// what to do next. Only a source the filesystem cannot read stays
 /// `provider_unavailable`, refined to `source_unreadable`.
 #[test]
@@ -674,7 +674,7 @@ fn bsl_check_preserves_only_canonical_jsonl_failure_recovery() {
 
 /// A provider that did not run names which engine, what happened to it
 /// and what restores it; the provider's own text is never the reason
-/// (#1338).
+/// .
 /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
 #[test]
 fn bsl_check_names_why_the_engine_gave_no_result_and_how_to_recover() {
@@ -1420,7 +1420,7 @@ fn name_scope_witnesses_cover_every_address_the_scope_check_asks_for() {
 }
 
 /// Resolving a metadata object by its own place answers exactly what the
-/// full layout directory answers, for every object shape it handles (#1457).
+/// full layout directory answers, for every object shape it handles.
 #[test]
 fn resolve_metadata_point_matches_the_full_layout_directory() {
     use crate::infrastructure::v13_find::{LayoutFindSource, WorkspaceFindDirectoryBuilder};
@@ -2702,7 +2702,7 @@ impl CodeIntelligenceProvider for ColdIndexProvider {
     }
 }
 
-/// #1216: the arguments of `search` are decided before execution. A
+/// The arguments of `search` are decided before execution. A
 /// cursor that is not a continuation of this question, and a limit out
 /// of range, are refused by `prepare` — the step before execution and
 /// before a call can become a task — without asking a provider whose
@@ -3316,7 +3316,7 @@ fn text_engine_workspace() -> tempfile::TempDir {
     workspace
 }
 
-/// #2095 (regex), the case flag and the seam of the two engines: a first
+/// The regex, the case flag and the seam of the two engines: a first
 /// page read through Git and its continuation by the walk give the same
 /// pages, matches, order and addresses as the walk alone, wherever the
 /// Git page stops.
@@ -3662,7 +3662,7 @@ fn literal_search_reads_submodules_and_embedded_repositories() {
     }
 }
 
-/// #2096: a match without a proven module names its file by an
+/// A match without a proven module names its file by an
 /// identifier, never by path, in either engine.
 /// rule: INV.WIRE.SEARCH-CORPUS
 #[test]

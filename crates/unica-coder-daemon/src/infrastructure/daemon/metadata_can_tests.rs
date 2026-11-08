@@ -1116,7 +1116,7 @@ fn canonical_apply_refuses_inexact_export_format_and_offers_platform_reexport() 
     }
 }
 
-// --- #1933: канонические `check` и `view` сообщают диагностики читателя
+// --- Канонические `check` и `view` сообщают диагностики читателя
 // метаданных — немоделируемый тип, битый квалификатор и голый `FillValue`.
 // Прежде их доказывал только путь v0.12.
 
@@ -1443,7 +1443,7 @@ fn canonical_borrowed_and_unchanged_event_sources_publish_without_a_recheck() {
 /// Отказ предпросмотра идёт через проводной `apply`, а не только через
 /// планировщик: недопустимый итог не получает токена, а попытка исполнить
 /// те же входы без предпросмотра (`dryRun: false`) отклоняется. В обоих
-/// случаях исходники не меняются (#959).
+/// случаях исходники не меняются.
 /// rule: INV.SOURCE.MUTATION-PREVIEW-VALIDATION
 #[test]
 fn canonical_wire_apply_refuses_removing_the_last_required_register_field_without_writes() {
@@ -1505,7 +1505,7 @@ fn canonical_wire_apply_refuses_removing_the_last_required_register_field_withou
 
 /// Состав плана обмена чтение показывает связью `content`, а меняет только
 /// `content.set`: `relation.*` с `relation: "content"` на плане обмена
-/// отказывает и ведёт к контракту `content.set` того же плана (#1923).
+/// отказывает и ведёт к контракту `content.set` того же плана.
 #[test]
 fn exchange_plan_content_relation_leads_to_content_set() {
     let fixture = Fixture::new("workspace-exchange-content");
@@ -1688,7 +1688,7 @@ fn canonical_unknown_type_set_stays_an_error() {
     );
 }
 
-/// #1941, INV.SOURCE.METADATA-OBJECT-FACTS: повреждённое свойство табличной
+/// INV.SOURCE.METADATA-OBJECT-FACTS: повреждённое свойство табличной
 /// части и её реквизита из профиля их свойств `check` называет ошибкой у поля
 /// элемента так же, как `view` называет её в пределах узла.
 /// rule: INV.SOURCE.METADATA-OBJECT-FACTS
@@ -1780,7 +1780,7 @@ fn canonical_check_reports_a_duplicated_tabular_attribute_property() {
     );
 }
 
-/// #2027: макет двоичных данных без содержимого платформа выгружает одним
+/// Макет двоичных данных без содержимого платформа выгружает одним
 /// описанием, без `Ext/Template.bin` (так его загружает и выгружает ibcmd
 /// 8.3.27). `check` не считает его непроверяемым ресурсом, а частичный каталог
 /// и макет другого вида без содержимого по-прежнему остаются ошибкой.
@@ -1875,7 +1875,7 @@ fn canonical_check_accepts_a_binary_template_without_data() {
     );
 }
 
-/// #2027: общий макет двоичных данных без содержимого — то же описание без
+/// Общий макет двоичных данных без содержимого — то же описание без
 /// `Ext/Template.bin`, которое платформа загружает и выгружает; `check` его
 /// принимает.
 #[test]
@@ -2013,7 +2013,7 @@ fn assert_platform_name(at: &str, key: &str, accepted: &BTreeSet<String>) {
 }
 
 /// Корень объекта метаданных называет свойство 1С так же, как его
-/// принимает `props.set` того же адреса (#2160).
+/// принимает `props.set` того же адреса.
 #[test]
 fn metadata_root_props_use_the_names_props_set_accepts() {
     let runtime = runtime();
@@ -2110,7 +2110,7 @@ fn oversized_subsystem_property_is_named_by_its_platform_name() {
     assert_eq!(whole["props"]["Comment"], comment, "{whole}");
 }
 
-/// #2217: a nested subsystem is written at the address `view` reads it by,
+/// A nested subsystem is written at the address `view` reads it by,
 /// in its own descriptor; its owners stay byte-identical.
 #[test]
 fn props_set_writes_a_nested_subsystem_at_its_own_address() {
@@ -2156,7 +2156,7 @@ fn props_set_writes_a_nested_subsystem_at_its_own_address() {
     assert_eq!(viewed["props"]["Comment"], "Nested 2217", "{viewed}");
 }
 
-/// #2218: a role synonym longer than the property limit is named in
+/// A role synonym longer than the property limit is named in
 /// `limits` by its platform address and reads whole there.
 #[test]
 fn oversized_role_synonym_is_named_by_its_platform_name() {
@@ -2198,7 +2198,7 @@ fn oversized_role_synonym_is_named_by_its_platform_name() {
     );
 }
 
-/// #2246: a synonym longer than the property limit does not inflate the
+/// A synonym longer than the property limit does not inflate the
 /// title of the node or of its collection row: the title is cut and marked,
 /// and the synonym reads whole at `<node>.Props.Synonym`.
 #[test]
@@ -2270,7 +2270,7 @@ fn an_oversized_synonym_leaves_a_bounded_marked_title() {
     }
 }
 
-/// #2246: a form item title longer than the property limit leaves a bounded
+/// A form item title longer than the property limit leaves a bounded
 /// marked title and a limit naming the address it reads whole at.
 #[test]
 fn an_oversized_form_item_title_is_named_by_a_limit() {

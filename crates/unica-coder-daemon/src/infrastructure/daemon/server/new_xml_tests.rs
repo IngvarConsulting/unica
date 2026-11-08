@@ -664,7 +664,7 @@ fn canonical_object_create_then_form_add_preserves_native_new_file_bytes() {
     let mut expected_owner = String::from_utf8(native_with_ids).unwrap();
     // The minimal native Catalog is the independent object.create baseline.
     // The registration takes its own line, as the 8.3.27 export writes the
-    // first form of an empty container (#1404).
+    // first form of an empty container.
     let eol = if expected_owner.contains("\r\n") {
         "\r\n"
     } else {

@@ -245,7 +245,7 @@ fn canonical_check_keeps_malformed_form_payload_an_error_with_legacy_registratio
 }
 
 /// Any edit of the owner registers its legacy inline forms and templates by
-/// name (#1370): the preview names them in a warning, the publication writes
+/// name: the preview names them in a warning, the publication writes
 /// the references, the inline command stays and check is quiet afterwards.
 /// rule: INV.SOURCE.KNOWN-DEFECT-REPAIR
 #[test]
