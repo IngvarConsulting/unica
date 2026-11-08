@@ -3,7 +3,7 @@
   "name": "retired-scope-recovers-at-the-tabular-section",
   "issue": 1352,
   "area": "Реквизиты и состав",
-  "task": "Вызов attribute.add со снятым scope.tabularSection отказывает без записи, next ведёт к can табличной части с контрактом операции, исправленный вызов на адресе части публикует реквизит внутри части, а не в шапке",
+  "task": "Вызов attribute.add с неизвестным аргументом scope отказывает без записи, next ведёт к контракту attribute.add на документе, исправленный вызов на адресе части публикует реквизит внутри части, а не в шапке",
   "wire": [
     {
       "tool": "unica.apply",
@@ -37,15 +37,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `attribute.add` names its subject by address, not by `scope.tabularSection`; call it at `main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.Категор",
+      "refusal": "bad_value: operation does not accept argument `scope`; `attribute.add` expects `items`",
       "assertions": [
         {
           "pointer": "/at",
-          "eq": "ops[0].args.scope.tabularSection"
+          "eq": "ops[0].args.scope"
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:Document.АктОбУничтоженииПерсональныхДанных.TabularSection.КатегорииДанных.Can.attribute.add"
+          "eq": "main:Document.АктОбУничтоженииПерсональныхДанных.Can.attribute.add"
         }
       ],
       "captures": {

@@ -377,37 +377,17 @@ impl CanonicalV13ReadService {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    // Роль элемента-предка читается его узлом: маршрут снятой
-                    // операции не ведёт в поле, куда элемент не добавить.
-                    let ancestor_role = |item: &QualifiedAddress| {
-                        if item.segments().last()?.kind() != NodeKind::Item {
-                            return None;
-                        }
-                        let read = service.view(ViewRequest::new(&item.to_string()).ok()?);
-                        read.data?
-                            .get("props")?
-                            .get("tag")?
-                            .as_str()
-                            .map(unica_forms::FormItemRole::from_tag)
-                    };
-                    operation_node_with(&data, op, &owner_at, can_context, &ancestor_role, &color)
-                        .map_err(|error| {
+                    operation_node_with(&data, op, &owner_at, can_context, &color).map_err(
+                        |error| {
                             let mut refused = ViewError::new(error.code(), error.to_string());
-                            // Снятая операция ведёт к контракту заменившей (#1465).
-                            refused.set_next(match error.next() {
-                                Some(contract) => json!({
-                                    "tool": "unica.view",
-                                    "args": {"at": contract},
-                                    "reason": "контракт операции, заменившей снятую",
-                                }),
-                                None => json!({
-                                    "tool": "unica.view",
-                                    "args": {"at": owner_at},
-                                    "reason": "операции, применимые к этому узлу",
-                                }),
-                            });
+                            refused.set_next(json!({
+                                "tool": "unica.view",
+                                "args": {"at": owner_at},
+                                "reason": "операции, применимые к этому узлу",
+                            }));
                             refused
-                        })
+                        },
+                    )
                 }
                 None => {
                     attach_can_with_color(&mut data, can_context, &color);

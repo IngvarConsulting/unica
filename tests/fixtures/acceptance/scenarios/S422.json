@@ -3,7 +3,7 @@
   "name": "xdto-nested-property-is-addressed",
   "issue": 1356,
   "area": "XDTO и обмены",
-  "task": "Свойство вложенного анонимного типа XDTO читается и правится по адресу Type.T.Property.A.Property.B: прежние propertyPath и имя удаляемого свойства отказывают без записи с next к адресу свойства, исправленные вызовы строят предпросмотр",
+  "task": "Свойство вложенного анонимного типа XDTO читается и правится по адресу Type.T.Property.A.Property.B: неизвестный propertyPath отказывает без записи с next к контракту property.add, property.remove на типе — с next к словарю типа, исправленные вызовы строят предпросмотр",
   "wire": [
     {
       "tool": "unica.view",
@@ -58,7 +58,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `property.add` names its subject by address, not by `values.propertyPath`; call it at `main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНа",
+      "refusal": "bad_value: unknown XDTO operation argument",
       "assertions": [
         {
           "pointer": "/at",
@@ -66,11 +66,7 @@
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Can.property.add"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property"
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Can.property.add"
         }
       ]
     },
@@ -121,19 +117,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `property.remove` names its subject by address, not by `values.name`; call it at `main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъек",
+      "refusal": "bad_value: apply operation `property.remove` does not apply to Type `main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка`; it addresses `XDTOPackage.Name.Type.T.Proper",
       "assertions": [
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.name"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Can.property.remove"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property"
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка"
         }
       ]
     },

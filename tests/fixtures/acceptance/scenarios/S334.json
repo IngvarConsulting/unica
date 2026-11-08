@@ -214,7 +214,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `mxl.set` names its subject by address, not by `values.area`; call it at `cf:Report.F06Report.Template.F06Template.Area.A`; a missing one is created by `area.ad",
+      "refusal": "bad_value: apply operation `mxl.set` does not apply to Template `cf:Report.F06Report.Template.F06Template`; it addresses `Kind.Name.Template.T.Area.A` of a spreadsheet",
       "fileAssertions": [
         {
           "kind": "sha256",
@@ -225,15 +225,11 @@
       "assertions": [
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.area"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "cf:Report.F06Report.Template.F06Template.Area.A.Can.mxl.set"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "cf:Report.F06Report.Template.F06Template.Area"
+          "eq": "cf:Report.F06Report.Template.F06Template"
         }
       ]
     }
