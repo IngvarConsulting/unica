@@ -644,7 +644,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         on = triggers(self.release)
 
         self.assertEqual(set(on), {"workflow_dispatch", "workflow_call", "push"})
-        self.assertEqual(on["push"], {"tags": ["v*"]})
+        # Теги alpha ставит ключ развёртывания, а собирает их ночь: прогона по тегу у alpha нет.
+        self.assertEqual(on["push"], {"tags": ["v*", "!v*-alpha.*"]})
         self.assertEqual(on["workflow_dispatch"]["inputs"]["profile"]["options"], ["main", "large"])
         self.assertEqual(set(on["workflow_call"]["inputs"]), {"profile", "alpha", "force_alpha"})
         # Связи между workflow через завершение прогона больше нет нигде.

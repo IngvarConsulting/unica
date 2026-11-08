@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -86,6 +87,32 @@ class PublishTests(unittest.TestCase):
 
     def test_the_tag_and_the_commit_go_to_the_outputs_of_the_step(self) -> None:
         commands = []
+        environments = []
+
+        def pushing(command, cwd=None, env=None):
+            commands.append(command)
+            if command[:2] == ["git", "push"]:
+                environments.append(env)
+            return "abc123\n" if command[:2] == ["git", "rev-parse"] else ""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            outputs = root / "output.txt"
+            (root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.15.0"\n', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"GH_TOKEN": "t", "RELEASE_TAG_KEY": "-----KEY-----", "GITHUB_OUTPUT": str(outputs)}):
+                tag = self.module.publish(root, "o/r", force=False, dry_run=False, gh=lambda path, **_: [], runner=pushing)
+            self.assertEqual(tag, "v0.15.0-alpha.1")
+            self.assertEqual(outputs.read_text(encoding="utf-8"), "tag=v0.15.0-alpha.1\nsha=abc123\n")
+        # Сборку делает этот же прогон: запуска другого workflow нет.
+        self.assertFalse(any(command[0] == "gh" for command in commands))
+        # Тег ставит ключ из секрета по SSH, не токен прогона.
+        self.assertIn(["git", "push", "git@github.com:o/r.git", "refs/tags/v0.15.0-alpha.1"], commands)
+        self.assertIn("StrictHostKeyChecking=yes", environments[0]["GIT_SSH_COMMAND"])
+        self.assertNotIn("RELEASE_TAG_KEY", environments[0])
+        self.assertNotIn("GIT_CONFIG_VALUE_0", environments[0])
+
+    def test_without_the_tag_key_nothing_is_pushed_and_the_error_names_the_secret(self) -> None:
+        commands = []
 
         def runner(command, cwd=None, env=None):
             commands.append(command)
@@ -93,15 +120,11 @@ class PublishTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            outputs = root / "output.txt"
             (root / "Cargo.toml").write_text('[workspace.package]\nversion = "0.15.0"\n', encoding="utf-8")
-            with mock.patch.dict(os.environ, {"GH_TOKEN": "t", "GITHUB_OUTPUT": str(outputs)}):
-                tag = self.module.publish(root, "o/r", force=False, dry_run=False, gh=lambda path, **_: [], runner=runner)
-            self.assertEqual(tag, "v0.15.0-alpha.1")
-            self.assertEqual(outputs.read_text(encoding="utf-8"), "tag=v0.15.0-alpha.1\nsha=abc123\n")
-        # Сборку делает этот же прогон: запуска другого workflow нет.
-        self.assertFalse(any(command[0] == "gh" for command in commands))
-        self.assertIn(["git", "push", "origin", "refs/tags/v0.15.0-alpha.1"], commands)
+            with mock.patch.dict(os.environ, {"GH_TOKEN": "t", "RELEASE_TAG_KEY": ""}), \
+                 self.assertRaisesRegex(self.module.AlphaError, "RELEASE_TAG_KEY"):
+                self.module.publish(root, "o/r", force=False, dry_run=False, gh=lambda path, **_: [], runner=runner)
+        self.assertFalse(any(command[:2] == ["git", "push"] for command in commands))
 
     def test_a_slice_without_a_new_alpha_leaves_no_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -190,3 +213,40 @@ class PruneTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TagKeyTests(unittest.TestCase):
+    """Тег выпуска ставит ключ из секрета окружения; токен прогона ruleset не пропустит."""
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "ci"))
+        import tag_push
+
+        self.tag_push = tag_push
+
+    def test_the_key_lives_only_inside_and_the_host_key_is_pinned(self) -> None:
+        with self.tag_push.ssh_remote("o/r", {"RELEASE_TAG_KEY": "-----KEY-----", "PATH": "/bin"}) as (remote, env):
+            command = env["GIT_SSH_COMMAND"]
+            key = Path(command.split(" -i ", 1)[1].split(" ", 1)[0])
+            known = Path(command.split("UserKnownHostsFile=", 1)[1].split(" ", 1)[0])
+            self.assertEqual(remote, "git@github.com:o/r.git")
+            self.assertEqual(key.read_text(encoding="utf-8"), "-----KEY-----\n")
+            self.assertEqual(known.read_text(encoding="utf-8").split()[:2], ["github.com", "ssh-ed25519"])
+            self.assertNotIn("RELEASE_TAG_KEY", env)
+        self.assertFalse(key.exists())
+
+    def test_a_missing_key_is_refused(self) -> None:
+        with self.assertRaises(self.tag_push.TagKeyMissing):
+            with self.tag_push.ssh_remote("o/r", {"RELEASE_TAG_KEY": "  "}):
+                pass
+
+    def test_the_alpha_job_takes_the_key_from_its_environment_and_tag_runs_skip_alpha(self) -> None:
+        import yaml
+
+        release = yaml.safe_load((Path(__file__).resolve().parents[2] / ".github/workflows/release.yml").read_text(encoding="utf-8"))
+        job = release["jobs"]["alpha-tag"]
+        self.assertEqual(job["environment"], "alpha")
+        publish = next(step for step in job["steps"] if step.get("id") == "publish")
+        self.assertEqual(publish["env"]["RELEASE_TAG_KEY"], "${{ secrets.RELEASE_TAG_KEY }}")
+        # Push ключом будит `on: push`: alpha собирает ночь, второй прогон по тегу не нужен.
+        self.assertEqual(release[True]["push"]["tags"], ["v*", "!v*-alpha.*"])
