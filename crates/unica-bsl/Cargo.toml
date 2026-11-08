@@ -27,5 +27,5 @@ unica-metadata = { path = "../unica-metadata" }
 
 [package.metadata.unica]
 component = "family"
-file-io = "none"
+file-io = "domain"
 inputs = ["tests/fixtures/v013/address-profile-8.3.27.json"]

@@ -11,6 +11,9 @@ import tomllib
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import crate_declarations  # noqa: E402
+
 
 OS_CFG_TERM = re.compile(
     r"\b(?:windows|unix|target_(?:os|arch|family|env|vendor))\b"
@@ -76,8 +79,14 @@ HOST_MARKER_KINDS = {
     "manifest": "host manifest directory",
     "name": "host name",
 }
+# What a package may do with files is its `[package.metadata.unica] file-io`:
+# "domain" (no `std::fs`, `std::env`, `std::process`), "none" (no `std::fs`)
+# or "owned". A declaration may only tighten a package: the floors below hold
+# the packages restricted today, and a package leaves one only by an edit of
+# this guard, never by its own declaration.
+FILE_IO_LEVELS = {"owned": 0, "none": 1, "domain": 2}
 # Semantic packages retain the former domain boundary after physical relocation.
-DOMAIN_COMPONENTS = frozenset({
+DOMAIN_FLOOR = frozenset({
     "unica-domain", "unica-address", "unica-source-contract", "unica-operation-contract",
     "unica-metadata", "unica-forms", "unica-roles", "unica-dcs", "unica-xdto",
     "unica-templates", "unica-bsl", "unica-bsl-applied", "unica-bindings", "unica-documentation",
@@ -88,11 +97,22 @@ DOMAIN_COMPONENTS = frozenset({
 # through workspace ports; a direct `std::fs` call would bypass the publication
 # authority that workspace owns (INV.APP.COMPONENT-DEPENDENCIES). The owners are
 # named by package, never by file: every `unica-*-designer` package is a codec.
-FILE_IO_COMPONENTS = frozenset({
+FILE_IO_FLOOR = frozenset({
     "unica-operations", "unica-navigation", "unica-diagnostics",
     "unica-code-intelligence", "unica-code-model", "unica-xml-format", "unica-work-control",
 })
 DESIGNER_CODEC_PACKAGE = re.compile(r"unica-[a-z0-9-]+-designer")
+DOMAIN_COMPONENTS = DOMAIN_FLOOR | crate_declarations.packages(crate_declarations.repository(), file_io="domain")
+FILE_IO_COMPONENTS = FILE_IO_FLOOR | crate_declarations.packages(crate_declarations.repository(), file_io="none")
+
+
+def required_file_io(name: str) -> str:
+    """The least restriction a package keeps whatever it declares."""
+    if name in DOMAIN_FLOOR:
+        return "domain"
+    if name in FILE_IO_FLOOR or DESIGNER_CODEC_PACKAGE.fullmatch(name) is not None:
+        return "none"
+    return "owned"
 
 
 # Third-party file crates would bypass the same boundary without naming
@@ -932,11 +952,11 @@ def file_io_declaration_errors(manifests: dict[str, str]) -> list[str]:
         package = tomllib.loads(text).get("package", {})
         name = package.get("name", "")
         declared = package.get("metadata", {}).get("unica", {}).get("file-io")
-        required = "none" if is_file_io_free_package(name) else "owned"
-        if declared not in {"none", "owned"}:
-            errors.append(f'{path}: declare file-io under [package.metadata.unica]: "none" reads files only through workspace ports and is listed in FILE_IO_COMPONENTS or DOMAIN_COMPONENTS, "owned" may touch the file system directly')
-        elif declared != required:
-            errors.append(f"{path}: file-io {declared} disagrees with this guard, which treats {name} as {required}; update FILE_IO_COMPONENTS or the declaration")
+        required = required_file_io(name)
+        if declared not in FILE_IO_LEVELS:
+            errors.append(f'{path}: declare file-io under [package.metadata.unica]: "domain" uses neither std::fs nor std::env nor std::process, "none" reads files only through workspace ports, "owned" may touch the file system directly')
+        elif FILE_IO_LEVELS[declared] < FILE_IO_LEVELS[required]:
+            errors.append(f"{path}: file-io {declared} lifts a restriction this guard holds for {name}, which stays at least {required}; only DOMAIN_FLOOR or FILE_IO_FLOOR in this guard lift it")
     return errors
 
 
