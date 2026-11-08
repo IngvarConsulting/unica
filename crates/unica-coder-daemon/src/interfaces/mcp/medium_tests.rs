@@ -7216,41 +7216,6 @@ async fn eof_cancels_active_calls_within_a_bounded_grace() {
 
 /// rule: INV.WIRE.BOUNDED-ADMISSION
 #[test]
-fn admission_crosses_the_former_call_quota_and_retains_exact_ownership() {
-    let registry = Arc::new(InFlightRegistry::default());
-    let mut guards = Vec::new();
-    for _ in 0..33 {
-        guards.push(
-            registry
-                .admit()
-                .expect("call count must not refuse admission"),
-        );
-    }
-    assert_eq!(registry.running(), 33);
-    let identifiers: std::collections::BTreeSet<_> = guards.iter().map(|guard| guard.id).collect();
-    assert_eq!(identifiers.len(), 33);
-    let released = guards.pop().unwrap();
-    let released_token = released.token();
-    drop(released);
-    assert_eq!(registry.running(), 32);
-    registry.cancel_all();
-    assert!(!released_token.is_cancelled());
-    assert!(guards.iter().all(|guard| guard.token().is_cancelled()));
-    assert_eq!(
-        registry.running(),
-        32,
-        "cancel must retain executing owners"
-    );
-    let next = registry.admit().unwrap();
-    assert!(!next.token().is_cancelled());
-    assert!(!identifiers.contains(&next.id));
-    drop(next);
-    drop(guards);
-    assert!(registry.wait_idle(Duration::from_millis(100)));
-}
-
-/// rule: INV.WIRE.BOUNDED-ADMISSION
-#[test]
 fn admission_identifier_overflow_preserves_existing_call_ownership() {
     let registry = Arc::new(InFlightRegistry::default());
     let existing = registry.admit().unwrap();

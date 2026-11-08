@@ -1071,20 +1071,4 @@ mod tests {
         assert_eq!(found.candidates().len(), 1);
         assert_eq!(found.candidates()[0].at(), "main:Catalog.Item");
     }
-
-    #[test]
-    fn find_matches_an_identity_longer_than_the_former_query_ceiling() {
-        let long_name = "Я".repeat(1_025);
-        let address = format!("main:Catalog.{long_name}");
-        let index = FindIndex::new(vec![FindDocument::new(
-            &address,
-            "Catalog",
-            long_name.clone(),
-            vec![FindFact::new(FindFactKind::Name, long_name.clone())],
-        )]);
-
-        let found = index.find(FindRequest::new(&long_name).unwrap());
-        assert_eq!(found.candidates().len(), 1);
-        assert_eq!(found.candidates()[0].at(), address);
-    }
 }

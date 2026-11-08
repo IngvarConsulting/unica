@@ -13,6 +13,10 @@ on:
   push:
     tags:
       - "v*"
+      # Тег alpha ставит ключ развёртывания, и такой push будит `on: push`. Alpha
+      # собирает и выпускает ночь, которая его поставила: второй прогон по тегу
+      # задвоил бы публикацию.
+      - "!v*-alpha.*"
   workflow_dispatch:
     inputs:
       profile:
@@ -588,6 +592,8 @@ jobs:
     name: Alpha — служебный коммит и тег
     needs: [unica-ci, rust-os]
     if: ${{ !cancelled() && inputs.alpha && needs.unica-ci.result == 'success' && needs.rust-os.result == 'success' }}
+    # Секрет ключа тегов живёт в окружении: оно пускает только `main`.
+    environment: alpha
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -605,6 +611,9 @@ jobs:
       - id: publish
         env:
           GH_TOKEN: ${{ github.token }}
+          # Тег ставит ключ развёртывания из секрета окружения `alpha` (только `main`):
+          # теги `v*` защищены ruleset, токен прогона их не создаёт.
+          RELEASE_TAG_KEY: ${{ secrets.RELEASE_TAG_KEY }}
           FORCE: ${{ inputs.force_alpha && '--force' || '' }}
         run: |
           # shellcheck disable=SC2086 # пустой флаг не должен становиться аргументом

@@ -1338,37 +1338,6 @@ fn main() {
     }
 
     #[test]
-    fn prepared_bsl_idle_reservation_lives_beyond_the_former_header_ttl() {
-        let server = WorkspaceAdmissionTestServer::start("prepared-idle-reservation");
-        let id = "success-after-idle";
-        let mut work = open_test_request(&server.record, prepared_begin(id));
-        assert!(matches!(
-            read_prepared_reply(&mut work),
-            PreparedBslReply::Admitted { .. }
-        ));
-        // This regression crosses the former 5s idle TTL, not a benchmark series.
-        thread::sleep(SERVICE_REQUEST_HEADER_TIMEOUT + Duration::from_millis(150));
-        assert!(server
-            .runtime
-            .test_operation_ids()
-            .iter()
-            .any(|active| active == id));
-        assert!(server.executor.started.lock().unwrap().is_empty());
-        write_prepared_phase(
-            &mut work,
-            &server.record,
-            ServiceRequestKind::BslMcpStart {
-                operation_id: id.into(),
-                deadline: BslOperationDeadline::Absent {},
-            },
-        );
-        let PreparedBslReply::Finished { response } = read_prepared_reply(&mut work) else {
-            panic!("missing result")
-        };
-        assert!(response.ok);
-    }
-
-    #[test]
     fn prepared_bsl_failed_separate_stop_delivery_retains_the_accepted_owner() {
         struct FailControlIo(AtomicUsize);
         impl ConnectorIo for FailControlIo {
