@@ -211,10 +211,6 @@ class PruneTests(unittest.TestCase):
         self.assertFalse(any(method == "DELETE" for method, _ in calls))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TagKeyTests(unittest.TestCase):
     """Тег выпуска ставит ключ из секрета окружения; токен прогона ruleset не пропустит."""
 
@@ -250,3 +246,7 @@ class TagKeyTests(unittest.TestCase):
         self.assertEqual(publish["env"]["RELEASE_TAG_KEY"], "${{ secrets.RELEASE_TAG_KEY }}")
         # Push ключом будит `on: push`: alpha собирает ночь, второй прогон по тегу не нужен.
         self.assertEqual(release[True]["push"]["tags"], ["v*", "!v*-alpha.*"])
+
+
+if __name__ == "__main__":
+    unittest.main()
