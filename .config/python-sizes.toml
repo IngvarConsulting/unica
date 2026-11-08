@@ -23,7 +23,6 @@ skip = [
   "tests.ci.test_classify_workflow_changes",
   "tests.ci.test_collect_results",
   "tests.ci.test_publish_channels",
-  "tests.ci.test_receipt_terminal_codec_boundary",
   "tests.ci.test_resource_limits",
   "tests.ci.test_rust_platform_boundary",
   "tests.ci.test_scope_skips",
