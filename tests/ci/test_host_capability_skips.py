@@ -22,9 +22,6 @@ import unittest
 
 import host_capability_guard as guard
 
-# Размер тестов модуля (scripts/ci/python_sizes.py).
-PR_SKIP = "дольше бюджета модуля уровня PR"
-
 # Ранние выходы, существовавшие до механизма (#1893). Список только сокращается.
 ALLOWLIST = frozenset({
     "crates/unica-coder/src/medium_application_tests.rs::cf_edit_preserves_unix_mode_0600",
