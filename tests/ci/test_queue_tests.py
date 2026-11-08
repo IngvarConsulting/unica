@@ -240,28 +240,52 @@ class GuardTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    """Ворота `ci.yml` по поведению: шаг по `id`, условие по исходам, скрипт — исполнением."""
+
     def setUp(self) -> None:
+        sys.path.insert(0, str(ROOT))
+        from tests.ci.test_unica_workflow import bash, evaluate, step_by_id
+
+        self.bash, self.evaluate = bash, evaluate
         jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]
-        self.steps = {step.get("name"): step for step in jobs["unica-ci"]["steps"]}
-        self.windows = jobs["windows-clippy"]
+        self.gate, self.windows = jobs["unica-ci"], jobs["windows-clippy"]
+        self.step = lambda step_id: step_by_id(self.gate, step_id)
 
     def test_clippy_of_the_whole_workspace_runs_on_linux_and_windows(self) -> None:
-        self.assertIn("--workspace --all-targets", self.steps["Clippy"]["run"])
-        self.assertEqual(self.steps["Clippy"]["if"], "env.KEPT != 'true'")
-        self.assertEqual(self.windows["if"], "github.event_name == 'merge_group'")
+        for clippy in (self.step("clippy"), self.windows["steps"][-1]):
+            for flag in ("--workspace", "--all-targets", "-D warnings"):
+                self.assertIn(flag, clippy["run"])
+        # Линукс линтует и PR, и очередь, пока ворота не взяты из прошлого прогона.
+        for kept in ("true", "false"):
+            with self.subTest(kept=kept):
+                self.assertEqual(self.evaluate(self.step("clippy")["if"], {"env.KEPT": kept}), kept != "true")
+        # Windows — только в очереди.
+        for event in ("merge_group", "pull_request"):
+            with self.subTest(event=event):
+                self.assertEqual(self.evaluate(self.windows["if"], {"github.event_name": event}), event == "merge_group")
 
     def test_the_queue_selects_rust_and_keeps_the_rollback_switch(self) -> None:
-        rust = self.steps["Тесты Rust"]
-        self.assertEqual(rust["id"], "selection")
-        self.assertIn("python scripts/ci/queue-tests.py", rust["run"])
+        rust = self.step("selection")
         self.assertEqual(rust["env"]["QUEUE_FULL_TESTS"], "${{ vars.QUEUE_FULL_TESTS }}")
         self.assertEqual(rust["env"]["BASE_SHA"], "${{ github.event.merge_group.base_sha }}")
+        self.assertIn("queue-tests.py", rust["run"])
+        for name in ("BASE_SHA", "HEAD_SHA"):
+            self.assertIn(f"${name}", rust["run"])
+        for event in ("merge_group", "pull_request"):
+            with self.subTest(event=event):
+                self.assertEqual(self.evaluate(rust["if"], {"github.event_name": event, "env.KEPT": "false"}), event == "merge_group")
 
     def test_python_medium_leaves_the_queue_unless_the_choice_is_full(self) -> None:
-        run = self.steps["Тесты Python"]["run"]
-        self.assertIn("python scripts/ci/run-static-tests.py --queue", run)
-        self.assertIn('python scripts/ci/run-tests.py --profile "$GATE_PROFILE" --ecosystem python', run)
-        self.assertEqual(self.steps["Тесты Python"]["env"]["FULL"], "${{ steps.selection.outputs.full }}")
+        python = self.step("python")
+        self.assertEqual(python["env"]["FULL"], "${{ steps.selection.outputs.full }}")
+        # Шаг исполняется: выбор очереди решает, какой исполнитель идёт.
+        for full, runner in (("false", "scripts/ci/run-static-tests.py"), ("true", "scripts/ci/run-tests.py")):
+            with self.subTest(full=full), tempfile.TemporaryDirectory() as tmp:
+                result = self.bash(python["run"], cwd=Path(tmp), env={"FULL": full, "GATE_PROFILE": "queue"},
+                                   prelude='python() { echo "$1" >> calls.txt; }\n')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = (Path(tmp) / "calls.txt").read_text(encoding="utf-8").split()
+                self.assertEqual(set(calls), {runner})
 
 
 class MemoryTempTests(unittest.TestCase):
