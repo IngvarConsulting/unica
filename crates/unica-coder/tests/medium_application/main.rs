@@ -1,9 +1,36 @@
-use crate::application::*;
-use crate::composition::testing::{
-    create_file_link_fixture_for_test, file_identity_for_test, prepare_file_for_removal,
-    set_unix_mode_for_test, unix_mode_for_test, with_publication_lock_contention_signal,
-    with_publication_lock_pause, CompileTransaction, FileLinkFixtureOutcome,
+//! The application's public tools over the infrastructure ports: native
+//! mutators, their format and support gates, publication and the typed
+//! results. An integration target, so that a change of `unica-application`
+//! runs these tests in the queue as its dependent's.
+
+mod format_gate;
+
+use format_gate::{support_test_catalog_xml, test_workspace_root};
+use unica_coder::application::*;
+use unica_coder::infrastructure::application_ports::InfrastructureApplicationPorts;
+use unica_workspace::compile_transaction::CompileTransaction;
+use unica_workspace::single_file_publisher::{
+    with_publication_lock_contention_signal, with_publication_lock_pause,
 };
+use unica_workspace::test_support::{
+    create_file_link_fixture_for_test, file_identity_for_test, prepare_file_for_removal,
+    set_unix_mode_for_test, unix_mode_for_test, FileLinkFixtureOutcome,
+};
+
+/// The application on the infrastructure ports, as the daemon composes it.
+fn application() -> UnicaApplication {
+    UnicaApplication::with_ports(Arc::new(InfrastructureApplicationPorts::new()))
+}
+
+#[test]
+fn incompatible_format_blocks_before_native_handler() {
+    format_gate::incompatible_format_blocks_before_native_handler();
+}
+
+#[test]
+fn public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects() {
+    format_gate::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
+}
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -23,7 +50,7 @@ fn call_public_tool_from_workspace(
     args: &Map<String, Value>,
 ) -> Result<OperationResult, String> {
     let _cwd = unica_workspace::test_support::ProcessCwdGuard::enter(workspace)?;
-    crate::composition::testing::application().call_tool(name, args)
+    application().call_tool(name, args)
 }
 
 fn path_text(path: &std::path::Path) -> String {
@@ -44,7 +71,7 @@ fn entity_spelled_supported_format_is_invalid_at_the_public_boundary() {
         );
         let before = std::fs::read(&config_path).unwrap();
 
-        let mutation = crate::composition::testing::application()
+        let mutation = application()
             .call_tool(
                 "unica.cf.edit",
                 &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
@@ -74,7 +101,7 @@ fn numeric_equivalent_noncanonical_format_warns_on_read_and_blocks_public_mutato
         );
         let before = std::fs::read(&config_path).unwrap();
 
-        let mutation = crate::composition::testing::application()
+        let mutation = application()
             .call_tool(
                 "unica.cf.edit",
                 &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
@@ -120,7 +147,7 @@ fn code_patch_public_result_is_typed_and_emits_only_applied_change_events() {
         "Procedure Run()\n    Message(\"ok\");\nEndProcedure\n",
     )
     .unwrap();
-    let app = crate::composition::testing::application();
+    let app = application();
     let mut args = json!({
         "cwd": workspace,
         "sourceSet": "main",
@@ -271,7 +298,7 @@ fn form_edit_remove_returns_typed_data() {
     )
     .unwrap();
     let original = std::fs::read(&form_path).unwrap();
-    let app = crate::composition::testing::application();
+    let app = application();
     let mut args = json!({
         "cwd": workspace,
         "FormPath": form_path,
@@ -434,9 +461,7 @@ fn form_edit_preview_rejects_an_invalid_projected_form_at_the_public_boundary() 
     .unwrap()
     .clone();
 
-    let result = crate::composition::testing::application()
-        .call_tool("unica.form.edit", &args)
-        .unwrap();
+    let result = application().call_tool("unica.form.edit", &args).unwrap();
 
     assert!(!result.ok, "{result:?}");
     assert!(result.data.is_none(), "{result:?}");
@@ -505,7 +530,7 @@ fn form_edit_remove_json_path_uses_the_typed_public_contract() {
         "addedEvents": [],
         "validation": "passed"
     });
-    let app = crate::composition::testing::application();
+    let app = application();
 
     let preview = app.call_tool("unica.form.edit", &args).unwrap();
     assert!(preview.ok, "{preview:?}");
@@ -579,9 +604,7 @@ pub(crate) fn code_patch_locked_support_blocks_preview_and_apply_before_handler(
     let mut results = Vec::new();
     for dry_run in [false, true] {
         args.insert("dryRun".to_string(), json!(dry_run));
-        let result = crate::composition::testing::application()
-            .call_tool("unica.code.patch", &args)
-            .unwrap();
+        let result = application().call_tool("unica.code.patch", &args).unwrap();
 
         assert!(!result.ok, "dryRun={dry_run}: {result:?}");
         assert!(result.summary.contains("support guard"));
@@ -875,9 +898,7 @@ fn mutating_cf_edit_blocks_locked_configuration_directory_target() {
         Value::String("Version=2.0".to_string()),
     );
 
-    let result = crate::composition::testing::application()
-        .call_tool("unica.cf.edit", &args)
-        .unwrap();
+    let result = application().call_tool("unica.cf.edit", &args).unwrap();
 
     assert!(!result.ok);
     assert!(result.summary.contains("support guard"));
@@ -925,9 +946,7 @@ fn cf_edit_normalizes_crlf_before_lxml_compatible_write() {
     );
     args.insert("NoValidate".to_string(), Value::Bool(true));
 
-    let result = crate::composition::testing::application()
-        .call_tool("unica.cf.edit", &args)
-        .unwrap();
+    let result = application().call_tool("unica.cf.edit", &args).unwrap();
 
     assert!(result.ok, "{result:?}");
     let after = std::fs::read_to_string(&config_path).unwrap();
@@ -1007,7 +1026,7 @@ fn cf_edit_preserves_unix_mode_0600() {
         return;
     }
 
-    let result = crate::composition::testing::application()
+    let result = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
@@ -1043,7 +1062,7 @@ fn cf_edit_rejects_readonly_configuration_unchanged() {
         assert_eq!(mode_before, None);
     }
 
-    let result = crate::composition::testing::application()
+    let result = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
@@ -1095,7 +1114,7 @@ fn cf_edit_rejects_symlink_configuration_without_touching_referent() {
     }
     let link_before = std::fs::read_link(&config_path).unwrap();
 
-    let result = crate::composition::testing::application()
+    let result = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
@@ -1124,7 +1143,7 @@ fn cf_edit_rejects_hard_linked_configuration_unchanged() {
         .join("Configuration.alias.xml");
     std::fs::hard_link(&config_path, &alias).unwrap();
 
-    let result = crate::composition::testing::application()
+    let result = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "modify-property", "Version=2.0"),
@@ -1149,7 +1168,7 @@ pub(crate) fn cf_edit_equal_serialized_result_is_a_public_noop_and_preserves_ide
         cf_edit_mutation_workspace("unica-cf-edit-equal-noop", &before);
     let identity = file_identity_for_test(&config_path).unwrap();
 
-    let result = crate::composition::testing::application()
+    let result = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "modify-property", "Version=1.0"),
@@ -1197,7 +1216,7 @@ fn compile_transaction_and_cf_edit_share_target_lock() {
     let workspace_in_edit = workspace.clone();
     let edit_thread = thread::spawn(move || {
         with_publication_lock_contention_signal(contended_sender, || {
-            crate::composition::testing::application()
+            application()
                 .call_tool(
                     "unica.cf.edit",
                     &cf_edit_args(&workspace_in_edit, "modify-property", "Version=1.0"),
@@ -1326,9 +1345,7 @@ fn cf_edit_definition_file_rejects_invalid_child_object_before_sidecar_writes() 
         );
         args.insert("NoValidate".to_string(), Value::Bool(true));
 
-        let result = crate::composition::testing::application()
-            .call_tool("unica.cf.edit", &args)
-            .unwrap();
+        let result = application().call_tool("unica.cf.edit", &args).unwrap();
 
         let case = format!("{sidecar_operation} -> {child_operation} {child_value}");
         if result.ok {
@@ -1406,9 +1423,7 @@ fn cf_edit_definition_file_late_failure_is_atomic_for_external_files() {
         );
         args.insert("NoValidate".to_string(), Value::Bool(true));
 
-        let result = crate::composition::testing::application()
-            .call_tool("unica.cf.edit", &args)
-            .unwrap();
+        let result = application().call_tool("unica.cf.edit", &args).unwrap();
 
         assert!(!result.ok, "{case}: {result:?}");
         assert!(
@@ -1480,9 +1495,7 @@ fn cf_edit_external_files_publish_for_single_and_combined_batches() {
         );
         args.insert("NoValidate".to_string(), Value::Bool(true));
 
-        let result = crate::composition::testing::application()
-            .call_tool("unica.cf.edit", &args)
-            .unwrap();
+        let result = application().call_tool("unica.cf.edit", &args).unwrap();
 
         assert!(result.ok, "{case}: {result:?}");
         assert_eq!(std::fs::read(&config_path).unwrap(), before, "{case}");
@@ -1557,9 +1570,7 @@ fn cf_edit_combined_batch_replaces_external_files_and_updates_configuration() {
     );
     args.insert("NoValidate".to_string(), Value::Bool(true));
 
-    let result = crate::composition::testing::application()
-        .call_tool("unica.cf.edit", &args)
-        .unwrap();
+    let result = application().call_tool("unica.cf.edit", &args).unwrap();
 
     assert!(result.ok, "{result:?}");
     assert_eq!(result.changes.len(), 3, "{result:?}");
@@ -1610,9 +1621,7 @@ fn cf_edit_late_config_publication_failure_leaves_external_files_absent() {
     );
     args.insert("NoValidate".to_string(), Value::Bool(true));
 
-    let result = crate::composition::testing::application()
-        .call_tool("unica.cf.edit", &args)
-        .unwrap();
+    let result = application().call_tool("unica.cf.edit", &args).unwrap();
 
     assert!(!result.ok, "{result:?}");
     assert!(
@@ -1653,9 +1662,7 @@ fn cf_edit_definition_file_keeps_valid_ordered_child_object_batch() {
     );
     args.insert("NoValidate".to_string(), Value::Bool(true));
 
-    let result = crate::composition::testing::application()
-        .call_tool("unica.cf.edit", &args)
-        .unwrap();
+    let result = application().call_tool("unica.cf.edit", &args).unwrap();
 
     assert!(result.ok, "{result:?}");
     assert!(workspace
@@ -1713,7 +1720,7 @@ fn bot_configuration_xml(include_bot: bool) -> String {
             "\t\t\t<CommonAttribute>Shared</CommonAttribute>"
         )
     };
-    include_str!("../../../tests/fixtures/unica_mcp_script_parity/cf-validate/Configuration.xml")
+    include_str!("../../../../tests/fixtures/unica_mcp_script_parity/cf-validate/Configuration.xml")
         .replace("\r\n", "\n")
         .replace("version=\"2.17\"", "version=\"2.20\"")
         .replace("\t\t\t<Language>Русский</Language>", children)
@@ -1744,7 +1751,7 @@ fn bot_cf_workspace(prefix: &str, include_bot: bool) -> (PathBuf, PathBuf, PathB
     std::fs::write(
         src.join("Languages/Русский.xml"),
         include_str!(
-            "../../../tests/fixtures/unica_mcp_script_parity/cf-validate/Languages/Русский.xml"
+            "../../../../tests/fixtures/unica_mcp_script_parity/cf-validate/Languages/Русский.xml"
         ),
     )
     .unwrap();
@@ -1761,7 +1768,7 @@ fn cf_edit_adds_removes_and_noops_bot_through_registry() {
     std::fs::write(src.join("Bots/Assistant.xml"), "<MetaDataObject/>").unwrap();
     let before = std::fs::read_to_string(&config_path).unwrap();
 
-    let add = crate::composition::testing::application()
+    let add = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "add-childObject", "Bot.Assistant"),
@@ -1780,7 +1787,7 @@ fn cf_edit_adds_removes_and_noops_bot_through_registry() {
                 .unwrap()
     );
 
-    let duplicate = crate::composition::testing::application()
+    let duplicate = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "add-childObject", "Bot.Assistant"),
@@ -1791,7 +1798,7 @@ fn cf_edit_adds_removes_and_noops_bot_through_registry() {
     assert!(duplicate.cache.events.is_empty(), "{duplicate:?}");
     assert_eq!(std::fs::read_to_string(&config_path).unwrap(), after_add);
 
-    let remove = crate::composition::testing::application()
+    let remove = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "remove-childObject", "Bot.Assistant"),
@@ -1800,7 +1807,7 @@ fn cf_edit_adds_removes_and_noops_bot_through_registry() {
     assert!(remove.ok, "{remove:?}");
     assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
 
-    let missing = crate::composition::testing::application()
+    let missing = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "add-childObject", "Bot.Missing"),
@@ -1812,7 +1819,7 @@ fn cf_edit_adds_removes_and_noops_bot_through_registry() {
     assert!(!missing_errors.contains("use meta-compile"), "{missing:?}");
     assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
 
-    let unknown = crate::composition::testing::application()
+    let unknown = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(
@@ -1878,9 +1885,7 @@ fn cf_edit_add_child_object_does_not_escape_structural_crlf() {
     );
     args.insert("NoValidate".to_string(), Value::Bool(true));
 
-    let result = crate::composition::testing::application()
-        .call_tool("unica.cf.edit", &args)
-        .unwrap();
+    let result = application().call_tool("unica.cf.edit", &args).unwrap();
 
     assert!(result.ok, "{result:?}");
     let after_bytes = std::fs::read(&config_path).unwrap();
@@ -1926,7 +1931,7 @@ fn cf_edit_remove_add_child_object_preserves_neighboring_childobjects() {
     )
     .unwrap();
 
-    let remove = crate::composition::testing::application()
+    let remove = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "remove-childObject", "Catalog.Валюты"),
@@ -1934,7 +1939,7 @@ fn cf_edit_remove_add_child_object_preserves_neighboring_childobjects() {
         .unwrap();
     assert!(remove.ok, "{remove:?}");
 
-    let add = crate::composition::testing::application()
+    let add = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "add-childObject", "Catalog.Валюты"),
@@ -1980,7 +1985,7 @@ fn cf_edit_child_object_roundtrip_preserves_trailing_blank_lines() {
     )
     .unwrap();
 
-    let remove = crate::composition::testing::application()
+    let remove = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "remove-childObject", "Catalog.Валюты"),
@@ -1990,7 +1995,7 @@ fn cf_edit_child_object_roundtrip_preserves_trailing_blank_lines() {
     let after_remove = std::fs::read_to_string(&config_path).unwrap();
     assert_eq!(trailer_after_root(&after_remove), "\r\n\r\n\r\n");
 
-    let add = crate::composition::testing::application()
+    let add = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "add-childObject", "Catalog.Валюты"),
@@ -2029,7 +2034,7 @@ fn cf_edit_duplicate_add_child_object_does_not_rewrite_configuration() {
     )
     .unwrap();
 
-    let result = crate::composition::testing::application()
+    let result = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "add-childObject", "Catalog.Валюты"),
@@ -2056,14 +2061,14 @@ fn cf_edit_duplicate_add_child_object_does_not_rewrite_configuration() {
 #[test]
 fn tool_specs_match_reviewed_result_contracts() {
     let review: Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/v013/tool-surface-review.json"
+        "../../../../tests/fixtures/v013/tool-surface-review.json"
     ))
     .expect("tool-surface review is valid JSON");
     let review = review
         .as_object()
         .expect("tool-surface review is a tool-name object");
-    let catalog = crate::application::v13::tool_catalog::catalog_for(
-        crate::application::tool_contracts::SurfaceRelease::V13,
+    let catalog = unica_coder::application::v13::tool_catalog::catalog_for(
+        unica_coder::application::tool_contracts::SurfaceRelease::V13,
     )
     .expect("canonical v0.13 catalog exists");
     let registered = catalog
@@ -2071,7 +2076,7 @@ fn tool_specs_match_reviewed_result_contracts() {
         .iter()
         .map(|tool| format!("unica.{}", tool.name))
         .chain(
-            crate::application::v13::task_tools::compatibility_tool_contracts()
+            unica_coder::application::v13::task_tools::compatibility_tool_contracts()
                 .into_iter()
                 .map(|tool| format!("unica.{}", tool.name)),
         )
@@ -2141,119 +2146,6 @@ fn native_operation_descriptors_drive_canonical_required_schema_paths() {
 }
 
 #[test]
-pub(crate) fn incompatible_format_blocks_before_native_handler() {
-    let root = test_workspace_root("unica-application-format-guard");
-    let src = root.join("src");
-    std::fs::create_dir_all(&src).unwrap();
-    std::fs::write(
-        root.join("v8project.yaml"),
-        "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-    )
-    .unwrap();
-    let config = src.join("Configuration.xml");
-    let before = r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.19"><Configuration/></MetaDataObject>"#;
-    std::fs::write(&config, before).unwrap();
-    let mut args = Map::new();
-    args.insert("cwd".into(), Value::String(root.display().to_string()));
-    args.insert(
-        "ConfigPath".into(),
-        Value::String(config.display().to_string()),
-    );
-    args.insert("dryRun".into(), Value::Bool(false));
-
-    let result = crate::composition::testing::application()
-        .call_tool("unica.cf.edit", &args)
-        .unwrap();
-
-    assert!(!result.ok, "{result:?}");
-    assert_eq!(
-        result.diagnostics.as_ref().unwrap()["formatCompatibility"]["code"],
-        "formatMigrationAvailable"
-    );
-    assert_eq!(std::fs::read_to_string(config).unwrap(), before);
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-pub(crate) fn public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects() {
-    for version in ["2.19", "2.21"] {
-        for tool in ["unica.meta.add", "unica.meta.edit"] {
-            let root = test_workspace_root(&format!(
-                "unica-meta-common-format-gate-{}-{version}",
-                tool.replace('.', "-")
-            ));
-            let workspace = root.join("workspace");
-            let source = workspace.join("src");
-            std::fs::create_dir_all(source.join("Catalogs")).unwrap();
-            std::fs::write(
-                workspace.join("v8project.yaml"),
-                "format: DESIGNER\nsource-set:\n  - name: main\n    type: CONFIGURATION\n    path: src\n",
-            )
-            .unwrap();
-            std::fs::write(
-                source.join("Configuration.xml"),
-                format!(
-                    r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="{version}"><Configuration><Properties><Name>Test</Name></Properties><ChildObjects><Catalog>Items</Catalog></ChildObjects></Configuration></MetaDataObject>"#
-                ),
-            )
-            .unwrap();
-            std::fs::write(
-                source.join("Catalogs/Items.xml"),
-                support_test_catalog_xml("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-            )
-            .unwrap();
-            let before = unica_workspace::test_support::tree_snapshot(&source);
-            let mut args = match tool {
-                "unica.meta.add" => Map::from_iter([
-                    ("sourceSet".to_string(), json!("main")),
-                    ("kind".to_string(), json!("Catalog")),
-                    ("name".to_string(), json!("Future")),
-                ]),
-                "unica.meta.edit" => Map::from_iter([
-                    ("sourceSet".to_string(), json!("main")),
-                    ("metadataPath".to_string(), json!("Catalog.Items")),
-                    (
-                        "operations".to_string(),
-                        json!([{
-                            "op": "setProperties",
-                            "values": {"Comment": "changed"}
-                        }]),
-                    ),
-                ]),
-                _ => unreachable!(),
-            };
-            args.insert(
-                "cwd".to_string(),
-                Value::String(workspace.display().to_string()),
-            );
-            args.insert("dryRun".to_string(), Value::Bool(false));
-
-            let result = crate::composition::testing::application()
-                .call_tool(tool, &args)
-                .unwrap();
-
-            assert!(!result.ok, "{tool}, version={version}: {result:?}");
-            let diagnostic = result
-                .diagnostics
-                .as_ref()
-                .and_then(Value::as_array)
-                .and_then(|diagnostics| diagnostics.first())
-                .expect("metadata refusal has one typed diagnostic");
-            assert_eq!(diagnostic["code"], "capability_unavailable");
-            assert_eq!(
-                unica_workspace::test_support::tree_snapshot(&source),
-                before,
-                "{tool}, version={version} changed source bytes"
-            );
-            assert!(result.changes.is_empty(), "{tool}: {result:?}");
-            assert!(result.artifacts.is_empty(), "{tool}: {result:?}");
-            assert!(result.cache.events.is_empty(), "{tool}: {result:?}");
-            std::fs::remove_dir_all(root).unwrap();
-        }
-    }
-}
-
-#[test]
 fn declared_existing_form_output_rejects_wrong_root_before_handler() {
     let root = test_workspace_root("unica-form-existing-wrong-root");
     let workspace = root.join("workspace");
@@ -2279,7 +2171,7 @@ fn declared_existing_form_output_rejects_wrong_root_before_handler() {
         ("dryRun".to_string(), Value::Bool(false)),
     ]);
 
-    let result = crate::composition::testing::application()
+    let result = application()
         .call_tool("unica.form.compile", &args)
         .unwrap();
 
@@ -2325,7 +2217,7 @@ fn declared_form_output_with_nonstandard_suffix_still_blocks_newer_owner() {
             ("dryRun".to_string(), Value::Bool(false)),
         ]);
 
-        let result = crate::composition::testing::application()
+        let result = application()
             .call_tool("unica.form.compile", &args)
             .unwrap();
 
@@ -2397,7 +2289,7 @@ fn cf_edit_validation_dependencies_block_incompatible_home_page_file() {
             .unwrap()
             .join("Ext/ClientApplicationInterface.xml");
 
-        let result = crate::composition::testing::application()
+        let result = application()
             .call_tool("unica.cf.edit", &cf_edit_args(&workspace, operation, value))
             .unwrap();
 
@@ -2447,7 +2339,7 @@ fn cf_edit_add_child_object_prioritizes_newer_existing_target_descriptor() {
     let config_before = std::fs::read(&config_path).unwrap();
     let target_before = std::fs::read(&target_path).unwrap();
 
-    let result = crate::composition::testing::application()
+    let result = application()
         .call_tool(
             "unica.cf.edit",
             &cf_edit_args(&workspace, "add-childObject", "Catalog.Future"),
@@ -2473,20 +2365,6 @@ fn cf_edit_add_child_object_prioritizes_newer_existing_target_descriptor() {
     assert!(result.artifacts.is_empty(), "{result:?}");
     assert!(result.cache.events.is_empty(), "{result:?}");
     std::fs::remove_dir_all(root).unwrap();
-}
-
-fn test_workspace_root(prefix: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "{prefix}-{}-{nanos}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::create_dir_all(&root).unwrap();
-    root
 }
 
 fn support_test_configuration_xml(uuid: &str) -> String {
@@ -2532,21 +2410,6 @@ fn write_support_test_language(src: &std::path::Path) {
 </MetaDataObject>"#,
     )
     .unwrap();
-}
-
-fn support_test_catalog_xml(uuid: &str) -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:v8="http://v8.1c.ru/8.1/data/core" version="2.20">
-  <Catalog uuid="{uuid}">
-<Properties>
-  <Name>Items</Name>
-  <Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Items</v8:content></v8:item></Synonym>
-</Properties>
-<ChildObjects/>
-  </Catalog>
-</MetaDataObject>"#
-    )
 }
 
 fn assert_support_guard_block_parity(applied: &OperationResult, preview: &OperationResult) {
@@ -2649,8 +2512,7 @@ fn native_xml_metadata_tools_reject_edt_source_set_targets() {
         Value::String("src/Reports/Sales/Templates/Sheet/Ext/Template.xml".to_string()),
     );
 
-    let error = match crate::composition::testing::application().call_tool("unica.mxl.info", &args)
-    {
+    let error = match application().call_tool("unica.mxl.info", &args) {
         Ok(result) => panic!("expected EDT source-set guard, got {}", result.summary),
         Err(error) => error,
     };
@@ -2688,7 +2550,7 @@ fn native_xml_metadata_tools_reject_ambiguous_source_set_targets() {
         ),
     ]);
 
-    let error = crate::composition::testing::application()
+    let error = application()
         .call_tool("unica.mxl.info", &args)
         .expect_err("ambiguous source format must fail before XML parsing");
 
@@ -2732,8 +2594,7 @@ fn read_only_native_outfile_is_rejected_before_any_write() {
         Value::String(outside.display().to_string()),
     );
 
-    let error = match crate::composition::testing::application().call_tool("unica.mxl.info", &args)
-    {
+    let error = match application().call_tool("unica.mxl.info", &args) {
         Ok(result) => panic!(
             "expected OutFile contract rejection, got {}",
             result.summary
@@ -2794,11 +2655,10 @@ fn cfe_borrow_rejects_edt_config_source_set_target() {
         Value::String("Catalog.Items".to_string()),
     );
 
-    let error =
-        match crate::composition::testing::application().call_tool("unica.cfe.borrow", &args) {
-            Ok(result) => panic!("expected EDT source-set guard, got {}", result.summary),
-            Err(error) => error,
-        };
+    let error = match application().call_tool("unica.cfe.borrow", &args) {
+        Ok(result) => panic!("expected EDT source-set guard, got {}", result.summary),
+        Err(error) => error,
+    };
 
     assert!(error.contains("source-set `cfg`"), "{error}");
     assert!(error.contains("sourceFormat=edt"), "{error}");
@@ -2854,7 +2714,7 @@ fn cfe_borrow_result_mutation_changes_and_workspace_agree() {
         Value::String("Catalog.Items".to_string()),
     );
 
-    let result = crate::composition::testing::application()
+    let result = application()
         .call_tool("unica.cfe.borrow", &args)
         .expect("borrow must succeed");
 
@@ -2953,11 +2813,10 @@ fn mutating_native_operation_rejects_output_escape_before_backend_execution() {
         Value::String("../outside/Form.xml".to_string()),
     );
 
-    let error =
-        match crate::composition::testing::application().call_tool("unica.form.compile", &args) {
-            Ok(result) => panic!("expected path policy error, got {}", result.summary),
-            Err(error) => error,
-        };
+    let error = match application().call_tool("unica.form.compile", &args) {
+        Ok(result) => panic!("expected path policy error, got {}", result.summary),
+        Err(error) => error,
+    };
 
     assert!(error.contains("outside workspace root"));
     assert!(!root.join("outside").exists());
@@ -2987,7 +2846,7 @@ fn form_compile_dry_run_rejects_output_escape_like_apply() {
         Value::String("../outside.xml".to_string()),
     );
 
-    let error = crate::composition::testing::application()
+    let error = application()
         .call_tool("unica.form.compile", &args)
         .expect_err("form preview must enforce the same output path policy as apply");
 
@@ -3029,7 +2888,7 @@ fn form_compile_dry_run_rejects_edt_source_set_like_apply() {
         Value::String("src/Form.xml".to_string()),
     );
 
-    let error = crate::composition::testing::application()
+    let error = application()
         .call_tool("unica.form.compile", &args)
         .expect_err("form preview must enforce the same source-format guard as apply");
 
@@ -3072,7 +2931,7 @@ fn preview_effects_follow_operation_order() {
         &workspace,
     );
     let cwd = unica_workspace::test_support::ProcessCwdGuard::enter(&workspace).unwrap();
-    let application = crate::composition::testing::application();
+    let application = application();
     for name in ["Owner", "Subject"] {
         let added = application
             .call_tool(
