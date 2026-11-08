@@ -23,7 +23,7 @@
       "caseId": "batch2-view-root-facts",
       "entry": "view",
       "mode": "root;props=cf.info facts",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S254.json",
       "expected": {
         "scenario": "S254",
         "class": "ok"
