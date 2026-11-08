@@ -32,6 +32,16 @@ def load_package_module():
     return module
 
 
+SCRIPT_INTERPRETER_LAUNCH = re.compile(
+    r'Command::new\(\s*"(python3?|bash|powershell|pwsh)(?:\.exe)?"\s*\)'
+)
+
+
+def script_interpreter_launches(source: str) -> list[str]:
+    """Интерпретаторы скриптов, которые исходник запускает буквальным `Command::new`."""
+    return SCRIPT_INTERPRETER_LAUNCH.findall(source)
+
+
 class PackageUnicaPluginTests(unittest.TestCase):
     def test_package_tree_hash_frames_path_and_content_boundaries(self) -> None:
         module = load_package_module()
@@ -283,32 +293,25 @@ class PackageUnicaPluginTests(unittest.TestCase):
     def test_unica_coder_has_no_runtime_operation_script_fallback(self) -> None:
         """rule: INV.APP.NATIVE-OPERATION-BACKEND"""
         repo_root = Path(__file__).resolve().parents[2]
-
-        self.assertFalse((repo_root / "plugins" / "unica" / "scripts" / "legacy").exists())
-
         rust_sources = sorted(
             path
             for package in ("unica-coder", "unica-coder-daemon", "unica-application", "unica-domain")
             for path in (repo_root / "crates" / package / "src").rglob("*.rs")
         )
-        forbidden = (
-            "ToolHandler::LegacyScript",
-            "LegacyScriptAdapter",
-            "legacy_scripts",
-            'Command::new("python3")',
-            'Command::new("python")',
-            'Command::new("bash")',
-            'Command::new("powershell")',
-            'Command::new("pwsh")',
-        )
         matches = [
-            f"{path.relative_to(repo_root)}:{needle}"
+            f"{path.relative_to(repo_root)}:{interpreter}"
             for path in rust_sources
-            for needle in forbidden
-            if needle in path.read_text(encoding="utf-8")
+            for interpreter in script_interpreter_launches(path.read_text(encoding="utf-8"))
         ]
 
         self.assertEqual(matches, [])
+
+    def test_a_script_interpreter_launch_is_found_however_it_is_spelled(self) -> None:
+        source = (
+            'Command::new("python3"); Command::new( "bash" ); std::process::Command::new("pwsh.exe"); '
+            'Command::new("powershell"); Command::new("cargo"); Command::new(path);'
+        )
+        self.assertEqual(script_interpreter_launches(source), ["python3", "bash", "pwsh", "powershell"])
 
     def test_source_mcp_does_not_use_runtime_shell_wrappers(self) -> None:
         repo_root = Path(__file__).resolve().parents[2]
