@@ -268,5 +268,99 @@ class RemovedTestsTests(unittest.TestCase):
         self.assertIsNone(removed_tests.baseline_scope({"source": {"headSha": "a" * 40}, "explanations": {"reset": True}}))
 
 
+PYTHON_BASE = '''import unittest
+
+
+class Shared:
+    def test_inherited(self):
+        pass
+
+
+class KeptTests(Shared, unittest.TestCase):
+    def test_keeps(self):
+        pass
+
+    def test_goes_away(self):
+        pass
+
+    def helper(self):
+        pass
+
+
+class TravelsTests(unittest.TestCase):
+    def test_travels(self):
+        pass
+
+
+class NotATest:
+    def test_looks_like_one(self):
+        pass
+'''
+
+
+class RemovedPythonTestsTests(unittest.TestCase):
+    """Python tests are named as `unittest` names them and checked like Rust ones."""
+
+    def repository(self, temporary: str) -> Path:
+        root = Path(temporary)
+
+        def git(*args):
+            subprocess.run(["git", *args], cwd=root, check=True, capture_output=True)
+
+        git("init", "-q", "-b", "main")
+        git("config", "user.email", "ci@example.invalid")
+        git("config", "user.name", "CI")
+        (root / "tests/ci").mkdir(parents=True)
+        (root / "tests/ci/test_source.py").write_text(PYTHON_BASE, encoding="utf-8")
+        (root / "tests/ci/helpers.py").write_text("class HelperTests:\n    def test_not_collected(self):\n        pass\n")
+        git("add", ".")
+        git("commit", "-q", "-m", "base")
+        git("switch", "-q", "-c", "change")
+        changed = PYTHON_BASE.replace("    def test_goes_away(self):\n        pass\n\n", "")
+        changed = changed.replace(
+            "class TravelsTests(unittest.TestCase):\n    def test_travels(self):\n        pass\n\n\n", "")
+        (root / "tests/ci/test_source.py").write_text(changed, encoding="utf-8")
+        (root / "tests/ci/test_target.py").write_text(
+            "import unittest\n\n\nclass TravelsTests(unittest.TestCase):\n    def test_travels(self):\n        pass\n",
+            encoding="utf-8")
+        (root / "tests/ci/helpers.py").write_text("")
+        git("add", ".")
+        git("commit", "-q", "-m", "change")
+        return root
+
+    def test_the_inventory_names_tests_as_unittest_does_without_importing(self) -> None:
+        self.assertEqual(
+            removed_tests.python_tests_in(PYTHON_BASE, "tests.ci.test_source"),
+            [
+                "tests.ci.test_source.KeptTests.test_goes_away",
+                "tests.ci.test_source.KeptTests.test_inherited",
+                "tests.ci.test_source.KeptTests.test_keeps",
+                "tests.ci.test_source.TravelsTests.test_travels",
+            ],
+        )
+
+    def test_a_removed_test_needs_a_declaration_and_a_moved_one_does_not(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.repository(temporary)
+            self.assertEqual(
+                removed_tests.removed_python_tests(root, "main", "change"),
+                ["tests.ci.test_source.KeptTests.test_goes_away"],
+            )
+            problems = removed_tests.check(root, "main", "", "change")
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("python: test tests.ci.test_source.KeptTests.test_goes_away disappeared", problems[0])
+            for declaration in ("Removes-test: tests.ci.test_source.KeptTests.test_goes_away",
+                                "- Removes-test: `tests.ci.test_source.KeptTests.*`"):
+                with self.subTest(declaration=declaration):
+                    self.assertEqual(removed_tests.check(root, "main", declaration, "change"), [])
+
+    def test_a_pair_that_arrives_twice_is_no_move(self) -> None:
+        lost = ["tests.ci.test_a.Tests.test_x"]
+        self.assertEqual(removed_tests.python_moved(lost, ["tests.ci.test_b.Tests.test_x"]), set(lost))
+        self.assertEqual(removed_tests.python_moved(
+            lost, ["tests.ci.test_b.Tests.test_x", "tests.ci.test_c.Tests.test_x"]), set())
+        self.assertEqual(removed_tests.python_moved(lost, ["tests.ci.test_b.Other.test_x"]), set())
+
+
 if __name__ == "__main__":
     unittest.main()

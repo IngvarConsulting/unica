@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Find Rust tests a change removes and check the description declares them.
+"""Find Rust and Python tests a change removes and check the description declares them.
 
 The queue gate compares each run with the previous inventory and refuses a
 vanished test result unless a merged pull request description declares it
@@ -27,10 +27,22 @@ gone. Packages under `crates/` and `vendor/ureq` are checked. `cfg` is not
 evaluated; tests a macro generates and files reached only through a computed
 `include!` are not seen, except the modules a build script of `crates/`
 declares for each `*.rs` of a module's own directory. The queue still checks what this misses.
+
+Python tests of `tests/**/test_*.py` (the local `tests/agent_evaluation`
+included: its tests are checks too) are named by their module path from the
+repository root, as `run-static-tests.py` names them, `tests.ci.test_x.Class.test`,
+and read from the source without importing it: a
+class whose bases within the module reach a `...TestCase`, its `test*`
+methods and those of its bases defined in the same module. A test moved to
+another module keeps its `Class.test`: a lost one counts as moved when that
+pair left exactly one module and arrived in exactly one other. A declaration is
+the exact name or a literal prefix ending in `*`. Python tests are checked on a
+pull request (`--base`); `--baseline` compares the Rust inventory only.
 """
 from __future__ import annotations
 
 import argparse
+import ast
 from collections import Counter
 import importlib.util
 import json
@@ -42,6 +54,7 @@ import shlex
 import subprocess
 import sys
 import tomllib
+import warnings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import ci_rust_lanes
@@ -322,6 +335,86 @@ def removed_tests(root: Path, base: str, head: str = "HEAD") -> list[tuple[str, 
                   for case in lost if case not in moved)
 
 
+PYTHON_TEST_MODULE = re.compile(r"^tests/(?:[^/]+/)*test_[^/]*\.py$")
+
+
+def python_tests_in(source: str, module: str) -> list[str]:
+    """`unittest` names of the tests a module defines, read without importing it."""
+    try:
+        with warnings.catch_warnings():
+            # A test's own string escapes are not this check's business.
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+
+    def base_names(node: ast.ClassDef) -> list[str]:
+        names = []
+        for base in node.bases:
+            target = base.attr if isinstance(base, ast.Attribute) else base.id if isinstance(base, ast.Name) else None
+            if target:
+                names.append(target)
+        return names
+
+    def is_test_case(name: str, seen: frozenset = frozenset()) -> bool:
+        node = classes.get(name)
+        if node is None or name in seen:
+            return False
+        return any(base.endswith("TestCase") or is_test_case(base, seen | {name}) for base in base_names(node))
+
+    def methods(name: str, seen: frozenset = frozenset()) -> set[str]:
+        node = classes.get(name)
+        if node is None or name in seen:
+            return set()
+        own = {item.name for item in node.body
+               if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)) and item.name.startswith("test")}
+        for base in base_names(node):
+            own |= methods(base, seen | {name})
+        return own
+
+    return sorted(f"{module}.{name}.{method}" for name in classes if is_test_case(name) for method in methods(name))
+
+
+def python_cases(root: Path, revision: str, paths: list[str]) -> dict[str, str]:
+    """Name of every Python test the given modules define at a revision, with its module path."""
+    found = {}
+    present = set(git(root, "ls-tree", "-r", "--name-only", revision, "--", *paths).splitlines()) if paths else set()
+    for path in paths:
+        if path not in present:
+            continue
+        module = path[:-len(".py")].replace("/", ".")
+        for case in python_tests_in(git(root, "show", f"{revision}:{path}"), module):
+            found[case] = path
+    return found
+
+
+def python_moved(lost: list[str], arrived: list[str]) -> set[str]:
+    """Lost tests whose `Class.test` left one module and arrived in exactly one other."""
+    def name(case: str) -> str:
+        return ".".join(case.rsplit(".", 2)[-2:])
+    lost_names = Counter(name(case) for case in lost)
+    arrivals = Counter(name(case) for case in arrived)
+    return {case for case in lost if lost_names[name(case)] == 1 and arrivals[name(case)] == 1}
+
+
+def removed_python_tests(root: Path, base: str, head: str = "HEAD") -> list[str]:
+    """Python tests defined at the merge base and not at head, in the modules the change touches."""
+    merge_base = git(root, "merge-base", base, head).strip()
+    changed = [line.split("\t") for line in git(root, "diff", "--name-status", "--no-renames", merge_base, head).splitlines()]
+    paths = sorted({path for _, *names in changed for path in names if PYTHON_TEST_MODULE.match(path)})
+    before = python_cases(root, merge_base, paths)
+    after = python_cases(root, head, paths)
+    lost = sorted(case for case in before if case not in after)
+    moved = python_moved(lost, sorted(case for case in after if case not in before))
+    return [case for case in lost if case not in moved]
+
+
+def python_explained(case: str, declarations: dict) -> bool:
+    return any(case.startswith(pattern[:-1]) if pattern.endswith("*") else case == pattern
+               for pattern in declarations["removedTests"])
+
+
 # The queue gate (`ci_rust_lanes.explained_case`) matches a declaration
 # literally; only a trailing `*` makes it a prefix. Braces, `?`, brackets or an
 # inner `*` would read as a pattern here and as a literal in the queue.
@@ -358,13 +451,19 @@ def declarations_in(description: str) -> dict:
             "removedTargets": sorted(set(baseline.REMOVED.findall(text)))}
 
 
-def check(root: Path, base: str, description: str, head: str = "HEAD") -> list[str]:
+def check(root: Path, base: str, description: str, head: str = "HEAD", *, python: bool = True) -> list[str]:
+    """Undeclared removals; `python` adds the Python tests, which only a pull
+    request checks: the Rust inventory baseline knows no Python declarations."""
     declarations = declarations_in(description)
     return unsupported_declarations(declarations) + [
         f"{package}: test {case} disappeared; declare 'Removes-test: {case}' "
         "(or a literal prefix ending in *) in the pull request description"
         for package, case, binaries, gone in removed_tests(root, base, head)
-        if not explained(case, binaries, gone, declarations)]
+        if not explained(case, binaries, gone, declarations)] + [
+        f"python: test {case} disappeared; declare 'Removes-test: {case}' "
+        "(or a literal prefix ending in *) in the pull request description"
+        for case in (removed_python_tests(root, base, head) if python else [])
+        if not python_explained(case, declarations)]
 
 
 def event_description() -> str | None:
@@ -413,7 +512,7 @@ def main() -> int:
         if description is None:
             parser.error("give --description-file or --description outside a pull request run")
     try:
-        problems = check(args.repo_root, args.base, description, args.head)
+        problems = check(args.repo_root, args.base, description, args.head, python=args.baseline is None)
     except subprocess.CalledProcessError as error:
         # No verdict: git could not read the revisions, so nothing was checked.
         detail = error.stderr.decode("utf-8", "replace").strip()
