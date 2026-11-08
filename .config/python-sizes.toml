@@ -13,12 +13,6 @@ skip = [
   # нужен `cargo` или продукт
   "tests.ci.test_acceptance_scenarios",
   "tests.ci.test_host_capability_skips",
-  "tests.ci.test_product_contracts",
-  "tests.ci.test_tool_surface_ledger",
-  "tests.ci.test_unica_mcp_script_parity",
-  "tests.ci.test_unica_mcp_smoke",
-  "tests.ci.test_whole_template_plan_diff",
-  "tests.dev.test_unica_observer",
   # дольше десяти секунд
   "tests.ci.test_classify_workflow_changes",
   "tests.ci.test_collect_results",
@@ -27,7 +21,6 @@ skip = [
   "tests.ci.test_resource_limits",
   "tests.ci.test_rust_platform_boundary",
   "tests.ci.test_scope_skips",
-  "tests.ci.test_smoke_unica_mcp",
   "tests.dev.test_verify_8_3_27_platform",
 ]
 
