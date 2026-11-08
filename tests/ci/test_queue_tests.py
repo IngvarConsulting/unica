@@ -126,7 +126,7 @@ class ChoiceTests(unittest.TestCase):
         self.assertEqual(queue.needle("scripts/dev/x.py"), "scripts/dev/x.py")
 
     def test_everything_else_runs_only_small(self) -> None:
-        for path in (".github/workflows/ci.yml", ".github/CODEOWNERS", "scripts/ci/run-tests.py", ".config/nextest.toml", ".config/python-sizes.toml",
+        for path in (".github/workflows/ci.yml", ".github/CODEOWNERS", "scripts/ci/run-tests.py", ".config/nextest.toml", "scripts/ci/python_sizes.py",
                      "tests/fixtures/acceptance/scenario-manifest/x.json", "tests/ci/test_x.py", "docs/release-runbook.md", ".gitattributes",
                      "plugins/unica/skills/x/SKILL.md"):
             with self.subTest(path=path):
@@ -203,7 +203,7 @@ class GuardTests(unittest.TestCase):
 
     def test_rust_does_not_read_the_paths_that_run_only_small(self) -> None:
         # Упоминания `scripts/ci/` в комментариях и текстах ошибок не читают файл: ищется строка пути.
-        for text in ("scenario-manifest", "python-sizes.toml", "CODEOWNERS", '"scripts/ci', ".github/workflows", ".agents/", '"tests/ci/', '"tests/dev/', '"docs/', "../docs/", "docs/pages", "visual-kit", '"arch/rules', '"scripts/research', '"AGENTS.md"'):
+        for text in ("scenario-manifest", "CODEOWNERS", '"scripts/ci', ".github/workflows", ".agents/", '"tests/ci/', '"tests/dev/', '"docs/', "../docs/", "docs/pages", "visual-kit", '"arch/rules', '"scripts/research', '"AGENTS.md"'):
             with self.subTest(text=text):
                 # `bundled_tools.rs` создаёт этот путь во временном каталоге теста, а файл репозитория не читает.
                 self.assertEqual([path for path in self.grep(text) if not path.endswith("infrastructure/bundled_tools.rs")], [])

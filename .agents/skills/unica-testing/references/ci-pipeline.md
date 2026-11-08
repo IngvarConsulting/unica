@@ -8,8 +8,8 @@ Workflow три, и ни один не запускает другой чере�
 
 - `ci.yml` — ворота pull request и очереди: одна Linux-джоба `Unica CI`, в очереди
   ещё `Clippy (windows-latest)`. На pull request она исполняет `cargo fmt`, контракт
-  версий, Clippy и `run-static-tests.py`: модули Python без `medium` и без `[pr] skip`
-  из `.config/python-sizes.toml`, параллельно. Цель до трёх минут. Тесты идут в очереди.
+  версий, Clippy и `run-static-tests.py`: модули Python без `medium` и без объявления
+  `PR_SKIP` в самом модуле (`scripts/ci/python_sizes.py`), параллельно. Цель до трёх минут. Тесты идут в очереди.
 - `release.yml` — сборка, проверка и публикация. Запуски: тег `v*` (профиль
   `release`), кнопка на ветке (`main` или `large`) и вызов ночи.
 - `nightly.yml` — расписание и кнопка на `main`. Если вершина сдвинулась, вызывает
@@ -31,7 +31,7 @@ Windows, ночь и выпуск остаются на GitHub-hosted.
 После восстановления PVE верните `true`.
 
 Очередь всегда исполняет Clippy всего workspace на Linux и Windows, весь Rust `small`,
-Python small, смоук продукта и снимки контрактов (`[queue] keep-medium`). К ним `queue-tests.py`
+Python small, смоук продукта и снимки контрактов (`QUEUE_KEEPS_MEDIUM` в модулях). К ним `queue-tests.py`
 добавляет `medium` изменённых крейтов, включая `unica-coder` и `unica-coder-daemon`. Изменённым считается и крейт,
 в исходниках которого упомянут правленый путь из `tests/fixtures` или `scripts`, кроме
 `scripts/ci` и `scripts/research`. Запись только из `docs/pages`, `docs/visual-kit`,

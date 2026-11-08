@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import tomllib
 import traceback
 import unittest
 from pathlib import Path
@@ -27,13 +26,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
+import python_sizes  # noqa: E402
 
 
 class Sizes:
-    """Размер теста по манифесту `.config/python-sizes.toml`.
+    """Размер теста по объявлениям модулей набора (`scripts/ci/python_sizes.py`).
 
-    Запись манифеста — `модуль`, `модуль.Класс` или `модуль.Класс.тест`;
-    побеждает самая длинная подходящая. Без записи размер — размер набора.
+    Имя — `модуль.Класс` или `модуль.Класс.тест`; побеждает самое длинное
+    подходящее. Без объявления размер — размер набора.
     """
 
     def __init__(self, medium: list[str], default: str = "small"):
@@ -41,11 +41,9 @@ class Sizes:
         self.default = default
 
     @classmethod
-    def load(cls, path: Path | None, default: str = "small") -> "Sizes":
-        if path is None or not path.is_file():
-            return cls([], default)
-        config = tomllib.loads(path.read_text(encoding="utf-8"))
-        return cls(list(config.get("medium", {}).get("entries", [])), default)
+    def declared(cls, directory: Path, default: str = "small") -> "Sizes":
+        """Размеры, объявленные модулями каталога набора."""
+        return cls(python_sizes.suite_medium(directory), default)
 
     def size_of(self, test_id: str) -> str:
         for entry in self.medium:
@@ -154,8 +152,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--results", type=Path, default=None, help="каталог allure-results")
     parser.add_argument("--runner", default="local")
     parser.add_argument("--profile", default="all")
-    parser.add_argument("--size", default="small", help="размер набора: умолчание для тестов без записи в манифесте")
-    parser.add_argument("--sizes", type=Path, default=None, help="манифест размеров .config/python-sizes.toml")
+    parser.add_argument("--size", default="small", help="размер набора: умолчание для тестов без объявления в модуле")
     parser.add_argument("--admit", default="", help="какие размеры гонять, через запятую; пусто — все")
     parser.add_argument("--plan-only", action="store_true", help="перечислить тесты и выйти")
     parser.add_argument("--lane", default="", help="полоса размера этой джобы: идёт в план, чтобы сайт нашёл её джобу")
@@ -163,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="queue docs-only: сохранить обнаруженные medium как намеренно пропущенные")
     args = parser.parse_args(argv)
 
-    sizes = Sizes.load(args.sizes, args.size)
+    sizes = Sizes.declared(Path(args.start_directory), args.size)
     admitted = {size.strip() for size in args.admit.split(",") if size.strip()}
     if args.scope_skip_medium and (args.profile != "queue" or admitted != {"small"} or args.lane != "small"):
         parser.error("--scope-skip-medium требует --profile queue --admit small --lane small")
