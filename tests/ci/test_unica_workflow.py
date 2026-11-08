@@ -426,7 +426,7 @@ class PersistentRunnerCacheTests(unittest.TestCase):
                 def git(*args):
                     return subprocess.run(["git", *args], cwd=workspace, check=True, capture_output=True)
                 git("init", "-q")
-                (workspace / ".gitignore").write_text("target/\n.build/\n", encoding="utf-8")
+                (workspace / ".gitignore").write_text((REPO_ROOT / ".gitignore").read_text(encoding="utf-8"), encoding="utf-8")
                 (workspace / "source").write_text("tracked", encoding="utf-8")
                 git("add", ".")
                 git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "fixture")
@@ -436,6 +436,7 @@ class PersistentRunnerCacheTests(unittest.TestCase):
                                    cwd=workspace, env=environment, check=True, capture_output=True)
                 attach()
                 target = workspace / "target"
+                self.assertEqual(git("ls-files", "--others", "--exclude-standard").stdout, b"")
                 targets.append(target.resolve())
                 (target / "artifact").write_text(name, encoding="utf-8")
                 (workspace / "untracked").write_text("old job", encoding="utf-8")
