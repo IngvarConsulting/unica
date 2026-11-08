@@ -17221,30 +17221,33 @@ fn canonical_dcs_template_removal_clears_only_the_real_reference_and_replays() {
     }
 }
 
-/// Чтение не игнорирует неизвестный аргумент: `filter` у `view` и `diff`
-/// отклоняется `bad_value` до чтения, как любой ключ вне схемы инструмента.
+/// Чтение не игнорирует неизвестный аргумент: ключ вне схемы `view` и `diff`
+/// отклоняется `bad_value` до чтения, каким бы именем он ни назывался.
 /// rule: INV.ANALYSIS.CALL-GRAPH-ON-DEMAND
 /// rule: INV.SOURCE.LOGICAL-QUESTION-COMPLETENESS
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
 #[test]
 fn a_read_with_an_unknown_argument_is_refused_not_ignored() {
     let request =
         |tool, arguments| InvocationRequest::new(tool, arguments, "/workspace", 7_000).unwrap();
-    for (tool, arguments) in [
-        (
-            ToolIdentity::View,
-            serde_json::json!({"at": "main:Catalog.Валюты", "filter": {"sections": ["props"]}}),
-        ),
-        (
-            ToolIdentity::Diff,
-            serde_json::json!({
-                "left": "main:Catalog.Валюты",
-                "right": "main:Catalog.Валюты",
-                "filter": {"paths": ["/props/synonym"]}
-            }),
-        ),
-    ] {
-        let refused = super::validate_hidden_v13_request(&request(tool, arguments))
-            .expect_err("an unknown read argument is refused");
-        assert!(refused.contains("unknown argument `filter`"), "{refused}");
+    for key in ["unicaUnknownArgument", "filter"] {
+        for (tool, mut arguments) in [
+            (
+                ToolIdentity::View,
+                serde_json::json!({"at": "main:Catalog.Валюты"}),
+            ),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({"left": "main:Catalog.Валюты", "right": "main:Catalog.Валюты"}),
+            ),
+        ] {
+            arguments[key] = serde_json::json!({});
+            let refused = super::validate_hidden_v13_request(&request(tool, arguments))
+                .expect_err("an unknown read argument is refused");
+            assert!(
+                refused.contains(&format!("unknown argument `{key}`")),
+                "{refused}"
+            );
+        }
     }
 }
