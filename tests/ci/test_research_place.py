@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import re
 import sys
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -176,6 +177,25 @@ class ResearchPlaceTests(unittest.TestCase):
                       if ISSUE_IN_NAME.search(name)}
         self.assertEqual(sorted(found - ISSUE_NAME_DEBT), [], "move these tests to the research place")
         self.assertEqual(sorted(ISSUE_NAME_DEBT - found), [], "remove fixed entries from ISSUE_NAME_DEBT")
+
+    def test_build_profile_names_research_packages_off_the_root_versions(self) -> None:
+        spec = importlib.util.spec_from_file_location("run_research", REPO_ROOT / "scripts/dev/run-research.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        def lock(*packages: tuple[str, str]) -> str:
+            return "".join(f'[[package]]\nname = "{name}"\nversion = "{version}"\n\n' for name, version in packages)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root, research = Path(temporary) / "root.lock", Path(temporary) / "research.lock"
+            root.write_text(lock(("serde", "1.0.200"), ("unica-domain", "0.15.0")), encoding="utf-8")
+            research.write_text(
+                lock(("serde", "1.0.201"), ("unica-domain", "0.15.0"), ("unica-research", "0.0.0")),
+                encoding="utf-8",
+            )
+            self.assertEqual(module.drifted(root, research), ["serde: ['1.0.201'] vs root ['1.0.200']"])
+            research.write_text(lock(("serde", "1.0.200"), ("unica-research", "0.0.0")), encoding="utf-8")
+            self.assertEqual(module.drifted(root, research), [])
 
     def test_detection_reads_code_not_comments_or_strings(self) -> None:
         source = (
