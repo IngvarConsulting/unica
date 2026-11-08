@@ -62,6 +62,9 @@ flate2.workspace = true
 
 [dev-dependencies]
 unica-coder = { path = "../unica-coder", features = ["test-support"] }
+# `tests/medium_application` проверяет инструменты `unica-application` на портах продукта:
+# прямая зависимость ставит цель в очередь при правке `unica-application`.
+unica-application = { path = "../unica-application", features = ["test-support"] }
 unica-daemon = { path = "../unica-daemon", features = ["test-support"] }
 unica-lsp-contract = { path = "../unica-lsp-contract", features = ["test-support"] }
 unica-project-health = { path = "../unica-project-health", features = ["test-support"] }
