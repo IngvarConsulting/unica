@@ -927,6 +927,42 @@ class ProductContractTests(unittest.TestCase):
 
         self.assertEqual(errors, [])
 
+    def test_tool_contract_checker_does_not_depend_on_rlm_sqlite_schema(self) -> None:
+        """rule: INV.APP.PROVIDER-PRIVATE-STATE"""
+        repo_root = Path(__file__).resolve().parents[2]
+        checker = (repo_root / "scripts" / "ci" / "check-tool-contracts.py").read_text(
+            encoding="utf-8"
+        )
+        for removed in ("sqlite3", "RLM_SCHEMA_COLUMNS", "check_rlm_schema", "--rlm-db"):
+            self.assertNotIn(removed, checker)
+
+        lock = tomllib.loads((repo_root / "Cargo.lock").read_text(encoding="utf-8"))
+        dependency_names = {package["name"] for package in lock["package"]}
+        self.assertEqual(
+            sorted(name for name in dependency_names if "sqlite" in name.lower()),
+            [],
+        )
+
+        # The daemon left `unica-coder` for `unica-coder-daemon`: both are the product.
+        rust_roots = [
+            repo_root / "crates" / "unica-coder" / "src",
+            repo_root / "crates" / "unica-coder-daemon" / "src",
+            repo_root / "crates" / "unica-bootstrap" / "src",
+        ]
+        production = "\n".join(
+            path.read_text(encoding="utf-8")
+            for rust_root in rust_roots
+            for path in sorted(rust_root.rglob("*.rs"))
+        )
+        for removed in (
+            "rusqlite",
+            "libsqlite3",
+            "sqlite3",
+            "Connection::open",
+            "methods_fts",
+        ):
+            self.assertNotIn(removed, production)
+
     def test_rmcp_transport_is_confined_to_mcp_interface(self) -> None:
         """rule: INV.WIRE.SDK-TRANSPORT"""
         self.assertEqual(
