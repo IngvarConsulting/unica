@@ -265,7 +265,8 @@ def sources(root: Path) -> dict[str, Source]:
     return {
         path.relative_to(root).as_posix(): source
         for path, source in parsed.items()
-        if not any(path == item or item in path.parents for item in test_files)
+        # The path itself or any of its directories is test-only: set lookups, not pairs.
+        if path not in test_files and test_files.isdisjoint(path.parents)
     }
 
 
