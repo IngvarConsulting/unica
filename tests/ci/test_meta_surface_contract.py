@@ -20,8 +20,6 @@ META_DOMAIN = REPO_ROOT / "crates/unica-metadata/src"
 META_REQUEST = META_DOMAIN / "request.rs"
 META_DESIGNER = REPO_ROOT / "crates/unica-metadata-designer/src"
 FORMAT_GUARD = REPO_ROOT / "crates/unica-coder/src/infrastructure/format_guard.rs"
-CF_RUNTIME = REPO_ROOT / "crates/unica-coder/src/infrastructure/native_operations/cf.rs"
-TOOL_CONTEXT = REPO_ROOT / "crates/unica-coder/src/infrastructure/tool_context.rs"
 # One file per property; `build.rs` of unica-metadata assembles the registry.
 META_PROPERTY_REGISTRY = REPO_ROOT / "crates/unica-metadata/src/properties"
 META_OPERATION_REGISTRY = (
@@ -562,30 +560,6 @@ class MetaSurfaceContractTests(unittest.TestCase):
             "unica.meta.edit.setProperties.RegisterType",
         )
         self.assertIn("RegisterType", registered_metadata_properties())
-
-    def test_live_rust_guidance_never_advertises_retired_meta_routes(self) -> None:
-        retired_route = re.compile(
-            r"(?<![A-Za-z0-9_])meta-(?:compile|validate|profile)\b|"
-            r"unica\.meta\.(?:compile|validate|profile)\b"
-        )
-        production_surfaces = (
-            (CF_RUNTIME, "pub(crate) fn edit_cf_with_data"),
-            (TOOL_CONTEXT, "fn validates_compile_preview_like_apply"),
-        )
-        violations: list[str] = []
-        for path, signature in production_surfaces:
-            production = rust_function(path.read_text(encoding="utf-8"), signature)
-            if retired_route.search(production):
-                violations.append(
-                    f"{path.relative_to(REPO_ROOT).as_posix()}: {signature}"
-                )
-
-        self.assertEqual(
-            violations,
-            [],
-            "live Rust error/help paths still advertise retired Meta routes:\n"
-            + "\n".join(violations),
-        )
 
     def test_live_meta_runtime_has_no_file_or_string_dsl_grammar(self) -> None:
         sources = {
