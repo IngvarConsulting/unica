@@ -872,6 +872,22 @@ def declared_after_move(lost: list[str], old_cases: set[str], new_cases: set[str
             if lost_names[name(case)] == 1 and len(declared.get(name(case), ())) == 1}
 
 
+def twin_declaration(case_path: str, pattern: str, binaries: list[str] = ()) -> bool:
+    """Whether an exact declaration names this case as compiled into another target.
+
+    A crate that includes another crate's modules runs their tests under its
+    own module path: `unica-domain::apply::tests::x` was also
+    `unica-coder::domain::apply::tests::x`. The declaration's binary is a known
+    target ID, else its package alone; what follows it — at least a module and
+    the function — must end the case's path in its target.
+    """
+    if pattern.endswith("*"):
+        return False
+    binary = binary_of(pattern, list(binaries)) or pattern.split("::", 1)[0]
+    tail = pattern[len(binary) + 2:].split("::")
+    return len(tail) >= 2 and case_path.split("::")[-len(tail):] == tail
+
+
 def declared_in_another_target(lost: list[str], binaries: list[str], tests: list[str]) -> dict[str, str]:
     """Lost cases an exact declaration names in another test target.
 
@@ -879,20 +895,20 @@ def declared_in_another_target(lost: list[str], binaries: list[str], tests: list
     another crate's modules runs their tests as its own cases. When the
     previous inventory had such a twin and the source later left one of the
     targets, the pull request that removed the test sees only the target that
-    still had it and declares that one. The declaration explains every lost
-    case with the same module path and function name, whatever its target.
+    still had it and declares that one. The declaration explains the lost case
+    whose path in its target ends with the declared module path and function.
     """
-    def path_in_target(case: str) -> str | None:
+    explained = {}
+    for case in lost:
         binary = binary_of(case, binaries)
-        return None if binary is None else case[len(binary) + 2:]
-    declared = {}
-    for pattern in tests:
-        if not pattern.endswith("*"):
-            path = path_in_target(pattern)
-            if path:
-                declared.setdefault(path, pattern)
-    return {case: declared[path] for case in lost
-            if (path := path_in_target(case)) in declared and declared[path] != case}
+        if binary is None:
+            continue
+        path = case[len(binary) + 2:]
+        found = [pattern for pattern in tests
+                 if pattern != case and twin_declaration(path, pattern, binaries)]
+        if found:
+            explained[case] = found[0]
+    return explained
 
 
 def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[str]) -> bool:

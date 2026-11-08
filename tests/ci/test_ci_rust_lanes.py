@@ -1027,6 +1027,16 @@ class PreviousInventoryTests(unittest.TestCase):
         self.assertEqual(lanes.declared_in_another_target(lost, binaries, tests),
                          {"unica-coder::application::v13::tool_catalog::tests::retired":
                           "unica-application::application::v13::tool_catalog::tests::retired"})
+        # The including crate adds its own module in front: `domain::` here.
+        self.assertEqual(lanes.declared_in_another_target(
+            ["unica-coder::domain::apply::tests::gone", "unica-coder::other::tests::gone"], binaries,
+            ["unica-domain::apply::tests::gone"]),
+            {"unica-coder::domain::apply::tests::gone": "unica-domain::apply::tests::gone"})
+        # A bare function name is not enough to call two cases one test.
+        self.assertFalse(lanes.twin_declaration("domain::x::gone", "unica-domain::gone"))
+        self.assertTrue(lanes.twin_declaration("tests::gone", "unica-domain::integration::tests::gone",
+                                               ["unica-domain::integration"]))
+        self.assertFalse(lanes.twin_declaration("other::tests::gone", "unica-domain::apply::tests::gone"))
 
     def test_cases_belong_to_the_longest_nested_target_id(self):
         binaries = ["unica-coder", "unica-coder::daemon_receipt_ledger"]
