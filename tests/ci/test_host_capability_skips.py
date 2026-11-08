@@ -24,8 +24,8 @@ import host_capability_guard as guard
 
 # Ранние выходы, существовавшие до механизма (#1893). Список только сокращается.
 ALLOWLIST = frozenset({
-    "crates/unica-coder/tests/medium_application/main.rs::cf_edit_preserves_unix_mode_0600",
-    "crates/unica-coder/tests/medium_application/main.rs::cf_edit_rejects_symlink_configuration_without_touching_referent",
+    "crates/unica-coder-daemon/tests/medium_application/main.rs::cf_edit_preserves_unix_mode_0600",
+    "crates/unica-coder-daemon/tests/medium_application/main.rs::cf_edit_rejects_symlink_configuration_without_touching_referent",
     "crates/unica-coder/tests/platform/code_patch_composition.rs::code_patch_symlink_module_is_rejected_during_preview",
 })
 
