@@ -19,7 +19,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import re
@@ -28,6 +27,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tag_push  # noqa: E402
 
 ALPHA = re.compile(r"\Av(?P<core>\d+\.\d+\.\d+)-alpha\.(?P<number>0|[1-9]\d*)\Z")
 CORE = re.compile(r'(?m)^\[workspace\.package\](?:\n(?!\[).*)*?\nversion = "(\d+\.\d+\.\d+)')
@@ -150,29 +152,20 @@ def publish(root: Path, repo: str, *, force: bool, dry_run: bool, gh: Gh = gh_ap
     identity = ["-c", "user.name=github-actions[bot]", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com"]
     runner(["git", *identity, "commit", "--all", "--message", f"alpha {version}: срез main {head}"], cwd=root)
     runner(["git", *identity, "tag", "--annotate", plan.tag, "--message", f"Срез main {head}"], cwd=root)
-    runner(["git", "push", "origin", f"refs/tags/{plan.tag}"], cwd=root, env=push_env())
-    # Тег, поставленный токеном прогона, не будит `on: push`: собирает этот же прогон.
+    # Тег ставит ключ из секрета окружения `alpha`, а не токен прогона: теги `v*`
+    # защищены ruleset. Push ключом будит `on: push`, поэтому `release.yml` не
+    # слушает теги alpha: собирает этот же прогон.
+    try:
+        with tag_push.ssh_remote(repo) as (remote, env):
+            runner(["git", "push", remote, f"refs/tags/{plan.tag}"], cwd=root, env=env)
+    except tag_push.TagKeyMissing as error:
+        raise AlphaError(str(error)) from error
     outputs = os.environ.get("GITHUB_OUTPUT")
     if outputs:
         sha = runner(["git", "rev-parse", "HEAD"], cwd=root).strip()
         with open(outputs, "a", encoding="utf-8") as stream:
             stream.write(f"tag={plan.tag}\nsha={sha}\n")
     return plan.tag
-
-
-def push_env() -> dict[str, str]:
-    """Токен идёт заголовком из окружения: не в аргументах и не в конфиге на диске."""
-
-    token = os.environ.get("GH_TOKEN")
-    if not token:
-        raise AlphaError("для push нужен GH_TOKEN")
-    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    return {
-        **os.environ,
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
-        "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}",
-    }
 
 
 def stale_alphas(tags: list[str], published: set[str], keep: int) -> list[str]:
