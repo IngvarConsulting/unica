@@ -291,5 +291,84 @@ class MigrateHistoryKeysTests(unittest.TestCase):
         self.assertEqual(0, module.migrate_history_keys(results))
 
 
+class VersionTests(unittest.TestCase):
+    """Тесты на сайте — по версии: отчёт и сводка лежат под тегом, а не под веткой."""
+
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    @staticmethod
+    def result(directory: Path, name: str, status: str, host: str, stop: int = 1, key: str | None = None) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / f"{name}-{stop}-result.json").write_text(json.dumps({
+            "historyId": key or name, "status": status, "stop": stop,
+            "labels": [{"name": "host", "value": host}]}), encoding="utf-8")
+
+    def test_breakdown_counts_each_test_once_by_its_last_attempt_and_host(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            results = Path(tmp)
+            self.result(results, "a", "failed", "ubuntu-latest", stop=1)
+            self.result(results, "a", "passed", "ubuntu-latest", stop=2)
+            self.result(results, "b", "skipped", "macos-15")
+            self.result(results, "c", "broken", "windows-latest")
+            found = self.module.breakdown(results)["by_host"]
+        self.assertEqual(found["ubuntu-latest"], {"total": 1, "passed": 1, "failed": 0, "skipped": 0})
+        self.assertEqual(found["macos-15"]["skipped"], 1)
+        self.assertEqual(found["windows-latest"]["failed"], 1)
+
+    def test_a_run_log_gives_counts_per_os_and_only_unittest_skips(self) -> None:
+        log = "\n".join([
+            "Rust (macos-14)\tТесты\t2026-10-26T09:39:12Z      Summary [1740.6s] 6772 tests run: 6772 passed, 21 skipped",
+            "Unica CI\tТесты\t2026-10-26T09:19:18Z      Summary [643.2s] 10 tests run: 8 passed, 2 failed, 119 skipped",
+            "Unica CI\tPython\t2026-10-26T09:29:41Z Ran 96 tests in 117.213s",
+            "Unica CI\tPython\t2026-10-26T09:29:41Z OK (skipped=3)",
+            "Build tools (win-x64)\tPython\t2026-10-26T09:55:50Z Ran 13 tests in 0.2s",
+            "Build tools (win-x64)\tPython\t2026-10-26T09:55:50Z FAILED (failures=1, skipped=2)",
+        ])
+        self.assertEqual(self.module.log_counts(log), {
+            "macos-14": {"total": 6772, "passed": 6772, "failed": 0, "skipped": 0},
+            "ubuntu-latest": {"total": 106, "passed": 101, "failed": 2, "skipped": 3},
+            "windows-latest": {"total": 13, "passed": 10, "failed": 1, "skipped": 2},
+        })
+
+    def args(self, **overrides) -> Namespace:
+        values = {"site": "https://site.invalid", "repo": "", "allure_command": "allure", "run_sha": "a" * 40,
+                  "run_url": "https://run.invalid/1", "run_at": "2026-11-08T00:00:00Z"}
+        return Namespace(**{**values, **overrides})
+
+    def generate(self, command, check):
+        report = Path(command[command.index("--output") + 1])
+        (report / "widgets").mkdir(parents=True)
+        (report / "widgets" / "summary.json").write_text(json.dumps({"statistic": {"total": 1}}), encoding="utf-8")
+
+    def test_fresh_results_are_stored_under_the_tag_with_report_summary_and_breakdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fresh = root / "fresh"
+            self.result(fresh, "a", "skipped", "macos-15")
+            (fresh / "run.json").write_text(json.dumps({"profile": "release"}), encoding="utf-8")
+            with patch.object(self.module.shutil, "which", return_value="allure"),                  patch.object(self.module.subprocess, "run", side_effect=self.generate):
+                note = self.module.publish_version(root / "site", "v1.0.0", fresh, self.args(), root / "work")
+            data = root / "site" / "data" / "versions" / "v1.0.0"
+            self.assertIn("свежие", note)
+            self.assertTrue((data / "results.tar.gz").is_file())
+            self.assertEqual(json.loads((data / "run.json").read_text(encoding="utf-8"))["sha"], "a" * 40)
+            self.assertEqual(json.loads((data / "breakdown.json").read_text(encoding="utf-8"))["by_host"]["macos-15"]["skipped"], 1)
+            self.assertTrue((data / "summary.json").is_file())
+
+    def test_without_stored_results_the_run_log_is_kept_and_without_it_the_version_is_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            record = {"tag": "v0.13.0", "sha": "b" * 40, "url": "https://run.invalid/2", "by_host": {}}
+            with patch.object(self.module, "fetch", return_value=False),                  patch.object(self.module, "legacy_record", return_value=record):
+                note = self.module.publish_version(root / "site", "v0.13.0", None, self.args(repo="o/r"), root / "work")
+            self.assertIn("журнала", note)
+            legacy = root / "site" / "data" / "versions" / "v0.13.0" / "legacy.json"
+            self.assertEqual(json.loads(legacy.read_text(encoding="utf-8"))["url"], "https://run.invalid/2")
+            with patch.object(self.module, "fetch", return_value=False),                  patch.object(self.module, "legacy_record", return_value=None):
+                self.module.publish_version(root / "site2", "v0.0.1", None, self.args(repo="o/r"), root / "work")
+            self.assertFalse((root / "site2" / "data" / "versions" / "v0.0.1").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
