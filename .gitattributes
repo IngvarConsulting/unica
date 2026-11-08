@@ -26,6 +26,10 @@ tests/fixtures/platform_8_3_27/html-template/native-ru.html -text
 # XDTO platform-export fixtures assert BOM and CRLF as part of their byte contract.
 tests/fixtures/xdto/** -text -whitespace
 
+# Snapshots of metadata_operations fixtures keep the bytes their writer produced.
+crates/unica-coder/tests/fixtures/metadata-editable/** -text -whitespace
+crates/unica-coder/tests/fixtures/metadata-editable-forms/** -text -whitespace
+
 # Harvested platform specifications retain their original CRLF where present.
 plugins/unica/references/specs/*.md whitespace=cr-at-eol
 
@@ -87,8 +91,3 @@ crates/unica-forms-designer/tests/platform/dump_parity/*.xml -text -whitespace
 # Spliced by tests with newline-prefixed patterns; keep their LF bytes on every host.
 /tests/fixtures/platform_8_3_27/mxl/** -text -whitespace
 /tests/fixtures/unica_mcp_script_parity/dcs-validate/** -text -whitespace
-
-
-# Snapshots of metadata_operations fixtures keep the bytes their writer produced.
-crates/unica-coder/tests/fixtures/metadata-editable/** -text -whitespace
-crates/unica-coder/tests/fixtures/metadata-editable-forms/** -text -whitespace
