@@ -814,7 +814,7 @@ mod tests {
         )
     }
 
-    /// #1381: операции, которые пишут содержимое из сопутствующего файла,
+    /// Операции, которые пишут содержимое из сопутствующего файла,
     /// называют его; операции над описанием объекта — нет.
     /// rule: INV.SOURCE.BORROWED-OBJECT-INHERITED-CONTENT
     #[test]
@@ -1548,7 +1548,7 @@ mod tests {
         assert_eq!(expected.len(), 130);
         assert_eq!(registry.names(), expected);
         // Реквизит и команда формы названы по своему узлу, как у объекта
-        // метаданных (#1465), свойства формы — как свойства описания (#1984):
+        // метаданных, свойства формы — как свойства описания:
         // имя одно, семейство выбирает адрес. Других повторов в реестре нет.
         const SHARED_NAMES: &[(&str, OperationFamily)] = &[
             ("attribute.add", OperationFamily::Metadata),
@@ -1695,7 +1695,7 @@ mod tests {
 
     /// Применимость зависит от маршрута, а не от вида последнего сегмента:
     /// одинаковые виды в разных деревьях получают разные операции. Строки —
-    /// известные расхождения #1351 и их правильные места.
+    /// известные расхождения и их правильные места.
     /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
     fn applicability_follows_the_route_not_the_terminal_kind() {
@@ -1735,7 +1735,7 @@ mod tests {
                 false,
             ),
             // Элементы и события формы адресуются цепочкой `Item` любой
-            // глубины (#1355): контейнер нового элемента — сам адрес.
+            // глубины: контейнер нового элемента — сам адрес.
             ("item.add", "main:Document.Order.Form.Main", true),
             (
                 "item.add",
@@ -1793,7 +1793,7 @@ mod tests {
             ("form.set", "main:Document.Order.Form.Main", false),
             ("form.remove", "main:Document.Order.Form.Main", true),
             ("form.remove", "main:Document.Order", false),
-            // Запись прав создаёт роль, а меняет сама запись (#1354).
+            // Запись прав создаёт роль, а меняет сама запись.
             ("right.add", "main:Role.Reader", true),
             ("right.add", "main:Role.Reader.Right.Catalog_Items", false),
             ("right.set", "main:Role.Reader", false),
@@ -1962,7 +1962,7 @@ mod tests {
             ("supportCapability.set", "main:Catalog.Items", false),
             ("supportRule.set", "main:Catalog.Items", true),
             // Запрос — узел набора без имени; прежний псевдоним набора
-            // `Template.T.Query.D` снят (#1353), и остальные операции набора
+            // `Template.T.Query.D` снят, и остальные операции набора
             // на запросе не исполнимы.
             (
                 "query.set",

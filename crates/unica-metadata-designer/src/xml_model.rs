@@ -1708,7 +1708,7 @@ mod tests {
     }
 
     /// Штатная выгрузка расширения 8.3.27 пишет источник из основной
-    /// конфигурации как `v8:TypeId` после `v8:Type` (#1361).
+    /// конфигурации как `v8:TypeId` после `v8:Type`.
     #[test]
     fn event_subscription_source_keeps_extension_type_ids_verbatim() {
         let type_id = "97a5ab75-0974-4551-8659-72579c7cef1e";

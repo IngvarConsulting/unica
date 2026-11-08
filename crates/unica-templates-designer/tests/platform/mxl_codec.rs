@@ -24,7 +24,7 @@ fn mxl_info_shared_core_parses_admitted_bytes_without_workspace_resolution() {
 /// compile. On real BSP print forms the round trip must yield well-formed
 /// spreadsheet XML that keeps the named areas. The round trip is neither
 /// byte- nor row-exact (the power-of-attorney form comes back with 119 of
-/// its 159 logical rows); #1448 part B replaces it with node edits.
+/// its 159 logical rows); node edits are to replace it.
 #[test]
 fn mxl_round_trip_of_real_bsp_templates_keeps_named_areas() {
     let bsp = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

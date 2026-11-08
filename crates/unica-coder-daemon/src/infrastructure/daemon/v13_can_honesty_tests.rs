@@ -1505,7 +1505,7 @@ fn without_an_executable_ancestor_the_refusal_names_the_address_shape() {
             "of a spreadsheet",
         ),
         // Запись `*.set` создаёт не предок: на владельце она не исполнима,
-        // и отказ называет форму адреса подузла (#1354).
+        // и отказ называет форму адреса подузла.
         (
             "cf:Role.Reader",
             "right.set",
@@ -1584,7 +1584,7 @@ fn a_missing_member_answers_not_found_with_the_owner_dictionary_next() {
     );
 }
 
-/// Матрица словаря формы (#1355): на форме, на контейнере любой глубины,
+/// Матрица словаря формы: на форме, на контейнере любой глубины,
 /// на поле, на автоматической командной панели и на событиях формы и
 /// элемента `can` называет ровно те операции формы, которые `apply`
 /// исполняет на этом адресе, и каждая из них строит предпросмотр.
@@ -1684,7 +1684,7 @@ fn honest_can_on_form_items_and_events() {
         }
         // Подробный контракт каждой операции узла читается её адресом, и его
         // пример строит предпросмотр на этом узле: контракт и планировщик
-        // согласны (#1447).
+        // согласны.
         for op in expected.iter() {
             let detailed = invoke(
                 &fixture.workspace,
@@ -1801,7 +1801,7 @@ fn header_and_catalog_attributes_still_add_at_the_owner() {
 
 /// Срезы `Interface` модуля — элементы без адреса: `…Interface.Public`
 /// грамматика отвергает, и `view` его больше не выдаёт. Каждый `at` ответа
-/// открывается, а методы среза — адреса, которые `view` читает (#1467).
+/// открывается, а методы среза — адреса, которые `view` читает.
 /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
 #[test]
 fn interface_slices_publish_only_addresses_view_opens() {
@@ -2263,7 +2263,7 @@ fn subsystem_interface_contracts_preview_all_operations_without_source_writes() 
     }
 }
 
-/// #2164: a client that always passes `limit` reads an operation contract
+/// A client that always passes `limit` reads an operation contract
 /// like a source node: a page size changes nothing, and only a continuation
 /// stays refused: one node has no pages.
 #[test]
@@ -2286,7 +2286,7 @@ fn a_contract_node_takes_a_page_size_like_any_single_node() {
     );
 }
 
-/// #2182: a node property is one value; a page size changes nothing, and
+/// A node property is one value; a page size changes nothing, and
 /// only a continuation stays refused.
 #[test]
 fn a_node_property_takes_a_page_size_like_any_single_node() {

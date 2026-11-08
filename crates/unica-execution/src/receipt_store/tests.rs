@@ -7024,7 +7024,7 @@ use unica_workspace::state_fs::test_support::{
 
 /// INV.APP.RECEIPT-RESULT-RESERVATION: memory held for committed results does
 /// not grow with their number or size, and a repeat after reopening returns
-/// exactly the committed result (#1119).
+/// exactly the committed result.
 /// rule: INV.APP.RECEIPT-RESULT-RESERVATION
 #[test]
 fn committed_results_are_not_held_in_catalog_memory_and_recover_exactly() {

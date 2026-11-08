@@ -4665,7 +4665,7 @@ fn owner_assignment_requires_same_case_source_set_path() {
 /// `InternalInfo`, and rejects the XDTO model when a package references a
 /// `current-config` type the platform never defines for it. Both stop the
 /// exact-platform gate at `import-apply`, long before the mutated
-/// `Package.bin` is ever compared (issue #358).
+/// `Package.bin` is ever compared.
 #[test]
 fn tracked_xdto_package_fixture_is_an_importable_platform_export() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))

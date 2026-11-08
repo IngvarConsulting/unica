@@ -1684,7 +1684,7 @@ mod medium_missing_binary_refusal_tests {
 
     #[test]
     fn a_missing_binary_is_refused_with_a_typed_delivery_stage() {
-        // #549: «Unica binary is missing: <path>» не машиночитаемо и не
+        // «Unica binary is missing: <path>» не машиночитаемо и не
         // подсказывает действие. Отказ называет инструмент, цель, путь, пин,
         // шаг поставки и следующий шаг полями, а не фразой.
         let plugin_root = medium_tests::temp_plugin_root("missing-code");

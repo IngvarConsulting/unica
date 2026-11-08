@@ -68,7 +68,7 @@ class ReleaseAssessmentTests(unittest.TestCase):
     def test_unica_version_names_the_manifest_that_lacks_the_unica_entry(self) -> None:
         # Манифест есть, записи `unica` нет — так устроен исходный
         # `plugins/unica/third-party/manifest.json` с пустым `tools`. Отказ
-        # обязан назвать файл, а не абстрактного «кандидата» (#701, п. 5).
+        # обязан назвать файл, а не абстрактного «кандидата» (п. 5).
         module = load_assessment_module()
         runtime = Path(self.enterContext(tempfile.TemporaryDirectory()))
         manifest = runtime / "third-party" / "manifest.json"
@@ -506,7 +506,7 @@ for raw in sys.stdin:
         # Демон v5 сам восстанавливает потерянный submit-response по точному
         # ключу квитанции; до провода `-32000` доходит только когда не
         # уложились и в окно восстановления. Оценка обязана показать это как
-        # отказ сценария, а не прятать одним повтором (#698).
+        # отказ сценария, а не прятать одним повтором.
         module = load_assessment_module()
 
         with tempfile.TemporaryDirectory() as tmp:

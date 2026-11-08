@@ -64,7 +64,7 @@ mod tests {
     }
 
     /// Контракт прав публикует ту же форму, что принимает планировщик
-    /// (#1354): объект — только `Kind.Name`, право — значение или
+    /// : объект — только `Kind.Name`, право — значение или
     /// ограничение, объект записи прав не аргумент `right.set`.
     /// rule: INV.WIRE.V13-CAN-DICTIONARY
     #[test]
@@ -140,7 +140,7 @@ mod tests {
             let error = add.normalize(&args, "args").unwrap_err();
             assert_eq!(error.path, path, "{args}");
         }
-        // Вложенный объект — одна запись роли (#1356).
+        // Вложенный объект — одна запись роли.
         assert!(add
             .normalize(
                 &json!({"items":[{"object":"DataProcessor.A.Command.B","rights":{"Use":true}}]}),
@@ -209,7 +209,7 @@ mod tests {
                 "args"
             )
             .is_ok());
-        // Область называет адрес (#1354): ключ, который её называл, снят.
+        // Область называет адрес: ключ, который её называл, снят.
         let error = contract
             .normalize(&json!({"values":{"area":"A","cells":{"R1C1":"x"}}}), "args")
             .unwrap_err();
@@ -330,7 +330,7 @@ mod tests {
             json!({"values":{"groupBy":[],"details":true}})
         );
         // Набор и вариант называет адрес: ключи, которые его дублировали,
-        // контракт не принимает (П2, #1353).
+        // контракт не принимает (П2).
         for (op, values, key) in [
             (
                 "query.set",
@@ -344,7 +344,7 @@ mod tests {
                 json!({"variant":"V","name":"G","groupBy":["A"]}),
                 "variant",
             ),
-            // Подузел называет адрес (П3, #1354).
+            // Подузел называет адрес (П3).
             ("variant.set", json!({"name":"V","title":"T"}), "name"),
             ("parameter.set", json!({"name":"P","title":"T"}), "name"),
             (

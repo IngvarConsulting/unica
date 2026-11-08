@@ -2453,7 +2453,7 @@ fn data_row(value: &Value) -> Value {
 mod dcs_structure_tests {
     use super::*;
     /// Итоги одного поля по разным группировкам адреса не получают: строка
-    /// ветви без `at`, а адрес `Total.<путь>` их не выбирает (#1357).
+    /// ветви без `at`, а адрес `Total.<путь>` их не выбирает.
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn repeated_total_paths_stay_rows_and_are_not_chosen() {
@@ -2484,7 +2484,7 @@ mod dcs_structure_tests {
 
     /// Именованный элемент, единственный по имени на своём уровне, — узел
     /// с адресом; безымянный прозрачен и остаётся строкой, а одноимённые
-    /// элементы одного уровня адреса не получают и не выбираются (#1357).
+    /// элементы одного уровня адреса не получают и не выбираются.
     /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn setting_structure_rows_never_fabricate_or_choose_named_addresses() {
@@ -2721,7 +2721,7 @@ mod composite_prop_tests {
         assert_eq!(whole["props"]["Comment"], payload["Comment"]);
     }
 
-    /// #2159: a form declaration whose properties fit one by one but not
+    /// A form declaration whose properties fit one by one but not
     /// together is named by its whole address and read there in full.
     #[test]
     fn a_large_form_declaration_is_read_whole_at_its_property_address() {

@@ -570,7 +570,7 @@ fn canonical_form_add_refuses_prefixed_legacy_inline_duplicate_registration() {
     );
 }
 
-// The inline form has no standalone descriptor here, so the #1370 collapse
+// The inline form has no standalone descriptor here, so the collapse
 // of an edited owner leaves it as it is.
 #[test]
 fn canonical_form_add_preserves_unrelated_legacy_inline_registration() {

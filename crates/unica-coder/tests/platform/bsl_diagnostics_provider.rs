@@ -216,7 +216,7 @@ fn no_deadline_analyze_dispatches_the_analyzer_without_a_timeout() {
 
 /// Each place an analyzer run stops keeps its own closed code instead of
 /// one "provider is unavailable", and the backend's text stays inside
-/// (#1338).
+/// .
 /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
 #[test]
 fn backend_failure_keeps_where_the_run_stopped_and_drops_its_text() {

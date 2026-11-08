@@ -73,7 +73,7 @@ fn diagnostic_module_scope_refuses_foreign_source_object_and_unregistered_module
     }
 }
 
-/// #1966: объект и корень проверяются как цель целиком — без модульной
+/// Объект и корень проверяются как цель целиком — без модульной
 /// области и без выдуманного объекта; общий модуль как объект — тоже объект.
 #[test]
 fn diagnostic_node_mapping_proves_object_common_module_and_root_without_module_scope() {

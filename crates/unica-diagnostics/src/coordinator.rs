@@ -3101,7 +3101,7 @@ mod tests {
             .at_stage(stage);
             let reason = missing_engine_public_reason(&missing);
             // One text on every route: the refusal's message is this reason
-            // behind the closed code (#549).
+            // behind the closed code.
             assert_eq!(missing.message(), format!("bundled_tool_missing: {reason}"));
             assert!(!reason.contains("/private"));
             assert_eq!(

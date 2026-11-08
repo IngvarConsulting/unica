@@ -1036,7 +1036,7 @@ fn structure_patch_targets_parent_direct_group_items_and_preserves_child() {
         &target(&[], "Main"),
     );
     // Одноимённые элементы на одном уровне адреса не имеют: правка
-    // отказывает, а не выбирает первый (#1357).
+    // отказывает, а не выбирает первый.
     let ambiguous = xml.replace(
         "</t:settings>",
         "<t:item xsi:type=\"t:StructureItemGroup\"><t:name>Parent</t:name></t:item></t:settings>",
@@ -2213,7 +2213,7 @@ fn dataset_link_read_preserves_complete_literal_selectors_for_set_and_noop() {
     );
 }
 
-/// #1257: plain-string titles of new DCS nodes take the default language of
+/// Plain-string titles of new DCS nodes take the default language of
 /// the source set, here `en`; `ru` appears nowhere.
 #[test]
 fn plain_string_titles_of_new_nodes_use_the_given_default_language() {
@@ -2295,7 +2295,7 @@ fn plain_string_titles_of_new_nodes_use_the_given_default_language() {
     );
 }
 
-/// #1257: a plain-string set changes only the default-language item and
+/// A plain-string set changes only the default-language item and
 /// keeps the other translations byte for byte; an explicit object replaces
 /// the value as given.
 #[test]

@@ -390,7 +390,7 @@ fn text_fits(bytes: u64, budget: usize) -> bool {
 mod tests {
     use super::*;
 
-    /// #2229: a refusal names every cause that fits the client's budget;
+    /// A refusal names every cause that fits the client's budget;
     /// past it, the answer names how many there are and how many it shows,
     /// and the refusal itself always stays.
     /// rule: INV.SOURCE.CODE-TEXT-SYNTAX-ERRORS

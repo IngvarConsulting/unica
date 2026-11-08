@@ -147,7 +147,7 @@ class RustLaneTests(unittest.TestCase):
             write_configurations(root)
             report = lanes.verify_union(root, "queue", ["ubuntu-latest"], "a" * 40)
             self.assertTrue(report["mandatoryComplete"])
-            # Один вердикт на все ОС: второго, «рекомендательного» списка нет (#2152).
+            # Один вердикт на все ОС: второго, «рекомендательного» списка нет.
             self.assertNotIn("fullMatrixPassed", report)
             self.assertNotIn("advisoryFailures", report)
             self.assertFalse(report["affectedAdmission"])
@@ -854,7 +854,7 @@ class PreviousInventoryTests(unittest.TestCase):
             with self.subTest(outcome=outcome), \
                  self.assertRaisesRegex(ValueError, rf"Rust \(macos-15\) did not finish as success: {outcome}"):
                 self.verify(self.previous(), jobs=jobs)
-        # In the nightly Windows blocks like macOS (#2152).
+        # In the nightly Windows blocks like macOS.
         hosts = ["ubuntu-latest", "macos-15", "windows-latest"]
         previous = self.previous("large", hosts=hosts)
         self.assertTrue(self.verify(previous, "large", hosts=hosts)["mandatoryComplete"])
@@ -967,6 +967,35 @@ class PreviousInventoryTests(unittest.TestCase):
         arrived = ["new::kept_name", "new::x::twice", "new::y::two_arrivals", "new::z::two_arrivals", "new::renamed"]
         self.assertEqual(lanes.moved_cases(lost, arrived), {"old::a::kept_name": "new::kept_name"})
         self.assertEqual(lanes.moved_cases(lost, []), {})
+
+    def test_a_test_moved_after_the_previous_inventory_and_then_removed_is_explained_by_its_moved_id(self):
+        def remove(plan):
+            if plan["lane"] != "ordinary":
+                return
+            for part in plan["shards"]:
+                for case in part:
+                    if case["name"] == "case_0":
+                        case["name"] = "unrelated"
+            plan["inventory"] = sum(plan["shards"], [])
+        report = self.verify(self.previous(tests=["package-moved::relocated::case_0"]), mutate=remove)
+        self.assertIn("ubuntu-latest/ordinary", report["previousInventory"]["removedCases"])
+        with self.assertRaisesRegex(ValueError, "package-ordinary::case_0"):
+            self.verify(self.previous(tests=["package-moved::relocated::case_0", "package-other::case_0"]),
+                        mutate=remove)
+
+    def test_a_removal_declared_by_the_id_after_a_later_move_explains_the_lost_case(self):
+        lost = ["unica-coder::old::moved_then_removed", "unica-coder::old::twice", "unica-coder::other::twice",
+                "unica-coder::old::still_named"]
+        old_cases = set(lost)
+        tests = ["unica-application::new::moved_then_removed", "unica-application::new::twice",
+                 "unica-coder::old::still_named", "unica-application::new::*"]
+        self.assertEqual(lanes.declared_after_move(lost, old_cases, set(), tests),
+                         {"unica-coder::old::moved_then_removed": "unica-application::new::moved_then_removed"})
+        # An ID that still runs or was already in the previous inventory is not a later move.
+        self.assertEqual(lanes.declared_after_move(lost, old_cases, {"unica-application::new::moved_then_removed"}, tests), {})
+        # Two declarations of one name are ambiguous.
+        self.assertEqual(lanes.declared_after_move(lost, old_cases, set(),
+                                                   tests + ["unica-workspace::x::moved_then_removed"]), {})
 
     def test_cases_belong_to_the_longest_nested_target_id(self):
         binaries = ["unica-coder", "unica-coder::daemon_receipt_ledger"]
