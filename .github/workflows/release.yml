@@ -38,6 +38,10 @@ on:
         description: "Выпустить alpha, даже если у этого среза он уже есть"
         type: boolean
         default: false
+    secrets:
+      RELEASE_TAG_KEY:
+        description: "Ключ тегов окружения `alpha`: вызов передаёт его по имени, значение даёт окружение задания `alpha-tag`"
+        required: true
 
 permissions:
   contents: read
