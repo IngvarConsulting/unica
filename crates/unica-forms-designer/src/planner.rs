@@ -81,35 +81,6 @@ pub fn form_item_at<'a>(
         form_item_at(&item.children, rest)
     }
 }
-/// Путь элемента с именем `name` от корня формы: один, ни одного или
-/// несколько элементов с этим именем.
-pub fn form_item_path(
-    elements: &[FormInfoElement],
-    name: &str,
-) -> unica_operations::recovery::NamedLookup {
-    fn collect(
-        elements: &[FormInfoElement],
-        name: &str,
-        prefix: &mut Vec<String>,
-        found: &mut Vec<Vec<String>>,
-    ) {
-        for element in elements {
-            prefix.push(element.name.clone());
-            if element.name == name {
-                found.push(prefix.clone());
-            }
-            collect(&element.children, name, prefix, found);
-            prefix.pop();
-        }
-    }
-    let mut found = Vec::new();
-    collect(elements, name, &mut Vec::new(), &mut found);
-    match found.len() {
-        0 => unica_operations::recovery::NamedLookup::Missing,
-        1 => unica_operations::recovery::NamedLookup::Found(found.remove(0)),
-        _ => unica_operations::recovery::NamedLookup::Ambiguous(found),
-    }
-}
 /// Дерево элементов формы, как его читает `view`.
 pub fn form_items_of(text: &str) -> Result<Vec<FormInfoElement>, String> {
     crate::codec::parse_form_event_evidence_xml(text).map(|evidence| evidence.elements)

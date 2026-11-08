@@ -56,8 +56,6 @@ pub mod borrowing;
 
 pub mod read_codec;
 
-pub mod recovery;
-
 pub mod support_state;
 
 pub mod type_contract;

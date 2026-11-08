@@ -310,7 +310,6 @@ pub mod applicability;
 pub mod contracts;
 pub mod operations;
 
-pub mod recovery;
 pub mod root_properties;
 
 pub mod events;

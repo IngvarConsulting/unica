@@ -136,19 +136,6 @@ impl RoleOperation {
 }
 
 impl unica_operations::FamilyOperation for RoleOperation {
-    fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
-        crate::recovery::RETIRED_ARGUMENTS
-    }
-    fn prepare_redirect(
-        self,
-        template: &str,
-        at: &unica_address::address::QualifiedAddress,
-        args: &serde_json::Map<String, serde_json::Value>,
-        value: &str,
-        members: unica_operations::recovery::MemberPathLookup<'_>,
-    ) -> Option<unica_operations::recovery::PreparedRedirect> {
-        crate::recovery::prepare(template, at, args, value, members)
-    }
     type Observation = ();
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Role

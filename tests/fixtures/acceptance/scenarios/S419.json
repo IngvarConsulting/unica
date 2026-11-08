@@ -240,7 +240,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: code.insert addresses a method: `main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки` with `position`",
+      "refusal": "bad_value: unknown argument; selector accepts only anchor",
       "assertions": [
         {
           "pointer": "/at",
