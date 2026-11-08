@@ -82,6 +82,23 @@ impl fmt::Display for FormatIdentity {
     }
 }
 
+/// A format family plugged into the product by a declaration
+/// (INV.APP.FORMAT-FAMILY-EXTENSION). It alone orders its tuples and knows
+/// which platform line a tuple means; the set of families is open.
+pub trait FormatFamily: Send + Sync {
+    fn id(&self) -> FormatFamilyId;
+
+    /// The order of two tuples of this family; `None` when they are not
+    /// comparable or either is not a tuple of this family.
+    fn compare(&self, left: &FormatKey, right: &FormatKey) -> Option<std::cmp::Ordering>;
+
+    /// The tuples the family supports: those with a measured reference corpus.
+    fn known_keys(&self) -> Vec<FormatKey>;
+
+    /// The platform line of a tuple: one of its versions or derived from them.
+    fn platform_line(&self, key: &FormatKey) -> Option<PlatformLine>;
+}
+
 /// A line of the 1C platform, `8.3.27` or `8.5.4`: three numbers, without a
 /// build. One notion for every format family, so lines compare across them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

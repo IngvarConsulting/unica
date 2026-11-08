@@ -103,6 +103,16 @@ impl SourceSetKind {
 }
 
 impl SourceFormat {
+    /// The format family this observed format names, by its wire name;
+    /// `None` for a set whose format is unknown or contradictory.
+    pub const fn family_id(self) -> Option<format_identity::FormatFamilyId> {
+        match self {
+            Self::PlatformXml => Some(format_identity::FormatFamilyId::new("platform_xml")),
+            Self::Edt => Some(format_identity::FormatFamilyId::new("edt")),
+            Self::Unknown | Self::Invalid => None,
+        }
+    }
+
     /// Работаем ли мы с этим форматом. Сегодня работаем с одним — выгрузкой
     /// платформы; EDT не поддержан, а `unknown` и `invalid` форматом не
     /// являются вовсе.

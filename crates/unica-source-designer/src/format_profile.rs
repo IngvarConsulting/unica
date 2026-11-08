@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::fmt;
 use unica_source_contract::format_identity::{
-    FormatFamilyId, FormatIdentity, FormatKey, PlatformLine,
+    FormatFamily, FormatFamilyId, FormatIdentity, FormatKey, PlatformLine,
 };
 use unica_source_contract::{ACTIVE_PLATFORM_LINE, ACTIVE_SERIALIZATION_FORMAT};
 
@@ -66,6 +66,38 @@ pub fn compare_platform_xml(left: &FormatIdentity, right: &FormatIdentity) -> Op
         _ => None,
     };
     Some(version(left)?.cmp(&version(right)?))
+}
+
+/// Export format versions with a measured reference corpus. 2.18 and 2.19
+/// have a platform line in the table but no corpus yet, so they are not known.
+const MEASURED_EXPORT_FORMATS: &[&str] = &["2.17", "2.20", "2.21", "2.22"];
+
+/// The Designer export as a format family (INV.APP.FORMAT-FAMILY-EXTENSION):
+/// a tuple of one export format version, its line by the table above.
+pub struct PlatformXmlFamily;
+
+impl FormatFamily for PlatformXmlFamily {
+    fn id(&self) -> FormatFamilyId {
+        PLATFORM_XML
+    }
+
+    fn compare(&self, left: &FormatKey, right: &FormatKey) -> Option<Ordering> {
+        compare_platform_xml(
+            &FormatIdentity::new(PLATFORM_XML, left.clone()),
+            &FormatIdentity::new(PLATFORM_XML, right.clone()),
+        )
+    }
+
+    fn known_keys(&self) -> Vec<FormatKey> {
+        MEASURED_EXPORT_FORMATS
+            .iter()
+            .map(|version| FormatKey::new([*version]))
+            .collect()
+    }
+
+    fn platform_line(&self, key: &FormatKey) -> Option<PlatformLine> {
+        platform_xml_line(&FormatIdentity::new(PLATFORM_XML, key.clone()))
+    }
 }
 
 /// Whether the four-part platform build `build` belongs to `line`
