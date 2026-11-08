@@ -161,19 +161,22 @@ def memory_temp(root: Path = MEMORY_TEMP_ROOT, min_free: int = MEMORY_TEMP_MIN_F
     free = status.f_bavail * status.f_frsize
     if free < min_free:
         return None, f"в {root} свободно {free >> 20} МиБ, нужно {min_free >> 20}"
-    directory = Path(tempfile.mkdtemp(prefix="unica-queue-", dir=root))
+    try:
+        directory = Path(tempfile.mkdtemp(prefix="unica-queue-", dir=root))
+    except OSError as error:
+        return None, f"в {root} нельзя создать каталог: {error}"
     # Тесты исполняют заглушки из временного каталога: том с `noexec` не годится.
     probe = directory / "exec-probe"
-    probe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    probe.chmod(0o700)
     try:
+        probe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        probe.chmod(0o700)
         runs = subprocess.run([str(probe)], check=False).returncode == 0
+        probe.unlink()
     except OSError:
         runs = False
-    probe.unlink(missing_ok=True)
     if not runs:
         shutil.rmtree(directory, ignore_errors=True)
-        return None, f"из {root} нельзя исполнять файлы"
+        return None, f"в {root} нельзя записать и исполнить файл"
     return directory, f"{free >> 20} МиБ свободно"
 
 
