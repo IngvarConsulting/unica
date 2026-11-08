@@ -2066,7 +2066,8 @@ jobs:
       - name: Поставить Allure CLI
         run: |
           set -eu
-          curl -fsSL -o allure.tgz \
+          # Выпуски GitHub отвечают 5xx на отдельные запросы: повтор, а не красный сайт.
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o allure.tgz \
             "https://github.com/allure-framework/allure2/releases/download/$ALLURE_VERSION/allure-$ALLURE_VERSION.tgz"
           echo "$ALLURE_SHA256  allure.tgz" | sha256sum -c -
           tar -xzf allure.tgz

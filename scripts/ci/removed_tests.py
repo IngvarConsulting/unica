@@ -314,9 +314,12 @@ def removed_tests(root: Path, base: str, head: str = "HEAD") -> list[tuple[str, 
     after = cases(Packages(root, head), directories)
     remaining = {binary for _, binaries in after.values() for binary in binaries}
     remaining |= {binary for directory in directories for binary, _ in Packages(root, head).targets(directory)}
-    # A test moved to another module changes its case ID: the queue sees it go.
-    return sorted((package, case, binaries, sorted(set(binaries) - remaining))
-                  for case, (package, binaries) in before.items() if case not in after)
+    # A test moved to another crate or module changes its case ID but keeps its
+    # function name: the inventory gate counts it as moved, not removed.
+    lost = sorted(case for case in before if case not in after)
+    moved = ci_rust_lanes.moved_cases(lost, sorted(case for case in after if case not in before))
+    return sorted((before[case][0], case, before[case][1], sorted(set(before[case][1]) - remaining))
+                  for case in lost if case not in moved)
 
 
 # The queue gate (`ci_rust_lanes.explained_case`) matches a declaration

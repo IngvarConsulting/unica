@@ -100,8 +100,8 @@ class RemovedTestsTests(unittest.TestCase):
             ("demo", "demo::contract_tests::whole_binary", gone),
             ("demo", "demo::model::codec::tests::async_goes_away", gone),
             ("demo", "demo::model::codec::tests::goes_away", gone),
-            # Moved to another module: a new case ID, the old one is gone.
-            ("demo", "demo::moved::travels", gone),
+            # `demo::moved::travels` moved to `demo::model::travels`: the same
+            # function arrived in another module, so it is moved, not removed.
             ("demo", "demo::shared::shared_case", gone),
             ("ureq", "ureq::pool::vendored", []),
         ])
@@ -114,7 +114,7 @@ class RemovedTestsTests(unittest.TestCase):
                 "Removes-test: ureq::pool::vendored\n")
 
     def test_each_removal_needs_its_own_declaration(self):
-        self.assertEqual(len(self.check("")), 6)
+        self.assertEqual(len(self.check("")), 5)
         self.assertEqual(self.check(self.DECLARED), [])
         # An exact name in another module of the package is a typo, not a declaration.
         wrong = self.DECLARED.replace("demo::model::codec::tests::goes_away", "demo::model::other::goes_away")
@@ -138,7 +138,7 @@ class RemovedTestsTests(unittest.TestCase):
         rest = self.DECLARED.replace("Removes-test-target: demo::contract_tests\n", "")
         self.assertEqual(len(self.check(rest)), 1)
         # The library still builds: declaring it gone explains none of its cases.
-        library = rest.replace("Removes-test: demo::moved::travels\n", "") + "Removes-test-target: demo\n"
+        library = rest.replace("Removes-test: demo::model::codec::tests::goes_away\r\n", "") + "Removes-test-target: demo\n"
         self.assertEqual(len(self.check(library)), 2)
         self.assertEqual(len(self.check(rest + "Removes-test-target: demo::contract\n")), 1)
 
@@ -229,7 +229,7 @@ class RemovedTestsTests(unittest.TestCase):
             utf8 = self.run_script(*arguments, utf8_mode=True)
             cp1251 = self.run_script(*arguments, utf8_mode=False)
         self.assertEqual(utf8.returncode, 1, utf8.stderr)
-        self.assertEqual(len(utf8.stdout.splitlines()), 6, utf8.stdout)
+        self.assertEqual(len(utf8.stdout.splitlines()), 5, utf8.stdout)
         self.assertEqual((cp1251.returncode, cp1251.stdout, cp1251.stderr), (utf8.returncode, utf8.stdout, b""))
 
     def test_a_failing_git_command_is_reported_not_raised(self):
