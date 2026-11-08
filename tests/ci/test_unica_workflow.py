@@ -1257,9 +1257,11 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         for ref in ("refs/heads/main", "refs/heads/release-v1.0"):
             with self.subTest(ref=ref):
                 self.assertEqual(evaluate(full["with"]["alpha"], {"github.ref": ref}), ref == "refs/heads/main")
-        # Права вызова — верхняя граница: их хватает всем заданиям `release.yml`, но
-        # токен маркетплейса вызову не передаётся, а `id-token` нужен только Pages.
-        self.assertNotIn("secrets", full)
+        # Права вызова — верхняя граница: их хватает всем заданиям `release.yml`.
+        # Вызов передаёт по имени только ключ тегов alpha: без этого секрет окружения
+        # в вызванном workflow пуст. Токен маркетплейса вызову не передаётся, а
+        # `id-token` нужен только Pages.
+        self.assertEqual(full["secrets"], {"RELEASE_TAG_KEY": "${{ secrets.RELEASE_TAG_KEY }}"})
         requested = {}
         for found in jobs(self.release).values():
             requested.update(found.get("permissions") or {})
