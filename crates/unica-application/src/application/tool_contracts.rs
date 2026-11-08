@@ -967,7 +967,6 @@ pub fn validate_tool_argument_shape(
             },
         );
     }
-
     let allowed = allowed_args(&tool).into_iter().collect::<BTreeSet<_>>();
     for key in args.keys() {
         if !allowed.contains(key.as_str()) {
