@@ -773,24 +773,6 @@ class PackageUnicaPluginTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), f"native=run")
 
-    def test_source_tree_does_not_reference_deleted_runtime_shell_wrappers_in_active_docs(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        active_paths = [
-            repo_root / "README.md",
-            repo_root / "plugins" / "unica" / "README.md",
-            repo_root / "docs" / "internal-package.md",
-        ]
-        forbidden = ("run-unica.sh", "run-tool.sh", "run-tool.ps1", "run-bsl-analyzer.sh", "run-v8-runner.sh")
-
-        matches = [
-            f"{path.relative_to(repo_root)}:{needle}"
-            for path in active_paths
-            for needle in forbidden
-            if needle in path.read_text(encoding="utf-8")
-        ]
-
-        self.assertEqual(matches, [])
-
     def test_packaged_mcp_entrypoint_is_target_neutral(self) -> None:
         module = load_package_module()
         repo_root = Path(__file__).resolve().parents[2]

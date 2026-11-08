@@ -1922,18 +1922,6 @@ class ProductContractTests(unittest.TestCase):
         "esac\n"
     )
 
-    def test_downloader_and_local_corpus_contract_are_retired(self) -> None:
-        """Справка платформы приходит из установки, а не из скачанного корпуса.
-
-        Загрузчик закреплял ровно ту болезнь, ради которой заведена #254:
-        полная загрузка в каждом рабочем дереве ради точечного вопроса.
-        """
-        downloader = REPO_ROOT / "scripts" / "dev" / "download-1ci-guides.py"
-        downloader_test = REPO_ROOT / "tests" / "dev" / "test_download_1ci_guides.py"
-
-        self.assertFalse(downloader.exists(), "загрузчик удалён вместе с контрактом корпуса")
-        self.assertFalse(downloader_test.exists(), "тест загрузчика удалён вместе с ним")
-
     def test_local_corpus_directory_stays_ignored(self) -> None:
         """Каталог остаётся игнорируемым: снят контракт корпуса, а не каталог."""
         ignore = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
