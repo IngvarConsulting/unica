@@ -12,7 +12,6 @@
 skip = [
   # нужен `cargo` или продукт
   "tests.ci.test_acceptance_scenarios",
-  "tests.ci.test_host_capability_skips",
   # дольше десяти секунд
   "tests.ci.test_classify_workflow_changes",
   "tests.ci.test_collect_results",
