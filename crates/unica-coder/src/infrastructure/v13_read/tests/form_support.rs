@@ -37,7 +37,7 @@ fn canonical_form_support_keeps_own_rule_and_owner_prohibition() {
             assert_eq!(props["directEditSafe"], safe);
             assert!(props.get("ownerSupport").is_none(), "unexpected answer");
             // The owner's own state is read from the owner in the same exact
-            // vocabulary as the form (#2158).
+            // vocabulary as the form.
             let owner = service.view(ViewRequest::new("main:Report.ParityReport").unwrap());
             assert!(owner.ok);
             assert_eq!(

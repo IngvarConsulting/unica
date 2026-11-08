@@ -90,7 +90,7 @@ mod tests {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     /// `AutomaticAndManaged` допустим только у корня конфигурации: корень
-    /// уходит в проверку `cf` раньше общих перечислений объектов (#1271).
+    /// уходит в проверку `cf` раньше общих перечислений объектов.
     #[test]
     fn configuration_accepts_automatic_and_managed_lock_mode_unlike_objects() {
         let temp = tempfile::tempdir().unwrap();
@@ -1374,7 +1374,7 @@ mod tests {
         }
     }
 
-    /// Issue #360 asked for this: the three ways a child can lose its
+    /// The three ways a child can lose its
     /// descriptor used to share one message, so the diagnostic never said which
     /// of them happened.
     #[test]
@@ -2631,7 +2631,7 @@ mod tests {
 
     /// Платформа 8.3.27 выгружает ссылку расширения на тип расширяемой
     /// конфигурации как `v8:TypeId`: один и после `v8:Type` в составном
-    /// типе, в том числе у реквизита табличной части (#1361). Фикстура —
+    /// типе, в том числе у реквизита табличной части. Фикстура —
     /// выгрузка `ibcmd config export --extension`.
     #[test]
     fn extension_type_id_reference_is_a_valid_type_block() {
@@ -2708,7 +2708,7 @@ mod tests {
 
     /// Source подписки расширения из штатной выгрузки 8.3.27 содержит
     /// `v8:TypeId` источника из основной конфигурации после собственного
-    /// `v8:Type` (#1361) — это допустимо. Source из одних `v8:TypeId`
+    /// `v8:Type` — это допустимо. Source из одних `v8:TypeId`
     /// платформа не загружает («Имя события должно быть задано»).
     #[test]
     fn extension_event_subscription_type_id_source_needs_an_own_source() {

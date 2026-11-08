@@ -388,7 +388,7 @@ fn metadata_missing_empty_and_malformed_types_do_not_claim_a_size_limit() {
         let data = detail.data.unwrap();
         assert!(data["props"].get("type").is_none(), "unexpected answer");
         // Отсутствующий, пустой и повреждённый тип не заявляют предел размера;
-        // причина повреждения названа у самого реквизита (#1933).
+        // причина повреждения названа у самого реквизита.
         let item_limits = data["limits"].as_array().cloned().unwrap_or_default();
         assert!(
             item_limits.iter().all(|limit| {
@@ -842,7 +842,7 @@ fn metadata_node_props_lay_out_the_per_kind_facts_by_role() {
     );
 
     // Тип константы: одно составное значение, вложенным JSON — тем же
-    // механизмом, каким отвечает тип реквизита (#2031).
+    // механизмом, каким отвечает тип реквизита.
     let constant = service.view(ViewRequest::new("main:Constant.MainCurrency").unwrap());
     assert!(constant.ok, "{:?}", refusal_codes(&constant));
     let ty = &constant.data.as_ref().unwrap()["props"]["Type"];
@@ -1120,7 +1120,7 @@ fn every_reference_of_an_object_answers_in_one_relation_branch() {
                 "dataLockField".to_string(),
                 "main:Catalog.Items.Attribute.Code".to_string()
             ),
-            // Membership in a subsystem is the same branch (#2235).
+            // Membership in a subsystem is the same branch.
             ("subsystem".to_string(), "main:Subsystem.Sales".to_string()),
         ]
     );
@@ -1431,7 +1431,7 @@ fn predefined_items_refuse_the_snapshot_budget_and_read_a_large_file_whole() {
     assert_eq!(refusal_codes(&result), ["result_too_large"]);
     assert!(result.cursor.is_none());
 
-    // #1119: the file size is no reason to refuse; a correct file larger than
+    // The file size is no reason to refuse; a correct file larger than
     // the former 8 MiB read limit lists the same items.
     let path = fixture.source.join("Catalogs/Items/Ext/Predefined.xml");
     let original = fs::read_to_string(&path).unwrap();

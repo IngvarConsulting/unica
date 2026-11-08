@@ -715,7 +715,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// #1385: the 8.3.27 export groups an owner's `ChildObjects` by kind in an
+    /// The 8.3.27 export groups an owner's `ChildObjects` by kind in an
     /// order of its own per owner kind (settled by load and export of
     /// reverse-ordered descriptors), so a new entry lands before the first
     /// entry of a later kind, else at the end.
@@ -1653,7 +1653,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// #1385: the platform names a tabular section's generated types after
+    /// The platform names a tabular section's generated types after
     /// it and renames them with it; their ids stay. Every other byte of the
     /// platform descriptor survives the rename.
     #[test]
@@ -1705,7 +1705,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// #1385: the 8.3.27 export writes `Use` before `LineNumberLength`; the
+    /// The 8.3.27 export writes `Use` before `LineNumberLength`; the
     /// sections of catalogs and characteristic-type charts carry both,
     /// documents only `LineNumberLength`, data processors neither.
     #[test]
@@ -1754,7 +1754,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// #1385: an owner command carries the property set of the 8.3.27 export.
+    /// An owner command carries the property set of the 8.3.27 export.
     #[test]
     fn new_owner_command_has_the_platform_property_set() {
         let mut xml = object_xml("Catalog", "Owner", "");
@@ -1889,7 +1889,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// #323, first defect. A CRLF descriptor must not grow a literal `&#13;`
+    /// A CRLF descriptor must not grow a literal `&#13;`
     /// entity: the platform writes none — the 8.3.27 dump has zero occurrences
     /// across 31 009 structural XML files — so an inserted element carries the
     /// file's own EOL rather than an escaped carriage return in content.
@@ -1912,7 +1912,7 @@ pub(crate) mod tests {
         assert!(xml.contains("<Resource uuid="), "{xml}");
     }
 
-    /// #323, second defect. A new register field must not silently disagree
+    /// A new register field must not silently disagree
     /// with the fields already in the register. The corpus gives no single
     /// standard value — a 8.3.27 vendor dump has 2169 of 2490 information
     /// register resources on `Use/Use` and 42 registers mixed inside
@@ -1955,7 +1955,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// Review of #444: the change covers three settings and two collections,
+    /// The change covers three settings and two collections,
     /// so the regression has to prove `Indexing` and the `Dimension` branch as
     /// well — otherwise either could break with the suite still green.
     #[test]
@@ -2653,7 +2653,7 @@ pub(crate) mod tests {
     }
 
     /// Source расширения из штатной выгрузки 8.3.27: тип основной
-    /// конфигурации записан `v8:TypeId` (#1361). Его не трогают ни правка
+    /// конфигурации записан `v8:TypeId`. Его не трогают ни правка
     /// другого свойства, ни замена логических источников.
     #[test]
     fn typed_event_source_replace_keeps_extension_type_ids_verbatim() {
@@ -2957,7 +2957,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// #1325: регистрация, встроенная во владельца прежними версиями Unica,
+    /// Регистрация, встроенная во владельца прежними версиями Unica,
     /// узнаётся по имени метаданных без учёта регистра и остаётся встроенной;
     /// новая — сворачивается в ссылку по имени.
     #[test]
@@ -5334,7 +5334,7 @@ pub(crate) mod tests {
         .collect()
     }
 
-    /// Regression for #360. A Designer dump registers a form in the owner's
+    /// A Designer dump registers a form in the owner's
     /// `ChildObjects` as a bare `<Form>Name</Form>` element and keeps the real
     /// descriptor in `Forms/Name.xml`. Reading such an object must succeed for
     /// every payload shape the platform actually writes.
