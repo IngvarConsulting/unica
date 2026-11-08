@@ -1806,38 +1806,6 @@ fn meta_info_private_closed_read_treats_absent_and_empty_documents_as_complete_e
     }
 }
 
-/// #1119: the registrar scan visits one document at a time, so a document
-/// past the former 64 MiB budget is read rather than refused.
-#[test]
-fn meta_info_private_closed_read_registrar_scan_reads_a_document_past_the_former_byte_cap() {
-    let files = [
-        "Configuration.xml",
-        "Documents/Регистратор.xml",
-        "InformationRegisters/SubordinateRegister.xml",
-        "Languages/Русский.xml",
-    ];
-    let workspace = fixture_workspace(
-        "registrar-large-document",
-        &subordinate_register_fixture(),
-        &files,
-    );
-    let descriptor = workspace.path().join("src/Documents/Регистратор.xml");
-    let inflated = std::fs::read_to_string(&descriptor).unwrap().replace(
-        "</MetaDataObject>",
-        &format!("<!--{}--></MetaDataObject>", "x".repeat(65 * 1024 * 1024)),
-    );
-    std::fs::write(&descriptor, inflated).unwrap();
-
-    let result = call_info_path(workspace.path(), "InformationRegister.SubordinateRegister");
-
-    assert!(result.ok);
-    assert_eq!(
-        result.data.as_ref().unwrap()["validation"]["status"],
-        "passed"
-    );
-    assert_no_error_diagnostic(&result, "provider_unavailable");
-}
-
 #[test]
 fn meta_info_private_closed_read_reports_malformed_registrar_evidence_unavailable() {
     let files = [

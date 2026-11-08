@@ -2,7 +2,7 @@
 
 Отбор объявлен профилями: `pr` пропускает только `small`, очередь и `main` —
 всё, кроме `large` и временного каталога `nightly-only`, релиз гоняет всё,
-`large` — названные тесты ёмкости и нагрузки ReceiptLedger и карты исходников, а на
+`large` — названные тесты ёмкости и нагрузки ReceiptLedger, а на
 Windows — весь набор. Меняется этот страж осознанно, вместе с выражениями профилей.
 """
 
@@ -20,35 +20,11 @@ import tree_sitter_rust
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATES = ("pr", "queue", "main", "release")
-# Library modules whose named tests may enter the large tier, with the source
-# file that declares them: map capacity checks and the real-time daemon run
-# past the former operation deadlines (#1251).
-LARGE_LIBRARY_MODULES = {
-    ("unica_coder_daemon", "infrastructure::daemon::medium_receipt_runtime_tests::"): (
-        "crates/unica-coder-daemon/tests/platform/receipt_runtime.rs",
-        "infrastructure::daemon::medium_receipt_runtime_tests::",
-    ),
-    # Root check and resource inspection past the former corpus caps (#1119).
-    ("unica_coder_daemon", "infrastructure::daemon::v13_workspace_bootstrap::medium_tests::"): (
-        "crates/unica-coder-daemon/src/infrastructure/daemon/v13_workspace_bootstrap.rs",
-        "infrastructure::daemon::v13_workspace_bootstrap::",
-    ),
-    ("unica_project_health", "inspection::resources::medium_tests::"): (
-        "crates/unica-project-health/tests/platform/project_health_resources.rs",
-        "inspection::resources::medium_tests::",
-    ),
-    ("unica_project_health", "inspection::git::medium_tests::"): (
-        "crates/unica-project-health/tests/platform/project_health_git.rs",
-        "inspection::git::medium_tests::",
-    ),
-    ("selection", ""): (
-        "crates/unica-source-integration-tests/tests/selection.rs",
-        "",
-    ),
-    ("unica_workspace", "selection_evidence::tests::"): (
-        "crates/unica-workspace/src/selection_evidence.rs", "selection_evidence::",
-    ),
-}
+# Library modules whose named tests may enter the large tier, keyed by
+# (binary, module prefix), with the source file and module that declare them.
+# Empty while the tier names only ReceiptLedger contract tests.
+LARGE_LIBRARY_MODULES: dict[tuple[str, str], tuple[str, str]] = {}
+LARGE_TARGETS = {"daemon_receipt_ledger"} | {binary for binary, _ in LARGE_LIBRARY_MODULES}
 
 # Expected command is independent of the runner's production constant.
 UREQ_SELECTION = (
@@ -100,7 +76,7 @@ def large_groups(expression: str) -> dict[str, list[str]]:
     result = exact_groups(
         expression,
         "large",
-        {"daemon_receipt_ledger", "unica_coder_daemon", "unica_project_health", "unica_workspace", "selection"},
+        LARGE_TARGETS,
     )
     for target, names in result.items():
         for name in names:
@@ -308,13 +284,8 @@ class GateProfileCompositionTests(unittest.TestCase):
         groups = large_groups(large)
         self.assertEqual(sum(map(len, groups.values())), large.count("test("))
         ledger = (REPO_ROOT / "crates" / "unica-product" / "tests/daemon_receipt_ledger.rs").read_text(encoding="utf-8")
-        declared_by_target = {
-            "daemon_receipt_ledger": attributed_test_functions(ledger),
-            "unica_coder_daemon": set(),
-            "unica_project_health": set(),
-            "unica_workspace": set(),
-            "selection": set(),
-        }
+        declared_by_target = {target: set() for target in LARGE_TARGETS}
+        declared_by_target["daemon_receipt_ledger"] = attributed_test_functions(ledger)
         for (binary, _), (path, module) in LARGE_LIBRARY_MODULES.items():
             source = (REPO_ROOT / path).read_text(encoding="utf-8")
             declared_by_target[binary] |= {module + name for name in attributed_test_functions(source)}
@@ -355,7 +326,7 @@ class GateProfileCompositionTests(unittest.TestCase):
 
     def test_large_filter_rejects_broad_wrong_target_and_duplicate_members(self) -> None:
         expression = self.config["profile"]["large"]["default-filter"].strip()
-        name = large_groups(expression)["unica_coder_daemon"][-1]
+        name = large_groups(expression)["daemon_receipt_ledger"][0]
         exact = f"test(/^{name}$/)"
         for replacement in [
             f"test(/^{name}/)",

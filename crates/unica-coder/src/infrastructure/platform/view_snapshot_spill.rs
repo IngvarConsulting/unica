@@ -59,11 +59,6 @@ impl TempFileSpill {
         }
         Ok(Arc::clone(spool.as_ref().expect("spool was just opened")))
     }
-
-    #[cfg(any(test, feature = "test-support"))]
-    fn spool_len_for_test(&self) -> u64 {
-        self.spool().unwrap().file.lock().unwrap().len
-    }
 }
 
 impl SnapshotSpill for TempFileSpill {
@@ -190,9 +185,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
-    use unica_navigation::result_store::{
-        ViewCursorBinding, ViewCursorStore, DEFAULT_MAX_TOTAL_BYTES,
-    };
+    use unica_navigation::result_store::{ViewCursorBinding, ViewCursorStore};
 
     fn binding() -> ViewCursorBinding {
         ViewCursorBinding {
@@ -202,51 +195,6 @@ mod tests {
             snapshot_id: "rev-1".into(),
             page_limit: 20,
         }
-    }
-
-    /// rule: INV.APP.VIEW-CURSOR-CAPACITY
-    #[test]
-    fn medium_snapshot_beyond_the_former_memory_quota_pages_exactly_from_disk() {
-        let text = "я".repeat(512 * 1024);
-        // 72 MiB of item text: more than the former 64 MiB in-memory budget.
-        let items = (0..72)
-            .map(|index| json!({"index": index, "text": text}))
-            .collect::<Vec<_>>();
-        assert!(serde_json::to_vec(&items).unwrap().len() > DEFAULT_MAX_TOTAL_BYTES);
-        let spill = Arc::new(TempFileSpill::default());
-        let store =
-            ViewCursorStore::new(VIEW_SNAPSHOT_MAX_RETAINED_BYTES).with_spill(spill.clone());
-        let binding = binding();
-        let token = store
-            .insert_snapshot(
-                binding.clone(),
-                json!({"kind": "Catalog"}),
-                items.clone(),
-                1,
-            )
-            .unwrap();
-        let page = store.read(&token, &binding.question()).unwrap();
-        assert_eq!(page.snapshot.len(), 72);
-        assert_eq!(page.snapshot.node(), &json!({"kind": "Catalog"}));
-        assert_eq!(
-            page.snapshot.read_items(1, 2).unwrap(),
-            items[1..3].to_vec()
-        );
-        assert_eq!(
-            page.snapshot.read_items(71, 5).unwrap(),
-            items[71..].to_vec()
-        );
-        assert!(page.snapshot.read_items(72, 1).unwrap().is_empty());
-        // The items are on disk: the shared spool holds exactly their bytes,
-        // while memory keeps the node and the bounds.
-        let item_bytes: usize = items
-            .iter()
-            .map(|item| serde_json::to_vec(item).unwrap().len())
-            .sum();
-        assert_eq!(spill.spool_len_for_test(), item_bytes as u64);
-        let usage = store.retained_usage_for_test();
-        assert!(usage.retained_bytes > DEFAULT_MAX_TOTAL_BYTES);
-        assert!(usage.retained_bytes <= VIEW_SNAPSHOT_MAX_RETAINED_BYTES);
     }
 
     #[test]

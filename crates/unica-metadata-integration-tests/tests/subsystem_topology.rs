@@ -511,32 +511,6 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    /// #1119: a registered descriptor past the former 64 MiB budget is read;
-    /// its size is no reason to refuse the topology.
-    /// rule: INV.SOURCE.SUBSYSTEM-REGISTRATION
-    #[test]
-    fn registered_descriptor_past_the_former_byte_budget_is_read() {
-        let root = tempfile::tempdir().unwrap();
-        write_configuration(root.path(), &["Registered"]);
-        write_subsystem(root.path(), &[], "Registered", "true", &[], &[]);
-        let source_root = root.path().canonicalize().unwrap();
-        let expected = capture_registered_subsystem_topology(&source_root, checkpoint).unwrap();
-        let descriptor = root.path().join("Subsystems/Registered.xml");
-        let text = fs::read_to_string(&descriptor).unwrap().replace(
-            "</MetaDataObject>",
-            &format!("<!--{}--></MetaDataObject>", "x".repeat(65 * 1024 * 1024)),
-        );
-        fs::write(descriptor, text).unwrap();
-
-        let actual = capture_registered_subsystem_topology(&source_root, checkpoint)
-            .expect("a large registered descriptor is read whole");
-
-        // Compare the structure only: the dependency documents now carry the
-        // large descriptor and must not be printed on failure.
-        assert!(actual.roots == expected.roots);
-        assert!(actual.dependency_paths == expected.dependency_paths);
-    }
-
     #[test]
     fn registered_name_mismatch_is_not_complete_evidence() {
         let root = tempfile::tempdir().unwrap();

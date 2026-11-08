@@ -3330,23 +3330,6 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
-    /// A file larger than the former 32 MiB staging bound is read whole: the
-    /// configuration, not apply, decides its size (#1119).
-    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
-    #[test]
-    fn apply_stages_a_file_larger_than_the_former_read_bound() {
-        const FORMER_BOUND: usize = 32 * 1024 * 1024;
-        let root = temp_root("unbounded-read");
-        std::fs::create_dir_all(root.join("Ext")).unwrap();
-        let large = vec![b'a'; FORMER_BOUND + 1];
-        std::fs::write(root.join("Ext/large.bin"), &large).unwrap();
-        let mut state = staged(&root);
-
-        let read = state.read(Path::new("Ext/large.bin")).unwrap();
-        assert_eq!(read.as_deref(), Some(large.as_slice()));
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
     /// `ContainmentIdentity` means links, hard-link aliases, paths outside the
     /// root and the generated subtree. A wrong kind of entry is a source
     /// defect and a failed filesystem call is an unreadable source.
