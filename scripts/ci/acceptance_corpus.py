@@ -35,8 +35,6 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ROOT = REPO_ROOT / "tests/fixtures/acceptance"
 HEADER_FILE = "scenario-corpus.json"
-# The former name of the header file, which used to hold the historical block.
-LEGACY_FILE = HEADER_FILE
 SCENARIO_DIR = "scenarios"
 MANIFEST_DIR = "scenario-manifest"
 MANIFEST_SUFFIX = ".steps"
