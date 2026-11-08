@@ -265,3 +265,5 @@ pub mod read;
 pub mod proposal;
 
 pub mod discovery;
+
+pub mod format_identity;
