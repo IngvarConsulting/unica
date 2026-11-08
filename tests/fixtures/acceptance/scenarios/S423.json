@@ -3,7 +3,7 @@
   "name": "dcs-composite-field-is-addressed",
   "issue": 1356,
   "area": "СКД",
-  "task": "Поле схемы с составным dataPath получает адрес Field.<dataPath> с экранированной точкой: после добавления ветвь полей публикует этот адрес и поле читается по нему; снятая форма field.set с values.field отказывает без записи с next к этому адресу, а field.set и fieldRole.set на нём меняют поле, что видно при чтении",
+  "task": "Поле схемы с составным dataPath получает адрес Field.<dataPath> с экранированной точкой: после добавления ветвь полей публикует этот адрес и поле читается по нему; field.set на наборе отказывает без записи с next к словарю набора, а field.set и fieldRole.set на нём меняют поле, что видно при чтении",
   "wire": [
     {
       "tool": "unica.apply",
@@ -95,11 +95,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `field.set` names its subject by address, not by `values.dataPath`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.",
+      "refusal": "bad_value: apply operation `field.set` does not apply to DataSet `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1`; it address",
       "assertions": [
         {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
           "pointer": "/next/0/args/at",
-          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.ТипОбъекта\\.Представление.Can.field.set"
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1"
         }
       ],
       "fileAssertions": [

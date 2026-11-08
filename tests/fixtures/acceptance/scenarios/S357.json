@@ -2,7 +2,7 @@
   "id": "S357",
   "issue": 895,
   "area": "Код BSL",
-  "task": "Выделить три helper-метода одной заменой метода по его адресу: одна запись, опубликованный повтор пустой, повторно объявленный helper отказывает; снятый селектор метода отказывает без записи и ведёт к адресу метода",
+  "task": "Выделить три helper-метода одной заменой метода по его адресу: одна запись, опубликованный повтор пустой, повторно объявленный helper отказывает; селектор метода отказывает без записи, next ведёт к контракту code.replace на модуле",
   "wire": [
     {
       "tool": "unica.apply",
@@ -30,11 +30,7 @@
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции.Can.code.replace"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "main:CommonModule.GoogleПереводчик.Method"
+          "eq": "main:CommonModule.GoogleПереводчик.Can.code.replace"
         }
       ],
       "fileAssertions": [
@@ -44,7 +40,7 @@
           "eq": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376"
         }
       ],
-      "refusal": "bad_value: `code.replace` names its subject by address, not by `selector.method`; call it at `main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции`"
+      "refusal": "bad_value: code.replace addresses a whole method: `main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции`"
     },
     {
       "tool": "unica.apply",

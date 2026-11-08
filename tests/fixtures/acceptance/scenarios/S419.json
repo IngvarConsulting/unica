@@ -3,7 +3,7 @@
   "name": "schema-subnodes-and-method-insert-are-addressed",
   "issue": 1354,
   "area": "СКД",
-  "task": "Вариант, параметр и поле схемы, названные аргументом на владельце, и метод в selector у code.insert отказывают без записи с next к адресу подузла; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр",
+  "task": "Операции варианта, параметра и поля схемы на владельце отказывают без записи с next к словарю адресованного узла, метод в selector у code.insert — с next к контракту code.insert на модуле; исправленные вызовы по адресам Setting, Field и Method строят предпросмотр",
   "wire": [
     {
       "tool": "unica.view",
@@ -43,15 +43,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `variant.set` names its subject by address, not by `values.name`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Ос",
+      "refusal": "bad_value: apply operation `variant.set` does not apply to Template `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных`; it addresses `Kind.Name.Temp",
       "assertions": [
         {
-          "pointer": "/next/0/args/at",
-          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting.Основной.Can.variant.set"
+          "pointer": "/at",
+          "eq": "ops[0].at"
         },
         {
-          "pointer": "/next/1/args/at",
-          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Setting"
+          "pointer": "/next/0/args/at",
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
         }
       ],
       "fileAssertions": [
@@ -117,11 +117,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `parameter.set` names its subject by address, not by `values.name`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Paramete",
+      "refusal": "bad_value: apply operation `parameter.set` does not apply to Template `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных`; it addresses `Kind.Name.Te",
       "assertions": [
         {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
           "pointer": "/next/0/args/at",
-          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.Parameter.Период.Can.parameter.set"
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных"
         }
       ],
       "fileAssertions": [
@@ -151,11 +155,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `field.set` names its subject by address, not by `values.dataPath`; call it at `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.",
+      "refusal": "bad_value: apply operation `field.set` does not apply to DataSet `main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1`; it address",
       "assertions": [
         {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
           "pointer": "/next/0/args/at",
-          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1.Field.Количество.Can.field.set"
+          "eq": "main:Report.АнализВерсийОбъектов.Template.ОсновнаяСхемаКомпоновкиДанных.DataSet.НаборДанных1"
         }
       ],
       "fileAssertions": [
@@ -232,7 +240,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `code.insert` names its subject by address, not by `selector.method`; call it at `main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки`",
+      "refusal": "bad_value: code.insert addresses a method: `main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки` with `position`",
       "assertions": [
         {
           "pointer": "/at",
@@ -240,11 +248,7 @@
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки.Can.code.insert"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "main:CommonModule.GoogleПереводчик.Method"
+          "eq": "main:CommonModule.GoogleПереводчик.Can.code.insert"
         }
       ],
       "fileAssertions": [

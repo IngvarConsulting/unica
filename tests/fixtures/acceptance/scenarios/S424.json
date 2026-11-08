@@ -3,7 +3,7 @@
   "name": "interface-group-with-a-dot-is-addressed",
   "issue": 1356,
   "area": "Подсистемы и интерфейс",
-  "task": "Группа командного интерфейса CommandGroup.X публикуется адресом с экранированной точкой и читается по нему; порядок её команд задаётся на этом адресе, а прежний values.group отказывает без записи с next к адресу группы",
+  "task": "Группа командного интерфейса CommandGroup.X публикуется адресом с экранированной точкой и читается по нему; порядок её команд задаётся на этом адресе, а commandOrder.set на интерфейсе отказывает без записи с next к его словарю",
   "wire": [
     {
       "tool": "unica.view",
@@ -61,19 +61,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `commandOrder.set` names its subject by address, not by `values.group`; call it at `main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрог",
+      "refusal": "bad_value: apply operation `commandOrder.set` does not apply to Interface `main:Subsystem.Администрирование.Interface`; it addresses `Subsystem.Name[.Subsystem.Child].Inte",
       "assertions": [
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.group"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:Subsystem.Администрирование.Interface.Group.CommandGroup\\.НастройкиПрограммы.Can.commandOrder.set"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "main:Subsystem.Администрирование.Interface.Group"
+          "eq": "main:Subsystem.Администрирование.Interface"
         }
       ]
     },

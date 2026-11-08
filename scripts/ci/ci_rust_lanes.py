@@ -31,6 +31,10 @@ HOSTS = (LINUX, "macos-15", "windows-latest")
 # macOS runs the complete suite nightly, in `main` and release runs and in
 # pull requests labelled `ci:full`.
 # macos-14 is comparison-only history; it is not a current HOSTS entry.
+# Removal: runners moved to macos-15 on 2026-10-31 and inventories live
+# 90 days. The macos-14 comparison here and in `rust_inventory_baseline.py`
+# goes, with its tests, once every release line has a run after 2026-10-31
+# or after 2027-01-29, whichever comes first.
 # Earlier queue inventories ran only the platform facades on macOS (profile
 # `queue-platform`); a baseline of that shape stays a narrowed selection.
 HISTORICAL_PLATFORM_ONLY = {("queue", "macos-15"), ("queue", "macos-14")}

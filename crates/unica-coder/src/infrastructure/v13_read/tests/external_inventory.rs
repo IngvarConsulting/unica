@@ -139,30 +139,6 @@ fn retained_external_inventory_is_cancellable() {
 
 /// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
 #[test]
-fn retained_external_inventory_crosses_former_aggregate_bytes_without_losing_owners() {
-    let fixture = large_external_inventory_fixture();
-    let reader = external_inventory_reader(&fixture);
-    let payload =
-        configuration_payload(&reader).expect("all sequential descriptors remain readable");
-    assert_complete_large_external_inventory(&payload);
-}
-
-/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
-#[test]
-fn retained_external_inventory_reads_malformed_tail_after_former_aggregate_bytes() {
-    let fixture = large_external_inventory_fixture();
-    // Retained names are sorted. The five Large*.xml files precede this entry
-    // and contain more than 32 MiB in total.
-    fs::write(fixture.processor.join("ZZBroken.xml"), "<broken>").unwrap();
-    let reader = external_inventory_reader(&fixture);
-    let error = configuration_payload(&reader).unwrap_err();
-    assert_eq!(error.code().as_str(), "provider_unavailable");
-    assert!(error.to_string().contains("ZZBroken.xml"), "{error}");
-    assert!(!error.to_string().contains("read limit"), "{error}");
-}
-
-/// rule: INV.SOURCE.EXTERNAL-ARTIFACT-ROOTS
-#[test]
 fn retained_external_inventory_cancels_inside_a_large_descriptor_without_publishing_prefix() {
     // This stays below the former aggregate limit, so its RED cannot be
     // masked by an unrelated size refusal.

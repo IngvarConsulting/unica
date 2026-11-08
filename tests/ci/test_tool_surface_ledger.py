@@ -373,5 +373,50 @@ class SurfaceCopiesAgreeTests(unittest.TestCase):
         )
 
 
+# Имя инструмента в тексте: `unica.view`, `unica.task.get`. Перед ним не стоит
+# часть другого имени (`run-unica.sh`, `.unica.x`), а имя с расширением файла —
+# это файл (`unica.toml`), не инструмент.
+GUIDANCE_TOOL_NAME = re.compile(r"(?<![\w./-])unica(?:\.[a-z][a-z0-9_]*)+")
+FILE_SUFFIXES = {"toml", "sh", "ps1", "json", "yaml", "yml", "md", "exe", "log"}
+GUIDANCE_ROOTS = ("plugins/unica/skills", "plugins/unica/references")
+
+
+def guidance_tool_names(text: str) -> list[str]:
+    return [name for name in GUIDANCE_TOOL_NAME.findall(text) if name.rsplit(".", 1)[-1] not in FILE_SUFFIXES]
+
+
+class GuidanceNamesPublishedToolsTests(unittest.TestCase):
+    """Скил и справочник называют только опубликованные инструменты.
+
+    Агент зовёт названный инструмент как есть: имя, которого поверхность не
+    публикует, ведёт к отказу. Опубликованные имена — заголовки ведомости,
+    которую сверяет с бинарём `test_ledger_matches_the_live_registry`.
+    """
+
+    def test_every_tool_name_in_skills_and_references_is_published(self) -> None:
+        published = set(LEDGER_TOOL_HEADING.findall(LEDGER.read_text(encoding="utf-8")))
+        self.assertTrue(published)
+        offenders = collections.defaultdict(set)
+        scanned = 0
+        for root in GUIDANCE_ROOTS:
+            for path in sorted((REPO_ROOT / root).rglob("*.md")):
+                scanned += 1
+                for name in guidance_tool_names(path.read_text(encoding="utf-8")):
+                    if name not in published:
+                        offenders[path.relative_to(REPO_ROOT).as_posix()].add(name)
+        self.assertGreater(scanned, 0)
+        self.assertEqual({path: sorted(names) for path, names in offenders.items()}, {})
+
+    def test_a_name_is_a_tool_unless_it_is_part_of_a_file_name(self) -> None:
+        text = (
+            "`unica.view` и `unica.task.get`, снятый `unica.form.compile` и семейство `unica.meta.*`; "
+            "файлы `run-unica.sh`, `unica.toml`, `unica.local.toml`, `.unica.cache`"
+        )
+        self.assertEqual(
+            guidance_tool_names(text),
+            ["unica.view", "unica.task.get", "unica.form.compile", "unica.meta"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

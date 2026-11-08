@@ -274,6 +274,8 @@ fn observe_fresh_view_capability_for_test(at: &str, revision: impl FnOnce() -> S
 }
 
 mod apply_tool;
+#[cfg(test)]
+pub(super) use apply_tool::with_unknown_argument_contract;
 mod check_tool;
 mod resolve_tool;
 mod search_tool;
@@ -1187,7 +1189,7 @@ fn name_search_interruption(
     None
 }
 
-fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
+pub(super) fn apply_plan_error_result(error: &ApplyPlanError) -> DomainResult {
     let at = error.path().map(str::to_string);
     let code = match error.kind() {
         ApplyPlanErrorKind::BadValue => RefusalCode::BadValue,
@@ -2492,10 +2494,7 @@ fn validate_style_item_apply_capabilities(
 /// Предварительная проверка `apply`: каждая операция есть в реестре, набор
 /// исходников её семейство пишет, а сама она исполнима на своём узле.
 ///
-/// Сначала читается таблица снятых аргументов: вызов, который называет
-/// подузел аргументом, получает `bad_value` с адресом подузла в `next` — а не
-/// вердикт «не тот узел» с тупиком к `can` того же узла. Затем проверяется
-/// применимость к месту; `next` неприменимой операции ведёт к `can`
+/// Проверяется применимость к месту; `next` неприменимой операции ведёт к `can`
 /// ближайшего узла, где она исполнима. Если такого узла нет, `next` ведёт к
 /// `can` того же узла, когда тот читается, иначе к корню набора, а текст
 /// называет форму нужного адреса. `template_format` читает формат макета-
@@ -2505,25 +2504,15 @@ pub(super) fn preflight_apply_operations(
     source: unica_source_contract::context::SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
 ) -> Result<(), Box<DomainResult>> {
-    preflight_apply_operations_with(
-        request,
-        source,
-        template_format,
-        &|_| None,
-        &unica_operations::recovery::no_member_lookup,
-        &|_| None,
-    )
+    preflight_apply_operations_with(request, source, template_format, &|_| None, &|_| None)
 }
 
-/// То же, что `preflight_apply_operations`, с поиском узла по имени: снятый
-/// `dataSet` ведёт к настоящему, в том числе вложенному, набору, а имя
-/// элемента формы — к его пути в форме.
+/// То же, что `preflight_apply_operations`, с ролью элемента формы.
 pub(super) fn preflight_apply_operations_with(
     request: &crate::domain::apply::ApplyRequest,
     source: unica_source_contract::context::SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
-    members: unica_operations::recovery::MemberPathLookup<'_>,
     color: &dyn Fn(
         &QualifiedAddress,
     ) -> Option<unica_metadata::style_color::StyleItemPropertiesObservation>,
@@ -2533,7 +2522,6 @@ pub(super) fn preflight_apply_operations_with(
         source,
         template_format,
         &|at| form_item(at).map(unica_forms::FormObservation::Item),
-        members,
         color,
     )
 }
@@ -2543,29 +2531,13 @@ pub(super) fn preflight_apply_operations_observed(
     source: unica_source_contract::context::SourceSetTraits,
     template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
     form_observation: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormObservation>,
-    members: unica_operations::recovery::MemberPathLookup<'_>,
     color: &dyn Fn(
         &QualifiedAddress,
     ) -> Option<unica_metadata::style_color::StyleItemPropertiesObservation>,
 ) -> Result<(), Box<DomainResult>> {
-    let form_item = &|at: &QualifiedAddress| {
-        form_observation(at).and_then(unica_forms::FormObservation::item_role)
-    };
     let registry = crate::domain::apply::operation_registry();
     for (index, operation) in request.ops().iter().enumerate() {
         let Some(descriptor) = registry.lookup(operation.name()) else {
-            // Снятая операция ведёт к заменившей на узле-родителе (#1354).
-            if let Some(retired) = crate::domain::apply::retired_operation(operation.name()) {
-                return Err(Box::new(retired_operation_refusal(
-                    index,
-                    operation.at(),
-                    retired,
-                    source,
-                    template_format,
-                    form_item,
-                    color,
-                )));
-            }
             return Err(Box::new(with_node_dictionary(
                 error_result(
                     Some(format!("ops[{index}].op")),
@@ -2608,163 +2580,6 @@ pub(super) fn preflight_apply_operations_observed(
                 ),
             )));
         };
-        if let Some(mut redirect) = registry.retired_argument_redirect_with(
-            operation.name(),
-            &site,
-            operation.args(),
-            members,
-        ) {
-            // Значение назвало элемент, роль которого операцию не принимает
-            // (`into` поля): `next` ведёт к ближайшему узлу, где она исполнима.
-            if !redirect.listing && !admits_form_item_at(descriptor, &redirect.at, form_item) {
-                if let Some(target) = crate::domain::apply::operation_site(&redirect.at, source)
-                    .and_then(|target| {
-                        descriptor.nearest_ancestor_with_observations(
-                            &target,
-                            registry.context(),
-                            &crate::domain::apply::observation_lookup_with_style_properties(
-                                template_format,
-                                form_observation,
-                                color,
-                            ),
-                        )
-                    })
-                {
-                    redirect.at = target;
-                }
-            }
-            let location = Some(format!("ops[{index}].args.{}", redirect.location));
-            if redirect.ambiguous {
-                // Имя повторяется (члены разных объединений, одноимённые
-                // группы в разных ветвях структуры): адрес за вызывающего
-                // не выбирается. `next` — ветвь, где видны все, и словари
-                // совпавших узлов (#1357).
-                let mut refusal = error_result(
-                    location,
-                    RefusalCode::BadValue,
-                    format!(
-                        "`{}` names its subject by address, not by `{}`; the name does not select one addressable node{}; read `{}` and call it at the one you mean",
-                        operation.name(),
-                        redirect.location,
-                        if redirect.candidates.is_empty() {
-                            String::new()
-                        } else {
-                            format!(
-                                ": {}",
-                                redirect
-                                    .candidates
-                                    .iter()
-                                    .map(|candidate| format!("`{candidate}`"))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            )
-                        },
-                        redirect.at
-                    ),
-                );
-                refusal.next.push(json!({
-                    "tool": "unica.view",
-                    "args": {"at": redirect.at.to_string()},
-                    "reason": "одноимённые узлы этого вида: выберите адрес",
-                }));
-                for candidate in &redirect.candidates {
-                    refusal =
-                        with_operation_dictionary(refusal, &candidate.to_string(), descriptor);
-                }
-                return Err(Box::new(refusal));
-            }
-            if redirect.listing {
-                // Значение называло подузел не именем: адрес из него не
-                // строится, и `next` ведёт к коллекции, где имя видно.
-                let mut refusal = error_result(
-                    location,
-                    RefusalCode::BadValue,
-                    format!(
-                        "`{}` names its subject by address, not by `{}`; call it at `{}.<Name>`, reading the name in `{}`",
-                        operation.name(),
-                        redirect.location,
-                        redirect.at,
-                        redirect.at
-                    ),
-                );
-                refusal.next.push(json!({
-                    "tool": "unica.view",
-                    "args": {"at": redirect.at.to_string()},
-                    "reason": format!(
-                        "имена узлов для операции `{}`: элемент коллекции несёт свой `id` в `props`",
-                        operation.name()
-                    ),
-                }));
-                return Err(Box::new(refusal));
-            }
-            // Адрес построен из значения аргумента, и узла с таким именем
-            // может не быть: вторым шагом — коллекция, где видны имена.
-            // Безымянный узел (`DataSet.D.Query`) — часть своего именованного
-            // родителя: ветвь строится по родителю.
-            let named = redirect
-                .at
-                .segments()
-                .iter()
-                .rposition(|segment| segment.name().is_some())
-                .map_or(redirect.at.segments(), |last| {
-                    &redirect.at.segments()[..=last]
-                });
-            let (member, owner) = named
-                .split_last()
-                .expect("a member address has a terminal segment");
-            let branch = QualifiedAddress {
-                line_range: None,
-                source_set: redirect.at.source_set().to_string(),
-                segments: owner.to_vec(),
-            };
-            let branch = format!("{branch}.{}", member.kind().as_str());
-            // Аргумент, повторявший сам адрес вызова, просто лишний.
-            let mut message = if redirect.at == *operation.at() {
-                format!(
-                    "`{}` takes its subject from `at`; remove `{}` and call it at `{}`",
-                    operation.name(),
-                    redirect.location,
-                    redirect.at
-                )
-            } else {
-                format!(
-                    "`{}` names its subject by address, not by `{}`; call it at `{}`",
-                    operation.name(),
-                    redirect.location,
-                    redirect.at
-                )
-            };
-            // `*.set` пишет только в существующий узел: отсутствующий
-            // создаёт операция родителя (#1354).
-            if let Some(creator) = descriptor.creator() {
-                message.push_str(&format!(
-                    "; a missing one is created by `{creator}` on its parent"
-                ));
-            }
-            let refusal = error_result(location, RefusalCode::BadValue, message);
-            let mut refusal =
-                with_operation_dictionary(refusal, &redirect.at.to_string(), descriptor);
-            refusal.next.push(json!({
-                "tool": "unica.view",
-                "args": {"at": branch},
-                "reason": "существующие узлы этого вида у владельца",
-            }));
-            // Узла с этим именем может не быть: третьим шагом — контракт
-            // операции родителя, которая его создаёт (#1354).
-            if let Some(creator) = descriptor.creator() {
-                let parent = QualifiedAddress {
-                    line_range: None,
-                    source_set: redirect.at.source_set().to_string(),
-                    segments: owner.to_vec(),
-                };
-                refusal.next.push(json!({
-                    "tool": "unica.view",
-                    "args": {"at": format!("{parent}.Can.{creator}")},
-                    "reason": format!("отсутствующий узел создаёт `{creator}` на родителе"),
-                }));
-            }
-            return Err(Box::new(refusal));
-        }
         // Наблюдаемые факты формы сужают структурную применимость:
         // роль элемента и тип реквизита проверяет само семейство.
         if descriptor.applies_at(&site)
@@ -2777,24 +2592,6 @@ pub(super) fn preflight_apply_operations_observed(
                 ))
         {
             continue;
-        }
-        // Прежний псевдоним запроса `Template.T.Query.D` снят (#1353): отказ
-        // называет адрес набора, где операция исполнима.
-        if let Some(target) =
-            descriptor.retired_query_alias_target(&site, registry.context(), members)
-        {
-            return Err(Box::new(with_operation_dictionary(
-                error_result(
-                    Some(format!("ops[{index}].at")),
-                    RefusalCode::BadValue,
-                    format!(
-                        "a query is addressed through its dataset: `{}` applies at `{target}`",
-                        operation.name()
-                    ),
-                ),
-                &target.to_string(),
-                descriptor,
-            )));
         }
         let refused = format!(
             "apply operation `{}` does not apply to {} `{}`",
@@ -2869,81 +2666,6 @@ pub(super) fn preflight_apply_operations_observed(
         return Err(Box::new(refusal));
     }
     Ok(())
-}
-
-/// Отказ снятой операции без записи (#1354, #1465). Создающая операция
-/// ведёт к словарю родителя; переименованная — к контракту заменившей на
-/// ближайшем узле, где она исполнима, как отказ «не тот узел». Если такого
-/// узла в цепочке адреса нет, отказ называет форму адреса заменившей.
-fn retired_operation_refusal(
-    index: usize,
-    at: &QualifiedAddress,
-    retired: unica_operations::recovery::RetiredOperation,
-    source: unica_source_contract::context::SourceSetTraits,
-    template_format: &dyn Fn(&QualifiedAddress) -> Option<TemplateFormat>,
-    form_item: &dyn Fn(&QualifiedAddress) -> Option<unica_forms::FormItemRole>,
-    color: &dyn Fn(
-        &QualifiedAddress,
-    ) -> Option<unica_metadata::style_color::StyleItemPropertiesObservation>,
-) -> DomainResult {
-    let location = Some(format!("ops[{index}].op"));
-    let site = crate::domain::apply::operation_site(at, source);
-    let target = site.as_ref().and_then(|site| {
-        retired.replacement_with_observations(
-            site,
-            crate::domain::apply::operation_registry().context(),
-            &crate::domain::apply::observation_lookup_with_style_properties(
-                template_format,
-                &|at| form_item(at).map(unica_forms::FormObservation::Item),
-                color,
-            ),
-        )
-    });
-    let replacement = retired.descriptor();
-    match (target, replacement) {
-        (Some(target), Some(replacement)) => {
-            let refusal = error_result(
-                location,
-                RefusalCode::BadValue,
-                format!(
-                    "apply operation `{}` is retired: call `{}` at `{target}`; {}",
-                    retired.op,
-                    retired.replacement(),
-                    retired.arguments
-                ),
-            );
-            if retired.creates.is_some() {
-                with_node_dictionary(refusal, &target.to_string())
-            } else {
-                with_operation_dictionary(refusal, &target.to_string(), replacement)
-            }
-        }
-        (_, replacement) => {
-            let shape = replacement.map_or_else(String::new, |replacement| {
-                format!(", which addresses {}", replacement.address_shape())
-            });
-            let refusal = error_result(
-                location,
-                RefusalCode::BadValue,
-                format!(
-                    "apply operation `{}` is retired: call `{}`{shape}; {}",
-                    retired.op,
-                    retired.replacement(),
-                    retired.arguments
-                ),
-            );
-            let readable = crate::infrastructure::logical_tree::route_logical_address(
-                at,
-                crate::domain::apply::source_classification_profile(source),
-            )
-            .is_ok();
-            if readable {
-                with_node_dictionary(refusal, &at.to_string())
-            } else {
-                with_node_dictionary(refusal, &format!("{}:Configuration", at.source_set()))
-            }
-        }
-    }
 }
 
 /// Принимает ли роль элемента формы по адресу `at` операцию; адрес не

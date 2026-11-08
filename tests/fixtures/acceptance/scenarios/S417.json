@@ -3,7 +3,7 @@
   "name": "role-rights-entry-is-addressed-and-created-by-right-add",
   "issue": 1354,
   "area": "Роли и права",
-  "task": "Объект права в аргументах вместо адреса записи отказывает без записи с next к записи и ветви прав; right.set правит существующую запись по её адресу, опечатка в адресе отвечает not_found с next к роли и ничего не создаёт; новую запись создаёт right.add на роли, а повторное right.add на существующей отказывает; контракт right.add читается по адресу операции",
+  "task": "right.set на роли отказывает без записи: операция не относится к роли, next ведёт к её словарю; right.set правит существующую запись по её адресу, опечатка в адресе отвечает not_found с next к роли и ничего не создаёт; новую запись создаёт right.add на роли, а повторное right.add на существующей отказывает; контракт right.add читается по адресу операции",
   "wire": [
     {
       "tool": "unica.view",
@@ -49,23 +49,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `right.set` names its subject by address, not by `values.object`; call it at `main:Role.SalesReader.Right.Catalog_Валюты`; a missing one is created by `right.ad",
+      "refusal": "bad_value: apply operation `right.set` does not apply to Role `main:Role.SalesReader`; it addresses `Role.Name.Right.<Kind>_<Name>`",
       "assertions": [
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.object"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:Role.SalesReader.Right.Catalog_Валюты.Can.right.set"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "main:Role.SalesReader.Right"
-        },
-        {
-          "pointer": "/next/2/args/at",
-          "eq": "main:Role.SalesReader.Can.right.add"
+          "eq": "main:Role.SalesReader"
         }
       ],
       "fileAssertions": [

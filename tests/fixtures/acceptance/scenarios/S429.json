@@ -3,7 +3,7 @@
   "name": "form-event-bind-element-argument-routes-to-the-event-address",
   "issue": 1355,
   "area": "Формы",
-  "task": "Прежние values.element и values.event у event.bind отказывают без записи; next ведёт к узлу события элемента, его can содержит event.bind, и привязка на этом адресе применяется",
+  "task": "event.bind на форме отказывает без записи: операция не относится к форме, next ведёт к её словарю; can события элемента содержит event.bind, и привязка на этом адресе применяется",
   "wire": [
     {
       "tool": "unica.view",
@@ -40,19 +40,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `event.bind` names its subject by address, not by `values.element`; call it at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.StartChoice`",
+      "refusal": "bad_value: apply operation `event.bind` does not apply to Form `main:Catalog.Валюты.Form.ФормаЭлемента`; it addresses `Kind.Name.Form.F[.Item.I…].Event.E`",
       "assertions": [
         {
           "pointer": "/at",
-          "eq": "ops[0].args.values.element"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.StartChoice.Can.event.bind"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event"
+          "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
         }
       ],
       "fileAssertions": [

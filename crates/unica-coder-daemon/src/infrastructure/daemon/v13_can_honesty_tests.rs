@@ -1100,7 +1100,6 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
         let preflight = super::v13_service::preflight_apply_operations_observed(
             &request, checked.traits, &|_| None,
             &|at| (at == &address).then_some(form_observation).flatten(),
-            &unica_operations::recovery::no_member_lookup,
             &|_| None,
         );
         if !checked.traits.writes(descriptor.family()) {
@@ -1189,8 +1188,10 @@ fn check_node(checked: &Checked<'_>, at: &str, plan_writes: bool, mismatches: &m
 }
 
 /// Лишний аргумент операции словаря отвергается, и отказ называет его ключ
-/// путём или текстом (INV.WIRE.V13-CAN-DICTIONARY, #1985): агент видит,
-/// какой из аргументов убрать.
+/// путём `ops[0].args.<ключ>` (INV.WIRE.V13-CAN-DICTIONARY,
+/// INV.WIRE.OPERATION-TARGET-ADDRESS): по этому пути ответ `apply` ведёт
+/// `next` к контракту операции на адресованном узле, а агент видит, какой
+/// из аргументов убрать.
 fn check_unknown_argument_is_named(
     checked: &Checked<'_>,
     at: &str,
@@ -1207,24 +1208,67 @@ fn check_unknown_argument_is_named(
     object.insert(KEY.to_string(), json!(true));
     let request = apply_request(at, op, args);
     let refusal = match preflight_apply_operations(&request, checked.traits, &|_| None) {
-        Err(refusal) => refusal.diagnostics[0].to_string(),
+        Err(refusal) => *refusal,
         Ok(_) => match parse_family_operation_for_test(0, &request.ops()[0], checked.binding) {
             // Разбор семейства пропустил ключ: отказать обязан планировщик.
-            Ok(()) => match plan(checked, &request) {
-                Ok(_) => {
+            Ok(()) => match plan_error(checked, &request) {
+                None => {
                     mismatches.push(format!("{at}: `{op}` accepts the unknown argument `{KEY}`"));
                     return;
                 }
-                Err(message) => message,
+                Some(error) => error,
             },
-            Err(error) => format!("{:?}: {error}", error.path()),
+            Err(error) => super::v13_service::apply_plan_error_result(&error),
         },
     };
-    if !refusal.contains(KEY) {
+    let expected = format!("ops[0].args.{KEY}");
+    if refusal.at.as_deref() != Some(expected.as_str()) {
         mismatches.push(format!(
-            "{at}: `{op}` refuses an unknown argument without naming its key: {refusal}"
+            "{at}: `{op}` refuses an unknown argument at {:?}, not `{expected}`: {}",
+            refusal.at, refusal.diagnostics[0]
+        ));
+        return;
+    }
+    // Ответ `apply` ведёт к контракту операции на адресованном узле.
+    let routed =
+        super::v13_service::with_unknown_argument_contract(refusal, &request, checked.traits);
+    // Без подробного контракта на узле лишний ключ не отличить от плохого
+    // значения: такой отказ продолжения не получает.
+    let Some(site) = crate::domain::apply::operation_site(address, checked.traits) else {
+        return;
+    };
+    if descriptor.argument_contract_at(&site).is_none() {
+        return;
+    }
+    let contract = format!("{at}.Can.{op}");
+    if !routed
+        .next
+        .iter()
+        .any(|next| next["args"]["at"] == contract.as_str())
+    {
+        mismatches.push(format!(
+            "{at}: `{op}` refuses an unknown argument without `next` to `{contract}`: {:?}",
+            routed.next
         ));
     }
+}
+
+/// Отказ планировщика на запросе, как его отдаёт `apply`; `None`, если план
+/// построен.
+fn plan_error(checked: &Checked<'_>, request: &ApplyRequest) -> Option<DomainResult> {
+    let admission = checked
+        .actor
+        .admit_apply(
+            checked.binding,
+            None,
+            true,
+            ProviderDeadline::from_budget(Duration::from_secs(10)),
+            &CancellationToken::new(),
+        )
+        .expect("the honesty workspace admits a plan");
+    plan_hidden_v13_apply(request, checked.binding, &admission)
+        .err()
+        .map(|error| super::v13_service::apply_plan_error_result(&error))
 }
 
 /// План операции на настоящем наборе: изменённые файлы или текст отказа.
@@ -1640,115 +1684,6 @@ fn honest_can_on_form_items_and_events() {
     }
 }
 
-/// Формы (#1355): контейнер, удаляемый элемент и событие, прежде названные
-/// аргументом, задаёт адрес. Настоящий вызов со снятым аргументом получает
-/// `bad_value` до планирования; первый `next` ведёт к узлу по его пути
-/// в форме (вложенная командная панель таблицы — через таблицу), второй —
-/// к ветви его вида; исправленный вызов по первому `next` строит
-/// предпросмотр.
-/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
-#[test]
-fn retired_form_arguments_route_next_to_the_item_or_event_address() {
-    let fixture = fixture("workspace");
-    let element = "main:Catalog.Валюты.Form.ФормаЭлемента";
-    let list = "main:Catalog.Валюты.Form.ФормаСписка";
-    let button = json!({"name": "Проба", "type": "Button", "stdCommand": "Close"});
-    for (at, op, args, location, next, branch, fixed) in [
-        (
-            list.to_string(),
-            "item.add",
-            json!({"items": [{"name": "Проба", "type": "Button", "stdCommand": "Close", "into": "ListCommandBar"}]}),
-            "ops[0].args.items[0].into",
-            format!("{list}.Item.List.Item.ListCommandBar"),
-            format!("{list}.Item.List.Item"),
-            json!({"items": [button.clone()]}),
-        ),
-        (
-            element.to_string(),
-            "item.remove",
-            json!({"items": [{"name": "ГруппаСлужебная"}]}),
-            "ops[0].args.items[0].name",
-            format!("{element}.Item.ГруппаСлужебная"),
-            format!("{element}.Item"),
-            json!({}),
-        ),
-        (
-            element.to_string(),
-            "event.bind",
-            json!({"values": {"event": "ПриИзменении", "handler": "ПолеНаименованиеПриИзменении", "element": "ПолеНаименование"}}),
-            "ops[0].args.values.element",
-            format!("{element}.Item.ПолеНаименование.Event.OnChange"),
-            format!("{element}.Item.ПолеНаименование.Event"),
-            json!({"values": {"handler": "ПолеНаименованиеПриИзменении"}}),
-        ),
-        (
-            element.to_string(),
-            "event.bind",
-            json!({"values": {"event": "ПриОткрытии", "handler": "ПриОткрытии"}}),
-            "ops[0].args.values.event",
-            format!("{element}.Event.OnOpen"),
-            format!("{element}.Event"),
-            json!({"values": {"handler": "ПриОткрытии"}}),
-        ),
-    ] {
-        let case = format!("{op} at {at}");
-        let refused = invoke(
-            &fixture.workspace,
-            ToolIdentity::Apply,
-            json!({"at": at, "ops": [{"op": op, "args": args}]}),
-        );
-        let value = serde_json::to_value(&refused).unwrap();
-        assert!(!refused.ok, "{case}: {value}");
-        assert_eq!(
-            value["diagnostics"][0]["code"], "bad_value",
-            "{case}: {value}"
-        );
-        assert_eq!(refused.at.as_deref(), Some(location), "{case}: {value}");
-        let actual = refused
-            .next
-            .iter()
-            .map(|next| next["args"]["at"].as_str().unwrap().to_string())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            actual,
-            vec![format!("{next}.Can.{op}"), branch],
-            "{case}: {value}"
-        );
-        let viewed = invoke(&fixture.workspace, ToolIdentity::View, json!({"at": next}));
-        assert!(viewed.ok, "{case}: {viewed:?}");
-        let can = &viewed.data.unwrap()["can"];
-        assert!(
-            can.as_array()
-                .unwrap()
-                .iter()
-                .any(|entry| entry["op"] == op),
-            "{case}: {can}"
-        );
-        let corrected = invoke(
-            &fixture.workspace,
-            ToolIdentity::Apply,
-            json!({"at": next, "ops": [{"op": op, "args": fixed}]}),
-        );
-        assert!(
-            corrected.ok,
-            "{case}: {}",
-            serde_json::to_value(&corrected).unwrap()
-        );
-    }
-    // Без имени события значение называет только элемент: `next` ведёт
-    // к его событиям, где видны имена.
-    let refused = invoke(
-        &fixture.workspace,
-        ToolIdentity::Apply,
-        json!({"at": element, "ops": [{"op": "event.bind", "args": {"values": {"handler": "H", "element": "ПолеНаименование"}}}]}),
-    );
-    assert!(!refused.ok);
-    assert_eq!(
-        refused.next[0]["args"]["at"],
-        format!("{element}.Item.ПолеНаименование.Event")
-    );
-}
-
 /// Рабочее пространство с двумя наборами конфигурации: первичный `base` и
 /// `sales` с документом и справочником корпуса — проверка того, что адрес
 /// сохраняет непервичный набор исходников.
@@ -1792,123 +1727,6 @@ fn tree_digest(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     files
 }
 
-/// #1318: вызов со снятым `scope.tabularSection` получает отказ, `next`
-/// которого ведёт к словарю табличной части с подробным контрактом
-/// `attribute.add`; исправленный по нему вызов строит исполнимый план,
-/// публикация кладёт реквизит в часть, а не в шапку, и сохраняет соседей.
-/// Отказ, чтение и предпросмотр исходников не меняют. Набор исходников —
-/// непервичный.
-/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
-#[test]
-fn a_retired_scope_call_recovers_through_next_to_a_published_tabular_attribute() {
-    let (_root, workspace) = two_set_workspace();
-    let document = "sales:Document.АктОбУничтоженииПерсональныхДанных";
-    let section = format!("{document}.TabularSection.КатегорииДанных");
-    let item = json!({
-        "name": "Основание",
-        "type": {"variants": [{"kind": "string", "length": 100, "allowedLength": "variable"}]}
-    });
-    let before = tree_digest(&workspace.join("src"));
-    let runtime = V5CanonicalInvocationRuntime::new(
-        Arc::new(CanonicalV13ReadService::default()),
-        Arc::new(TokioClock),
-    );
-    let invoke =
-        |workspace: &Path, tool, arguments| invoke_on(&runtime, workspace, tool, arguments);
-
-    let refused = invoke(
-        &workspace,
-        ToolIdentity::Apply,
-        json!({"at": document, "ops": [{"op": "attribute.add", "args": {
-            "scope": {"tabularSection": "КатегорииДанных"},
-            "items": [item.clone()]
-        }}]}),
-    );
-    let value = serde_json::to_value(&refused).unwrap();
-    assert!(!refused.ok, "{value}");
-    assert_eq!(value["diagnostics"][0]["code"], "bad_value", "{value}");
-    assert_eq!(value["diagnostics"][0]["outcome"], "fixCall", "{value}");
-    assert_eq!(value["at"], "ops[0].args.scope.tabularSection", "{value}");
-    let next = refused.next[0].clone();
-    assert_eq!(next["tool"], "unica.view", "{value}");
-    assert_eq!(
-        next["args"],
-        json!({"at": format!("{section}.Can.attribute.add")}),
-        "{value}"
-    );
-
-    let viewed = invoke(&workspace, ToolIdentity::View, next["args"].clone());
-    let viewed_value = serde_json::to_value(&viewed).unwrap();
-    assert!(viewed.ok, "{viewed_value}");
-    let entry = &viewed_value["data"]["props"];
-    assert_eq!(entry["op"], "attribute.add", "{viewed_value}");
-    assert!(entry.get("implemented").is_none(), "{viewed_value}");
-    let contract = &entry["contract"];
-    assert!(
-        contract["argsSchema"]["properties"]["items"]["items"]["properties"]["type"].is_object(),
-        "the contract shows the attribute type: {contract}"
-    );
-    assert!(
-        !contract["argsSchema"].to_string().contains("\"scope\""),
-        "no scope argument is published: {contract}"
-    );
-    assert!(contract["exampleArgs"]["items"].is_array(), "{contract}");
-
-    let preview = invoke(
-        &workspace,
-        ToolIdentity::Apply,
-        json!({"at": section, "ops": [{"op": "attribute.add", "args": {"items": [item]}}]}),
-    );
-    let preview_value = serde_json::to_value(&preview).unwrap();
-    assert!(preview.ok, "{preview_value}");
-    assert_eq!(preview_value["data"]["executable"], true, "{preview_value}");
-    assert_eq!(
-        tree_digest(&workspace.join("src")),
-        before,
-        "refusal, reading and preview leave the sources untouched"
-    );
-
-    let token = preview_value["data"]["executionToken"].clone();
-    let published = invoke(
-        &workspace,
-        ToolIdentity::Apply,
-        json!({"executionToken": token}),
-    );
-    assert!(
-        published.ok,
-        "{}",
-        serde_json::to_value(&published).unwrap()
-    );
-    let added = invoke(
-        &workspace,
-        ToolIdentity::View,
-        json!({"at": format!("{section}.Attribute.Основание")}),
-    );
-    assert!(added.ok, "{:?}", added);
-    let header = invoke(
-        &workspace,
-        ToolIdentity::View,
-        json!({"at": format!("{document}.Attribute.Основание")}),
-    );
-    assert!(!header.ok, "the attribute is not a header attribute");
-    for sibling in ["Субъект", "ИмяОбъекта"] {
-        let kept = invoke(
-            &workspace,
-            ToolIdentity::View,
-            json!({"at": format!("{section}.Attribute.{sibling}")}),
-        );
-        assert!(kept.ok, "{sibling} stays");
-    }
-    let descriptor = workspace.join("src/sales/Documents/АктОбУничтоженииПерсональныхДанных.xml");
-    let after = std::fs::read_to_string(&descriptor).unwrap();
-    let original = String::from_utf8(before[&descriptor].clone()).unwrap();
-    assert_eq!(
-        after.matches("<xr:GeneratedType").count(),
-        original.matches("<xr:GeneratedType").count(),
-        "an attribute brings no generated type"
-    );
-}
-
 /// Реквизит шапки документа и реквизит справочника по-прежнему добавляются
 /// на адресе владельца.
 #[test]
@@ -1931,545 +1749,6 @@ fn header_and_catalog_attributes_still_add_at_the_owner() {
             "{owner}: {}",
             serde_json::to_value(&preview).unwrap()
         );
-    }
-}
-
-/// Аргументы, дублировавшие `at` (П2, #1353): вызов получает `bad_value` до
-/// планирования, первый `next` ведёт к узлу, который называло значение (к его
-/// контракту, где он вычисляется), второй — к ветви узлов этого вида. Когда
-/// значение повторяло сам адрес вызова, отказ говорит снять аргумент.
-/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
-#[test]
-fn retired_duplicate_arguments_route_next_to_the_addressed_node() {
-    let traits = crate::domain::apply::source_set_traits_for_read(
-        SourceSetKind::Configuration,
-        PlatformProfile::v8_3_27(),
-    );
-    // Прежний псевдоним запроса ведёт к запросу набора, а операция набора —
-    // к самому набору.
-    for (op, args, target) in [
-        (
-            "query.set",
-            json!({"values": {"query": "ВЫБРАТЬ 1"}}),
-            "cf:Report.Sales.Template.Schema.DataSet.Main.Query.Can.query.set",
-        ),
-        (
-            "field.add",
-            json!({"items": [{"dataPath": "Amount"}]}),
-            "cf:Report.Sales.Template.Schema.DataSet.Main.Can.field.add",
-        ),
-    ] {
-        let request = apply_request("cf:Report.Sales.Template.Schema.Query.Main", op, args);
-        let refusal = preflight_apply_operations(&request, traits, &|_| None)
-            .expect_err("the retired query alias refuses");
-        assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{op}");
-        assert_eq!(refusal.at.as_deref(), Some("ops[0].at"), "{op}");
-        assert_eq!(refusal.next.len(), 1, "{op}");
-        assert_eq!(refusal.next[0]["args"], json!({"at": target}), "{op}");
-    }
-    let schema = "cf:Report.Sales.Template.Schema";
-    // Операция запроса на самом наборе — обычный отказ «не тот узел» с `next`
-    // к запросу набора.
-    let request = apply_request(
-        &format!("{schema}.DataSet.Main"),
-        "query.set",
-        json!({"values": {"query": "ВЫБРАТЬ 1"}}),
-    );
-    let refusal = preflight_apply_operations(&request, traits, &|_| None)
-        .expect_err("query.set is not executable at the dataset itself");
-    assert_eq!(refusal.at.as_deref(), Some("ops[0].at"));
-    assert_eq!(
-        refusal.next[0]["args"],
-        json!({"at": format!("{schema}.DataSet.Main.Query.Can.query.set")})
-    );
-    // Набор, не названный адресом вызова, ищется в схеме: член объединения
-    // получает свой вложенный адрес.
-    let request = apply_request(
-        &format!("{schema}.DataSet.Main.Query"),
-        "query.set",
-        json!({"values": {"dataSet": "Member", "query": "ВЫБРАТЬ 1"}}),
-    );
-    let refusal = super::v13_service::preflight_apply_operations_with(
-        &request,
-        traits,
-        &|_| None,
-        &|_| None,
-        &|template, name| {
-            if template.to_string() == schema && name == "Member" {
-                unica_operations::recovery::NamedLookup::Found(vec![
-                    "Union".to_string(),
-                    "Member".to_string(),
-                ])
-            } else {
-                unica_operations::recovery::NamedLookup::Missing
-            }
-        },
-        &|_| None,
-    )
-    .expect_err("the dataSet argument is retired");
-    let actual = refusal
-        .next
-        .iter()
-        .map(|next| next["args"]["at"].clone())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        actual,
-        vec![
-            json!(format!(
-                "{schema}.DataSet.Union.DataSet.Member.Query.Can.query.set"
-            )),
-            json!(format!("{schema}.DataSet.Union.DataSet")),
-        ]
-    );
-    for (at, op, args, location, next_at, branch, duplicate) in [
-        (
-            format!("{schema}.DataSet.Main.Query"),
-            "query.set",
-            json!({"values": {"dataSet": "Main", "query": "ВЫБРАТЬ 1"}}),
-            "ops[0].args.values.dataSet",
-            format!("{schema}.DataSet.Main.Query.Can.query.set"),
-            format!("{schema}.DataSet"),
-            true,
-        ),
-        (
-            format!("{schema}.DataSet.Main.Query"),
-            "query.patch",
-            json!({"values": {"dataSet": "Other", "find": "1"}}),
-            "ops[0].args.values.dataSet",
-            format!("{schema}.DataSet.Other.Query.Can.query.patch"),
-            format!("{schema}.DataSet"),
-            false,
-        ),
-        (
-            format!("{schema}.Setting.Main"),
-            "structure.set",
-            json!({"values": {"variant": "Extra", "groupBy": []}}),
-            "ops[0].args.values.variant",
-            format!("{schema}.Setting.Extra.Can.structure.set"),
-            format!("{schema}.Setting"),
-            false,
-        ),
-        (
-            "cf:Subsystem.Sales".to_string(),
-            "childSubsystem.remove",
-            json!({"items": [{"name": "Orders"}]}),
-            "ops[0].args.items[0].name",
-            "cf:Subsystem.Sales.Subsystem.Orders.Can.childSubsystem.remove".to_string(),
-            "cf:Subsystem.Sales.Subsystem".to_string(),
-            false,
-        ),
-        (
-            "cf:CommonModule.Shared".to_string(),
-            "code.replace",
-            json!({"selector": {"method": "Run"}, "text": "Procedure Run()\nEndProcedure"}),
-            "ops[0].args.selector.method",
-            "cf:CommonModule.Shared.Method.Run.Can.code.replace".to_string(),
-            "cf:CommonModule.Shared.Method".to_string(),
-            false,
-        ),
-    ] {
-        let request = apply_request(&at, op, args);
-        let refusal = preflight_apply_operations(&request, traits, &|_| None)
-            .expect_err("a retired argument refuses before planning");
-        let case = format!("{op} at {at}");
-        assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{case}");
-        assert_eq!(refusal.diagnostics[0]["outcome"], "fixCall", "{case}");
-        assert_eq!(refusal.at.as_deref(), Some(location), "{case}");
-        let message = refusal.diagnostics[0]["message"].as_str().unwrap();
-        assert_eq!(
-            message.contains("takes its subject from `at`"),
-            duplicate,
-            "{case}: {message}"
-        );
-        let expected = [next_at, branch]
-            .into_iter()
-            .filter(|at| !at.is_empty())
-            .map(|at| json!({"at": at}))
-            .collect::<Vec<_>>();
-        let actual = refusal
-            .next
-            .iter()
-            .map(|next| {
-                assert_eq!(next["tool"], "unica.view", "{case}");
-                next["args"].clone()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected, "{case}");
-    }
-}
-
-/// Операции подузлов (#1354): подузел, прежде названный аргументом на
-/// владельце, задаёт адрес. Прежний вызов получает `bad_value` до
-/// планирования: первый `next` — к `can` подузла, второй — к ветви узлов
-/// этого вида. `*.set`, чей узел создаёт операция родителя, называет её.
-/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
-#[test]
-fn retired_subnode_arguments_route_next_to_the_subnode_address() {
-    let traits = crate::domain::apply::source_set_traits_for_read(
-        SourceSetKind::Configuration,
-        PlatformProfile::v8_3_27(),
-    );
-    let schema = "cf:Report.Sales.Template.Schema";
-    for (at, op, args, location, next_at, branch, creator) in [
-        (
-            "cf:Role.Reader".to_string(),
-            "right.set",
-            json!({"values": {"object": "Catalog.Items", "right": "Read", "value": true}}),
-            "ops[0].args.values.object",
-            "cf:Role.Reader.Right.Catalog_Items.Can.right.set".to_string(),
-            "cf:Role.Reader.Right".to_string(),
-            Some("right.add"),
-        ),
-        (
-            "cf:Report.Sales.Template.Print".to_string(),
-            "mxl.set",
-            json!({"values": {"area": "Header", "cells": {"R1C1": "x"}}}),
-            "ops[0].args.values.area",
-            "cf:Report.Sales.Template.Print.Area.Header.Can.mxl.set".to_string(),
-            "cf:Report.Sales.Template.Print.Area".to_string(),
-            Some("area.add"),
-        ),
-        (
-            schema.to_string(),
-            "variant.set",
-            json!({"values": {"name": "Main", "title": "x"}}),
-            "ops[0].args.values.name",
-            format!("{schema}.Setting.Main.Can.variant.set"),
-            format!("{schema}.Setting"),
-            None,
-        ),
-        (
-            schema.to_string(),
-            "parameter.rename",
-            json!({"values": {"name": "Period", "newName": "Range"}}),
-            "ops[0].args.values.name",
-            format!("{schema}.Parameter.Period.Can.parameter.rename"),
-            format!("{schema}.Parameter"),
-            None,
-        ),
-        (
-            format!("{schema}.DataSet.Main"),
-            "fieldRole.set",
-            json!({"values": {"field": "Amount", "role": {"dimension": true}}}),
-            "ops[0].args.values.field",
-            format!("{schema}.DataSet.Main.Field.Amount.Can.fieldRole.set"),
-            format!("{schema}.DataSet.Main.Field"),
-            None,
-        ),
-        (
-            "cf:CommonModule.Shared".to_string(),
-            "code.insert",
-            json!({"selector": {"method": "Run"}, "position": "after", "text": "x"}),
-            "ops[0].args.selector.method",
-            "cf:CommonModule.Shared.Method.Run.Can.code.insert".to_string(),
-            "cf:CommonModule.Shared.Method".to_string(),
-            None,
-        ),
-    ] {
-        let request = apply_request(&at, op, args);
-        let refusal = preflight_apply_operations(&request, traits, &|_| None)
-            .expect_err("a retired subnode argument refuses before planning");
-        let case = format!("{op} at {at}");
-        assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{case}");
-        assert_eq!(refusal.at.as_deref(), Some(location), "{case}");
-        let message = refusal.diagnostics[0]["message"].as_str().unwrap();
-        match creator {
-            Some(creator) => assert!(
-                message.contains(&format!("created by `{creator}`")),
-                "{case}: {message}"
-            ),
-            None => assert!(!message.contains("created by"), "{case}: {message}"),
-        }
-        let actual = refusal
-            .next
-            .iter()
-            .map(|next| next["args"]["at"].clone())
-            .collect::<Vec<_>>();
-        // Узел создаёт операция родителя: её контракт — третий шаг.
-        let mut expected = vec![json!(next_at), json!(branch)];
-        if let Some(creator) = creator {
-            let parent = branch.rsplit_once('.').unwrap().0;
-            expected.push(json!(format!("{parent}.Can.{creator}")));
-        }
-        assert_eq!(actual, expected, "{case}");
-    }
-    // Контракт операций прав читается по адресу операции, как у других.
-    for op in ["right.add", "right.set"] {
-        let descriptor = crate::domain::apply::operation_registry()
-            .lookup(op)
-            .unwrap();
-        let contract = descriptor.argument_contract().expect("role contract");
-        assert!(
-            contract.normalize(&contract.example_args, "args").is_ok(),
-            "{op}"
-        );
-    }
-    // Снятая `form.create` называет `form.add` на владельце формы.
-    let request = apply_request(
-        "cf:Catalog.Items.Form.Choice",
-        "form.create",
-        json!({"values": {"type": "ChoiceForm"}}),
-    );
-    let refusal = preflight_apply_operations(&request, traits, &|_| None)
-        .expect_err("a retired operation refuses before planning");
-    assert_eq!(refusal.diagnostics[0]["code"], "bad_value");
-    assert_eq!(refusal.at.as_deref(), Some("ops[0].op"));
-    let message = refusal.diagnostics[0]["message"].as_str().unwrap();
-    assert!(
-        message.contains("call `form.add` at `cf:Catalog.Items`"),
-        "{message}"
-    );
-    assert_eq!(refusal.next.len(), 1);
-    assert_eq!(refusal.next[0]["args"]["at"], "cf:Catalog.Items");
-    // Операции элемента формы названы по узлу `Item` (#1465): снятые
-    // `element.*` называют `item.*` на ближайшем узле, где она исполнима:
-    // на самом адресе или на его предке, а `next` ведёт к её контракту.
-    let form = "cf:Catalog.Items.Form.Choice";
-    let add = json!({"items": [{"name": "Code", "type": "InputField", "path": "Code"}]});
-    for (at, retired, args, target) in [
-        (
-            form.to_string(),
-            "element.add",
-            add.clone(),
-            Some(form.to_string()),
-        ),
-        (
-            format!("{form}.Item.Code"),
-            "element.remove",
-            json!({}),
-            Some(format!("{form}.Item.Code")),
-        ),
-        (
-            format!("{form}.Item.Code.Event.OnChange"),
-            "element.add",
-            add.clone(),
-            Some(format!("{form}.Item.Code")),
-        ),
-        // На форме удалять нечего: элемент называет его адрес.
-        (form.to_string(), "element.remove", json!({}), None),
-        // Реквизит и команда формы названы по своему узлу, как у объекта.
-        (
-            format!("{form}.Item.Code"),
-            "formAttribute.add",
-            json!({"items": [{"name": "Comment", "type": "String"}]}),
-            Some(form.to_string()),
-        ),
-        (
-            form.to_string(),
-            "formCommand.add",
-            json!({"items": [{"name": "Refresh"}]}),
-            Some(form.to_string()),
-        ),
-        // Снятая операция формы не уводит к реквизиту объекта.
-        (
-            "cf:Catalog.Items".to_string(),
-            "formAttribute.add",
-            json!({"items": [{"name": "Comment", "type": "String"}]}),
-            None,
-        ),
-    ] {
-        let replacement = match retired {
-            "formAttribute.add" => "attribute.add".to_string(),
-            "formCommand.add" => "command.add".to_string(),
-            other => other.replace("element.", "item."),
-        };
-        let request = apply_request(&at, retired, args);
-        let refusal = preflight_apply_operations(&request, traits, &|_| None)
-            .expect_err("a retired operation refuses before planning");
-        assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{retired}");
-        assert_eq!(refusal.at.as_deref(), Some("ops[0].op"), "{retired}");
-        let message = refusal.diagnostics[0]["message"].as_str().unwrap();
-        assert_eq!(refusal.next.len(), 1, "{retired} at {at}");
-        match target {
-            Some(target) => {
-                assert!(
-                    message.contains(&format!("call `{replacement}` at `{target}`")),
-                    "{message}"
-                );
-                assert_eq!(
-                    refusal.next[0]["args"]["at"],
-                    format!("{target}.Can.{replacement}"),
-                    "{retired} at {at}"
-                );
-            }
-            None => {
-                assert!(
-                    message.contains(&format!("call `{replacement}`, which addresses")),
-                    "{message}"
-                );
-                assert_eq!(refusal.next[0]["args"]["at"], at, "{retired} at {at}");
-            }
-        }
-    }
-    // Общее имя без исполнимого узла в цепочке адреса называет формы
-    // адреса обеих записей: объекта и формы.
-    let request = apply_request(
-        "cf:Constant.Rate",
-        "attribute.add",
-        json!({"items": [{"name": "Comment", "type": "String"}]}),
-    );
-    let refusal = preflight_apply_operations(&request, traits, &|_| None)
-        .expect_err("attribute.add does not apply to a constant");
-    let message = refusal.diagnostics[0]["message"].as_str().unwrap();
-    assert!(message.contains("`Kind.Name.Form.F`"), "{message}");
-    assert!(message.contains(" or "), "{message}");
-}
-
-/// Новые узлы схемы (#1357): снятый `group`, `parent` или `name` ведёт
-/// `next` к `can` элемента структуры и к ветви `Setting.V.Item`, а снятое
-/// имя источника, вычисляемого поля и итога — к их адресу. Повторённое имя
-/// ведёт к ветви и к `can` каждого совпавшего элемента.
-/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
-#[test]
-fn retired_dcs_container_arguments_route_next_to_the_structure_item() {
-    let traits = crate::domain::apply::source_set_traits_for_read(
-        SourceSetKind::Configuration,
-        PlatformProfile::v8_3_27(),
-    );
-    let schema = "cf:Report.Sales.Template.Schema";
-    let setting = format!("{schema}.Setting.Main");
-    let lookup = |owner: &QualifiedAddress, name: &str| match name {
-        "Details" if owner.to_string().ends_with(".Setting.Main") => {
-            unica_operations::recovery::NamedLookup::Found(vec!["Top".into(), "Details".into()])
-        }
-        "Twin" if owner.to_string().ends_with(".Setting.Main") => {
-            unica_operations::recovery::NamedLookup::Ambiguous(vec![
-                vec!["Top".into(), "Twin".into()],
-                vec!["Table".into(), "Twin".into()],
-            ])
-        }
-        _ => unica_operations::recovery::NamedLookup::Missing,
-    };
-    for (at, op, args, location, expected) in [
-        (
-            setting.clone(),
-            "filter.add",
-            json!({"items": [{"field": "Amount", "group": "Details"}]}),
-            "ops[0].args.items[0].group",
-            vec![
-                format!("{setting}.Item.Top.Item.Details.Can.filter.add"),
-                format!("{setting}.Item.Top.Item"),
-            ],
-        ),
-        (
-            setting.clone(),
-            "structure.patch",
-            json!({"values": {"name": "Details", "groupBy": ["Amount"]}}),
-            "ops[0].args.values.name",
-            vec![
-                format!("{setting}.Item.Top.Item.Details.Can.structure.patch"),
-                format!("{setting}.Item.Top.Item"),
-            ],
-        ),
-        (
-            setting.clone(),
-            "order.clear",
-            json!({"values": {"group": "Twin"}}),
-            "ops[0].args.values.group",
-            vec![
-                format!("{setting}.Item"),
-                format!("{setting}.Item.Top.Item.Twin.Can.order.clear"),
-                format!("{setting}.Item.Table.Item.Twin.Can.order.clear"),
-            ],
-        ),
-        (
-            schema.to_string(),
-            "total.set",
-            json!({"values": {"field": "Amount", "expression": "Сумма(Amount)"}}),
-            "ops[0].args.values.field",
-            vec![
-                format!("{schema}.Total.Amount.Can.total.set"),
-                format!("{schema}.Total"),
-            ],
-        ),
-        (
-            schema.to_string(),
-            "dataSource.remove",
-            json!({"values": {"name": "Local"}}),
-            "ops[0].args.values.name",
-            vec![
-                format!("{schema}.DataSource.Local.Can.dataSource.remove"),
-                format!("{schema}.DataSource"),
-            ],
-        ),
-    ] {
-        let request = apply_request(&at, op, args);
-        let refusal = super::v13_service::preflight_apply_operations_with(
-            &request,
-            traits,
-            &|_| None,
-            &|_| None,
-            &lookup,
-            &|_| None,
-        )
-        .expect_err("a retired DCS argument refuses before planning");
-        let case = format!("{op} at {at}");
-        assert_eq!(refusal.diagnostics[0]["code"], "bad_value", "{case}");
-        assert_eq!(refusal.at.as_deref(), Some(location), "{case}");
-        let actual = refusal
-            .next
-            .iter()
-            .map(|next| next["args"]["at"].clone())
-            .collect::<Vec<_>>();
-        let expected = expected.into_iter().map(|at| json!(at)).collect::<Vec<_>>();
-        assert_eq!(actual, expected, "{case}");
-    }
-}
-
-/// Снятые аргументы членов метаданных: прежний вызов на владельце получает
-/// `bad_value` с адресом члена; предопределённый элемент, прежде названный
-/// идентификатором, ведёт к коллекции, где видно его имя.
-/// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
-#[test]
-fn retired_member_arguments_route_next_to_the_member_address() {
-    let traits = crate::domain::apply::source_set_traits_for_read(
-        SourceSetKind::Configuration,
-        PlatformProfile::v8_3_27(),
-    );
-    for (at, op, args, location, next_at, branch) in [
-        (
-            "cf:Catalog.Items",
-            "tabularSection.set",
-            json!({"values": {"name": "Rows", "synonym": "x"}}),
-            "ops[0].args.values.name",
-            "cf:Catalog.Items.TabularSection.Rows.Can.tabularSection.set",
-            Some("cf:Catalog.Items.TabularSection"),
-        ),
-        (
-            "cf:Report.Sales",
-            "template.remove",
-            json!({"values": {"name": "Print"}}),
-            "ops[0].args.values.name",
-            "cf:Report.Sales.Template.Print.Can.template.remove",
-            Some("cf:Report.Sales.Template"),
-        ),
-        (
-            "cf:Catalog.Items",
-            "predefinedItem.set",
-            json!({"values": {"id": "a1b2c3d4-1111-4111-8111-111111111111", "description": "x"}}),
-            "ops[0].args.values.id",
-            "cf:Catalog.Items.PredefinedItem",
-            None,
-        ),
-    ] {
-        let request = apply_request(at, op, args);
-        let refusal = preflight_apply_operations(&request, traits, &|_| None)
-            .expect_err("a retired argument refuses before planning");
-        let value = serde_json::to_value(&*refusal).unwrap();
-        assert_eq!(value["diagnostics"][0]["code"], "bad_value", "{value}");
-        assert_eq!(value["diagnostics"][0]["outcome"], "fixCall", "{value}");
-        assert_eq!(value["at"], location, "{value}");
-        assert_eq!(refusal.next[0]["tool"], "unica.view", "{value}");
-        assert_eq!(refusal.next[0]["args"], json!({"at": next_at}), "{value}");
-        // Адрес из значения может не существовать: вторым шагом — ветвь
-        // владельца, где видны имена членов этого вида.
-        match branch {
-            Some(branch) => {
-                assert_eq!(refusal.next.len(), 2, "{value}");
-                assert_eq!(refusal.next[1]["args"]["at"], branch, "{value}");
-            }
-            None => assert_eq!(refusal.next.len(), 1, "{value}"),
-        }
     }
 }
 
@@ -3041,7 +2320,6 @@ fn column_type_uses_the_same_parent_fact_for_dictionary_and_preflight() {
             traits,
             &|_| None,
             &|_| observed,
-            &unica_operations::recovery::no_member_lookup,
             &|_| None,
         );
         assert_eq!(admitted.is_ok(), allowed, "{parent_type}: {admitted:?}");
@@ -3064,7 +2342,6 @@ fn column_type_uses_the_same_parent_fact_for_dictionary_and_preflight() {
         traits,
         &|_| None,
         &|_| None,
-        &unica_operations::recovery::no_member_lookup,
         &|_| None,
     )
     .is_ok());
@@ -3096,7 +2373,6 @@ fn column_add_uses_the_same_attribute_fact_for_dictionary_and_preflight() {
             traits,
             &|_| None,
             &|_| observed,
-            &unica_operations::recovery::no_member_lookup,
             &|_| None,
         );
         assert_eq!(admitted.is_ok(), allowed, "{type_name}: {admitted:?}");

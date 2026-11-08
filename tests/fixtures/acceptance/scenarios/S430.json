@@ -3,7 +3,7 @@
   "name": "form-element-remove-by-name-routes-to-the-item-address",
   "issue": 1355,
   "area": "Формы",
-  "task": "item.remove на форме с именем в items отказывает без записи; next ведёт к адресу элемента, а удаление по этому адресу строит предпросмотр",
+  "task": "item.remove на форме отказывает без записи: операция не относится к форме, next ведёт к её словарю; а удаление по этому адресу строит предпросмотр",
   "wire": [
     {
       "tool": "unica.view",
@@ -40,15 +40,15 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: `item.remove` names its subject by address, not by `items[0].name`; call it at `main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная`",
+      "refusal": "bad_value: apply operation `item.remove` does not apply to Form `main:Catalog.Валюты.Form.ФормаЭлемента`; it addresses `Kind.Name.Form.F.Item.I[.Item.J…]`",
       "assertions": [
         {
           "pointer": "/at",
-          "eq": "ops[0].args.items[0].name"
+          "eq": "ops[0].at"
         },
         {
           "pointer": "/next/0/args/at",
-          "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ГруппаСлужебная.Can.item.remove"
+          "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
         }
       ],
       "fileAssertions": [

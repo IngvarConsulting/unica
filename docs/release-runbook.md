@@ -427,6 +427,11 @@ commits. The commit's parent is the slice; the release description names it as
   tests pass on every OS, the job `alpha-tag` makes the commit and the tag, and
   the rest of that run builds and publishes them. The tests do not run again: the
   commit changes only the version. A `main` that did not move starts nothing.
+- **The tag key.** The job pushes the tag over SSH with the deploy key from the
+  secret `RELEASE_TAG_KEY` of the environment `alpha`, not with the run's token:
+  `v*` tags are protected, and the environment admits only `main`. A push by the
+  key wakes `on: push`, so `release.yml` does not listen to `v*-alpha.*` tags:
+  the night that set the tag builds it.
 - **By hand.** The same path, with no commits in `main`:
 
   ```bash

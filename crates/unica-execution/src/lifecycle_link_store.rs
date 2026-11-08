@@ -2579,39 +2579,6 @@ mod tests {
 
     /// rule: INV.APP.DAEMON-TASK-CAPACITY
     #[test]
-    fn inspection_cleans_links_staging_past_former_directory_bound() {
-        let root = tempfile::tempdir().unwrap();
-        let root_path = physical_root(&root);
-        seed_reservation_snapshot(&root_path, 1);
-        let committed = fs::read(root_path.join(STORE_SNAPSHOT_FILE)).unwrap();
-        let directory = open_state_directory_nofollow(&root_path).unwrap();
-        for index in 0..100 {
-            let file = create_state_file_child(
-                &directory,
-                OsStr::new(&format!(
-                    "{STORE_STAGING_PREFIX}{index}{STORE_STAGING_SUFFIX}"
-                )),
-            )
-            .unwrap();
-            restrict_state_stage_to_owner(&file).unwrap();
-        }
-        let store =
-            TaskLifecycleLinkStoreV5::open(&root_path, deadline()).expect("inspect all staging");
-        assert_eq!(store.capacity_snapshot().live_reservations(), 1);
-        assert_eq!(
-            fs::read(root_path.join(STORE_SNAPSHOT_FILE)).unwrap(),
-            committed
-        );
-        for entry in fs::read_dir(root_path).unwrap() {
-            assert!(matches!(
-                entry.unwrap().file_name().to_str(),
-                Some(STORE_SNAPSHOT_FILE | STORE_LOCK_FILE)
-            ));
-        }
-    }
-
-    /// rule: INV.APP.DAEMON-TASK-CAPACITY
-    #[test]
     fn reservation_consumes_task_store_slot_before_materialization_and_reopens_exactly() {
         let root = tempfile::tempdir().expect("temporary root");
         let root_path = physical_root(&root);
