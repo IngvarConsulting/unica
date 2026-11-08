@@ -140,6 +140,15 @@ class ResourceLimitBlockTests(unittest.TestCase):
         found, _ = limits.inventory(self.root)
         self.assertEqual(found["excluded"], [{"at": self.line_of("const READ_TIMEOUT"), "symbol": "READ_TIMEOUT", "reason": "демонстрация"}])
 
+    def test_rejects_an_exclusion_that_stands_before_no_constant(self) -> None:
+        """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
+        self.lib(block(), timeout="// resource-limit-excluded: демонстрация\n\n")
+        errors = self.errors()
+        self.assertTrue(any("resource-limit-excluded stands before no constant" in error for error in errors), errors)
+        self.assertTrue(any("READ_TIMEOUT has no" in error for error in errors), errors)
+        found, _ = limits.inventory(self.root)
+        self.assertEqual(found["excluded"], [])
+
     def test_justified_status_requires_evidence_and_decision(self) -> None:
         """rule: INV.RUNTIME.RESOURCE-LIMIT-EVIDENCE"""
         self.lib(block(status="justified"))
