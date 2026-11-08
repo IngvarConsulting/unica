@@ -957,6 +957,16 @@ fn absolutize(raw: &str, cwd: &Path) -> PathBuf {
     }
 }
 
+/// The application on the infrastructure ports, for the shared format-gate calls.
+#[cfg(test)]
+fn application() -> crate::application::UnicaApplication {
+    crate::composition::testing::application()
+}
+
+#[cfg(test)]
+#[path = "../../tests/medium_application/format_gate.rs"]
+mod format_gate;
+
 #[cfg(test)]
 mod medium_tests {
     use super::{
@@ -2603,8 +2613,8 @@ mod medium_tests {
         // diagnostic route, so exercise all three of those public calls
         // separately. Together these close the exact two handler variants
         // without pretending their public diagnostics match.
-        crate::medium_application_tests::incompatible_format_blocks_before_native_handler();
-        crate::medium_application_tests::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
+        super::format_gate::incompatible_format_blocks_before_native_handler();
+        super::format_gate::public_metadata_mutators_refuse_old_and_new_profiles_without_side_effects();
         std::fs::remove_dir_all(workspace_root).unwrap();
     }
 

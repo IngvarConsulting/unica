@@ -17,8 +17,6 @@ pub mod composition;
     allow(dead_code, unused_imports)
 )]
 pub mod infrastructure;
-#[cfg(test)]
-mod medium_application_tests;
 
 pub use infrastructure::platform::run_platform_main;
 

@@ -15,16 +15,8 @@ pub mod testing {
         with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
         with_subsystem_evidence_processing_hook,
     };
-    pub(crate) use unica_workspace::compile_transaction::CompileTransaction;
-    pub(crate) use unica_workspace::single_file_publisher::{
-        with_publication_lock_contention_signal, with_publication_lock_pause,
-    };
-
-    pub(crate) use unica_workspace::test_support::prepare_file_for_removal;
-
     pub(crate) use unica_workspace::test_support::{
-        create_file_link_fixture_for_test, file_identity_for_test, set_unix_mode_for_test,
-        unix_mode_for_test, FileLinkFixtureOutcome,
+        create_file_link_fixture_for_test, FileLinkFixtureOutcome,
     };
 }
 
