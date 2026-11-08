@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 /// The directory of a module and the file its declarations are written to.
 const MODULES: &[(&str, &str)] = &[
     (
+        "src/infrastructure/native_operations/apply_families/metadata/tests",
+        "apply_families_metadata_tests_modules.rs",
+    ),
+    (
         "src/infrastructure/v13_read/tests",
         "v13_read_tests_modules.rs",
     ),
