@@ -77,7 +77,7 @@ struct CanonicalInvalidationFixture {
     context: WorkspaceContext,
     executable: PathBuf,
     daemon: Option<crate::infrastructure::daemon::server::actor_capacity_tests::LiveV5Daemon>,
-    owner: Option<unica_daemon::client_v5::V5DaemonProcessOwner>,
+    owner: Option<unica_daemon_protocol::client_v5::V5DaemonProcessOwner>,
     _directory: tempfile::TempDir,
 }
 

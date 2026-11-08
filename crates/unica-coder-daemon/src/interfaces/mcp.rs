@@ -49,12 +49,12 @@ use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::progress::{NoopProgressSink, ProgressEvent, ProgressSink};
 
 #[cfg(test)]
-use unica_daemon::client_v5::V5DaemonProcessOwner;
-use unica_daemon::client_v5::{
+use unica_daemon_protocol::client_v5::V5DaemonProcessOwner;
+use unica_daemon_protocol::client_v5::{
     TaskObservation, TaskObservationStage, TaskObservationTimer, V5DaemonClient,
     V5TaskExchangeError,
 };
-use unica_daemon::protocol_v5::V5DaemonErrorCode;
+use unica_daemon_protocol::protocol_v5::V5DaemonErrorCode;
 use unica_execution::receipt_runtime::response::V5DaemonTaskSnapshot;
 
 // resource-limit: mcp.eof-cancellation-grace

@@ -11,11 +11,11 @@ path = "src/lib.rs"
 
 [features]
 default = []
-receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "unica-daemon/receipt-ledger-test-support"]
+receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "unica-daemon-protocol/receipt-ledger-test-support"]
 
 [dependencies]
 unica-coder = { path = "../unica-coder" }
-unica-daemon = { path = "../unica-daemon" }
+unica-daemon-protocol = { path = "../unica-daemon-protocol" }
 unica-lsp-contract = { path = "../unica-lsp-contract" }
 unica-lsp = { path = "../unica-lsp" }
 unica-adapter-lexical = { path = "../unica-adapter-lexical" }
@@ -62,7 +62,7 @@ flate2.workspace = true
 
 [dev-dependencies]
 unica-coder = { path = "../unica-coder", features = ["test-support"] }
-unica-daemon = { path = "../unica-daemon", features = ["test-support"] }
+unica-daemon-protocol = { path = "../unica-daemon-protocol", features = ["test-support"] }
 unica-lsp-contract = { path = "../unica-lsp-contract", features = ["test-support"] }
 unica-project-health = { path = "../unica-project-health", features = ["test-support"] }
 unica-bsl = { path = "../unica-bsl", features = ["test-support"] }

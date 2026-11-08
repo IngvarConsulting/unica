@@ -6,7 +6,7 @@ use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
-use unica_daemon::protocol_v5::V5ClientRequest;
+use unica_daemon_protocol::protocol_v5::V5ClientRequest;
 use unica_execution::receipt_ledger::{canonical_v5_terminal, ReceiptTerminalOutcome};
 use unica_execution::receipt_runtime::response::V5PendingDirectReceipt;
 
@@ -254,7 +254,7 @@ fn malformed_direct_receipt_is_recovered_by_key_and_only_the_strict_one_is_ackno
 /// rule: INV.APP.DIRECT-RESPONSE-RECOVERY
 #[test]
 fn lost_submit_response_follows_replaced_endpoint_without_resubmitting() {
-    use unica_daemon::identity::{CoreIdentity, DaemonStateDirectory};
+    use unica_daemon_protocol::identity::{CoreIdentity, DaemonStateDirectory};
     let root = tempfile::tempdir().unwrap();
     let state_root = std::fs::canonicalize(root.path()).unwrap();
     let identity = CoreIdentity::production_v5();
@@ -414,7 +414,7 @@ fn a_trickling_submit_answer_does_not_renew_the_frontend_deadline() {
 #[test]
 fn submit_answer_at_the_frame_limit_is_read_and_one_byte_over_or_cut_is_recovered() {
     use std::io::Write as _;
-    let limit = unica_daemon::protocol_v5::MAX_V5_RESPONSE_LINE_BYTES;
+    let limit = unica_daemon_protocol::protocol_v5::MAX_V5_RESPONSE_LINE_BYTES;
     // A valid answer padded inside its JSON to `line` bytes with the newline.
     let padded = |line: usize| {
         let compact = serde_json::to_vec(&V5ServerResponse::Error {
@@ -998,7 +998,7 @@ fn task_operations_use_peer_sessions_bounded_by_the_frontend_cutoff() {
     };
     assert_eq!(
         closed.stage,
-        unica_daemon::client_v5::TaskObservationStage::ReadResponse
+        unica_daemon_protocol::client_v5::TaskObservationStage::ReadResponse
     );
     assert!(closed.endpoint_generation_hash.is_some());
     let Err(V5TaskExchangeError::Transport(past)) = past else {
@@ -1006,7 +1006,7 @@ fn task_operations_use_peer_sessions_bounded_by_the_frontend_cutoff() {
     };
     assert_eq!(
         past.stage,
-        unica_daemon::client_v5::TaskObservationStage::AcquirePeer
+        unica_daemon_protocol::client_v5::TaskObservationStage::AcquirePeer
     );
     assert!(past.cutoff_expired);
     assert!(past.endpoint_generation_hash.is_none());
@@ -1265,7 +1265,7 @@ fn live_daemon_executes_once_and_compacts_the_acknowledged_receipt_to_a_tombston
 /// rule: INV.WIRE.DAEMON-REQUEST-FRAMING
 #[test]
 fn live_daemon_runs_a_large_call_and_refuses_one_above_the_bound_unsent() {
-    use unica_daemon::protocol_v5::MAX_V5_REQUEST_LINE_BYTES;
+    use unica_daemon_protocol::protocol_v5::MAX_V5_REQUEST_LINE_BYTES;
     let service = Arc::new(ScriptedService {
         delay: Duration::ZERO,
         known_long: false,

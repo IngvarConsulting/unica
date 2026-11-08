@@ -11,11 +11,13 @@ use rmcp::model::{CallToolResult, ErrorCode, ErrorData};
 use serde_json::{Map, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use unica_daemon::client_v5::{
+use unica_daemon_protocol::client_v5::{
     TaskObservationStage, TaskObservationTimer, V5DaemonClient, V5DaemonProcessOwner,
     V5TaskExchangeError, V5TransportError,
 };
-use unica_daemon::protocol_v5::{V5DaemonErrorCode, V5InvocationRequest, V5ServerResponse};
+use unica_daemon_protocol::protocol_v5::{
+    V5DaemonErrorCode, V5InvocationRequest, V5ServerResponse,
+};
 use unica_execution::invocation::{
     handoff_budget, normalized_arguments_hash, INVOCATION_HANDOFF_WINDOW,
     RESPONSE_SERIALIZATION_MARGIN, RESPONSE_SERIALIZATION_MARGIN_MS,
@@ -462,7 +464,7 @@ fn read_only_uncertain_outcome(
 }
 
 fn cancel_exact_endpoint(
-    endpoint: unica_daemon::protocol_v5::V5EndpointRecord,
+    endpoint: unica_daemon_protocol::protocol_v5::V5EndpointRecord,
     key: ReceiptKey,
 ) -> Result<(), ControlFailure> {
     let mut uncertain = false;

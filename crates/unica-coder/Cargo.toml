@@ -13,7 +13,7 @@ path = "src/lib.rs"
 default = []
 test-support = [
     "unica-application/test-support",
-    "unica-daemon/test-support",
+    "unica-daemon-protocol/test-support",
     "unica-roles-designer/test-support",
     "unica-templates-designer/test-support",
     "unica-xdto-designer/test-support",
@@ -46,7 +46,7 @@ test-support = [
 [dependencies]
 unica-application = { path = "../unica-application" }
 unica-domain = { path = "../unica-domain" }
-unica-daemon = { path = "../unica-daemon" }
+unica-daemon-protocol = { path = "../unica-daemon-protocol" }
 unica-lsp = { path = "../unica-lsp" }
 unica-bindings = { path = "../unica-bindings" }
 unica-adapter-lexical = { path = "../unica-adapter-lexical" }
@@ -131,7 +131,7 @@ cap-fs-ext.workspace = true
 
 [dev-dependencies]
 unica-application = { path = "../unica-application", features = ["test-support"] }
-unica-daemon = { path = "../unica-daemon", features = ["test-support"] }
+unica-daemon-protocol = { path = "../unica-daemon-protocol", features = ["test-support"] }
 unica-roles-designer = { path = "../unica-roles-designer", features = ["test-support"] }
 unica-templates-designer = { path = "../unica-templates-designer", features = ["test-support"] }
 unica-xdto-designer = { path = "../unica-xdto-designer", features = ["test-support"] }

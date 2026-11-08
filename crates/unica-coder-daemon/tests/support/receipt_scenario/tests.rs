@@ -44,7 +44,7 @@ impl Drop for CancelCheckpointWitnessRunner {
 // Only the exact terminal projection permits the final positive assertions.
 fn cancel_checkpoint_observation_witness(point: &str, held_cancel: bool) -> (Value, Value) {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let request = json!({
         "clock": "fake",
@@ -318,7 +318,7 @@ fn terminal_projection_wait_covers_cancel_flag_before_terminal_lifecycle_link() 
 
 fn sender_completion_without_a_terminal_hook_cannot_satisfy_the_projection_wait() {
     let control = ReceiptScenarioControl::<CanonicalInvocationHost>::new(Arc::new(
-        unica_daemon::transport::test_support::encode_lifecycle_response,
+        unica_daemon_protocol::transport::test_support::encode_lifecycle_response,
     ));
     let key = fresh_key(&CoreIdentity::production_v5(), &Map::new()).unwrap();
     control.record_operation_event("cancel", "completed");
@@ -331,7 +331,7 @@ fn sender_completion_without_a_terminal_hook_cannot_satisfy_the_projection_wait(
 
 fn terminal_projection_action_without_a_terminal_hook_cannot_report_success() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let request = json!({
         "clock": "fake",
@@ -1026,7 +1026,7 @@ fn invalid_restart_joins_its_held_operation_before_returning_without_a_successor
         }
     }
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let original_life = control.process_life();
     let cleanup = RedSafetyCleanup {
@@ -1085,7 +1085,7 @@ fn no_elapsed_fail_stop_cannot_rotate_while_its_actual_runtime_is_retained() {
     let identity = CoreIdentity::production_v5();
     let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS, false));
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let (runtime, _, _) =
@@ -1114,7 +1114,7 @@ fn genuine_no_elapsed_fail_stop_releases_its_owner_before_a_fresh_native_success
     let identity = CoreIdentity::production_v5();
     let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS, false));
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     control.set_provider(ScenarioProviderFixture {
@@ -1244,7 +1244,7 @@ fn gated_runtime_registers_its_actual_owner_until_that_runtime_is_released() {
     let identity = CoreIdentity::production_v5();
     let clock = Arc::new(ScenarioEpochClock::new(SCENARIO_INITIAL_EPOCH_MS, false));
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let (runtime, _, _) =
@@ -1478,7 +1478,7 @@ fn fresh_task_listener_after_restart_survives_its_prepare_barrier_release() {
         ]
     });
     let mut observed_task = None;
-    let mut observer = |record: &unica_daemon::protocol_v5::V5EndpointRecord,
+    let mut observer = |record: &unica_daemon_protocol::protocol_v5::V5EndpointRecord,
                         keys: &HashMap<String, ReceiptKey>| {
         let key = keys
             .get("fresh-task")
@@ -1572,7 +1572,7 @@ fn assert_successor_barrier_configuration(
 
 fn future_barriers_after_no_elapsed_fail_stop_belong_to_the_next_process() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
@@ -1583,7 +1583,7 @@ fn future_barriers_after_no_elapsed_fail_stop_belong_to_the_next_process() {
 
 fn future_barriers_after_permission_close_belong_to_the_next_process() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
@@ -1594,7 +1594,7 @@ fn future_barriers_after_permission_close_belong_to_the_next_process() {
 
 fn future_barrier_queries_after_exit_select_the_next_process_configuration() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
@@ -1605,7 +1605,7 @@ fn future_barrier_queries_after_exit_select_the_next_process_configuration() {
 
 fn successor_hooks_keep_old_process_dead_and_future_barriers_owned_by_the_new_life() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let old_point = ScenarioBarrierPoint::BeforePrepare;
@@ -1684,7 +1684,7 @@ fn successor_hooks_keep_old_process_dead_and_future_barriers_owned_by_the_new_li
 
 fn successor_gate_permission_does_not_inherit_the_old_process_cancellation_request() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
@@ -1711,7 +1711,7 @@ fn successor_gate_permission_does_not_inherit_the_old_process_cancellation_reque
 
 fn retained_old_hook_cannot_release_the_successor_lifecycle_gate() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
@@ -1736,7 +1736,7 @@ fn retained_old_hook_cannot_release_the_successor_lifecycle_gate() {
 
 fn successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
@@ -1794,7 +1794,7 @@ fn successor_closes_and_joins_old_gate_waiters_without_cancelling_the_new_life()
 
 fn closing_permissions_does_not_claim_process_exit() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let hooks = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
@@ -1821,7 +1821,7 @@ fn closing_permissions_does_not_claim_process_exit() {
 
 fn fail_stop_request_without_exit_belongs_only_to_its_captured_process_life() {
     let control = Arc::new(ReceiptScenarioControl::<CanonicalInvocationHost>::new(
-        Arc::new(unica_daemon::transport::test_support::encode_lifecycle_response),
+        Arc::new(unica_daemon_protocol::transport::test_support::encode_lifecycle_response),
     ));
     let telemetry = Arc::new(V5ReceiptRuntimeTelemetry::start());
     let old = ScenarioHooks::install(telemetry.clone(), Some(control.clone()));
@@ -2008,7 +2008,7 @@ fn late_exact_submit_keeps_original_lazy_cancel_deadline_and_all_durable_winners
     let mut frame = serde_json::to_vec(&V5ClientRequest::SubmitInvocation { invocation }).unwrap();
     frame.push(b'\n');
     let response = runtime.submit_invocation(
-        unica_daemon::protocol_v5::DecodedSubmitAdapter::new(
+        unica_daemon_protocol::protocol_v5::DecodedSubmitAdapter::new(
             decode_v5_request_frame(frame).unwrap(),
             identity.clone(),
         ),

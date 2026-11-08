@@ -22,7 +22,7 @@ use unica_analysis_services::test_support::*;
 use unica_analysis_services::{
     WorkspaceServiceIdentity, WorkspaceServiceRecord, WorkspaceServices,
 };
-use unica_daemon::identity::CoreIdentity;
+use unica_daemon_protocol::identity::CoreIdentity;
 use unica_process::mcp_session::PersistentMcpSession;
 use unica_source_contract::events::DomainEvent;
 use unica_source_contract::workspace::WorkspaceContext;

@@ -2613,7 +2613,7 @@ dependencies = [
  "unica-bsl-parser",
  "unica-code-intelligence",
  "unica-configuration",
- "unica-daemon",
+ "unica-daemon-protocol",
  "unica-dcs",
  "unica-dcs-designer",
  "unica-diagnostics",
@@ -2686,7 +2686,7 @@ dependencies = [
  "unica-bsl-parser",
  "unica-code-intelligence",
  "unica-coder",
- "unica-daemon",
+ "unica-daemon-protocol",
  "unica-diagnostics",
  "unica-documentation",
  "unica-documentation-sources",
@@ -2727,7 +2727,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "unica-daemon"
+name = "unica-daemon-protocol"
 version = "0.15.0-rc.1"
 dependencies = [
  "serde",
@@ -3098,7 +3098,7 @@ dependencies = [
  "unica-artifact-delivery",
  "unica-bootstrap",
  "unica-coder-daemon",
- "unica-daemon",
+ "unica-daemon-protocol",
  "unica-execution",
  "unica-metadata-designer",
  "unica-process",

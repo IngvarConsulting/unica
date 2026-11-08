@@ -8,8 +8,8 @@ use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::thread;
-use unica_daemon::identity::{CoreIdentity, DaemonStateDirectory};
-use unica_daemon::protocol_v5::{
+use unica_daemon_protocol::identity::{CoreIdentity, DaemonStateDirectory};
+use unica_daemon_protocol::protocol_v5::{
     decode_v5_request_frame, read_bounded_v5_request_frame, V5ClientRequest, V5EndpointRecord,
     V5HandshakeServerResponse,
 };
@@ -440,7 +440,7 @@ impl LiveDaemon {
             None => config,
         };
         self.thread = Some(thread::spawn(move || {
-            unica_daemon::transport::run_daemon(config.into_transport_config())
+            unica_daemon_protocol::transport::run_daemon(config.into_transport_config())
         }));
     }
 
