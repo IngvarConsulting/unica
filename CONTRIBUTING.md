@@ -326,10 +326,10 @@ repository `muratcankoylan/Agent-Skills-for-Context-Engineering`, ref `main`,
 
 Поверхность v0.13 принимается корпусом задач разработчика в
 `tests/fixtures/acceptance/`; `tests/ci/test_acceptance_scenarios.py` исполняет
-его против собранного бинаря. Сценарии `S001`–`S440` лежат в
-`scenario-corpus.json` и сохраняют свои номера; этот блок закрыт. Каждый новый
-сценарий — отдельный файл `scenarios/<id>.json` с идентификатором
-`S-<issue>-<slug>`, а его шаги заморожены в `scenario-manifest/<id>.steps`
+его против собранного бинаря. Каждый сценарий — отдельный файл
+`scenarios/<id>.json`, в `scenario-corpus.json` лежат только общие поля корпуса.
+Сценарии `S001`–`S440` сохраняют свои номера; этот блок закрыт. Новый сценарий
+получает идентификатор `S-<issue>-<slug>`, а его шаги заморожены в `scenario-manifest/<id>.steps`
 командой `python scripts/ci/acceptance_corpus.py --freeze <id>`. Сквозного
 номера и общих счётчиков нет, поэтому изменения с разными сценариями
 не конфликтуют и могут стоять в очереди слияния вместе. Пропавший сценарий

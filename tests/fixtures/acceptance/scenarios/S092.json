@@ -1,0 +1,32 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Узнать словарь операций табличной части перед правкой",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.TabularSection.Представления"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "attribute.add",
+            "args": "items"
+          }
+        },
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "tabularSection.set",
+            "args": "values"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S092"
+}

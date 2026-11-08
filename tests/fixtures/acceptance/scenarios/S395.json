@@ -1,0 +1,69 @@
+{
+  "id": "S395",
+  "name": "call-graph-is-a-branch-not-a-section",
+  "issue": 1373,
+  "area": "Код BSL",
+  "task": "Узел метода называет ветви графа вызовов без счёта, а фильтра секций у view нет",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст.Caller"
+          }
+        },
+        {
+          "pointer": "/data/branches",
+          "contains": {
+            "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст.Callee"
+          }
+        },
+        {
+          "pointer": "/data/props/callGraph",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст",
+        "filter": {
+          "sections": [
+            "callGraph"
+          ]
+        }
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        },
+        {
+          "pointer": "/diagnostics/0/message",
+          "eq": "canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `<node>.Can.<op>`, and page collections with limit"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст"
+        }
+      ],
+      "refusal": "bad_value: canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `"
+    }
+  ]
+}

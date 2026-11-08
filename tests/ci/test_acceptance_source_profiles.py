@@ -300,8 +300,9 @@ class IndependentSourceAdditionTests(unittest.TestCase):
         }]}
         (self.root / "scenario-corpus.json").write_text(json.dumps({
             "workspace": "tests/fixtures/acceptance/workspace-base",
-            "scenarios": [self.base],
         }), encoding="utf-8")
+        (self.root / "scenarios").mkdir()
+        (self.root / "scenarios/S001.json").write_text(json.dumps(self.base), encoding="utf-8")
         manifest = self.root / "scenario-manifest"
         manifest.mkdir()
         (manifest / "S001.steps").write_text("unica.view\n", encoding="utf-8")

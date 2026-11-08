@@ -164,7 +164,7 @@
       "caseId": "batch1-check-cf-passed",
       "entry": "check",
       "mode": "validator=cf",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S224.json",
       "expected": {
         "scenario": "S224",
         "class": "ok",
@@ -175,7 +175,7 @@
       "caseId": "batch1-check-cf-newer-export-warns",
       "entry": "check",
       "mode": "validator=cf;export=2.21",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S267.json",
       "expected": {
         "scenario": "S267",
         "class": "ok",
@@ -187,7 +187,7 @@
       "caseId": "batch1-check-form-passed",
       "entry": "check",
       "mode": "validator=form",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S225.json",
       "expected": {
         "scenario": "S225",
         "class": "ok",
@@ -198,7 +198,7 @@
       "caseId": "batch1-check-form-newer-export-warns",
       "entry": "check",
       "mode": "validator=form;export=2.21",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S268.json",
       "expected": {
         "scenario": "S268",
         "class": "ok",
@@ -210,7 +210,7 @@
       "caseId": "batch1-check-role-passed",
       "entry": "check",
       "mode": "validator=role",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S175.json",
       "expected": {
         "scenario": "S175",
         "class": "ok",
@@ -221,7 +221,7 @@
       "caseId": "batch1-check-role-newer-export-warns",
       "entry": "check",
       "mode": "validator=role;export=2.21",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S269.json",
       "expected": {
         "scenario": "S269",
         "class": "ok",
@@ -233,7 +233,7 @@
       "caseId": "batch1-check-subsystem-passed",
       "entry": "check",
       "mode": "validator=subsystem",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S210.json",
       "expected": {
         "scenario": "S210",
         "class": "ok",
@@ -244,7 +244,7 @@
       "caseId": "batch1-check-subsystem-newer-export-warns",
       "entry": "check",
       "mode": "validator=subsystem;export=2.21",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S270.json",
       "expected": {
         "scenario": "S270",
         "class": "ok",
@@ -256,7 +256,7 @@
       "caseId": "batch1-check-dcs-passed",
       "entry": "check",
       "mode": "validator=dcs",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S194.json",
       "expected": {
         "scenario": "S194",
         "class": "ok",
@@ -267,7 +267,7 @@
       "caseId": "batch1-check-mxl-passed",
       "entry": "check",
       "mode": "validator=mxl",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S201.json",
       "expected": {
         "scenario": "S201",
         "class": "ok",
@@ -278,7 +278,7 @@
       "caseId": "batch1-check-missing-subsystem-refuses",
       "entry": "check",
       "mode": "validator=subsystem;target=missing",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S272.json",
       "expected": {
         "scenario": "S272",
         "class": "refused",
@@ -289,7 +289,7 @@
       "caseId": "batch2-check-cfe-passed",
       "entry": "check",
       "mode": "validator=cfe",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S290.json",
       "expected": {
         "scenario": "S290",
         "class": "ok",
@@ -300,7 +300,7 @@
       "caseId": "batch2-check-interface-passed",
       "entry": "check",
       "mode": "validator=interface",
-      "fixture": "tests/fixtures/acceptance/scenario-corpus.json",
+      "fixture": "tests/fixtures/acceptance/scenarios/S266.json",
       "expected": {
         "scenario": "S266",
         "class": "ok",

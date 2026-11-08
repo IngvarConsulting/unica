@@ -4,19 +4,20 @@
 The corpus is stored so that two changes, each adding its own scenario, never
 touch the same lines:
 
-* `tests/fixtures/acceptance/scenario-corpus.json` holds the header and the
-  closed historical block `S001`…`S440`; nothing is appended to it any more;
-* every later scenario lives in its own file
-  `tests/fixtures/acceptance/scenarios/<id>.json` with a stable identifier
-  `S-<issue>-<slug>` that does not depend on the order of addition;
+* `tests/fixtures/acceptance/scenario-corpus.json` holds only the header
+  shared by all scenarios;
+* every scenario lives in its own file `tests/fixtures/acceptance/scenarios/<id>.json`:
+  the closed historical block keeps its ids `S001`…`S440`, and every later
+  scenario has a stable identifier `S-<issue>-<slug>` that does not depend on
+  the order of addition;
 * `tests/fixtures/acceptance/scenario-manifest/<id>.steps` freezes the step
   tools of each scenario, one per line.  A scenario without its manifest, a
   manifest without its scenario, or a wire whose steps differ from the
   manifest fails the corpus test; changing a manifest is the explicit
   decision that the scenario or its steps change.
 
-Loading order is defined: the historical block in file order, then the
-per-file scenarios by issue number and slug.
+Loading order is defined: the historical block by number, then the later
+scenarios by issue number and slug.
 
     python scripts/ci/acceptance_corpus.py --check          # verify the manifest
     python scripts/ci/acceptance_corpus.py --freeze S-1489-two-branches
@@ -75,6 +76,10 @@ def strict_load(path: Path):
 
 
 def stable_order(identifier: str) -> tuple[int, str]:
+    legacy = LEGACY_ID.fullmatch(identifier)
+    if legacy is not None and 1 <= int(legacy.group(1)) <= LEGACY_LAST:
+        # The closed block keeps its numbers and loads first.
+        return 0, legacy.group(1)
     match = STABLE_ID.fullmatch(identifier)
     # The issue number is above the closed block, so a number-first order
     # (the site sorts by the first number in the id) keeps S### first.
@@ -98,14 +103,11 @@ def load(root: Path = ROOT) -> dict:
     """The whole corpus: the header and scenarios in their defined order."""
     root = Path(root)
     corpus = strict_load(root / LEGACY_FILE)
-    legacy = corpus["scenarios"]
-    for scenario in legacy:
-        match = LEGACY_ID.fullmatch(str(scenario.get("id")))
-        if match is None or not 1 <= int(match.group(1)) <= LEGACY_LAST:
-            raise CorpusError(
-                f"{root / LEGACY_FILE}: {scenario.get('id')!r} is outside the closed block "
-                f"S001-S{LEGACY_LAST:03d}; put a new scenario into {SCENARIO_DIR}/<id>.json"
-            )
+    if "scenarios" in corpus:
+        raise CorpusError(
+            f"{root / LEGACY_FILE}: the file holds only the corpus header; "
+            f"each scenario lives in {SCENARIO_DIR}/<id>.json"
+        )
     added = []
     directory = root / SCENARIO_DIR
     for path in visible_files(directory):
@@ -117,11 +119,11 @@ def load(root: Path = ROOT) -> dict:
         stable_order(path.stem)
         added.append(scenario)
     added.sort(key=lambda scenario: stable_order(scenario["id"]))
-    identifiers = [scenario["id"] for scenario in legacy + added]
+    identifiers = [scenario["id"] for scenario in added]
     duplicates = sorted({item for item in identifiers if identifiers.count(item) > 1})
     if duplicates:
         raise CorpusError(f"duplicate scenario ids: {', '.join(duplicates)}")
-    return {**corpus, "scenarios": legacy + added}
+    return {**corpus, "scenarios": added}
 
 
 def manifest_steps(scenario: dict) -> list[str]:
