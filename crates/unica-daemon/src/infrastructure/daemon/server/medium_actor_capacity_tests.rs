@@ -8777,101 +8777,6 @@ fn diff_refuses_incomparable_kinds_and_an_unreadable_side() {
     assert_eq!(missing.diagnostics[0]["code"], "not_found", "{missing:?}");
 }
 
-/// `filter` снят с `view` и `diff` (#1374). Вызов с ним — отказ
-/// неизвестного аргумента, но `next` ведёт к адресу, который заменил то,
-/// что фильтр делал: к контракту операции `<узел>.Can.<op>`, к самому
-/// узлу с его `can`, к сравнению без фильтра.
-/// rule: INV.ANALYSIS.CALL-GRAPH-ON-DEMAND
-/// rule: INV.SOURCE.LOGICAL-QUESTION-COMPLETENESS
-/// rule: INV.WIRE.V13-CAN-DICTIONARY
-#[test]
-fn a_retired_read_filter_routes_next_to_the_address_that_replaced_it() {
-    let request =
-        |tool, arguments| InvocationRequest::new(tool, arguments, "/workspace", 7_000).unwrap();
-    let view = super::retired_read_filter(&request(
-        ToolIdentity::View,
-        serde_json::json!({
-            "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
-            "filter": {"sections": ["can"], "can": {"op": "query.set"}}
-        }),
-    ))
-    .expect("a view filter is refused");
-    assert!(!view.ok);
-    assert_eq!(view.diagnostics[0]["code"], "bad_value");
-    assert!(view.diagnostics[0]["message"]
-        .as_str()
-        .is_some_and(|message| message.contains("unknown argument `filter`")));
-    let targets = view
-        .next
-        .iter()
-        .map(|entry| (entry["tool"].clone(), entry["args"]["at"].clone()))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        targets,
-        [
-            (
-                serde_json::json!("unica.view"),
-                serde_json::json!(
-                    "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set"
-                )
-            ),
-            (
-                serde_json::json!("unica.view"),
-                serde_json::json!("cf:Report.F05Report.Template.F05Schema.DataSet.F05Data")
-            ),
-        ]
-    );
-    let sections_only = super::retired_read_filter(&request(
-        ToolIdentity::View,
-        serde_json::json!({"at": "main:Catalog.Валюты", "filter": {"sections": ["props"]}}),
-    ))
-    .expect("a sections filter is refused");
-    assert_eq!(sections_only.next.len(), 1);
-    assert_eq!(
-        sections_only.next[0]["args"],
-        serde_json::json!({"at": "main:Catalog.Валюты"})
-    );
-
-    let diff = super::retired_read_filter(&request(
-        ToolIdentity::Diff,
-        serde_json::json!({
-            "left": "main:Enum.A",
-            "right": "main:Enum.B",
-            "filter": {"paths": ["/props/synonym"]}
-        }),
-    ))
-    .expect("a diff filter is refused");
-    assert_eq!(diff.diagnostics[0]["code"], "bad_value");
-    assert_eq!(
-        diff.next[0]["args"],
-        serde_json::json!({"left": "main:Enum.A", "right": "main:Enum.B"})
-    );
-
-    let workspace = super::retired_read_filter(&request(
-        ToolIdentity::View,
-        serde_json::json!({"filter": {"sections": ["props"]}}),
-    ))
-    .expect("a filter without at is refused too");
-    assert_eq!(workspace.next[0]["args"], serde_json::json!({}));
-
-    for (tool, arguments) in [
-        (
-            ToolIdentity::View,
-            serde_json::json!({"at": "main:Catalog.Валюты"}),
-        ),
-        (
-            ToolIdentity::Check,
-            serde_json::json!({"at": "main:Catalog.Валюты", "filter": {}}),
-        ),
-    ] {
-        assert!(
-            super::retired_read_filter(&request(tool, arguments)).is_none(),
-            "{}: only a view or diff filter is retired here",
-            tool.catalog_name()
-        );
-    }
-}
-
 /// Адрес операции словаря читает только `view`: `check`, `resolve`,
 /// `apply` (в том числе адрес внутри операции) и область `search`
 /// отвечают одним отказом с переходом к этому чтению.
@@ -17313,5 +17218,36 @@ fn canonical_dcs_template_removal_clears_only_the_real_reference_and_replays() {
             serde_json::to_value(&applied).unwrap()
         );
         assert_eq!(own_removal_snapshot(&source), after);
+    }
+}
+
+/// Чтение не игнорирует неизвестный аргумент: ключ вне схемы `view` и `diff`
+/// отклоняется `bad_value` до чтения, каким бы именем он ни назывался.
+/// rule: INV.ANALYSIS.CALL-GRAPH-ON-DEMAND
+/// rule: INV.SOURCE.LOGICAL-QUESTION-COMPLETENESS
+/// rule: INV.WIRE.V13-CAN-DICTIONARY
+#[test]
+fn a_read_with_an_unknown_argument_is_refused_not_ignored() {
+    let request =
+        |tool, arguments| InvocationRequest::new(tool, arguments, "/workspace", 7_000).unwrap();
+    for key in ["unicaUnknownArgument", "filter"] {
+        for (tool, mut arguments) in [
+            (
+                ToolIdentity::View,
+                serde_json::json!({"at": "main:Catalog.Валюты"}),
+            ),
+            (
+                ToolIdentity::Diff,
+                serde_json::json!({"left": "main:Catalog.Валюты", "right": "main:Catalog.Валюты"}),
+            ),
+        ] {
+            arguments[key] = serde_json::json!({});
+            let refused = super::validate_hidden_v13_request(&request(tool, arguments))
+                .expect_err("an unknown read argument is refused");
+            assert!(
+                refused.contains(&format!("unknown argument `{key}`")),
+                "{refused}"
+            );
+        }
     }
 }

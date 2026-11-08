@@ -3,7 +3,7 @@
   "name": "retired-view-filter-routes-to-addresses",
   "issue": 1374,
   "area": "Навигация и чтение",
-  "task": "Вызов view или diff с прежним filter получает отказ неизвестного аргумента и next к адресу, который его заменил; Can без операции и неприменимая операция отказывают с next к словарю узла; check, resolve, search и apply на адресе операции отказывают и ведут к его чтению через view",
+  "task": "Вызов view или diff с аргументом filter получает отказ неизвестного аргумента; Can без операции и неприменимая операция отказывают с next к словарю узла; check, resolve, search и apply на адресе операции отказывают и ведут к его чтению через view",
   "wire": [
     {
       "tool": "unica.view",
@@ -21,17 +21,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `",
-      "assertions": [
-        {
-          "pointer": "/next/0/args/at",
-          "eq": "main:Catalog.Валюты.Can.attribute.add"
-        },
-        {
-          "pointer": "/next/1/args/at",
-          "eq": "main:Catalog.Валюты"
-        }
-      ]
+      "refusal": "bad_value: canonical invocation has unknown argument `filter`"
     },
     {
       "tool": "unica.diff",
@@ -47,20 +37,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: canonical invocation has unknown argument `filter`: unica.diff narrows a comparison by address; compare the member nodes themselves",
-      "assertions": [
-        {
-          "pointer": "/next/0/tool",
-          "eq": "unica.diff"
-        },
-        {
-          "pointer": "/next/0/args",
-          "eq": {
-            "left": "main:Enum.LanguageAware",
-            "right": "main:Enum.ВажностьПроблемыУчета"
-          }
-        }
-      ]
+      "refusal": "bad_value: canonical invocation has unknown argument `filter`"
     },
     {
       "tool": "unica.view",

@@ -967,7 +967,6 @@ pub fn validate_tool_argument_shape(
             },
         );
     }
-    validate_removed_target_arguments(tool, args)?;
     let allowed = allowed_args(&tool).into_iter().collect::<BTreeSet<_>>();
     for key in args.keys() {
         if !allowed.contains(key.as_str()) {
@@ -1329,33 +1328,6 @@ fn is_xml_ncname_start(character: char) -> bool {
 fn is_xml_ncname_char(character: char) -> bool {
     is_xml_ncname_start(character)
         || xml_character_is_in_ranges(character, XML_NCNAME_CONTINUATION_RANGES)
-}
-
-fn validate_removed_target_arguments(
-    tool: ToolSpec,
-    args: &Map<String, Value>,
-) -> Result<(), String> {
-    if tool.name == "unica.code.patch"
-        && ["path", "sourceDir"]
-            .iter()
-            .any(|field| args.contains_key(*field))
-    {
-        return Err(
-            "legacy_target_removed: unica.code.patch no longer accepts `path` or `sourceDir`; use `sourceSet + metadataPath`"
-                .to_string(),
-        );
-    }
-    if tool.name == "unica.code.diagnostics"
-        && ["mode", "sourceDir", "path"]
-            .iter()
-            .any(|field| args.contains_key(*field))
-    {
-        return Err(
-            "legacy_target_removed: unica.code.diagnostics no longer accepts `mode`, `sourceDir`, or `path`; use `action + sourceSet` and `metadataPath` for findings"
-                .to_string(),
-        );
-    }
-    Ok(())
 }
 
 fn validate_code_patch_arguments(tool: ToolSpec, args: &Map<String, Value>) -> Result<(), String> {
@@ -4013,31 +3985,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn code_patch_legacy_target_fields_fail_with_a_stable_migration_error() {
-        let tool = tools()
-            .into_iter()
-            .find(|tool| tool.name == "unica.code.patch")
-            .unwrap();
-
-        for legacy in [
-            json!({"path": "src/CommonModules/X/Ext/Module.bsl"}),
-            json!({"sourceDir": "src"}),
-            json!({
-                "path": "src/CommonModules/X/Ext/Module.bsl",
-                "sourceDir": "src"
-            }),
-        ] {
-            let error =
-                validate_tool_arguments(tool, legacy.as_object().unwrap(), true).unwrap_err();
-            assert!(
-                error.starts_with("legacy_target_removed:"),
-                "{legacy}: {error}"
-            );
-            assert!(error.contains("sourceSet + metadataPath"), "{error}");
-        }
-    }
-
-    #[test]
     fn meta_mutation_schemas_fit_the_mcp_context_budget() {
         // These schemas are sent on every tools/list response and occupy model
         // context before the caller supplies any task data. Kind correlation
@@ -5218,21 +5165,6 @@ pub(crate) mod tests {
             ]}}),
         ] {
             assert!(!validator.is_valid(&invalid), "schema accepted {invalid}");
-        }
-    }
-
-    #[test]
-    fn diagnostics_legacy_target_removed_precedes_unknown_argument_validation() {
-        let tool = diagnostic_tool();
-        for legacy in ["mode", "sourceDir", "path"] {
-            let args = Map::from_iter([
-                ("action".into(), json!("analyze")),
-                ("sourceSet".into(), json!("main")),
-                (legacy.into(), json!("legacy")),
-            ]);
-            let error = validate_tool_argument_shape(tool, &args).unwrap_err();
-            assert!(error.starts_with("legacy_target_removed:"), "{error}");
-            assert!(error.contains("action + sourceSet"), "{error}");
         }
     }
 

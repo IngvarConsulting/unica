@@ -20,7 +20,9 @@ use unica_redaction::redactor;
 use unica_source_contract::{
     read::full_dump::DumpSemanticValidator, workspace::WorkspaceContext, SourceSetKind,
 };
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
+use unica_source_designer::format_profile::{
+    build_in_platform_line, platform_line_for_export_format, ACTIVE_FORMAT_PROFILE,
+};
 use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::full_dump::{
     current_host_platform, observe_executable_permissions, ConfigInputSnapshot,
@@ -31,8 +33,14 @@ use unica_workspace::full_dump::{
 use unica_workspace::paths::{
     metadata_is_link_or_reparse_point, normalize_leaf_path, normalize_path_identity,
 };
-const TARGET_PLATFORM_LINE: &str = ACTIVE_FORMAT_PROFILE.platform_line;
 const TARGET_EXPORT_FORMAT: &str = ACTIVE_FORMAT_PROFILE.export_format;
+
+/// The platform line a full dump runs: the line that writes the export format
+/// the dump produces (INV.RUNTIME.PLATFORM-LINE), not a line of its own.
+fn target_platform_line() -> &'static str {
+    platform_line_for_export_format(TARGET_EXPORT_FORMAT)
+        .expect("the writable export format has a platform line")
+}
 const EFFECTIVE_CONFIG_NAME: &str = "v8project.yaml";
 const LOCAL_CONFIG_NAME: &str = "v8project.local.yaml";
 // resource-limit: v8-runner.build-dump-timeout
@@ -131,35 +139,66 @@ impl PlatformResolver for SystemPlatformResolver {
         let candidates = if let Some(hint) = configured_hint {
             platform_candidates_from_hint(&hint, utility).map_err(|error| {
                 format!(
-                    "configured tools.platform.path cannot prove platform {TARGET_PLATFORM_LINE}: {error}"
+                    "configured tools.platform.path cannot prove platform {}: {error}",
+                    target_platform_line()
                 )
             })?
         } else {
             default_platform_candidates(utility)
         };
 
+        let line = target_platform_line();
         let mut verified = Vec::new();
+        let mut other_lines = Vec::new();
         let mut last_rejection = None;
         for candidate in candidates {
             match verify_platform_candidate(&candidate, utility, runner, cancellation) {
-                Ok(candidate) => verified.push(candidate),
+                Ok(candidate) if platform_in_line(&candidate, line) => verified.push(candidate),
+                Ok(candidate) => {
+                    if !other_lines.contains(&candidate.exact_version) {
+                        other_lines.push(candidate.exact_version);
+                    }
+                }
                 Err(error) => last_rejection = Some(error),
             }
         }
+        // Any verified build of the line will do; of several, the newest.
         verified.sort_by_key(|candidate| {
             parse_exact_platform_version(&candidate.exact_version)
                 .expect("verified platform always carries a four-part version")
         });
-        verified.pop().ok_or_else(|| {
-            format!(
-                "could not resolve an immutable trusted executable for platform {TARGET_PLATFORM_LINE} ({}) with an exact four-part version in its installation path{}",
-                utility.executable_name(),
-                last_rejection
-                    .map(|error| format!("; last rejected candidate: {error}"))
-                    .unwrap_or_default()
-            )
-        })
+        verified
+            .pop()
+            .ok_or_else(|| platform_line_not_installed(line, utility, other_lines, last_rejection))
     }
+}
+
+/// The refusal when no verified installation of `line` is found; it names the
+/// line and the builds of other lines that were found (INV.RUNTIME.PLATFORM-LINE).
+fn platform_line_not_installed(
+    line: &str,
+    utility: PlatformUtility,
+    mut other_lines: Vec<String>,
+    last_rejection: Option<String>,
+) -> String {
+    other_lines.sort_by_key(|build| parse_exact_platform_version(build));
+    format!(
+        "platformLineNotInstalled: no immutable trusted installation of platform line {line} ({}) with an exact four-part version in its installation path; installations of other lines: {}{}",
+        utility.executable_name(),
+        if other_lines.is_empty() {
+            "none".to_string()
+        } else {
+            other_lines.join(", ")
+        },
+        last_rejection
+            .map(|error| format!("; last rejected candidate: {error}"))
+            .unwrap_or_default()
+    )
+}
+
+fn platform_in_line(platform: &VerifiedPlatform, line: &str) -> bool {
+    parse_exact_platform_version(&platform.exact_version)
+        .is_some_and(|build| build_in_platform_line(&build, line))
 }
 
 impl SystemPlatformResolver {
@@ -183,8 +222,11 @@ impl SystemPlatformResolver {
             }
             let version = parse_exact_platform_version(&exact_version)
                 .ok_or("selected local platform version is not exact")?;
-            if version[..3] != [8, 3, 27] {
-                return Err("selected local platform must be 8.3.27.x".into());
+            if !build_in_platform_line(&version, target_platform_line()) {
+                return Err(format!(
+                    "selected local platform must be {}.x",
+                    target_platform_line()
+                ));
             }
             return Ok(VerifiedPlatform {
                 attestation: PlatformAttestation::capture_test_fixture(executable)?,
@@ -196,13 +238,22 @@ impl SystemPlatformResolver {
             .into_iter()
             .find(|utility| executable.file_name() == Some(OsStr::new(utility.executable_name())))
             .ok_or("selected local provider has an unsupported executable name")?;
-        verify_platform_candidate_recording_cancellation(
+        let platform = verify_platform_candidate_recording_cancellation(
             executable,
             utility,
             runner,
             cancellation,
             Some(probe_cancelled),
-        )
+        )?;
+        if !platform_in_line(&platform, target_platform_line()) {
+            return Err(format!(
+                "platform version probe for {} reported {}, required {}.x",
+                platform.executable.display(),
+                platform.exact_version,
+                target_platform_line()
+            ));
+        }
+        Ok(platform)
     }
 }
 
@@ -484,7 +535,8 @@ impl<'a> VerifiedFullDumpAdapter<'a> {
             AdapterOutcome {
             ok: true,
             summary: format!(
-                "{tool_name} published a validated platform {TARGET_PLATFORM_LINE} / export format {TARGET_EXPORT_FORMAT} full dump"
+                "{tool_name} published a validated platform {} / export format {TARGET_EXPORT_FORMAT} full dump",
+                target_platform_line()
             ),
             changes: vec![format!(
                 "replaced {} with validated full dump",
@@ -645,10 +697,11 @@ fn prepare_selected(
             platform_resolver.resolve(&effective, config_dir, utility, runner, cancellation)?;
         let version = parse_exact_platform_version(&platform.exact_version)
             .ok_or("resolved platform version is not an exact four-part version")?;
-        if version[..3] != [8, 3, 27] {
+        if !build_in_platform_line(&version, target_platform_line()) {
             return Err(format!(
-                "resolved platform {} is not supported; required {TARGET_PLATFORM_LINE}.x",
-                platform.exact_version
+                "resolved platform {} is not supported; required {}.x",
+                platform.exact_version,
+                target_platform_line()
             )
             .into());
         }
@@ -1324,13 +1377,17 @@ fn validate_configured_platform_line(version: &str) -> Result<(), String> {
         .map(str::parse::<u32>)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| format!("invalid tools.platform.version `{version}`"))?;
-    if !(2..=4).contains(&parts.len())
-        || parts[0] != 8
-        || parts[1] != 3
-        || parts.get(2).is_some_and(|patch| *patch != 27)
-    {
+    let line = target_platform_line();
+    let line_parts = line
+        .split('.')
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("a platform line is numeric");
+    // `8.3`, `8.3.27` and `8.3.27.<build>` all name the required line.
+    let named = parts.len().min(line_parts.len());
+    if !(2..=4).contains(&parts.len()) || parts[..named] != line_parts[..named] {
         return Err(format!(
-            "configured tools.platform.version `{version}` is incompatible with required {TARGET_PLATFORM_LINE}"
+            "configured tools.platform.version `{version}` is incompatible with required {line}"
         ));
     }
     Ok(())
@@ -1499,14 +1556,7 @@ fn verify_platform_candidate_recording_cancellation(
         ));
     }
     let exact_version = parse_platform_probe_version(&output.stdout, &output.stderr)?;
-    let parts = parse_exact_platform_version(&exact_version)
-        .expect("platform probe parser returns a four-part version");
-    if parts[..3] != [8, 3, 27] {
-        return Err(format!(
-            "platform version probe for {} reported {exact_version}, required {TARGET_PLATFORM_LINE}.x",
-            canonical.display()
-        ));
-    }
+    // The caller checks the line against the export format it needs.
     attestation.recheck().map_err(|error| {
         format!("platform trust changed during version probing and was rejected: {error}")
     })?;
@@ -1759,6 +1809,39 @@ pub fn write_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn a_full_dump_runs_the_line_that_writes_its_export_format() {
+        assert_eq!(target_platform_line(), "8.3.27");
+        assert!(validate_configured_platform_line("8.3").is_ok());
+        assert!(validate_configured_platform_line("8.3.27").is_ok());
+        assert!(validate_configured_platform_line("8.3.27.2342").is_ok());
+        for other in ["8.3.26", "8.5.4.1878", "8.5"] {
+            let error = validate_configured_platform_line(other).unwrap_err();
+            assert!(error.contains("required 8.3.27"), "{error}");
+        }
+    }
+
+    /// rule: INV.RUNTIME.PLATFORM-LINE
+    #[test]
+    fn a_missing_line_is_refused_naming_the_line_and_the_other_installations() {
+        let error = platform_line_not_installed(
+            "8.3.27",
+            PlatformUtility::Ibcmd,
+            vec!["8.5.4.1878".into(), "8.3.24.1819".into()],
+            None,
+        );
+        assert!(error.starts_with("platformLineNotInstalled:"), "{error}");
+        assert!(error.contains("platform line 8.3.27"), "{error}");
+        assert!(
+            error.contains("other lines: 8.3.24.1819, 8.5.4.1878"),
+            "{error}"
+        );
+
+        let error = platform_line_not_installed("8.3.27", PlatformUtility::Ibcmd, Vec::new(), None);
+        assert!(error.contains("other lines: none"), "{error}");
+    }
     #[test]
     fn key_value_connection_preserves_quoted_file_path_and_semicolons() {
         let config_dir = Path::new("/workspace/project");
