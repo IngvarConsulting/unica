@@ -1015,8 +1015,9 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         """Сайт обновляется заданием прогона: и зелёного, и красного, но не чужой ветки."""
         build, deploy = job(self.release, "pages-build"), job(self.release, "pages-deploy")
 
-        # После итога сборки и маркетплейса, даже красных.
-        self.assertEqual(needs(build), ["delivery-ci", "promote"])
+        # После итога сборки и маркетплейса, даже красных; `alpha-tag` называет
+        # версию, чьи тесты дал прогон.
+        self.assertEqual(needs(build), ["delivery-ci", "promote", "alpha-tag"])
         gate = condition(build)
         self.assertIn("!cancelled()", gate)
         self.assertNotIn("result == 'success'", gate)

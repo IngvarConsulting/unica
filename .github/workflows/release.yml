@@ -2054,7 +2054,9 @@ jobs:
   # Источник — main, релизная линия или тег; прогон другой ветки сайта не трогает.
   pages-build:
     name: Собрать сайт
-    needs: [delivery-ci, promote]
+    # `alpha-tag` называет версию, чьи тесты дал этот прогон: alpha ставится
+    # служебным коммитом поверх проверенного среза и своего прогона не имеет.
+    needs: [delivery-ci, promote, alpha-tag]
     if: >-
       ${{
         !cancelled() &&
@@ -2130,6 +2132,9 @@ jobs:
           SITE: https://ingvarconsulting.github.io/unica
           RUN_SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          ALPHA_TAG: ${{ needs.alpha-tag.outputs.tag }}
         run: |
           set -eu
           RUN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -2149,11 +2154,27 @@ jobs:
               args+=(--line "$line")
             fi
           done < .build/lines.txt
+          # Карточки версий: свежие результаты получает только версия, которую
+          # дал этот прогон, — тег прогона по тегу или alpha, выпущенная ночью.
+          # Остальные версии пересобираются из хранимого под их тегом.
+          FRESH_LINE="$(head -n 1 .build/fresh-line.txt 2>/dev/null || true)"
+          python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" \
+            --print-versions --out /dev/null > .build/versions.txt
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            fresh=""
+            if [ -n "$FRESH_LINE" ] && [ -d ".build/fresh/$FRESH_LINE" ]; then
+              if { [ "$REF_TYPE" = tag ] && [ "$tag" = "$REF_NAME" ]; } || [ "$tag" = "$ALPHA_TAG" ]; then
+                fresh=".build/fresh/$FRESH_LINE"
+              fi
+            fi
+            args+=(--version "$tag${fresh:+=$fresh}")
+          done < .build/versions.txt
           python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" --out .build/bootstrap.json
           python scripts/ci/build-site.py --status .build/bootstrap.json --out .build/site \
             --allure-command "$GITHUB_WORKSPACE/allure-$ALLURE_VERSION/bin/allure" \
             --site "$SITE" --run-sha "$RUN_SHA" --run-url "$RUN_URL" --run-at "$RUN_AT" \
-            "${args[@]}"
+            --repo "$GITHUB_REPOSITORY" "${args[@]}"
 
       # Счётчики на странице берутся из сводок собранных отчётов, поэтому
       # документ статуса считается после них, а страницы перерисовываются.
