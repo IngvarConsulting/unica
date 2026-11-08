@@ -440,9 +440,15 @@ def explained(case: str, binaries: list[str], gone: list[str], declarations: dic
     binary = binary_of(case, binaries)
     if binary in gone and binary in declarations["removedTargets"]:
         return True
-    return any(binary_of(pattern, binaries) == binary
-               and (case.startswith(pattern[:-1]) if pattern.endswith("*") else case == pattern)
-               for pattern in declarations["removedTests"])
+    if any(binary_of(pattern, binaries) == binary
+           and (case.startswith(pattern[:-1]) if pattern.endswith("*") else case == pattern)
+           for pattern in declarations["removedTests"]):
+        return True
+    # The same test compiled into another target is explained by its exact
+    # declaration there (`ci_rust_lanes.declared_in_another_target`).
+    path = case[len(binary) + 2:] if binary is not None else None
+    return path is not None and any(ci_rust_lanes.twin_declaration(path, pattern, binaries)
+                                    for pattern in declarations["removedTests"])
 
 
 def declarations_in(description: str) -> dict:
