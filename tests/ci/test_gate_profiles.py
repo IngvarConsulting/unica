@@ -396,6 +396,31 @@ class GateProfileCompositionTests(unittest.TestCase):
 
         self.assertEqual(self.config["nextest-version"], {"recommended": installed})
 
+    def test_tool_installs_are_bounded_and_nextest_is_reused_where_present(self) -> None:
+        """Зависшая загрузка выпуска GitHub не съедает запись; готовый nextest не ставится заново."""
+        import yaml
+
+        for name in ("ci.yml", "release.yml"):
+            workflow = yaml.safe_load((REPO_ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))
+            for job_name, job in workflow["jobs"].items():
+                steps = job.get("steps", [])
+                for index, step in enumerate(steps):
+                    if not step.get("uses", "").startswith("taiki-e/install-action@"):
+                        continue
+                    with self.subTest(workflow=name, job=job_name, tool=step["with"]["tool"]):
+                        self.assertLessEqual(step.get("timeout-minutes", 0), 10)
+                        self.assertGreater(step.get("timeout-minutes", 0), 0)
+                        if "cargo-nextest@" not in step["with"]["tool"]:
+                            continue
+                        probe = steps[index - 1]
+                        self.assertEqual(probe.get("id"), "nextest-present")
+                        self.assertIn(".config/nextest.toml", probe["run"])
+                        self.assertIn("cargo nextest --version", probe["run"])
+                        self.assertIn("steps.nextest-present.outputs.present != 'true'", step["if"])
+                        # The probe runs exactly when the install would.
+                        self.assertIn(probe["if"].strip("${} ").removeprefix("{{").strip(),
+                                      step["if"].strip("${} ").removeprefix("{{").strip())
+
     def test_default_profile_carries_the_small_deadline_for_everyone(self) -> None:
         """Срок на тест — то, чем размер держится честным; пока он один на всех."""
         default = self.config["profile"]["default"]
