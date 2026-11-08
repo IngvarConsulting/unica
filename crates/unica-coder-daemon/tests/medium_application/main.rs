@@ -1,8 +1,10 @@
-//! The application's public tools over the infrastructure ports: native
-//! mutators, their format and support gates, publication and the typed
-//! results. An integration target, so that a change of `unica-application`
-//! runs these tests in the queue as its dependent's.
+//! The application's public tools over the infrastructure ports, as the
+//! daemon composes them: native mutators, their format and support gates,
+//! publication and the typed results. Each test reads and writes a real
+//! workspace through the product's ports, so it lives with the product; the
+//! application's own contracts are tested on test ports in `unica-application`.
 
+#[path = "../../../unica-coder/src/infrastructure/format_gate.rs"]
 mod format_gate;
 
 use format_gate::{support_test_catalog_xml, test_workspace_root};
@@ -2059,93 +2061,6 @@ fn cf_edit_duplicate_add_child_object_does_not_rewrite_configuration() {
 }
 
 #[test]
-fn tool_specs_match_reviewed_result_contracts() {
-    let review: Value = serde_json::from_str(include_str!(
-        "../../../../tests/fixtures/v013/tool-surface-review.json"
-    ))
-    .expect("tool-surface review is valid JSON");
-    let review = review
-        .as_object()
-        .expect("tool-surface review is a tool-name object");
-    let catalog = unica_coder::application::v13::tool_catalog::catalog_for(
-        unica_coder::application::tool_contracts::SurfaceRelease::V13,
-    )
-    .expect("canonical v0.13 catalog exists");
-    let registered = catalog
-        .tools
-        .iter()
-        .map(|tool| format!("unica.{}", tool.name))
-        .chain(
-            unica_coder::application::v13::task_tools::compatibility_tool_contracts()
-                .into_iter()
-                .map(|tool| format!("unica.{}", tool.name)),
-        )
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(review.len(), registered.len());
-    assert_eq!(
-        review
-            .keys()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>(),
-        registered
-    );
-
-    for name in registered {
-        let entry = review
-            .get(&name)
-            .unwrap_or_else(|| panic!("{name} has no tool-surface review"));
-        assert_eq!(entry["scope"], "in", "{name}");
-        assert_eq!(entry["result"]["contract"], "typed", "{name}");
-    }
-}
-
-#[test]
-fn native_operation_descriptors_drive_canonical_required_schema_paths() {
-    for tool in tools() {
-        let ToolHandler::NativeOperation { operation, .. } = tool.handler else {
-            continue;
-        };
-        let descriptor = operation_descriptors::native_operation_descriptor(operation).unwrap();
-        let schema = input_schema_for_tool(&tool);
-        let path_groups = operation_descriptors::native_path_alias_groups(operation);
-        let required = schema["required"]
-            .as_array()
-            .expect("schema required is array")
-            .iter()
-            .map(|value| value.as_str().expect("required item is string"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            required, descriptor.required_args,
-            "{operation} canonical required arguments"
-        );
-        assert!(
-            schema.get("allOf").is_none(),
-            "{operation} must not hide required paths in schema composition"
-        );
-        let properties = schema["properties"].as_object().unwrap();
-        for required in &required {
-            assert!(
-                properties.contains_key(*required),
-                "{operation} requires unpublished argument {required}"
-            );
-        }
-        for group in path_groups {
-            assert!(properties.contains_key(group.canonical));
-            for alias in group
-                .aliases
-                .iter()
-                .filter(|alias| **alias != group.canonical)
-            {
-                assert!(
-                    !properties.contains_key(*alias),
-                    "{operation} publishes compatibility path alias {alias}"
-                );
-            }
-        }
-    }
-}
-
-#[test]
 fn declared_existing_form_output_rejects_wrong_root_before_handler() {
     let root = test_workspace_root("unica-form-existing-wrong-root");
     let workspace = root.join("workspace");
@@ -2766,31 +2681,6 @@ fn cfe_borrow_result_mutation_changes_and_workspace_agree() {
     assert_eq!(result.changes, expected_changes);
 
     let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn native_operations_rs_is_thin_facade_not_xml_dsl_monolith() {
-    let infrastructure_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("infrastructure");
-    let path = infrastructure_dir.join("native_operations.rs");
-    let text = std::fs::read_to_string(&path).unwrap();
-    let line_count = text.lines().count();
-
-    assert!(
-        line_count < 200,
-        "native_operations.rs must stay a thin facade; got {line_count} lines"
-    );
-    assert!(
-        !text.contains("match operation"),
-        "operation-specific XML/DSL dispatch belongs in backend modules"
-    );
-    assert!(
-        !infrastructure_dir
-            .join("native_operations_backend.rs")
-            .exists(),
-        "native_operations_backend.rs must not return; split operation logic by family under native_operations/"
-    );
 }
 
 #[test]

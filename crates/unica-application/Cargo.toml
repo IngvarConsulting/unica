@@ -63,3 +63,4 @@ jsonschema.workspace = true
 [package.metadata.unica]
 component = "coordinator"
 file-io = "owned"
+inputs = ["tests/fixtures/v013"]
