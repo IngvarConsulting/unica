@@ -4106,7 +4106,7 @@ mod legacy_inline_collapse_tests {
 
     /// An inline form or template with a standalone descriptor becomes the
     /// by-name reference in the owner's own namespace prefix; one without a
-    /// descriptor, a by-name reference and an inline command stay (#1370).
+    /// descriptor, a by-name reference and an inline command stay.
     #[test]
     fn only_described_inline_forms_and_templates_are_collapsed() {
         let owner = concat!(

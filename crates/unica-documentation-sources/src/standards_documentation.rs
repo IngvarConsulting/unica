@@ -1108,7 +1108,7 @@ mod tests {
 
     /// Кеш ограничен по числу записей и вычищает истёкшие при записи:
     /// у долгоживущего процесса поток уникальных запросов не раздувает
-    /// память безгранично (ревью PR #416).
+    /// память безгранично.
     /// rule: INV.APP.DOCUMENTATION-STANDARDS-CACHE
     #[test]
     fn the_search_cache_is_bounded_and_purges_expired_entries() {

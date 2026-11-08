@@ -910,7 +910,7 @@ mod tests {
 
     /// Лексический поиск: естественная формулировка — другой порядок слов и
     /// падежи — находит страницу метода. До правки находилась только точная
-    /// подстрока целого запроса (#415).
+    /// подстрока целого запроса.
     #[test]
     fn natural_word_order_and_morphology_find_the_page() {
         let corpus = corpus_from_pages(
@@ -982,7 +982,7 @@ mod tests {
 
     /// Английский многословный запрос находит двуязычный заголовок: до
     /// правки «ValueTable GroupBy» не совпадал с «ValueTable.GroupBy» —
-    /// разделитель точка, а не пробел (#415).
+    /// разделитель точка, а не пробел.
     #[test]
     fn an_english_two_word_query_finds_the_bilingual_title() {
         let corpus = corpus_from_pages(

@@ -222,7 +222,7 @@ fn dcs_info_structure_items_preserve_names_unnamed_parents_duplicates_and_axes()
     assert!(rows.iter().all(|row| row.get("at").is_none()));
 }
 
-/// #311. A `SettingsParameterValue` with an empty `<dcscor:parameter>` is
+/// A `SettingsParameterValue` with an empty `<dcscor:parameter>` is
 /// well-formed XML that names no parameter, so the variant carries no value
 /// for it. Validation reported `Validation OK` on exactly that shape.
 #[test]

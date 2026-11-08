@@ -541,7 +541,7 @@ fn caller_document() -> SymbolDocument<'static> {
     }
 }
 
-/// #2190: other modules' uses come from the modules the name index lists,
+/// Other modules' uses come from the modules the name index lists,
 /// each parsed and its paths resolved, in any letter case; until the index is
 /// built the answer is the module's own places, marked not indexed.
 #[test]

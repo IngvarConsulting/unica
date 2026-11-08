@@ -2006,7 +2006,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// A reference scan over a whole configuration (issue #1466) must not
+    /// A reference scan over a whole configuration must not
     /// keep a descriptor per inspected file or directory: the saved guard is
     /// an identity and a fingerprint, re-proved by walking the route again.
     /// This resource invariant has no operation cutoff; the finite-deadline
