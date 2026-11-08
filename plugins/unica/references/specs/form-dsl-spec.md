@@ -244,8 +244,8 @@ companion-панели с собственным контентом. Оба не
 - объект `{ "autofill"?: bool, "children": [ … ] }` (+ `horizontalAlign` у `commandBar`).
 
 `children` — массив `button` с `command`/`commandName`/`stdCommand`.
-`popup` и `buttonGroup` зарезервированы полной моделью Form XML, но текущий
-native `unica.form.compile` их не принимает. Не передавайте эти ключи как
+`popup` и `buttonGroup` зарезервированы полной моделью Form XML, но `form.add` в
+`unica.apply` их сейчас не принимает. Не передавайте эти ключи как
 элементы DSL до появления отдельной реализации и тестов.
 
 - `autofill`: `false` → подавить автозаполнение (тег `<Autofill>false</Autofill>`); `true` или отсутствие → автозаполнение (платформенный дефолт, тег **не пишется**). Платформа `Autofill=true` не эмитит никогда.
@@ -807,8 +807,8 @@ Pages поддерживает `pagesRepresentation`: `None`, `TabsOnTop`, `Tabs
 
 #### popup / buttonGroup — зарезервированы
 
-`popup` и `buttonGroup` зарезервированы полной моделью Form XML, но текущий
-native `unica.form.compile` их не принимает. Для группировки команд пока
+`popup` и `buttonGroup` зарезервированы полной моделью Form XML, но `form.add` в
+`unica.apply` их сейчас не принимает. Для группировки команд пока
 используйте отдельные `button` в `cmdBar`; документировать эти два ключа как
 исполняемый JSON DSL можно только после реализации и точных XML-тестов.
 

@@ -84,7 +84,7 @@ fn dcs_info_overview_does_not_duplicate_structured_support() {
 
 /// rule: INV.SOURCE.DCS-READ-FACTS
 #[test]
-fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
+fn dcs_info_data_carries_sources_datasets_totals_parameters_and_variants() {
     // The owner's support state is an input of the read, so the fixture passes
     // one no codec could produce by default.
     let support = ObjectSupportData {
@@ -93,7 +93,7 @@ fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
     };
     let data = DesignerDcsCodec.read(COMPLETE_SCHEMA, support).unwrap();
 
-    // `overview` printed the owner's support state and the data sources.
+    // The owner's support state and the data sources.
     assert_eq!(
         (data.support.state, data.support.direct_edit_safe),
         (ObjectSupportState::Locked, Some(false)),
@@ -108,8 +108,8 @@ fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
         "{data:?}"
     );
 
-    // `overview` distinguished an Object dataset by its objectName, and
-    // every dataset named the source it reads.
+    // An Object dataset is distinguished by its objectName, and every
+    // dataset names the source it reads.
     let object_set = data
         .data_sets
         .iter()
@@ -121,8 +121,8 @@ fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
         Some("ИсточникДанных1")
     );
 
-    // `resources` printed the grouping a total belongs to; without it an
-    // overall total and a per-group total look identical.
+    // A total names the grouping it belongs to; without it an overall
+    // total and a per-group total look identical.
     assert_eq!(
         data.total_fields
             .iter()
@@ -132,23 +132,23 @@ fn dcs_info_data_carries_every_fact_the_retired_modes_printed() {
         "{data:?}"
     );
 
-    // `calculated -Name` printed which uses a field is barred from; the
-    // element is structured, so a boolean cannot carry that answer.
+    // A calculated field lists the uses it is barred from; the element is
+    // structured, so a boolean cannot carry that answer.
     assert_eq!(
         data.calculated_fields[0].restrictions.as_deref(),
         Some(&["condition".to_string(), "order".to_string()][..]),
         "{data:?}"
     );
 
-    // `params` marked a parameter that cannot be used as a field.
+    // A parameter that cannot be used as a field is marked.
     assert_eq!(
         data.parameters[0].available_as_field,
         Some(false),
         "{data:?}"
     );
 
-    // `variant` printed the name, presentation, selection, filters and the
-    // structure with its grouping fields.
+    // A variant carries its name, presentation, selection, filters, order
+    // and the structure with its grouping fields.
     let variant = &data.variants[0];
     assert_eq!(variant.name, "Основной");
     assert_eq!(variant.presentation.as_deref(), Some("Основной вариант"));
