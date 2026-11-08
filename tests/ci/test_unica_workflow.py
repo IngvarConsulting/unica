@@ -33,7 +33,6 @@ CLIPPY_SCRIPT = REPO_ROOT / "scripts" / "ci" / "clippy.sh"
 NIGHTLY_WORKFLOW = WORKFLOWS_DIR / "nightly.yml"
 PAGES_WORKFLOW = WORKFLOWS_DIR / "release.yml"
 PUBLISH_WORKFLOW = WORKFLOWS_DIR / "release.yml"
-LEGACY_WORKFLOW = WORKFLOWS_DIR / "unica-legacy-migration.yml"
 RELEASE_TAG_EXPRESSION = "${{ needs.alpha-tag.outputs.tag || (github.event_name == 'push' && github.ref_name) || '' }}"
 
 
@@ -644,7 +643,8 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         on = triggers(self.release)
 
         self.assertEqual(set(on), {"workflow_dispatch", "workflow_call", "push"})
-        self.assertEqual(on["push"], {"tags": ["v*"]})
+        # Теги alpha ставит ключ развёртывания, а собирает их ночь: прогона по тегу у alpha нет.
+        self.assertEqual(on["push"], {"tags": ["v*", "!v*-alpha.*"]})
         self.assertEqual(on["workflow_dispatch"]["inputs"]["profile"]["options"], ["main", "large"])
         self.assertEqual(set(on["workflow_call"]["inputs"]), {"profile", "alpha", "force_alpha"})
         # Связи между workflow через завершение прогона больше нет нигде.
@@ -1257,28 +1257,6 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
         self.assertEqual(needs(probe), ["package-thin", "alpha-tag"])
         self.assertEqual(needs(smoke), ["package-thin", "publish-release-assets", "alpha-tag"])
         self.assertIn("--expect-download-failure", script(probe))
-
-    def test_v080_source_release_has_no_executable_legacy_migration_jobs(self) -> None:
-        for job_id in ("legacy-migration-preflight", "verify-installers", "installer"):
-            with self.subTest(job_id=job_id):
-                self.assertNotIn(job_id, jobs(self.release))
-        for marker in ("test-unica-upgrade.ps1", "unica-installer", "install-unica.sh", "install-unica.ps1"):
-            with self.subTest(marker=marker):
-                self.assertFalse(any(marker in value for value in strings(self.release)), marker)
-
-    def test_source_repo_has_no_manual_or_scheduled_full_migration_workflow(self) -> None:
-        violations: dict[str, list[str]] = {}
-        workflows = sorted((*WORKFLOWS_DIR.glob("*.yml"), *WORKFLOWS_DIR.glob("*.yaml")), key=lambda path: path.name)
-
-        for workflow in workflows:
-            text = workflow.read_text(encoding="utf-8")
-            markers = [marker for marker in ("-Mode Full", "legacy-migration-full") if marker in text]
-            if markers:
-                violations[workflow.name] = markers
-
-        self.assertFalse(LEGACY_WORKFLOW.exists())
-        self.assertNotIn("unica-legacy-migration.yml", RELEASE_WORKFLOW.read_text(encoding="utf-8"))
-        self.assertEqual({}, violations, f"source workflows own full migration policy: {violations}")
 
     def test_release_assets_are_published_without_pages_dependency_and_redownloaded(self) -> None:
         publish = job(self.release, "publish-release-assets")

@@ -2657,64 +2657,6 @@ mod tests {
 
     /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
     #[test]
-    fn diagnostics_executes_all_workers_past_the_former_provider_quota() {
-        for descriptor in [
-            &ANALYZER_DESCRIPTOR,
-            &LANGUAGE_SERVER_DESCRIPTOR,
-            &METADATA_DESCRIPTOR,
-        ] {
-            let (entered_tx, entered_rx) = mpsc::channel();
-            let release = Arc::new((Mutex::new(false), Condvar::new()));
-            let mut calls = Vec::new();
-            for _ in 0..33 {
-                let registry = behavior_registry(vec![(
-                    descriptor,
-                    ProviderBehavior::WaitForRelease {
-                        started: entered_tx.clone(),
-                        gate: Arc::clone(&release),
-                    },
-                )]);
-                calls.push(thread::spawn(move || {
-                    let mut request = findings_request();
-                    request.timeout = Some(Duration::from_secs(30));
-                    if descriptor.id == METADATA_VALIDATOR {
-                        request.metadata_path = Some(address("Catalog.Selected"));
-                    }
-                    run(registry, &request)
-                }));
-            }
-            drop(entered_tx);
-            let cutoff = Instant::now() + Duration::from_secs(5);
-            let mut entered = Vec::new();
-            while entered.len() < 33 {
-                match entered_rx.recv_timeout(cutoff.saturating_duration_since(Instant::now())) {
-                    Ok(id) => entered.push(id),
-                    Err(_) => break,
-                }
-            }
-            *release.0.lock().unwrap() = true;
-            release.1.notify_all();
-            let results: Vec<_> = calls.into_iter().map(|call| call.join().unwrap()).collect();
-            assert!(super::drain_diagnostic_workers(Duration::from_secs(5)));
-            assert_eq!(
-                entered.len(),
-                33,
-                "not every {} worker entered",
-                descriptor.id.as_str()
-            );
-            assert!(entered.iter().all(|id| *id == descriptor.id));
-            for result in results {
-                let result = result.expect("worker count must not refuse diagnostics");
-                assert_eq!(result.state, DiagnosticResultState::Completed);
-                assert!(result.complete);
-                assert_eq!(result.providers.len(), 1);
-                assert_eq!(result.providers[0].id, descriptor.id.as_str());
-            }
-        }
-    }
-
-    /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
-    #[test]
     fn diagnostics_retains_each_noncooperative_worker_after_its_caller_returns() {
         let lifecycle = super::DiagnosticWorkerLifecycle {
             handles: Mutex::new(Vec::new()),

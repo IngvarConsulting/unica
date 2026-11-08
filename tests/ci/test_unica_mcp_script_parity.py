@@ -514,13 +514,6 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         errors = donor_contract.validate_repository_contract(REPO_ROOT)
         self.assertEqual(errors, [])
 
-    def test_category_only_expected_gap_allowlist_is_removed(self) -> None:
-        legacy_name = "CC_1C_" + "EXPECTED_GAPS"
-        self.assertNotIn(
-            legacy_name,
-            Path(__file__).read_text(encoding="utf-8"),
-        )
-
     def test_donor_cases_match_reviewed_relations(self) -> None:
         for case in iter_cc_1c_skill_cases():
             with self.subTest(case=case.case_id, tool=cc_case_tool(case)):

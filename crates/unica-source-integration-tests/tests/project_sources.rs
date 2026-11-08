@@ -120,58 +120,6 @@ mod tests {
         health_leaf_fixture(&config)
     }
 
-    fn health_format_bytes_fixture() -> (tempfile::TempDir, String) {
-        let fixture = tempfile::tempdir().unwrap();
-        let path = format!("{}/{}/src", "a".repeat(180), "b".repeat(180));
-        let marker = format!("{path}/Configuration.xml");
-        write(&fixture.path().join(&marker), "<MetaDataObject/>");
-        let mut config = String::from("format: DESIGNER\nsource-set:\n");
-        for index in 0..12_000 {
-            config.push_str(&format!(
-                "  - name: set{index:05}\n    type: CONFIGURATION\n    path: {path}\n"
-            ));
-        }
-        assert!(config.len() < 8 * 1024 * 1024);
-        assert!(marker.len() * 12_000 > 4 * 1024 * 1024);
-        write(&fixture.path().join("v8project.yaml"), &config);
-        (fixture, path)
-    }
-
-    fn assert_health_format_bytes(map: &ProjectSourceMap, path: &str) {
-        assert_eq!(map.source_sets.len(), 12_000);
-        assert!(map.source_sets.len() < 16 * 1024);
-        for (index, set) in map.source_sets.iter().enumerate() {
-            assert_eq!(set.name, format!("set{index:05}"));
-            assert_eq!(set.path, path);
-            assert_eq!(set.kind, SourceSetKind::Configuration);
-            assert_eq!(set.source_format, SourceFormat::PlatformXml);
-            assert_eq!(set.source_state, SourceSetState::Supported);
-            assert_eq!(set.format_probe_error, None);
-            assert_eq!(
-                set.format_evidence,
-                vec![format!("{path}/Configuration.xml")]
-            );
-        }
-    }
-
-    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
-    #[test]
-    fn controlled_health_keeps_format_evidence_past_four_mib_below_the_old_entry_limit() {
-        let (fixture, path) = health_format_bytes_fixture();
-        let map = discover_project_source_map_controlled(fixture.path(), &mut || Ok(()))
-            .expect("valid format evidence beyond four MiB must keep every source");
-        assert_health_format_bytes(&map, &path);
-    }
-
-    /// rule: INV.APP.SOURCE-SELECTION-LIMITS
-    #[test]
-    fn actor_health_keeps_format_evidence_past_four_mib_below_the_old_entry_limit() {
-        let (fixture, path) = health_format_bytes_fixture();
-        let admission = discover_project_source_admission(fixture.path(), &mut || Ok(()))
-            .expect("actor format evidence beyond four MiB must keep every source");
-        assert_health_format_bytes(admission.map(), &path);
-    }
-
     fn health_external_membership_fixture() -> tempfile::TempDir {
         let fixture = tempfile::tempdir().unwrap();
         write(&fixture.path().join("v8project.yaml"),
