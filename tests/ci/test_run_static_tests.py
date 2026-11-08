@@ -77,13 +77,30 @@ class PullRequestLevelTests(unittest.TestCase):
                 self.assertEqual(self.step(name).get("if"), "env.KEPT != 'true'")
         checks = self.step("Статические проверки Python")
         self.assertEqual(checks["if"], "${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}")
-        self.assertEqual(checks["run"], "python scripts/ci/run-static-tests.py")
+        self.assertEqual(checks["run"], "python scripts/ci/background_step.py wait static-python --timeout 900")
+        started = self.step("Статические проверки Python (запуск)")
+        self.assertEqual(started["if"], "${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}")
+        self.assertEqual(started["run"],
+                         "python scripts/ci/background_step.py start static-python -- python scripts/ci/run-static-tests.py")
+
+    def test_python_checks_start_before_rust_and_are_awaited_after_clippy(self) -> None:
+        """Проверки Python идут параллельно с кэшем, fmt и Clippy, а исход отдают шаги ожидания."""
+        names = [step.get("name") for step in self.steps]
+        for job in ("static-python", "removed-tests"):
+            start = next(index for index, step in enumerate(self.steps) if f" start {job} " in step.get("run", ""))
+            wait = next(index for index, step in enumerate(self.steps) if f" wait {job} " in step.get("run", ""))
+            with self.subTest(job=job):
+                self.assertLess(start, names.index("Кэш зависимостей Rust"))
+                self.assertGreater(wait, names.index("Clippy"))
 
     def test_the_pull_request_checks_removed_rust_tests_against_its_base(self) -> None:
         removed = self.step("Удалённые тесты Rust объявлены")
         self.assertEqual(removed["if"], "${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}")
-        self.assertEqual(removed["run"], 'python scripts/ci/removed_tests.py --base "$BASE_SHA"')
-        self.assertEqual(removed["env"]["BASE_SHA"], "${{ github.event.pull_request.base.sha }}")
+        self.assertEqual(removed["run"], "python scripts/ci/background_step.py wait removed-tests --timeout 600")
+        started = self.step("Удалённые тесты Rust (запуск)")
+        self.assertEqual(started["run"], 'python scripts/ci/background_step.py start removed-tests -- '
+                                         'python scripts/ci/removed_tests.py --base "$BASE_SHA"')
+        self.assertEqual(started["env"]["BASE_SHA"], "${{ github.event.pull_request.base.sha }}")
         # The description is read fresh through the API: the job may read pull requests.
         job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))["jobs"]["unica-ci"]
         self.assertEqual(job["permissions"], {"contents": "read", "pull-requests": "read"})
