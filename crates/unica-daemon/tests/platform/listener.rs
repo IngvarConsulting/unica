@@ -610,7 +610,7 @@ fn live_v5_owner_prevents_idle_listener_shutdown() {
 }
 
 /// The first frame is read before the token is checked and keeps the small
-/// handshake bound; an authenticated session reads far larger frames (#1309).
+/// handshake bound; an authenticated session reads far larger frames.
 /// rule: INV.WIRE.DAEMON-REQUEST-FRAMING
 #[test]
 fn handshake_keeps_its_small_bound_while_an_authenticated_frame_may_be_far_larger() {
@@ -683,7 +683,7 @@ fn handshake_keeps_its_small_bound_while_an_authenticated_frame_may_be_far_large
 
 /// A large frame that begins just before an idle session poll expires keeps
 /// its consumed prefix: the frame has its own deadline from its first byte,
-/// and its tail is never read as a new request (#1309).
+/// and its tail is never read as a new request.
 /// rule: INV.WIRE.DAEMON-REQUEST-FRAMING
 #[test]
 fn a_frame_straddling_the_idle_session_poll_is_read_whole() {

@@ -1005,7 +1005,7 @@ mod tests {
         result
     }
 
-    /// #1119 (9c): a diagnostic group is never cut. One over the 64 KiB page
+    /// A diagnostic group is never cut. One over the 64 KiB page
     /// target travels alone and whole; the walk still reads every group.
     /// rule: INV.WIRE.READ-PAGE-BUDGET
     #[test]
@@ -1041,7 +1041,7 @@ mod tests {
         assert_eq!(walked, [vec!["group-0"], vec!["group-1"], vec!["group-2"]]);
     }
 
-    /// #1119 (9c): a group that cannot pass the 8 MiB result limit with its
+    /// A group that cannot pass the 8 MiB result limit with its
     /// envelope refuses the whole answer before a cursor is promised, wherever
     /// it stands.
     /// rule: INV.WIRE.READ-PAGE-BUDGET
@@ -1118,7 +1118,7 @@ mod tests {
         }
     }
 
-    /// #1119 (9c): the same verdict to the same question is saved once and
+    /// The same verdict to the same question is saved once and
     /// gets the same cursor, so a Task and a direct call deliver the same
     /// page; another question gets another cursor.
     #[test]
@@ -1219,7 +1219,7 @@ mod tests {
             plan_for_node("Catalog", plain),
             [CheckStep::Meta, CheckStep::Bsl]
         );
-        // #1381: заимствованный узел без своего файла не отдаёт валидатору
+        // Заимствованный узел без своего файла не отдаёт валидатору
         // файла содержимое родителя; остальные виды плана не меняют.
         let inherited = NodeFacts {
             extension: true,
