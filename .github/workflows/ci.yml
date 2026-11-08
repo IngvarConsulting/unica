@@ -130,12 +130,36 @@ jobs:
     env:
       KEPT: ${{ needs.admission.outputs.kept }}
     steps:
+      # На PVE сохраняем сборку на время очистки checkout. При исполнении target
+      # остаётся обычным каталогом: тесты ищут плагин относительно пути бинаря.
+      - name: Сохранить локальную сборку перед очисткой
+        id: park-target
+        if: ${{ runner.environment == 'self-hosted' && env.KEPT != 'true' }}
+        run: |
+          cache_dir="$(dirname "$GITHUB_WORKSPACE")/.unica-ci-target"
+          if [ -d target ] && [ ! -L target ]; then
+            test ! -e "$cache_dir"
+            test ! -L "$cache_dir"
+            mv target "$cache_dir"
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: env.KEPT != 'true'
         with:
           persist-credentials: false
           # Python-проверки читают историю репозитория.
           fetch-depth: 0
+      - name: Вернуть локальную сборку в checkout
+        id: local-target
+        if: ${{ runner.environment == 'self-hosted' && env.KEPT != 'true' }}
+        run: |
+          cache_dir="$(dirname "$GITHUB_WORKSPACE")/.unica-ci-target"
+          if [ -e "$cache_dir" ] || [ -L "$cache_dir" ]; then
+            test -d "$cache_dir"
+            test ! -L "$cache_dir"
+            test ! -e target
+            test ! -L target
+            mv "$cache_dir" target
+          fi
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         if: env.KEPT != 'true'
         with:
@@ -177,16 +201,6 @@ jobs:
         timeout-minutes: 5
         with:
           tool: cargo-nextest@0.9.148
-      # Checkout очищает исходники и удаляет ссылку target, но сохраняет сборку
-      # рядом с рабочей копией. Явные --target-dir target используют тот же каталог.
-      # У каждой ВМ свой диск и один исполнитель; кэш между машинами не разделяется.
-      - name: Локальная сборка постоянного раннера
-        id: local-target
-        if: ${{ runner.environment == 'self-hosted' && env.KEPT != 'true' }}
-        run: |
-          cache_dir="$(dirname "$GITHUB_WORKSPACE")/.unica-ci-target"
-          mkdir -p "$cache_dir"
-          ln -s "$cache_dir" target
       # На GitHub читаем кэш main; при промахе все команды работают с пустым target.
       # На PVE сохраняем локальные артефакты workspace, не заменяя их архивом GitHub.
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] restore-only; pull request и очередь читают область main и ничего не пишут
