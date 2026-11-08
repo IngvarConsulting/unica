@@ -8,7 +8,7 @@
 mod format_gate;
 
 use format_gate::{support_test_catalog_xml, test_workspace_root};
-use unica_coder::application::*;
+use unica_application::application::*;
 use unica_coder::infrastructure::application_ports::InfrastructureApplicationPorts;
 use unica_workspace::compile_transaction::CompileTransaction;
 use unica_workspace::single_file_publisher::{
