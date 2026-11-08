@@ -161,6 +161,18 @@ codex plugin remove unica@unica
 codex plugin marketplace remove unica
 ```
 
+### Removed configuration keys
+
+A key that Unica no longer knows makes its settings file refuse to load, and
+the refusal names the key. Remove these keys when updating from an earlier
+version:
+
+| File | Key | What to do |
+| --- | --- | --- |
+| `unica.toml`, `unica.local.toml`, the file named by `UNICA_DOCUMENTATION_POLICY_FILE` | `[providers.kb-1ci]` | delete the section; the provider was removed |
+| `unica.toml`, `unica.local.toml` | `search_rlm_timeout_seconds` in `[operational.code_intelligence]` | rename to `search_semantic_timeout_seconds` |
+| `unica.toml`, `unica.local.toml` | `search_git_grep_timeout_seconds` in `[operational.code_intelligence]` | delete; literal search has no separate deadline |
+
 ## Data composition schemas
 
 Read the template's datasets and settings with `unica.view`; every node
