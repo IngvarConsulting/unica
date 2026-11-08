@@ -18,6 +18,10 @@ const MODULES: &[(&str, &str)] = &[
         "src/infrastructure/daemon/server/medium_actor_capacity_tests",
         "medium_actor_capacity_tests_modules.rs",
     ),
+    (
+        "tests/platform/receipt_runtime",
+        "receipt_runtime_modules.rs",
+    ),
 ];
 /// Lowercase Rust keywords, strict and reserved, and `_`: `mod <keyword>;` does
 /// not compile. `gen` is reserved from edition 2024; rejecting it now keeps the
