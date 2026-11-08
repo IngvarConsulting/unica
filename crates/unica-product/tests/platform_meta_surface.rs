@@ -17,19 +17,3 @@ fn public_meta_surface_is_the_exact_four_typed_operations() {
         unica_coder_daemon::application::ToolHandler::Metadata { .. }
     )));
 }
-
-#[test]
-fn retired_meta_routes_are_not_registered() {
-    let names = unica_coder_daemon::application::tools()
-        .into_iter()
-        .map(|tool| tool.name)
-        .collect::<Vec<_>>();
-
-    for retired in [
-        "unica.meta.compile",
-        "unica.meta.profile",
-        "unica.meta.validate",
-    ] {
-        assert!(!names.contains(&retired), "retired {retired} is public");
-    }
-}
