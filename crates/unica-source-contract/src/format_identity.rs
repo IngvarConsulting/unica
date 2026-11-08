@@ -138,6 +138,52 @@ impl fmt::Display for PlatformLine {
     }
 }
 
+/// A format family that exists only for tests: it proves that a family the
+/// product has never seen plugs in by a declaration alone
+/// (INV.APP.FORMAT-FAMILY-EXTENSION). Its tuple is a tool version and a
+/// platform line, as with a tool whose versions run on several lines; tuples
+/// are ordered part by part, so a newer tool on an older line is not comparable.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use super::{FormatFamily, FormatFamilyId, FormatKey, PlatformLine};
+    use std::cmp::Ordering;
+
+    pub const TOOL_LINE_FAMILY: FormatFamilyId = FormatFamilyId::new("tool_line_test");
+
+    pub struct ToolLineFamily;
+
+    fn parts(key: &FormatKey) -> Option<(u32, PlatformLine)> {
+        let [tool, line] = key.parts() else {
+            return None;
+        };
+        Some((tool.parse().ok()?, PlatformLine::parse(line)?))
+    }
+
+    impl FormatFamily for ToolLineFamily {
+        fn id(&self) -> FormatFamilyId {
+            TOOL_LINE_FAMILY
+        }
+
+        fn compare(&self, left: &FormatKey, right: &FormatKey) -> Option<Ordering> {
+            let (left_tool, left_line) = parts(left)?;
+            let (right_tool, right_line) = parts(right)?;
+            match (left_tool.cmp(&right_tool), left_line.cmp(&right_line)) {
+                (tool, line) if tool == line => Some(tool),
+                (Ordering::Equal, other) | (other, Ordering::Equal) => Some(other),
+                _ => None,
+            }
+        }
+
+        fn known_keys(&self) -> Vec<FormatKey> {
+            vec![FormatKey::new(["1", "8.3.27"])]
+        }
+
+        fn platform_line(&self, key: &FormatKey) -> Option<PlatformLine> {
+            parts(key).map(|(_, line)| line)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{FormatFamilyId, FormatIdentity, FormatKey, PlatformLine};

@@ -12,6 +12,8 @@ pub mod engine_delivery;
 pub(crate) mod event_views;
 pub mod family_codecs;
 pub mod format_families;
+#[cfg(test)]
+mod format_family_tests;
 pub mod format_guard;
 pub mod internal_adapters;
 // Hidden v0.13 routing remains unreachable from the package-selected v0.12 surface.

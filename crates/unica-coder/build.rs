@@ -26,16 +26,29 @@ const MODULES: &[(&str, &str)] = &[
         "src/infrastructure/format_families",
         "format_families_modules.rs",
     ),
+    (
+        "src/infrastructure/format_family_tests",
+        "format_family_tests_modules.rs",
+    ),
 ];
 /// Directories whose modules each declare one item; the generated file lists
 /// them in file-name order as a slice constant: (directory, file, constant, item, type).
-const REGISTRIES: &[(&str, &str, &str, &str, &str)] = &[(
-    "src/infrastructure/format_families",
-    "format_families_registry.rs",
-    "DECLARED_FAMILIES",
-    "FAMILY",
-    "&[&dyn FormatFamily]",
-)];
+const REGISTRIES: &[(&str, &str, &str, &str, &str)] = &[
+    (
+        "src/infrastructure/format_families",
+        "format_families_registry.rs",
+        "DECLARED_FAMILIES",
+        "FAMILY",
+        "&[&dyn FormatFamily]",
+    ),
+    (
+        "src/infrastructure/format_family_tests",
+        "format_family_tests_registry.rs",
+        "DECLARED_TEST_FAMILIES",
+        "FAMILY",
+        "&[&dyn FormatFamily]",
+    ),
+];
 /// Lowercase Rust keywords, strict and reserved, and `_`: `mod <keyword>;` does
 /// not compile. `gen` is reserved from edition 2024; rejecting it now keeps the
 /// module names valid across an edition change.
