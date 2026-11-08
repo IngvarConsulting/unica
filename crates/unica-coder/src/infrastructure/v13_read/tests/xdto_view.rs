@@ -387,8 +387,9 @@ fn xdto_restricted_value_view_returns_named_and_anonymous_facets() {
         .root_element()
         .attribute("targetNamespace")
         .unwrap();
-    let source = include_str!("../../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
-        .replace("urn:unica:anonymous", namespace);
+    let source =
+        include_str!("../../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
+            .replace("urn:unica:anonymous", namespace);
     fs::write(&package, source.as_bytes()).unwrap();
     let service = fixture.view_service();
     for (suffix, facets, anonymous, base) in [
@@ -436,13 +437,14 @@ fn xdto_restricted_value_view_reports_oversized_facets() {
         .root_element()
         .attribute("targetNamespace")
         .unwrap();
-    let source = include_str!("../../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
-        .replace("urn:unica:anonymous", namespace)
-        .replace("999.99", &"9".repeat(3000))
-        .replace(
-            "base=\"xs:string\" maxLength=\"10\"",
-            &format!("base=\"xs:decimal\" maxInclusive=\"{}\"", "9".repeat(3000)),
-        );
+    let source =
+        include_str!("../../../../../../tests/fixtures/xdto/restricted-values/Package.bin")
+            .replace("urn:unica:anonymous", namespace)
+            .replace("999.99", &"9".repeat(3000))
+            .replace(
+                "base=\"xs:string\" maxLength=\"10\"",
+                &format!("base=\"xs:decimal\" maxInclusive=\"{}\"", "9".repeat(3000)),
+            );
     fs::write(&package, source.as_bytes()).unwrap();
     let service = fixture.view_service();
     for suffix in ["Type.СуммаПримера", "Type.Пример.Property.АнонимныйКод"]
