@@ -817,6 +817,24 @@ def binary_of(case: str, binaries: list[str]) -> str | None:
     return max((binary for binary in binaries if case.startswith(binary + "::")), key=len, default=None)
 
 
+def moved_cases(lost: list[str], arrived: list[str]) -> dict[str, str]:
+    """Lost cases that reappeared elsewhere: the same test function, one to one.
+
+    A test moved to another crate or module changes its case ID but keeps its
+    function name. A lost case counts as moved when exactly one lost case and
+    exactly one newly arrived case carry that name; any ambiguity is not a move
+    and still needs a declaration.
+    """
+    def name(case: str) -> str:
+        return case.rsplit("::", 1)[-1]
+    lost_names = Counter(name(case) for case in lost)
+    arrivals: dict[str, list[str]] = {}
+    for case in arrived:
+        arrivals.setdefault(name(case), []).append(case)
+    return {case: arrivals[name(case)][0] for case in lost
+            if lost_names[name(case)] == 1 and len(arrivals.get(name(case), ())) == 1}
+
+
 def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[str]) -> bool:
     """A lost case is explained by its own vanished target or a declaration naming that target."""
     binary = binary_of(case, binaries)
@@ -875,7 +893,7 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
     tests = list(explanations["removedTests"])
     drift = {"source": baseline.get("source"), "reset": explanations["reset"],
              "declaredBy": explanations.get("declaredBy", {}), "removedTargets": sorted(removed),
-             "removedTests": sorted(tests), "removedCases": {}}
+             "removedTests": sorted(tests), "removedCases": {}, "movedCases": {}}
     if previous is None:
         if explanations["reset"]:
             return [], drift
@@ -930,9 +948,13 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
         if not same_profile:
             continue
         lost = sorted(set(old["cases"]) - set(new["cases"]))
-        unexplained = [case for case in lost if not explained_case(case, old["binaries"], gone, tests)]
+        moved = moved_cases(lost, sorted(set(new["cases"]) - set(old["cases"])))
+        unexplained = [case for case in lost
+                       if case not in moved and not explained_case(case, old["binaries"], gone, tests)]
         if lost:
             drift["removedCases"][label] = lost
+        if moved:
+            drift["movedCases"][label] = moved
         for binary, count in sorted(old["selected"].items()):
             if (count and binary in new["binaries"] and not new["selected"].get(binary)
                 and any(binary_of(case, old["binaries"]) == binary for case in unexplained)):

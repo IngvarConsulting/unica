@@ -249,5 +249,28 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.steps["Тесты Python"]["env"]["FULL"], "${{ steps.selection.outputs.full }}")
 
 
+class MemoryTempTests(unittest.TestCase):
+    def test_outside_linux_tests_keep_the_system_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(queue.memory_temp(Path(root), 0, platform="win32"), (None, "не Linux"))
+
+    def test_a_missing_or_small_memory_volume_keeps_the_system_temp(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            missing = Path(root) / "absent"
+            self.assertEqual(queue.memory_temp(missing, 0, platform="linux")[0], None)
+            if hasattr(os, "statvfs"):
+                temp, why = queue.memory_temp(Path(root), 1 << 62, platform="linux")
+                self.assertIsNone(temp)
+                self.assertIn("нужно", why)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the probe runs a shell script")
+    def test_an_executable_memory_volume_gives_a_fresh_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            temp, _ = queue.memory_temp(Path(root), 0, platform="linux")
+            self.assertIsNotNone(temp)
+            self.assertEqual(temp.parent, Path(root))
+            self.assertEqual(list(temp.iterdir()), [])
+
+
 if __name__ == "__main__":
     unittest.main()

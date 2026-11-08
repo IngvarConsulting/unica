@@ -119,6 +119,11 @@ jobs:
     # UNICA_SELF_HOSTED=false (или отсутствие переменной) возвращает новые прогоны на GitHub.
     runs-on: ${{ fromJSON(github.event_name == 'merge_group' && github.run_attempt == 1 && vars.UNICA_SELF_HOSTED == 'true' && '["self-hosted","Linux","X64","unica-pve"]' || '["ubuntu-latest"]') }}
     timeout-minutes: 60
+    # Проверка удалений тестов читает описание pull request: объявление,
+    # поправленное после push, должно засчитаться при повторе.
+    permissions:
+      contents: read
+      pull-requests: read
     defaults:
       run:
         shell: bash
@@ -142,8 +147,18 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
-      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+      # Постоянные раннеры PVE уже держат nextest: установка с выпусков GitHub
+      # там не нужна и зависает на их 5xx. Версия — из `.config/nextest.toml`.
+      - id: nextest-present
         if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' }}
+        run: |
+          want=$(grep -o 'recommended = "[^"]*"' .config/nextest.toml | cut -d '"' -f 2)
+          have=$(cargo nextest --version 2>/dev/null | awk 'NR == 1 { print $2 }')
+          echo "nextest: нужен $want, стоит ${have:-нет}"
+          if [ -n "$want" ] && [ "$have" = "$want" ]; then echo "present=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        if: ${{ github.event_name == 'merge_group' && env.KEPT != 'true' && steps.nextest-present.outputs.present != 'true' }}
+        timeout-minutes: 5
         with:
           tool: cargo-nextest@0.9.148
       # Только чтение: pull request и очередь берут кэш области `main`.
@@ -195,6 +210,14 @@ jobs:
       - name: Статические проверки Python
         if: ${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}
         run: python scripts/ci/run-static-tests.py
+      # Тест Rust, снятый без объявления `Removes-test`, иначе впервые виден
+      # в учёте ночи. Случаи строятся по исходникам, без сборки.
+      - name: Удалённые тесты Rust объявлены
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python scripts/ci/removed_tests.py --base "$BASE_SHA"
 
   windows-clippy:
     # Пропуск на pull request не мешает сделать проверку обязательной:
