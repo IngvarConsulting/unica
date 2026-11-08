@@ -51,7 +51,7 @@ fn tabular_sections_expose_source_standard_attributes_without_losing_applied_att
     let data = detail.data.unwrap();
     assert_eq!(data["kind"], "StandardAttribute");
     // Пустые наблюдения (`empty`, `nil`, многоязычная строка без переводов)
-    // свойства не создают; остальные приходят без обёртки наблюдения (#2031).
+    // свойства не создают; остальные приходят без обёртки наблюдения.
     assert_eq!(data["props"].as_object().unwrap().len(), 16);
     for (key, expected) in [
         ("LinkByType", None),

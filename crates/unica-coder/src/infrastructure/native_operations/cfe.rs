@@ -2517,7 +2517,7 @@ pub(crate) mod tests {
         let _ = fs::remove_dir_all(&context.cwd);
     }
 
-    /// #300 asks that an identical plan publish nothing. The property belongs
+    /// An identical plan publishes nothing. The property belongs
     /// to the write plan, so it is proven there: planning a file with exactly
     /// the bytes it already holds must leave the commit report empty.
     #[test]
@@ -2547,7 +2547,7 @@ pub(crate) mod tests {
     ///
     /// This replaces `borrow_cfe_repeat_reports_the_rewrite_it_actually
     /// _performs`, which asserted the opposite while the regeneration it
-    /// described was still open as #435: the report was truthful about a
+    /// described was still open: the report was truthful about a
     /// rewrite that should never have happened.
     #[test]
     pub(crate) fn borrow_cfe_preserves_object_and_file_identity_on_repeated_borrow() {
@@ -2593,7 +2593,7 @@ pub(crate) mod tests {
     }
 
     /// Legacy behavior: borrowing accepts a damaged identifier pair.
-    /// This test records the gap in #935/#931; the target behavior rejects
+    /// This test records the gap; the target behavior rejects
     /// the damaged descriptor without attempting to repair it.
     #[test]
     fn borrow_cfe_keeps_a_surviving_identifier_when_its_pair_is_missing() {

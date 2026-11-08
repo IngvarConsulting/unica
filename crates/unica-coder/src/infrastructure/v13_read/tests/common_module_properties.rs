@@ -91,7 +91,7 @@ fn borrowed_common_module_view_serializes_unknown_privileged_without_losing_cont
     assert!(data["branches"].is_array());
 }
 
-/// #1304: платформа 8.3.27 выгружает заимствованный общий модуль без любого
+/// Платформа 8.3.27 выгружает заимствованный общий модуль без любого
 /// из восьми свойств. Отсутствие читается как неизвестное, не как значение
 /// по умолчанию; у обычного модуля и у собственного модуля расширения оно
 /// остаётся ошибкой источника, записанное некорректное значение — тоже.
@@ -179,7 +179,7 @@ fn borrowed_common_module_reads_platform_absent_properties_as_unknown() {
     }
 }
 
-/// #1304: заимствованный модуль без свойств читается, его методы доступны.
+/// Заимствованный модуль без свойств читается, его методы доступны.
 /// Контексты без флагов среды неизвестны и сериализуются `null`, фильтр по
 /// контексту отказывает типизированно; при записанных флагах контексты
 /// вычисляются как прежде, а неизвестные свойства остаются `null`.
@@ -268,7 +268,7 @@ fn borrowed_common_module_view_keeps_absent_properties_and_contexts_unknown() {
     );
 }
 
-/// #1304: контексты известны только при всех четырёх флагах среды.
+/// Контексты известны только при всех четырёх флагах среды.
 /// Без любого одного из них контексты метода — `null`, а остальные
 /// записанные флаги читаются как есть.
 /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
@@ -338,7 +338,7 @@ fn borrowed_common_module_without_any_single_environment_flag_has_unknown_contex
 /// rule: INV.SOURCE.MODULE-COMMON-PROPERTIES
 #[test]
 fn borrowed_common_module_missing_reuse_preserves_methods_and_source() {
-    // Synthetic omission reproduces #1304; it is not a platform export.
+    // Synthetic omission; it is not a platform export.
     let fixture = RealReaderFixture::new();
     let configuration = fs::read_to_string(fixture.source.join("Configuration.xml")).unwrap();
     write(

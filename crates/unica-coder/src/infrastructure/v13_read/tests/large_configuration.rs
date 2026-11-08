@@ -143,7 +143,7 @@ fn large_configuration_root_rejects_malformed_tail() {
     assert_eq!(result.diagnostics[0]["detailCode"], "source_unreadable");
 }
 
-/// #1119: a correct descriptor larger than the former 8 MiB read limit is
+/// A correct descriptor larger than the former 8 MiB read limit is
 /// read through the public view instead of refused by its size.
 /// rule: INV.SOURCE.LARGE-CONFIGURATION-ROOT-VIEW
 #[test]

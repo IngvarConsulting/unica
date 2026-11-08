@@ -245,7 +245,7 @@ fn canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_marke
                     result.ok,
                     "{at}: view must succeed without a support marker"
                 );
-                // Без маркера поддержки у любого объекта одно состояние (#2158).
+                // Без маркера поддержки у любого объекта одно состояние.
                 let expected = json!("notSupported");
                 assert_eq!(
                     result.data.as_ref().unwrap()["props"]["support"],
@@ -275,7 +275,7 @@ fn canonical_view_distinguishes_absent_support_from_unreadable_and_invalid_marke
         }
         // Коллекция обычной конфигурации читает корень вместе с его
         // поддержкой: без маркера её члены не несут состояния, а нечитаемый
-        // маркер не выдаёт их свободными и отказывает, как карточка (#2158).
+        // маркер не выдаёт их свободными и отказывает, как карточка.
         let collection = service.view(ViewRequest::new("main:Catalog").unwrap());
         if marker_kind == "absent" {
             let items = view_items(&collection);
