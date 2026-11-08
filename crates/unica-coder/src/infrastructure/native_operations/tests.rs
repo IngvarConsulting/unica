@@ -3,8 +3,7 @@ use crate::infrastructure::native_operations::typed_result::NativeInvocationCont
 use crate::infrastructure::workspace::discover_workspace;
 use serde_json::{json, Map};
 use std::fs;
-use std::path::PathBuf;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 
@@ -130,12 +129,9 @@ fn read_only_native_dispatch_does_not_honor_legacy_outfile() {
     fs::remove_dir_all(root).unwrap();
 }
 
-fn temp_root(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!("unica-native-ops-{name}-{nanos}"));
-    fs::create_dir_all(&root).unwrap();
-    root
+fn temp_root(name: &str) -> crate::infrastructure::temp_test_root::TempTestRoot {
+    crate::infrastructure::temp_test_root::TempTestRoot::new(
+        &format!("unica-native-ops-{name}"),
+        "",
+    )
 }

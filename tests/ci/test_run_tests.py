@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -160,6 +161,7 @@ class RunTestsSeamTests(unittest.TestCase):
 
         module = load_module()
         out = P(tempfile.mkdtemp(prefix="run-tests-"))
+        self.addCleanup(shutil.rmtree, out)
         calls = []
 
         code = module.execute("all", "all", out, "ubuntu-latest",
@@ -181,6 +183,7 @@ class RunTestsSeamTests(unittest.TestCase):
 
         module = load_module()
         out = P(tempfile.mkdtemp(prefix="run-tests-"))
+        self.addCleanup(shutil.rmtree, out)
 
         code = module.execute("all", "rust", out, "macos-14",
                               run_commands=lambda planned: 101,
@@ -197,6 +200,7 @@ class RunTestsSeamTests(unittest.TestCase):
 
         module = load_module()
         out = P(tempfile.mkdtemp(prefix="run-tests-"))
+        self.addCleanup(shutil.rmtree, out)
         stale = out / "junit.xml"
         stale.write_text(
             '<testsuites name="unica"><testsuite name="unica-coder">'
@@ -334,6 +338,7 @@ class GateProfileTests(unittest.TestCase):
 
         module = load_module()
         out = P(tempfile.mkdtemp(prefix="run-tests-"))
+        self.addCleanup(shutil.rmtree, out)
         junit = out / "junit.xml"
         seen = []
 
@@ -388,6 +393,7 @@ class GateProfileTests(unittest.TestCase):
         """Отчёт идёт перед пересборкой с признаком, а не перед workspace-вызовом."""
         module = load_module()
         out = Path(tempfile.mkdtemp(prefix="run-tests-"))
+        self.addCleanup(shutil.rmtree, out)
         events = []
 
         def run_commands(planned):
@@ -531,6 +537,7 @@ class GateProfileTests(unittest.TestCase):
         """Состав набора — до запуска, тем же швом: джоба, умершая на середине, его не унесёт."""
         module = load_module()
         results = Path(tempfile.mkdtemp(prefix="plan-py-"))
+        self.addCleanup(shutil.rmtree, results)
 
         code = module.main(["--profile", "pr", "--ecosystem", "python", "--suite", "tests/dev", "--plan-only", "--results", str(results), "--runner", "ubuntu-latest"])
 

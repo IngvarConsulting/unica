@@ -82,6 +82,9 @@ pub mod source_diff;
 pub mod source_workspace;
 
 #[cfg(test)]
+pub(crate) mod temp_test_root;
+
+#[cfg(test)]
 mod workspace_state_integration_tests;
 
 #[cfg(test)]
