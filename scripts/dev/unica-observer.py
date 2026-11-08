@@ -51,6 +51,8 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "ci"))
+from cargo_target import cargo_target_dir  # noqa: E402
 PROTOCOL_VERSION = "2025-06-18"
 # Переменные, через которые хост называет свой проект: у наблюдателя проект
 # один — `--workspace`.
@@ -63,10 +65,7 @@ MAX_BODY_BYTES = 4 * 1024 * 1024
 
 
 def default_binary() -> Path:
-    target = Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "target"))
-    if not target.is_absolute():
-        target = REPO_ROOT / target
-    return target / "release" / ("unica.exe" if os.name == "nt" else "unica")
+    return cargo_target_dir(REPO_ROOT) / "release" / ("unica.exe" if os.name == "nt" else "unica")
 
 
 class McpError(RuntimeError):

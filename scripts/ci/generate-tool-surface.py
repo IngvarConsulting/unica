@@ -19,9 +19,12 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from cargo_target import cargo_target_dir  # noqa: E402
+
 REVIEW_PATH = REPO_ROOT / "tests/fixtures/v013/tool-surface-review.json"
 LEDGER_PATH = REPO_ROOT / "docs/tool-surface.md"
-DEFAULT_BINARY = REPO_ROOT / "target/debug/unica"
+DEFAULT_BINARY = cargo_target_dir(REPO_ROOT) / "debug" / "unica"
 
 # Above this count a tool is publishing the shared XML/DSL argument list rather
 # than its own, so enumerating every entry would describe the list, not the

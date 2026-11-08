@@ -953,10 +953,13 @@ def collect_repository_manifests(repo_root: Path) -> tuple[dict[str, str], dict[
     """Package manifests under `crates/` and the root workspace dependency table."""
     result = subprocess.run(["git", "-C", str(repo_root), "ls-files", "-z", "--", "crates/*/Cargo.toml"],
                             text=False, capture_output=True, check=True)
-    manifests = {raw.decode("utf-8"): (repo_root / raw.decode("utf-8")).read_text(encoding="utf-8")
-                 for raw in sorted(set(result.stdout.split(b"\0")) - {b""})}
     root_manifest = repo_root / "Cargo.toml"
     root = tomllib.loads(root_manifest.read_text(encoding="utf-8")) if root_manifest.is_file() else {}
+    # Как Cargo: `exclude` снимает каталог с членства, и он не пакет продукта.
+    excluded = set(root.get("workspace", {}).get("exclude", []))
+    manifests = {raw.decode("utf-8"): (repo_root / raw.decode("utf-8")).read_text(encoding="utf-8")
+                 for raw in sorted(set(result.stdout.split(b"\0")) - {b""})
+                 if str(PurePosixPath(raw.decode("utf-8")).parent) not in excluded}
     return manifests, root.get("workspace", {}).get("dependencies", {})
 
 

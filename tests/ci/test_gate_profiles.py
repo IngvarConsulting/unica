@@ -16,6 +16,23 @@ from pathlib import Path
 
 from tree_sitter import Language, Parser
 import tree_sitter_rust
+import os
+from unittest import mock
+
+# The fixtures describe the CI layout, where the build directory is the
+# workspace's own `target`. A session sets `CARGO_TARGET_DIR`; the scripts
+# under test would follow it, so this module's tests run without the variable.
+_CARGO_ENV = mock.patch.dict(os.environ)
+
+
+def setUpModule() -> None:
+    _CARGO_ENV.start()
+    os.environ.pop("CARGO_TARGET_DIR", None)
+
+
+def tearDownModule() -> None:
+    _CARGO_ENV.stop()
+
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]

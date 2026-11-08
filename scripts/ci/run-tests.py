@@ -17,10 +17,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
+from cargo_target import cargo_target_dir, vendor_target_arg, vendor_target_dir  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RUN_UNITTEST = Path(__file__).with_name("run-unittest.py")
-NEXTEST_JUNIT = REPO_ROOT / "target" / "nextest" / "default" / "junit.xml"
 
 from workflow_routing import (  # noqa: E402
     ADMITTED, LANED_SUITES, PROFILES, PYTHON_SUITES, SIZES,
@@ -48,9 +48,9 @@ def nextest_profile(profile: str, selection: tuple[str, ...] | None = None) -> s
 
 
 def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Path:
-    """Nextest хранит JUnit относительно корня выбранного workspace."""
-    workspace = REPO_ROOT / "vendor" / "ureq" if selection == UREQ_RECYCLING_SELECTION else REPO_ROOT
-    return workspace / "target" / "nextest" / nextest_profile(profile, selection) / "junit.xml"
+    """Nextest хранит JUnit в каталоге сборки выбранного workspace."""
+    target = vendor_target_dir(REPO_ROOT, "ureq") if selection == UREQ_RECYCLING_SELECTION else cargo_target_dir(REPO_ROOT)
+    return target / "nextest" / nextest_profile(profile, selection) / "junit.xml"
 
 
 # Контракт ReceiptLedger (`tests/daemon_receipt_ledger.rs`) собирается только с
@@ -77,7 +77,7 @@ UREQ_RECYCLING_PREFIX = "completed_response_recycling::"
 UREQ_RECYCLING_SELECTION = (
     "--manifest-path", "vendor/ureq/Cargo.toml", "--locked", "--lib",
     "--features", "json,serde_json/preserve_order,serde_json/float_roundtrip",
-    "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",
+    "--config-file", "vendor/ureq/.config/nextest.toml", "--target-dir", "target",  # cargo-target: mapped
     "-E", f"test(/^{UREQ_RECYCLING_PREFIX}/)",
 )
 
@@ -125,11 +125,20 @@ def rust_selections(profile: str) -> list[tuple[str, ...]]:
     return selections
 
 
+def targeted(selection: tuple[str, ...]) -> list[str]:
+    """Отбор с каталогом сборки сессии: `--target-dir target` вендорного workspace
+    уходит в `CARGO_TARGET_DIR`, если переменная задана."""
+    arguments = list(selection)
+    if "--target-dir" in arguments and selection == UREQ_RECYCLING_SELECTION:
+        arguments[arguments.index("--target-dir") + 1] = vendor_target_arg(REPO_ROOT, "ureq")
+    return arguments
+
+
 def rust_command(profile: str, selection: tuple[str, ...]) -> list[str]:
     # nextest: процесс на тест и JUnit из коробки. Число потоков, повторы
     # и отчёт описаны в `.config/nextest.toml`, а не здесь: конвейер и
     # локальный прогон обязаны идти одной настройкой.
-    return ["cargo", "nextest", "run", *selection, "--profile", nextest_profile(profile, selection)]
+    return ["cargo", "nextest", "run", *targeted(selection), "--profile", nextest_profile(profile, selection)]
 
 
 def rust_commands(profile: str) -> list[list[str]]:
@@ -140,7 +149,7 @@ def rust_commands(profile: str) -> list[list[str]]:
 def rust_list_commands(profile: str) -> list[list[str]]:
     """Состав тех же отборов: план обязан перечислять то, что прогон гоняет."""
     return [
-        ["cargo", "nextest", "list", *selection, "--profile", nextest_profile(profile, selection),
+        ["cargo", "nextest", "list", *targeted(selection), "--profile", nextest_profile(profile, selection),
          "--run-ignored", "all", "--message-format", "json"]
         for selection in rust_selections(profile)
     ]

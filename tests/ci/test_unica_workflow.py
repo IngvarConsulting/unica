@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -860,9 +861,12 @@ class UnicaWorkflowGuardrailTests(unittest.TestCase):
             order = steps(found)
             nextest = next(step for step in steps_using(found, "taiki-e/install-action") if "cargo-nextest@" in step["with"]["tool"])
             self.assertLess(order.index(nextest), order.index(cache[0]))
-        for lane in ("ordinary", "receipt", "vendor"):
-            archive = lanes.archive_command(lane, Path("tests.tar.zst"))
-            self.assertEqual(Path(archive[archive.index("--target-dir") + 1]), lanes.ROOT / "target")
+        # CI sets no `CARGO_TARGET_DIR`: the archive goes to `<root>/target`.
+        with mock.patch.dict(os.environ):
+            os.environ.pop("CARGO_TARGET_DIR", None)
+            for lane in ("ordinary", "receipt", "vendor"):
+                archive = lanes.archive_command(lane, Path("tests.tar.zst"))
+                self.assertEqual(Path(archive[archive.index("--target-dir") + 1]), lanes.ROOT / "target")
         script_text = CLIPPY_SCRIPT.read_text(encoding="utf-8")
         per_package = script_text[script_text.index("  packages)"):]
         # Признаки, объединённые workspace, прячут мёртвый код отдельного пакета.
