@@ -25,7 +25,6 @@ skip = [
   "tests.ci.test_publish_channels",
   "tests.ci.test_receipt_terminal_codec_boundary",
   "tests.ci.test_resource_limits",
-  "tests.ci.test_rust_platform_boundary",
   "tests.ci.test_scope_skips",
   "tests.ci.test_smoke_unica_mcp",
   "tests.dev.test_verify_8_3_27_platform",
