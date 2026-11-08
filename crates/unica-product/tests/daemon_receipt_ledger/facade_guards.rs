@@ -756,7 +756,7 @@ fn facade_authority_guard_scans_every_named_production_source() {
             r#"
                 use unica_execution::receipt_ledger::ReceiptLedgerPort;
                 use unica_execution::receipt_ledger_actor::ReceiptLedgerActor;
-                use unica_daemon::identity::DaemonStateDirectory;
+                use unica_daemon_protocol::identity::DaemonStateDirectory;
                 use unica_execution::receipt_store::ReceiptLedgerStore;
 
                 fn bypass_the_owner() {}

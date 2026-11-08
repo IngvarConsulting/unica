@@ -12,14 +12,16 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use unica_daemon::identity::{CoreIdentity, DaemonStateDirectory};
-use unica_daemon::protocol_v5::*;
-use unica_daemon::transport::run_daemon;
-use unica_daemon::transport::test_support::{
+use unica_daemon_protocol::identity::{CoreIdentity, DaemonStateDirectory};
+use unica_daemon_protocol::protocol_v5::*;
+use unica_daemon_protocol::transport::run_daemon;
+use unica_daemon_protocol::transport::test_support::{
     daemon_error_code, fail_stop_response_write_timeout, v5_request_deadlines,
     write_fail_stop_json_line, write_runtime_json_line_before, SESSION_READ_TIMEOUT,
 };
-use unica_daemon::transport::test_support::{run_daemon_configured, run_daemon_configured_until};
+use unica_daemon_protocol::transport::test_support::{
+    run_daemon_configured, run_daemon_configured_until,
+};
 use unica_execution::invocation::RESPONSE_SERIALIZATION_MARGIN;
 use unica_execution::invocation_store::{EpochMillisClock, SystemEpochMillisClock};
 use unica_execution::invocation_store_v5::*;
@@ -41,7 +43,7 @@ type V5ReceiptRuntime = unica_execution::receipt_runtime::V5ReceiptRuntime<Canon
 
 #[test]
 fn canonical_host_captures_deadline_before_real_strict_submit_and_preserves_receipt_key() {
-    use unica_daemon::protocol_v5::{DecodedSubmitAdapter, StrictV5SubmitError};
+    use unica_daemon_protocol::protocol_v5::{DecodedSubmitAdapter, StrictV5SubmitError};
     use unica_execution::receipt_runtime::ports::{DecodedSubmit, StrictSubmit};
 
     struct CaptureClock {
@@ -1031,9 +1033,9 @@ fn protected_mutation_preserves_success_and_failure_after_cancel_request() {
 use serde_json::json;
 use std::io::{BufRead, Read};
 use std::sync::mpsc;
-use unica_daemon::client_v5::V5DaemonProcessOwner;
-use unica_daemon::protocol_v5::V5InvocationRequest;
-use unica_daemon::protocol_v5::{
+use unica_daemon_protocol::client_v5::V5DaemonProcessOwner;
+use unica_daemon_protocol::protocol_v5::V5InvocationRequest;
+use unica_daemon_protocol::protocol_v5::{
     decode_v5_server_response, read_bounded_v5_probe_response_frame, V5EndpointRecord,
     V5ProbeResponseKind, V5ProbeServerResponse,
 };
@@ -7814,7 +7816,7 @@ fn exact_repeat_of_a_retiring_task_is_not_found_and_reserves_nothing() {
     )
     .expect("decode the exact repeat");
     let repeat = runtime.submit_invocation(
-        unica_daemon::protocol_v5::DecodedSubmitAdapter::new(decoded, identity.clone()),
+        unica_daemon_protocol::protocol_v5::DecodedSubmitAdapter::new(decoded, identity.clone()),
         RETIREMENT_TEST_OBSERVED_EPOCH_MS,
         Instant::now() + TEST_STEP,
         runtime.capture_submit_deadline(7_000),

@@ -164,12 +164,12 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
         allowed = ABSTRACTIONS | frozenset({"workspace", "process", "runner"})
         if target not in allowed:
             reasons.append("execution owns outcomes and invokes typed backend ports")
-    if name == "daemon" and dependency.startswith("unica-"):
+    if name == "daemon-protocol" and dependency.startswith("unica-"):
         # `lsp-contract` is the port the LSP lane calls, not a component: the
         # service behind it stays out of the daemon's reach.
         allowed = ABSTRACTIONS | frozenset({"execution", "workspace", "process", "bootstrap", "artifact-delivery", "lsp-contract"})
         if target not in allowed:
-            reasons.append("daemon owns transport and identity without product dispatch or family backends")
+            reasons.append("the daemon protocol owns transport and identity without product dispatch or family backends")
     if name == "lsp-contract" and dependency.startswith("unica-") and target != "work-control":
         # The request's cancellation token is the one the transport cancels
         # and the service's work watches; nothing else is shared.

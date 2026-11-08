@@ -34,7 +34,7 @@ unica-coder-daemon = { path = "../unica-coder-daemon" }
 unica-analysis-services = { path = "../unica-analysis-services", features = ["test-support"] }
 unica-artifact-delivery = { path = "../unica-artifact-delivery", features = ["test-support"] }
 unica-bootstrap = { path = "../unica-bootstrap" }
-unica-daemon = { path = "../unica-daemon", features = ["test-support"] }
+unica-daemon-protocol = { path = "../unica-daemon-protocol", features = ["test-support"] }
 unica-execution = { path = "../unica-execution", features = ["test-support"] }
 unica-metadata-designer = { path = "../unica-metadata-designer", features = ["test-support"] }
 unica-process = { path = "../unica-process", features = ["test-support"] }

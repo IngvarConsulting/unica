@@ -17,8 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use unica_daemon::client_v5::{V5DaemonClient, V5DaemonProcessOwner, V5LspExchangeError};
-use unica_daemon::protocol_v5::V5EndpointRecord;
+use unica_daemon_protocol::client_v5::{V5DaemonClient, V5DaemonProcessOwner, V5LspExchangeError};
+use unica_daemon_protocol::protocol_v5::V5EndpointRecord;
 use unica_lsp_contract::protocol::{
     V5LspCall, V5LspContentChange, V5LspDiagnostic, V5LspFailure, V5LspMessageLevel,
     V5LspNotification, V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange,

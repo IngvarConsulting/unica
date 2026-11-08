@@ -37,7 +37,7 @@ pub(crate) fn run_supported_receipt_scenario_for_test(request: &str) -> Result<S
 }
 
 type ReceiptScenarioCompletionObserver<'a> = dyn FnMut(
-        &unica_daemon::protocol_v5::V5EndpointRecord,
+        &unica_daemon_protocol::protocol_v5::V5EndpointRecord,
         &HashMap<String, ReceiptKey>,
     ) -> Result<(), String>
     + 'a;
@@ -123,7 +123,7 @@ fn run_receipt_scenario_with_control_observer(
     let mut report = ScenarioReportBuilder::default();
     let control = supplied_control.unwrap_or_else(|| {
         Arc::new(ReceiptScenarioControl::new(Arc::new(
-            unica_daemon::transport::test_support::encode_lifecycle_response,
+            unica_daemon_protocol::transport::test_support::encode_lifecycle_response,
         )))
     });
     for action in &scenario.actions {
@@ -2457,7 +2457,9 @@ fn run_receipt_scenario_with_control_observer(
                 causal.emit_for_test(&label, result.is_ok());
                 let response = result?;
                 let response =
-                    unica_daemon::transport::test_support::outer_lifecycle_response(response);
+                    unica_daemon_protocol::transport::test_support::outer_lifecycle_response(
+                        response,
+                    );
                 control.record_operation_event(&label, "spawned");
                 control.record_operation_event(&label, "completed");
                 operations.insert(
