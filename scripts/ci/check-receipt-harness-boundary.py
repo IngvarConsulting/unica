@@ -37,10 +37,10 @@ import sys
 from pathlib import Path
 
 HARNESS_ROOT = Path(
-    "crates/unica-coder-daemon/tests/support/receipt_scenario.rs"
+    "crates/unica-daemon/tests/support/receipt_scenario.rs"
 )
 HARNESS_DIR = Path(
-    "crates/unica-coder-daemon/tests/support/receipt_scenario"
+    "crates/unica-daemon/tests/support/receipt_scenario"
 )
 # Читаемые файлы обвязки. Новый файл добавляется сюда осознанно.
 SCANNED_FILES = ("dispatch.rs",)
