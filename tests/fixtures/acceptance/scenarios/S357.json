@@ -1,0 +1,214 @@
+{
+  "id": "S357",
+  "issue": 895,
+  "area": "Код BSL",
+  "task": "Выделить три helper-метода одной заменой метода по его адресу: одна запись, опубликованный повтор пустой, повторно объявленный helper отказывает; снятый селектор метода отказывает без записи и ведёт к адресу метода",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "selector": {
+                "method": "МаксимальныйРазмерПорции"
+              },
+              "text": "Функция МаксимальныйРазмерПорции() Экспорт\n\tВозврат CorpusOne() + CorpusTwo() + CorpusThree();\nКонецФункции\n\nФункция CorpusOne()\n\tВозврат 1;\nКонецФункции\n\nФункция CorpusTwo()\n\tВозврат 2;\nКонецФункции\n\nФункция CorpusThree()\n\tВозврат 3;\nКонецФункции"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.selector.method"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции.Can.code.replace"
+        },
+        {
+          "pointer": "/next/1/args/at",
+          "eq": "main:CommonModule.GoogleПереводчик.Method"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376"
+        }
+      ],
+      "refusal": "bad_value: `code.replace` names its subject by address, not by `selector.method`; call it at `main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции`"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции",
+              "text": "Функция МаксимальныйРазмерПорции() Экспорт\n\tВозврат CorpusOne() + CorpusTwo() + CorpusThree();\nКонецФункции\n\nФункция CorpusOne()\n\tВозврат 1;\nКонецФункции\n\nФункция CorpusTwo()\n\tВозврат 2;\nКонецФункции\n\nФункция CorpusThree()\n\tВозврат 3;\nКонецФункции"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "9242a8a0392611dcdf09cbd630fed8b6565a4940cdc3d69bc7b53db177d3f376"
+        }
+      ],
+      "captures": {
+        "extract": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.extract"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 1
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "5fa4abf059a9bd998e6a362090a135e27290e0aaa4ec5861dbcdc9f1ff9aade9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:CommonModule.GoogleПереводчик.Method.МаксимальныйРазмерПорции",
+              "text": "Функция МаксимальныйРазмерПорции() Экспорт\n\tВозврат CorpusOne() + CorpusTwo() + CorpusThree();\nКонецФункции\n\nФункция CorpusOne()\n\tВозврат 1;\nКонецФункции\n\nФункция CorpusTwo()\n\tВозврат 2;\nКонецФункции\n\nФункция CorpusThree()\n\tВозврат 3;\nКонецФункции"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "5fa4abf059a9bd998e6a362090a135e27290e0aaa4ec5861dbcdc9f1ff9aade9"
+        }
+      ],
+      "captures": {
+        "repeat": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.repeat"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        },
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "5fa4abf059a9bd998e6a362090a135e27290e0aaa4ec5861dbcdc9f1ff9aade9"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик",
+        "ops": [
+          {
+            "op": "code.replace",
+            "args": {
+              "at": "main:CommonModule.GoogleПереводчик.Method.ДоступныеЯзыки",
+              "text": "Функция ДоступныеЯзыки() Экспорт\n\tВозврат CorpusOne();\nКонецФункции\n\nФункция CorpusOne()\n\tВозврат 1;\nКонецФункции"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: replacement declares method `CorpusOne` that the module already defines elsewhere",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.text"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/CommonModules/GoogleПереводчик/Ext/Module.bsl",
+          "eq": "5fa4abf059a9bd998e6a362090a135e27290e0aaa4ec5861dbcdc9f1ff9aade9"
+        }
+      ]
+    }
+  ]
+}

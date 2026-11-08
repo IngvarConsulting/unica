@@ -1,0 +1,161 @@
+{
+  "id": "S422",
+  "name": "xdto-nested-property-is-addressed",
+  "issue": 1356,
+  "area": "XDTO и обмены",
+  "task": "Свойство вложенного анонимного типа XDTO читается и правится по адресу Type.T.Property.A.Property.B: прежние propertyPath и имя удаляемого свойства отказывают без записи с next к адресу свойства, исправленные вызовы строят предпросмотр",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property.Документ_ЗаказКлиента"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "propertyPath": "СсылкаНаОбъект",
+                "property": {
+                  "name": "Документ_Новый",
+                  "type": "xs:string",
+                  "lowerBound": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `property.add` names its subject by address, not by `values.propertyPath`; call it at `main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНа",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.propertyPath"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Can.property.add"
+        },
+        {
+          "pointer": "/next/1/args/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Документ_Новый",
+                  "type": "xs:string",
+                  "lowerBound": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+        "ops": [
+          {
+            "op": "property.remove",
+            "args": {
+              "values": {
+                "name": "СсылкаНаОбъект"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: `property.remove` names its subject by address, not by `values.name`; call it at `main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъек",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.name"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Can.property.remove"
+        },
+        {
+          "pointer": "/next/1/args/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property.Документ_ЗаказКлиента",
+        "ops": [
+          {
+            "op": "property.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    }
+  ]
+}

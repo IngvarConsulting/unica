@@ -4,9 +4,9 @@ The common corpus has source, pinned-analyzer delivery and real-agent drivers.
 Runtime drivers are implemented with their surface tasks;
 a profile without an executable driver is rejected.
 
-Every scenario of the corpus (the closed block S001-S440 in
-tests/fixtures/acceptance/scenario-corpus.json and one file per later scenario
-in tests/fixtures/acceptance/scenarios/, both loaded by
+Every scenario of the corpus (one file per scenario in
+tests/fixtures/acceptance/scenarios/, the closed block S001-S440 among them,
+loaded with the header tests/fixtures/acceptance/scenario-corpus.json by
 scripts/ci/acceptance_corpus.py) is a real configuration-development task
 expressed as a wire of canonical unica.* calls against the acceptance fixture
 workspace.  The corpus freezes, per step, the class of answer the surface

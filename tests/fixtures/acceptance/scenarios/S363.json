@@ -1,0 +1,671 @@
+{
+  "id": "S363",
+  "name": "dcs-variant-settings-primitives",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Создать отдельный вариант: явная выборка, сортировка, отбор, параметры данных/вывода и оформление; set меняет только выбранное свойство и сохраняет соседние настройки",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveSettings",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveSettings"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveSettings",
+        "ops": [
+          {
+            "op": "variant.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Work",
+                  "title": {
+                    "ru": "Рабочий",
+                    "en": "Work"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}settingsVariant/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "Основной",
+            "Work"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
+        "ops": [
+          {
+            "op": "selection.add",
+            "args": {
+              "items": [
+                {
+                  "field": "Amount"
+                }
+              ]
+            }
+          },
+          {
+            "op": "order.add",
+            "args": {
+              "items": [
+                {
+                  "field": "Amount",
+                  "direction": "Desc"
+                }
+              ]
+            }
+          },
+          {
+            "op": "filter.add",
+            "args": {
+              "items": [
+                {
+                  "field": "Category",
+                  "comparison": "Contains",
+                  "value": "@user [literal] in progress",
+                  "viewMode": "Normal",
+                  "userSettingID": "11111111-1111-4111-8111-111111111111"
+                }
+              ]
+            }
+          },
+          {
+            "op": "dataParameter.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Period",
+                  "value": "2026-01-01T00:00:00",
+                  "valueType": "xs:dateTime",
+                  "use": true,
+                  "viewMode": "Normal"
+                }
+              ]
+            }
+          },
+          {
+            "op": "outputParameter.set",
+            "args": {
+              "values": {
+                "name": "Title",
+                "value": "Заголовок [шт] @on"
+              }
+            }
+          },
+          {
+            "op": "conditionalAppearance.add",
+            "args": {
+              "items": [
+                {
+                  "fields": [
+                    "Amount"
+                  ],
+                  "appearance": {
+                    "Format": "ЧДЦ=2"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}order/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}orderType",
+          "eq": [
+            "Desc"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}right",
+          "eq": [
+            "@user [literal] in progress"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}viewMode",
+          "eq": [
+            "Normal"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}dataParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item/{http://v8.1c.ru/8.1/data-composition-system/core}value",
+          "eq": [
+            "2026-01-01T00:00:00"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item/{http://v8.1c.ru/8.1/data-composition-system/core}value",
+          "eq": [
+            "Заголовок [шт] @on"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}dataParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item/{http://v8.1c.ru/8.1/data-composition-system/settings}viewMode",
+          "eq": [
+            "Normal"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveSettings"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase6Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveSettings",
+        "ops": [
+          {
+            "op": "variant.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
+              "values": {
+                "presentation": {
+                  "ru": "Новый",
+                  "en": "New"
+                }
+              }
+            }
+          },
+          {
+            "op": "filter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
+              "values": {
+                "field": "Category",
+                "value": "changed @user [literal]"
+              }
+            }
+          },
+          {
+            "op": "dataParameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
+              "values": {
+                "name": "Period",
+                "value": "2026-02-01T00:00:00",
+                "valueType": "xs:dateTime",
+                "use": false
+              }
+            }
+          },
+          {
+            "op": "outputParameter.set",
+            "args": {
+              "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
+              "values": {
+                "name": "Title",
+                "value": "Обновлённый"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase6Before"
+        }
+      ],
+      "captures": {
+        "phase6Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase6Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}settingsVariant[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Work']/{http://v8.1c.ru/8.1/data-composition-system/settings}presentation/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='en']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "New"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}settingsVariant[{http://v8.1c.ru/8.1/data-composition-system/settings}name='Work']/{http://v8.1c.ru/8.1/data-composition-system/settings}presentation/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Новый"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}comparisonType",
+          "eq": [
+            "Contains"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}viewMode",
+          "eq": [
+            "Normal"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}right",
+          "eq": [
+            "changed @user [literal]"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}dataParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item/{http://v8.1c.ru/8.1/data-composition-system/core}value",
+          "eq": [
+            "2026-02-01T00:00:00"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}order/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}orderType",
+          "eq": [
+            "Desc"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}dataParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item/{http://v8.1c.ru/8.1/data-composition-system/settings}viewMode",
+          "eq": [
+            "Normal"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase8Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
+        "ops": [
+          {
+            "op": "filter.remove",
+            "args": {
+              "values": {
+                "field": "Category"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase8Before"
+        }
+      ],
+      "captures": {
+        "phase8Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase8Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}order/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}orderType",
+          "eq": [
+            "Desc"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveSettings"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase10Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveSettings.Setting.Work",
+        "ops": [
+          {
+            "op": "variant.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase10Before"
+        }
+      ],
+      "captures": {
+        "phase10Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase10Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveSettings/Ext/Template.xml",
+          "kind": "xml",
+          "select": "./{http://v8.1c.ru/8.1/data-composition-system/schema}settingsVariant/{http://v8.1c.ru/8.1/data-composition-system/settings}name",
+          "eq": [
+            "Основной"
+          ]
+        }
+      ]
+    }
+  ]
+}

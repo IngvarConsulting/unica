@@ -137,7 +137,7 @@ class DcsNamingContractTests(unittest.TestCase):
             entry = entries[skill]
             self.assertFalse(entry["promptSkill"])
             self.assertIn(primitive_path, entry["localPaths"])
-            self.assertIn("tests/fixtures/acceptance/scenario-corpus.json", entry["contractPaths"])
+            self.assertIn("tests/fixtures/acceptance/scenarios", entry["contractPaths"])
             for active_path in entry["localPaths"] + entry["contractPaths"]:
                 self.assertTrue((REPO_ROOT / active_path).exists(), active_path)
             self.assertTrue(

@@ -693,7 +693,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_dcs_naming_contract.py",
-            "tests/fixtures/acceptance/scenario-corpus.json",
+            "tests/fixtures/acceptance/scenarios",
             "crates/unica-domain/src/apply.rs",
             "crates/unica-domain/src/operation_contract.rs",
             "crates/unica-dcs-designer/src/primitives/tests.rs"
@@ -724,7 +724,7 @@
           ],
           "contractPaths": [
             "tests/ci/test_dcs_naming_contract.py",
-            "tests/fixtures/acceptance/scenario-corpus.json",
+            "tests/fixtures/acceptance/scenarios",
             "crates/unica-domain/src/apply.rs",
             "crates/unica-domain/src/operation_contract.rs",
             "crates/unica-dcs-designer/src/primitives/tests.rs"

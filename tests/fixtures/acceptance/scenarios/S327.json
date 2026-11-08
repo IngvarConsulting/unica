@@ -1,0 +1,630 @@
+{
+  "id": "S327",
+  "name": "dcs-contract-refusals-preserve-source",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Ошибочные цели, типы, адреса операций словаря, имена групп и число замен дают точный отказ без изменения XML, включая частично подходящую структуру",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "unchanged": {
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.unknown"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: unknown operation `query.unknown`; inspect the node can dictionary",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "unknown operation `query.unknown`; inspect the node can dictionary"
+            }
+          ]
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.enumValue.add"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: operation `enumValue.add` does not apply to DataSet",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "operation `enumValue.add` does not apply to DataSet"
+            }
+          ]
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: Can names one operation: `<node>.Can.<op>`; the node answer lists its operations in can",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "Can names one operation: `<node>.Can.<op>`; the node answer lists its operations in can"
+            }
+          ]
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data",
+        "filter": {
+          "sections": [
+            "can"
+          ],
+          "can": {
+            "op": "query.set"
+          }
+        }
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "canonical invocation has unknown argument `filter`: unica.view answers every node with its operation dictionary can; read one operation's argument contract at `<node>.Can.<op>`, and page collections with limit"
+            }
+          ]
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set"
+        },
+        {
+          "pointer": "/next/1/args/at",
+          "eq": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Can.dataSet.add"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/op",
+          "eq": "dataSet.add"
+        },
+        {
+          "pointer": "/data/props/implemented",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.Missing"
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "not_found: DCS structure item `Missing` was not found uniquely; read the Item collection of its parent",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "not_found",
+              "outcome": "fixCall",
+              "message": "DCS structure item `Missing` was not found uniquely; read the Item collection of its parent"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set",
+        "right": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Can.query.set"
+      },
+      "expect": [
+        "unsupported"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "target_kind_unsupported",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "target_kind_unsupported",
+              "outcome": "fixCall",
+              "message": "diff compares source-backed nodes; an operation contract at `.Can.<op>` is computed from the registry, read it with view"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema",
+        "ops": [
+          {
+            "op": "query.set",
+            "args": {
+              "values": {
+                "query": "ВЫБРАТЬ 1"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D.Query`",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "apply operation `query.set` does not apply to Template `cf:Report.F05Report.Template.F05Schema`; it addresses `Kind.Name.Template.T.DataSet.D.Query`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
+        "ops": [
+          {
+            "op": "query.set",
+            "args": {
+              "values": {
+                "query": "@query.sql"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: query takes text, not @file",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "query takes text, not @file"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
+        "ops": [
+          {
+            "op": "query.patch",
+            "args": {
+              "values": {
+                "find": "КАК",
+                "replace": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: ops[0].args.values.replace: expected \"string\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "ops[0].args.values.replace: expected \"string\""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
+        "ops": [
+          {
+            "op": "query.patch",
+            "args": {
+              "values": {
+                "find": "КАК",
+                "replace": "AS",
+                "once": "true"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: ops[0].args.values.once: expected \"boolean\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "ops[0].args.values.once: expected \"boolean\""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+        "ops": [
+          {
+            "op": "structure.patch",
+            "args": {
+              "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.Missing",
+              "values": {
+                "groupBy": [
+                  "Amount"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: structure item `Missing` was not found uniquely; read the Item collection of its parent",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "structure item `Missing` was not found uniquely; read the Item collection of its parent"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+        "ops": [
+          {
+            "op": "structure.patch",
+            "args": {
+              "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
+              "values": {
+                "groupBy": [
+                  "Amount"
+                ]
+              }
+            }
+          },
+          {
+            "op": "structure.patch",
+            "args": {
+              "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.Missing",
+              "values": {
+                "groupBy": [
+                  "Category"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: structure item `Missing` was not found uniquely; read the Item collection of its parent",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "structure item `Missing` was not found uniquely; read the Item collection of its parent"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+        "ops": [
+          {
+            "op": "structure.patch",
+            "args": {
+              "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant.Item.F05Group",
+              "values": {
+                "groupBy": "Amount"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: ops[0].args.values.groupBy: expected \"array\"",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "ops[0].args.values.groupBy: expected \"array\""
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
+        "ops": [
+          {
+            "op": "query.patch",
+            "args": {
+              "values": {
+                "find": "MissingSentinel",
+                "replace": "X",
+                "once": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: query patch found no matches",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "query patch found no matches"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.DataSet.F05Data.Query",
+        "ops": [
+          {
+            "op": "query.patch",
+            "args": {
+              "values": {
+                "find": "КАК",
+                "replace": "AS",
+                "once": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.unchanged"
+        }
+      ],
+      "refusal": "bad_value: once requires one match, found 3",
+      "assertions": [
+        {
+          "pointer": "/diagnostics",
+          "eq": [
+            {
+              "code": "bad_value",
+              "outcome": "fixCall",
+              "message": "once requires one match, found 3"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

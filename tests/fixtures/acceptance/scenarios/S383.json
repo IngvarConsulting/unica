@@ -1,0 +1,72 @@
+{
+  "id": "S383",
+  "name": "kb-administrator-guide-locators-retired",
+  "issue": 1892,
+  "area": "Документация и стандарты",
+  "task": "Секция [providers.kb-1ci] с прежними настройками (network, endpoint) игнорируется целиком: локаторы Administrator Guide 8.3.27 обоих режимов больше не открываются, ответ называет строку удалённого поставщика",
+  "workspace": "tests/fixtures/acceptance/workspace-docs-8.3.27",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "Overview",
+        "source": "platform-help"
+      },
+      "expect": [
+        "ok",
+        "provider",
+        "task"
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "https://kb.1ci.com/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_File_Mode/8.3.27/Introduction/Overview/",
+        "source": "platform-help"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_File_Mode/8.3.27/Introduction/Overview/` was not f",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "retired_provider"
+        }
+      ]
+    },
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "https://kb.1ci.com/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_Client_Server_Mode/8.3.27/Introduction/Overview/",
+        "source": "platform-help"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "not_found: documentation page `https://kb.1ci.com/1C_Enterprise_Platform/Guides/Administrator_Guides/Administrator_Guide_Client_Server_Mode/8.3.27/Introduction/Overview/` ",
+      "assertions": [
+        {
+          "pointer": "/ok",
+          "eq": false
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "not_found"
+        },
+        {
+          "pointer": "/warnings/0/code",
+          "eq": "retired_provider"
+        }
+      ]
+    }
+  ]
+}

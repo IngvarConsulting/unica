@@ -903,9 +903,8 @@ class V013ParityInventoryTest(unittest.TestCase):
         """A case that cites the acceptance corpus must cite a scenario that
         exists and freezes the same answer; a dangling or mismatched citation
         would let a parity shard claim evidence the corpus never gives."""
-        # The corpus file names the whole corpus: the closed S### block and
-        # the per-file scenarios load together, and a case may also cite a
-        # per-file scenario by its own path.
+        # The corpus header file names the whole corpus, every scenario file
+        # loaded with it; a case may also cite a scenario by its own path.
         corpus_path = "tests/fixtures/acceptance/scenario-corpus.json"
         scenario_dir = "tests/fixtures/acceptance/scenarios/"
         corpus = load_acceptance_corpus()
