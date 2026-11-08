@@ -318,8 +318,7 @@ impl CanonicalV13ReadService {
 
 /// Аргумент, которого нет в контракте операции на адресованном узле,
 /// отклоняется `bad_value`, и `next` ведёт к этому контракту,
-/// `<адрес>.Can.<op>`, либо к словарю узла, если подробного контракта нет
-/// (INV.WIRE.OPERATION-TARGET-ADDRESS). Отказ любого слоя — предварительной
+/// `<адрес>.Can.<op>` (INV.WIRE.OPERATION-TARGET-ADDRESS). Отказ любого слоя — предварительной
 /// проверки, разбора семейства или планировщика — получает один и тот же путь.
 pub(in crate::infrastructure::daemon) fn with_unknown_argument_contract(
     refusal: DomainResult,
@@ -348,16 +347,22 @@ pub(in crate::infrastructure::daemon) fn with_unknown_argument_contract(
     else {
         return refusal;
     };
-    // Ключ из контракта — плохое значение, а не лишний аргумент; другой
-    // слой, уже назвавший продолжение, не дополняется. Без подробного
-    // контракта `next` ведёт к словарю узла.
-    let published = descriptor
-        .argument_contract_at(&site)
-        .is_some_and(|contract| published_path(&contract.schema, &segments));
-    if published || !refusal.next.is_empty() {
+    // Ключ из контракта на этом узле — плохое значение, а не лишний
+    // аргумент; без подробного контракта их не различить. Слой, уже
+    // назвавший продолжение, не дополняется.
+    let Some(contract) = descriptor.argument_contract_at(&site) else {
+        return refusal;
+    };
+    if published_path(&contract.schema, &segments) || !refusal.next.is_empty() {
         return refusal;
     }
-    with_operation_dictionary(refusal, &operation.at().to_string(), descriptor)
+    let mut refusal = refusal;
+    refusal.next.push(json!({
+        "tool": "unica.view",
+        "args": {"at": format!("{}.Can.{}", operation.at(), descriptor.name())},
+        "reason": format!("аргументы операции `{}` на этом узле", descriptor.name()),
+    }));
+    refusal
 }
 
 /// `ops[<i>].args.<путь>` → номер операции и шаги пути: ключи и номера.

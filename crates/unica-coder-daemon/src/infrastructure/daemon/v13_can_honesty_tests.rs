@@ -1232,11 +1232,15 @@ fn check_unknown_argument_is_named(
     // Ответ `apply` ведёт к контракту операции на адресованном узле.
     let routed =
         super::v13_service::with_unknown_argument_contract(refusal, &request, checked.traits);
-    let contract = if descriptor.argument_contract().is_some() {
-        format!("{at}.Can.{op}")
-    } else {
-        at.to_string()
+    // Без подробного контракта на узле лишний ключ не отличить от плохого
+    // значения: такой отказ продолжения не получает.
+    let Some(site) = crate::domain::apply::operation_site(address, checked.traits) else {
+        return;
     };
+    if descriptor.argument_contract_at(&site).is_none() {
+        return;
+    }
+    let contract = format!("{at}.Can.{op}");
     if !routed
         .next
         .iter()
