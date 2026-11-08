@@ -185,7 +185,7 @@ impl CompletionSources for SessionSources<'_> {
             .descriptors
             .metadata_descriptor(&target)
             .ok()
-            .and_then(|descriptor| object_members(std::str::from_utf8(&descriptor).ok()?));
+            .and_then(|descriptor| object_members(&descriptor));
         self.missed.set(self.missed.get() || members.is_none());
         members
     }
@@ -216,53 +216,15 @@ pub(super) fn module_owner(module: &str) -> Option<ModuleOwner> {
 }
 
 /// Attributes and tabular sections, with their columns, of an object's
-/// descriptor.
-pub(super) fn object_members(descriptor: &str) -> Option<ObjectMembers> {
-    let document = roxmltree::Document::parse(descriptor).ok()?;
-    let object = document
-        .root_element()
-        .children()
-        .find(roxmltree::Node::is_element)?;
+/// descriptor, as the metadata family reads them.
+pub(super) fn object_members(descriptor: &[u8]) -> Option<ObjectMembers> {
+    let names = crate::infrastructure::family_codecs::metadata_read_codec()
+        .object_member_names(descriptor)
+        .ok()?;
     Some(ObjectMembers {
-        attributes: children(object, "Attribute")
-            .into_iter()
-            .filter_map(name)
-            .collect(),
-        tabular_sections: children(object, "TabularSection")
-            .into_iter()
-            .filter_map(|section| {
-                Some((
-                    name(section)?,
-                    children(section, "Attribute")
-                        .into_iter()
-                        .filter_map(name)
-                        .collect(),
-                ))
-            })
-            .collect(),
+        attributes: names.attributes,
+        tabular_sections: names.tabular_sections,
     })
-}
-
-/// The `kind` elements in a node's `ChildObjects`.
-fn children<'a, 'input>(
-    node: roxmltree::Node<'a, 'input>,
-    kind: &'static str,
-) -> Vec<roxmltree::Node<'a, 'input>> {
-    node.children()
-        .find(|child| child.has_tag_name("ChildObjects"))
-        .into_iter()
-        .flat_map(|list| list.children().filter(|child| child.has_tag_name(kind)))
-        .collect()
-}
-
-/// The `Properties/Name` of a child object.
-fn name(node: roxmltree::Node<'_, '_>) -> Option<String> {
-    node.children()
-        .find(|child| child.has_tag_name("Properties"))?
-        .children()
-        .find(|child| child.has_tag_name("Name"))?
-        .text()
-        .map(str::to_owned)
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {

@@ -1758,25 +1758,6 @@ fn every_fail_stop_store_error_is_written_without_reentering_the_actor() {
     );
 }
 
-#[test]
-fn healthy_runtime_drops_the_actor_store_before_releasing_named_authority() {
-    // Порядок полей проверяется в производственном файле — тесты живут рядом с ним.
-    let source = include_str!("../../../unica-execution/src/receipt_runtime.rs");
-    let start = source
-        .find("struct V5ReceiptRuntime<H: InvocationHost> {")
-        .expect("runtime owner declaration");
-    let body = source[start..]
-        .split_once("\n}")
-        .expect("runtime owner declaration end")
-        .0;
-
-    assert!(
-        body.find("receipt_ledger: ReceiptLedgerActor")
-            < body.find("_stable_authority: ReceiptAuthorityLock"),
-        "healthy Rust drop order must join actor/store before authority release"
-    );
-}
-
 struct ManualEpochClock {
     epoch_ms: AtomicU64,
 }

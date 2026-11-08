@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::Mutex;
 use std::time::Duration;
+use unica_work_control::provider_deadline::ProviderDeadline;
 
 const MODULE_AT: &str = "main:Catalog.Валюты.Module.Manager";
 const MODULE_PATH: &str = "Catalogs/Валюты/Ext/ManagerModule.bsl";

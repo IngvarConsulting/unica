@@ -10,7 +10,7 @@ pub mod diagnostics;
 pub mod engine_delivery;
 #[allow(dead_code)]
 pub(crate) mod event_views;
-pub(crate) mod family_codecs;
+pub mod family_codecs;
 pub mod format_guard;
 pub mod internal_adapters;
 // Hidden v0.13 routing remains unreachable from the package-selected v0.12 surface.
