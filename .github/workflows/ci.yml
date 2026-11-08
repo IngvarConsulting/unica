@@ -142,6 +142,18 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -r tests/ci/requirements.txt
         if: env.KEPT != 'true'
+      # На pull request проверки Python идут в фоне, пока раннер восстанавливает
+      # кэш Rust и гоняет fmt и Clippy: подряд они занимали бо́льшую часть
+      # стадии. Шаги ожидания ниже отдают их лог и исход как свои.
+      - name: Статические проверки Python (запуск)
+        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        run: python scripts/ci/background_step.py start static-python -- python scripts/ci/run-static-tests.py
+      - name: Удалённые тесты Rust (запуск)
+        if: ${{ github.event_name == 'pull_request' && env.KEPT != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: python scripts/ci/background_step.py start removed-tests -- python scripts/ci/removed_tests.py --base "$BASE_SHA"
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         if: env.KEPT != 'true'
         with:
@@ -209,15 +221,12 @@ jobs:
           fi
       - name: Статические проверки Python
         if: ${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}
-        run: python scripts/ci/run-static-tests.py
+        run: python scripts/ci/background_step.py wait static-python --timeout 900
       # Тест Rust, снятый без объявления `Removes-test`, иначе впервые виден
       # в учёте ночи. Случаи строятся по исходникам, без сборки.
       - name: Удалённые тесты Rust объявлены
         if: ${{ !cancelled() && github.event_name == 'pull_request' && env.KEPT != 'true' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: python scripts/ci/removed_tests.py --base "$BASE_SHA"
+        run: python scripts/ci/background_step.py wait removed-tests --timeout 600
 
   windows-clippy:
     # Пропуск на pull request не мешает сделать проверку обязательной:
