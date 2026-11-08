@@ -108,7 +108,7 @@ static BSL_DIAGNOSTIC_BACKEND:
     unica_adapter_bsl_analyzer::diagnostics::WorkspaceBslDiagnosticBackend {
         environment: &ANALYSIS_ENVIRONMENT,
     };
-pub(crate) fn bsl_provider() -> unica_adapter_bsl_analyzer::provider::BslAnalyzerProvider<'static> {
+pub fn bsl_provider() -> unica_adapter_bsl_analyzer::provider::BslAnalyzerProvider<'static> {
     unica_adapter_bsl_analyzer::provider::BslAnalyzerProvider::new(&BSL_CLIENT, source_bindings())
 }
 /// The analyzer behind the symbol port for one source set.

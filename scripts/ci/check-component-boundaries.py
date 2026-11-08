@@ -5,27 +5,62 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import re
+import sys
 import tomllib
 
-FAMILIES = frozenset({"metadata", "forms", "roles", "dcs", "xdto", "templates", "bsl"})
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import crate_declarations  # noqa: E402
+
+# The kinds below that only restrict a crate (family, coordinator) are read
+# from each crate's `[package.metadata.unica] component`: a new crate states
+# its kind and does not edit this guard. Each keeps a closed floor of the
+# crates it holds today: a crate cannot lift a restriction by declaring a
+# looser kind, only an edit of the floor here can. Lists that permit (shared
+# contracts others may import, a family's semantic dependencies, closed edge
+# sets) stay closed: a crate must not widen them by its own declaration.
+FAMILY_FLOOR = frozenset({"metadata", "forms", "roles", "dcs", "xdto", "templates", "bsl"})
 SEMANTIC_DEPENDENCIES = {
     "metadata": frozenset(), "forms": frozenset({"metadata"}),
     "roles": frozenset({"metadata"}), "dcs": frozenset({"metadata", "templates"}),
     "xdto": frozenset(), "templates": frozenset({"metadata"}),
     "bsl": frozenset({"metadata"}),
 }
+def _declared(component: str, declarations: dict | None = None) -> frozenset[str]:
+    declarations = crate_declarations.repository() if declarations is None else declarations
+    return frozenset(
+        name.removeprefix("unica-")
+        for name in crate_declarations.packages(declarations, component=component)
+    )
+
+
 ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
 # Named apart from ABSTRACTIONS so that a new shared contract does not widen
 # what the publication owner may import without a review of this list.
 WORKSPACE_DEPENDENCIES = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
-COORDINATORS = frozenset({"operations", "bindings", "navigation", "code-intelligence", "diagnostics", "documentation"})
+COORDINATOR_FLOOR = frozenset({
+    "operations", "bindings", "navigation", "code-intelligence", "diagnostics", "documentation",
+    "analysis-services", "application", "domain",
+})
+# A family is ruled by its semantic dependencies, which only this guard grants.
+FAMILIES = FAMILY_FLOOR | (_declared("family") & SEMANTIC_DEPENDENCIES.keys())
 # Everything the rule against importing a port implementation applies to.
-PORT_CALLERS = COORDINATORS | frozenset({"analysis-services", "application", "domain"})
+PORT_CALLERS = COORDINATOR_FLOOR | _declared("coordinator")
+
+
+def use_declarations(root: Path) -> None:
+    """Derive the restriction sets from the crates under `root`, the tree checked."""
+    global FAMILIES, PORT_CALLERS
+    declarations = crate_declarations.read(root)
+    FAMILIES = FAMILY_FLOOR | (_declared("family", declarations) & SEMANTIC_DEPENDENCIES.keys())
+    PORT_CALLERS = COORDINATOR_FLOOR | _declared("coordinator", declarations)
 CODEC_DEPENDENCIES = {"xdto": frozenset({"metadata-designer"})}
 # Families whose codec sits behind the family port (#1826). Product composition
 # selects the implementation in one module; everyone else calls the trait.
 PORTED_FAMILIES = frozenset({"dcs"})
 CODEC_SELECTION = "crates/unica-coder/src/infrastructure/family_codecs.rs"
+# The product composition: the lower layer, the daemon with its doors over it,
+# and the package of the product binary. Only these depend on one another.
+PRODUCT_COMPOSITION = frozenset({"unica-coder", "unica-coder-daemon", "unica-product"})
 # Metadata read code of the composition parses descriptors only through the
 # family port `MetadataReadCodec`. Write code still names the codec, so
 # `metadata` is not in PORTED_FAMILIES.
@@ -36,25 +71,26 @@ METADATA_READ_SOURCES = "crates/unica-coder/src/infrastructure/v13_read"
 # declaration must match what `edge_errors` applies to the crate by name, so a
 # new crate states its place instead of falling outside every list unnoticed.
 COMPONENT_KINDS = {
-    "family": "semantic family, listed in FAMILIES",
+    "family": "semantic family with its semantic dependencies in SEMANTIC_DEPENDENCIES",
     "abstraction": "shared contract, listed in ABSTRACTIONS",
-    "coordinator": "invokes ports without implementations, listed in PORT_CALLERS",
+    "coordinator": "invokes ports without implementations; the declaration alone makes it one",
     "codec": "`unica-<family>-designer` representation codec",
     "adapter": "`unica-adapter-*` implementation of a port",
     "integration-tests": "`unica-*-integration-tests` cross-component checks",
-    "product": "the product composition: unica-coder and unica-product",
+    "product": "the product composition: unica-coder, unica-coder-daemon and unica-product",
     "service": "any other runtime component; a closed dependency rule is added to edge_errors by name",
 }
 
 
-def required_component(package: str) -> str:
-    """The kind the rules of this guard give a package by its name."""
+def required_component(package: str, declared: str | None = None) -> str:
+    """The kind the rules of this guard give a package: by its name, or by
+    `declared` where the declaration alone may restrict it."""
     name = package.removeprefix("unica-")
-    if name in FAMILIES:
+    if name in FAMILY_FLOOR or (declared == "family" and name in SEMANTIC_DEPENDENCIES):
         return "family"
     if name in ABSTRACTIONS:
         return "abstraction"
-    if name in PORT_CALLERS:
+    if name in COORDINATOR_FLOOR or declared == "coordinator":
         return "coordinator"
     if name.endswith("-integration-tests"):
         return "integration-tests"
@@ -62,7 +98,7 @@ def required_component(package: str) -> str:
         return "codec"
     if name.startswith("adapter-"):
         return "adapter"
-    if name in {"coder", "product"}:
+    if f"unica-{name}" in PRODUCT_COMPOSITION:
         return "product"
     return "service"
 
@@ -73,11 +109,11 @@ def declaration_errors(members: dict[str, tuple[Path, dict]]) -> list[str]:
     errors: list[str] = []
     for package, (_, document) in sorted(members.items()):
         declared = document["package"].get("metadata", {}).get("unica", {}).get("component")
-        required = required_component(package)
+        required = required_component(package, declared)
         if declared not in COMPONENT_KINDS:
             errors.append(f'{package}: declare component under [package.metadata.unica] in its Cargo.toml; kinds are {hint}')
         elif declared != required:
-            errors.append(f"{package}: component {declared} needs the rules of this guard to treat it so, and they treat it as {required}; update the list in check-component-boundaries.py or the declaration")
+            errors.append(f"{package}: component {declared} needs the rules of this guard to treat it so, and they treat it as {required}; a floor in check-component-boundaries.py or a closed list of permissions there decides it, not the declaration")
     return errors
 
 
@@ -87,11 +123,11 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
     target = dependency.removeprefix("unica-")
     prefix = f"{owner} {kind} -> {dependency}: "
     reasons: list[str] = []
-    if dependency == "rmcp" and owner != "unica-coder":
+    if dependency == "rmcp" and owner != "unica-coder-daemon":
         reasons.append("the MCP SDK belongs to the product composition")
     if dependency in {"bsl-parser", "bsl-syntax", "parser", "syntax"} and owner != "unica-bsl-parser":
         reasons.append("upstream parser types belong to the parser boundary")
-    if dependency == "unica-coder" and owner not in {"unica-coder", "unica-product"}:
+    if dependency in PRODUCT_COMPOSITION - {"unica-product"} and owner not in PRODUCT_COMPOSITION:
         reasons.append("a component or its unit target must not depend on the product composition")
     if dependency == "unica-product":
         reasons.append("nothing depends on the package that declares the product binary")
@@ -218,6 +254,7 @@ def manifests(root: Path) -> dict[str, tuple[Path, dict]]:
 
 def check(root: Path) -> list[str]:
     root = root.resolve()
+    use_declarations(root)
     members = manifests(root)
     paths = {directory.resolve(): name for name, (directory, _) in members.items()}
     workspace = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]

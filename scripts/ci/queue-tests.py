@@ -152,7 +152,7 @@ def commands(packages: tuple[str, ...], runner, dependents: tuple[str, ...] = ()
     if dependents:
         selection = (*(item for package in dependents for item in ("-p", package)), "-E", DEPENDENT_FILTER)
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
-    if {"unica-coder", "unica-product"} & set(packages):
+    if {"unica-coder-daemon", "unica-product"} & set(packages):
         planned.append(runner.rust_command("queue", runner.LEDGER_FEATURE_SELECTION))
     if "ureq" in packages:
         planned.append(runner.rust_command("queue", runner.UREQ_RECYCLING_SELECTION))

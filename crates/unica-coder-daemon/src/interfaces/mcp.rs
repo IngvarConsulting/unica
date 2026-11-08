@@ -4926,7 +4926,7 @@ mod medium_tests {
             workspace.to_string_lossy().into_owned(),
         ));
 
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let runner = root
             .path()
             .join("plugins/unica/bin")
@@ -8700,7 +8700,7 @@ fn main() {
         });
         let release_path = plugin.join("runtime-manifest.json");
         std::fs::write(&release_path, release.to_string()).unwrap();
-        let target = crate::infrastructure::platform::current_target_id().unwrap();
+        let target = crate::infrastructure::current_target_id().unwrap();
         let relative = format!("bin/{target}/v8-runner{}", std::env::consts::EXE_SUFFIX);
         std::fs::write(plugin.join("third-party/manifest.json"), json!({"schemaVersion":2,"artifactAssets":{"v8-runner":{"sha256":digest}},"tools":[{"name":"v8-runner","version":runner_version,"binaryPath":relative,"deliveredPath":relative,"sha256":digest}]}).to_string()).unwrap();
         // Only this one-test child owns these global overrides.

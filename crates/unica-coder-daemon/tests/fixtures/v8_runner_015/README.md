@@ -37,7 +37,7 @@ infobase still held the temporary line.
 ## Creating an infobase, pushes and another working copy
 
 Recaptured with the same runner, platform and configuration in place of the
-0.14.0 captures of `crates/unica-coder/tests/fixtures/v8_runner_014`, with `providers: {push:
+0.14.0 captures of `crates/unica-coder-daemon/tests/fixtures/v8_runner_014`, with `providers: {push:
 ibcmd}`: on the capture machine the Designer had no licence and the managed
 agent refused the empty infobase user, so the default agent provider of the
 0.14.0 captures could not be repeated. Project `E` declared its own file

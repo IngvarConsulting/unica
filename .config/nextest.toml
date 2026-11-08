@@ -66,7 +66,7 @@ binary(daemon_receipt_ledger) & (
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
 )
 ) | (
-binary(unica_coder) & (
+binary(unica_coder_daemon) & (
     test(/^infrastructure::daemon::medium_receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
     | test(/^infrastructure::daemon::v13_workspace_bootstrap::medium_tests::root_check_streams_an_index_past_the_former_capture_limit$/)
 )
@@ -110,7 +110,7 @@ binary(daemon_receipt_ledger) & (
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
 )
 ) | (
-binary(unica_coder) & (
+binary(unica_coder_daemon) & (
     test(/^infrastructure::daemon::medium_receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
     | test(/^infrastructure::daemon::v13_workspace_bootstrap::medium_tests::root_check_streams_an_index_past_the_former_capture_limit$/)
 )
@@ -191,7 +191,7 @@ binary(daemon_receipt_ledger) & (
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
 )
 ) | (
-binary(unica_coder) & (
+binary(unica_coder_daemon) & (
     test(/^infrastructure::daemon::medium_receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
     | test(/^infrastructure::daemon::v13_workspace_bootstrap::medium_tests::root_check_streams_an_index_past_the_former_capture_limit$/)
 )
@@ -338,7 +338,7 @@ binary(daemon_receipt_ledger) & (
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
 )
 ) | (
-binary(unica_coder) & (
+binary(unica_coder_daemon) & (
     test(/^infrastructure::daemon::medium_receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
     | test(/^infrastructure::daemon::v13_workspace_bootstrap::medium_tests::root_check_streams_an_index_past_the_former_capture_limit$/)
 )
@@ -395,7 +395,7 @@ binary(daemon_receipt_ledger) & (
     | test(/^thirty_two_lazy_cancel_actor_batch_finishes_within_125ms$/)
 )
 ) | (
-binary(unica_coder) & (
+binary(unica_coder_daemon) & (
     test(/^infrastructure::daemon::medium_receipt_runtime_tests::promoted_reads_run_past_former_deadlines_and_complete_through_their_tasks$/)
     | test(/^infrastructure::daemon::v13_workspace_bootstrap::medium_tests::root_check_streams_an_index_past_the_former_capture_limit$/)
 )
@@ -450,7 +450,7 @@ workspace-stdio = { max-threads = 1 }
 # записью на диск; срок самой отмены — 2 с. Тест занимает машину целиком,
 # чтобы старт не делил её с соседями по прогону.
 [[profile.default.overrides]]
-filter = 'binary(unica_coder) & test(/^infrastructure::daemon::medium_receipt_runtime_tests::(exact|task_id)_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled$/)'
+filter = 'binary(unica_coder_daemon) & test(/^infrastructure::daemon::medium_receipt_runtime_tests::(exact|task_id)_cancel_racing_the_start_of_the_continued_task_ends_it_cancelled$/)'
 threads-required = "num-cpus"
 
 # Сравнивает задержку вызова MCP под потоком hover с задержкой без него. Обе
@@ -458,11 +458,11 @@ threads-required = "num-cpus"
 # замерами, выглядят как задержка от LSP. Допуск не меняется; тест занимает
 # машину целиком, и замеры делят её только с его собственным потоком hover.
 [[profile.default.overrides]]
-filter = 'binary(unica_coder) & test(/^interfaces::lsp::tests::medium_an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call$/)'
+filter = 'binary(unica_coder_daemon) & test(/^interfaces::lsp::tests::medium_an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call$/)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]
-filter = 'binary(unica_coder) & test(/^infrastructure::daemon::medium_receipt_runtime_tests::/)'
+filter = 'binary(unica_coder_daemon) & test(/^infrastructure::daemon::medium_receipt_runtime_tests::/)'
 test-group = "receipt-runtime"
 
 [[profile.default.overrides]]

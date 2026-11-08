@@ -64,7 +64,7 @@ def nextest_junit(profile: str, selection: tuple[str, ...] | None = None) -> Pat
 #
 # Проверки обвязки сценариев идут в том же бинаре: их тела живут в библиотеке
 # под признаком, а `#[test]` им приставляет контракт. Поэтому вызову не нужен
-# `--lib` — тестовая сборка всего `unica-coder` ради них. Библиотека
+# `--lib` — тестовая сборка всего `unica-coder-daemon` ради них. Библиотека
 # собирается один раз, обычной, для контракта и бинаря `unica`.
 LEDGER_FEATURE_SELECTION = (
     "-p", "unica-product", "--features", "receipt-ledger-test-support",

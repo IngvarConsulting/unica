@@ -1383,7 +1383,7 @@ mod medium_tests {
                 fs::write(
                     &indexes,
                     include_bytes!(
-                        "../../../tests/fixtures/additional_indexes/AdditionalIndexes.xml"
+                        "../../../../unica-coder/tests/fixtures/additional_indexes/AdditionalIndexes.xml"
                     ),
                 )
                 .unwrap();
@@ -1421,7 +1421,7 @@ mod medium_tests {
             assert!(target.join("Catalogs/CorpusCatalog.xml").is_file());
             assert_eq!(
                 fs::read(target.join("Catalogs/CorpusCatalog/Ext/AdditionalIndexes.xml")).unwrap(),
-                include_bytes!("../../../tests/fixtures/additional_indexes/AdditionalIndexes.xml")
+                include_bytes!("../../../../unica-coder/tests/fixtures/additional_indexes/AdditionalIndexes.xml")
             );
             assert_eq!(fs::read(root.path().join(CONFIG_NAME)).unwrap(), original);
             assert_eq!(

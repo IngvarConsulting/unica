@@ -62,7 +62,7 @@ def unpinned_line_endings(root: Path, prefixes: tuple[str, ...]) -> list[str]:
 class CheckoutEolContractTests(unittest.TestCase):
     def test_source_scanned_and_hashed_inputs_are_lf_on_every_checkout(self) -> None:
         for path in [
-            "crates/unica-coder/src/infrastructure/daemon/server.rs",
+            "crates/unica-coder-daemon/src/infrastructure/daemon/server.rs",
             "crates/unica-bindings-integration-tests/tests/fixtures/modules/syntax-boundaries.bsl",
             "crates/unica-metadata/src/platform-event-catalog-8.3.27.2074.json",
         ]:

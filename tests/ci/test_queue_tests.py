@@ -168,9 +168,11 @@ class ChoiceTests(unittest.TestCase):
             ["pr", "--workspace", "--exclude", "unica-a", "--no-tests=pass"],
             ["queue", "-p", "unica-a", "--no-tests=pass"],
         ])
-        planned = queue.commands(("unica-coder", "ureq"), runner)
-        self.assertEqual(planned[1], ["queue", "-p", "unica-coder", "--no-tests=pass"])
+        planned = queue.commands(("unica-coder-daemon", "ureq"), runner)
+        self.assertEqual(planned[1], ["queue", "-p", "unica-coder-daemon", "--no-tests=pass"])
         self.assertEqual(planned[2:], [["queue", "ledger"], ["queue", "ureq"]])
+        # Фасад журнала живёт в демоне: правка нижнего слоя его не запускает.
+        self.assertNotIn(["queue", "ledger"], queue.commands(("unica-coder",), runner))
 
     def test_a_vendored_patch_is_selected_in_the_real_workspace(self) -> None:
         directories, dependents = queue.workspace()
