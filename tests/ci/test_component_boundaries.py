@@ -93,6 +93,10 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-mcp", "unica-coder"),
             ("unica-mcp", "unica-forms"),
             ("unica-mcp", "unica-adapter-lexical"),
+            ("unica-lsp", "unica-daemon"),
+            ("unica-lsp", "unica-coder"),
+            ("unica-lsp", "unica-editor-analysis"),
+            ("unica-lsp", "unica-workspace"),
             ("unica-coder", "bsl-syntax"),
             ("unica-code-intelligence", "syntax"),
         )
@@ -135,6 +139,9 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-mcp", "unica-application"),
             ("unica-mcp", "unica-execution"),
             ("unica-product", "unica-mcp"),
+            ("unica-lsp", "unica-daemon-protocol"),
+            ("unica-lsp", "unica-lsp-contract"),
+            ("unica-product", "unica-lsp"),
             ("unica-bsl-parser", "bsl-syntax"),
         ):
             with self.subTest(owner=owner, target=target):

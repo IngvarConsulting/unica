@@ -1,5 +1,6 @@
 pub mod daemon;
-pub mod lsp;
+#[cfg(test)]
+mod lsp_door_tests;
 pub mod runtime_job_worker;
 pub mod workspace_service;
 

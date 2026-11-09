@@ -15,7 +15,7 @@ use std::io::{self, BufRead, Read, Write};
 // problem: неизвестно
 // on-reach: поток считается испорченным: `unica lsp` пишет причину в stderr и завершается с кодом 1
 // issue: #2173
-pub(super) const MAX_LSP_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_LSP_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
 // resource-limit: lsp.frontend-header-line-bytes
 // class: format
 // unit: bytes
@@ -31,7 +31,7 @@ const MAX_LSP_HEADER_LINE_BYTES: usize = 1024;
 
 /// Прочитать тело следующего сообщения. `None` — поток закрыт между
 /// сообщениями. Ошибка означает, что границы кадров потеряны.
-pub(super) fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
+pub fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Vec<u8>>> {
     let mut length = None;
     let mut started = false;
     loop {
@@ -80,7 +80,7 @@ pub(super) fn read_message(reader: &mut impl BufRead) -> io::Result<Option<Vec<u
     Ok(Some(body))
 }
 
-pub(super) fn write_message(writer: &mut impl Write, message: &Value) -> io::Result<()> {
+pub fn write_message(writer: &mut impl Write, message: &Value) -> io::Result<()> {
     let body = serde_json::to_vec(message)?;
     write!(writer, "Content-Length: {}\r\n\r\n", body.len())?;
     writer.write_all(&body)?;

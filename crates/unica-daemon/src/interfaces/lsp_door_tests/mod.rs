@@ -1,21 +1,31 @@
 //! Дверь LSP над живым демоном в потоке: жизненный цикл, отмена,
 //! приоритет MCP и уход редактора посреди запроса.
-use super::*;
+#![cfg(test)]
 use crate::infrastructure::daemon::protocol::InvocationRequest;
 use crate::infrastructure::daemon::server::actor_capacity_tests::{
     canonical_v13_service, LiveV5Daemon, V5Submission,
 };
+use serde_json::{json, Value};
 use std::collections::VecDeque;
+use std::io::{self, Write};
 use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Condvar};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+use unica_daemon_protocol::client_v5::{V5DaemonClient, V5DaemonProcessOwner};
 use unica_daemon_protocol::lsp_lane::MAX_LSP_LANE_WORKERS;
 use unica_execution::invocation_store::ToolIdentity;
+use unica_lsp::test_support::*;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
-    V5LspCapabilities, V5LspCompletionData, V5LspCompletionItem, V5LspCompletionKind,
-    V5LspDiagnostic, V5LspLocation, V5LspRange, V5LspSeverity, V5LspWorkspaceSpace,
+    V5LspCall, V5LspCapabilities, V5LspCompletionData, V5LspCompletionItem, V5LspCompletionKind,
+    V5LspDiagnostic, V5LspFailure, V5LspLocation, V5LspMessageLevel, V5LspNotification,
+    V5LspOpening, V5LspOutcome, V5LspPosition, V5LspRange, V5LspServerNotification, V5LspSessionId,
+    V5LspSeverity, V5LspTextSync, V5LspWorkspaceFolder, V5LspWorkspaceSpace,
 };
 
 /// Допуск задержки MCP под потоком hover: медиана вызова MCP при занятой
