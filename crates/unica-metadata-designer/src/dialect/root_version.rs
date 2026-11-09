@@ -104,6 +104,12 @@ mod tests {
             RootVersionReport::Error(_)
         ));
         assert!(require_supported(Some(writable())).is_ok());
-        assert!(require_supported(Some("2.21")).is_err());
+        // A version with a dialect of its own is read as written.
+        let RootVersionReport::Ok(line) = report(Some("2.21")) else {
+            panic!("2.21 has a dialect of its own");
+        };
+        assert_eq!(line, "Export format: 2.21");
+        assert!(require_supported(Some("2.21")).is_ok());
+        assert!(require_supported(Some("2.23")).is_err());
     }
 }

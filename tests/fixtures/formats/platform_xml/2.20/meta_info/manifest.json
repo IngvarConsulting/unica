@@ -39,7 +39,7 @@
     {"kind": "Task", "mainFixture": "canonical-template", "platformCase": "meta-compile-task", "edgeFixtures": ["edge/task-addressing.xml"]},
     {"kind": "ExchangePlan", "mainFixture": "canonical-template", "platformCase": "meta-compile-exchange-plan"},
     {"kind": "DocumentJournal", "mainFixture": "canonical-template", "platformCase": "meta-compile-document-journal", "edgeFixtures": ["edge/document-journal-child-kinds.xml"]},
-    {"kind": "Report", "mainFixture": "canonical-template", "platformCase": "meta-compile-report"},
+    {"kind": "Report", "mainFixture": "canonical-template", "platformCase": "meta-compile-report", "edgeFixtures": ["../../2.22/all_kinds/src/Reports/АнализВерсийОбъектов.xml"]},
     {"kind": "DataProcessor", "mainFixture": "canonical-template", "platformCase": "meta-compile-data-processor"},
     {"kind": "CommonModule", "mainFixture": "canonical-template", "platformCase": "meta-compile-common-module", "edgeFixtures": ["../incomplete_borrowed/extension-common-module.xml"]},
     {"kind": "ScheduledJob", "mainFixture": "canonical-template", "platformCase": "meta-compile-scheduled-job", "edgeFixtures": ["edge/scheduled-job.xml"]},

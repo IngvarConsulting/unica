@@ -127,6 +127,7 @@ pub const META_INFO_PROPERTY_NAMES: &[&str] = &[
     "LinkByType",
     "ListPresentation",
     "MainAddressingAttribute",
+    "MainAnalyticsSystemSchema",
     "MainDataCompositionSchema",
     "MainFilterOnPeriod",
     "MarkNegatives",
@@ -777,6 +778,7 @@ fn additional_property_is_observable(kind: MetadataKind, name: &str) -> bool {
             "DefaultForm"
                 | "AuxiliaryForm"
                 | "MainDataCompositionSchema"
+                | "MainAnalyticsSystemSchema"
                 | "DefaultSettingsForm"
                 | "AuxiliarySettingsForm"
                 | "DefaultVariantForm"

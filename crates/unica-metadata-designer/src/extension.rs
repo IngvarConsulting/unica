@@ -3107,7 +3107,12 @@ pub fn cfe_validate_enum_properties(
         if let Some(value) = unica_xml_format::read::child_direct_text(props_node, property)
             .filter(|value| !value.is_empty())
         {
-            if !allowed.contains(&value.as_str()) {
+            let line_mode = *property == "ConfigurationExtensionCompatibilityMode"
+                && crate::dialect::for_version(
+                    props_node.document().root_element().attribute("version"),
+                )
+                .knows_line_compatibility_mode(&value);
+            if !allowed.contains(&value.as_str()) && !line_mode {
                 report.error(format!(
                     "4. Property '{property}' has invalid value '{value}'"
                 ));

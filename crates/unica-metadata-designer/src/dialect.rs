@@ -4,6 +4,8 @@
 //! version edits this module, not the readers and writers that ask it.
 pub(crate) mod root_version;
 pub(crate) mod v2_20;
+pub(crate) mod v2_21;
+pub(crate) mod v2_22;
 
 use unica_metadata::MetadataKind;
 use unica_source_contract::format_identity::{FormatKey, ReadResolution};
@@ -16,6 +18,17 @@ pub(crate) struct MetadataDialect {
     pub(crate) platform_line: &'static str,
     pub(crate) kind_declares_child_objects: fn(MetadataKind) -> bool,
     pub(crate) boolean_properties: fn(&str) -> &'static [&'static str],
+    /// Compatibility modes the platform line adds to the 8.3 modes every
+    /// line knows: the line writes its own mode into the configuration.
+    pub(crate) line_compatibility_modes: &'static [&'static str],
+}
+
+impl MetadataDialect {
+    /// Whether `value` is a compatibility mode the platform line of this
+    /// dialect knows beyond the 8.3 modes.
+    pub(crate) fn knows_line_compatibility_mode(&self, value: &str) -> bool {
+        self.line_compatibility_modes.contains(&value)
+    }
 }
 
 static V2_20: MetadataDialect = MetadataDialect {
@@ -23,10 +36,11 @@ static V2_20: MetadataDialect = MetadataDialect {
     platform_line: root_version::writable_platform_line_const(),
     kind_declares_child_objects: v2_20::kind_declares_child_objects,
     boolean_properties: v2_20::boolean_properties,
+    line_compatibility_modes: &[],
 };
 
 /// The dialects the codec has, one per export format version.
-static DIALECTS: &[&MetadataDialect] = &[&V2_20];
+static DIALECTS: &[&MetadataDialect] = &[&V2_20, &v2_21::DIALECT, &v2_22::DIALECT];
 
 /// The dialect of the version the codec writes.
 pub(crate) fn writable() -> &'static MetadataDialect {
@@ -57,15 +71,23 @@ mod tests {
     /// rule: INV.SOURCE.WRITABLE-PROFILE
     #[test]
     fn a_root_is_read_by_the_dialect_its_family_names() {
-        // 2.20 has a dialect of its own; known versions without one and
-        // versions newer than every known one are read by it; a version the
-        // family does not read falls back to the writable dialect for checks.
-        for version in [Some("2.20"), Some("2.17"), Some("2.22"), Some("2.30"), None] {
-            assert!(
-                std::ptr::eq(for_version(version), writable()),
-                "{version:?}"
-            );
+        // 2.20, 2.21 and 2.22 have dialects of their own; 2.17 (known, older
+        // than every dialect) is read by 2.20; a version newer than every
+        // known one by the nearest older dialect; a version the family does
+        // not read falls back to the writable dialect for checks.
+        for (version, dialect) in [
+            (Some("2.20"), "2.20"),
+            (Some("2.21"), "2.21"),
+            (Some("2.22"), "2.22"),
+            (Some("2.17"), "2.20"),
+            (Some("2.30"), "2.22"),
+            (None, "2.20"),
+        ] {
+            assert_eq!(for_version(version).version, dialect, "{version:?}");
         }
+        assert_eq!(for_version(Some("2.21")).platform_line, "8.5.1");
+        assert!(for_version(Some("2.22")).knows_line_compatibility_mode("Version8_5_4"));
+        assert!(!writable().knows_line_compatibility_mode("Version8_5_1"));
         assert_eq!(writable().version, super::root_version::writable());
         assert_eq!(
             writable().platform_line,

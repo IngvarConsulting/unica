@@ -1234,7 +1234,7 @@ mod medium_tests {
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
-        let graph = cfe_read_graph(&root, "2.20", "2.20", "2.21", "2.20", "2.21");
+        let graph = cfe_read_graph(&root, "2.20", "2.20", "2.23", "2.20", "2.23");
         let args = Map::from_iter([(
             "ExtensionPath".to_string(),
             Value::String(graph.extension.display().to_string()),
@@ -1245,7 +1245,7 @@ mod medium_tests {
             panic!("full CFE validation must warn for a newer registered form wrapper");
         };
         assert_eq!(diagnostic["code"], "formatVersionUnverified");
-        assert_eq!(diagnostic["actualFormat"], "2.21");
+        assert_eq!(diagnostic["actualFormat"], "2.23");
         assert_eq!(
             diagnostic["root"],
             normalized_path(&graph.form_wrapper).display().to_string()
@@ -1735,6 +1735,39 @@ mod medium_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn formats_with_a_dialect_of_their_own_are_read_without_a_finding() {
+        // 2.21 (8.5.1) and 2.22 (8.5.4) have dialects of their own: reading
+        // them reports nothing, while edits still need the writable format.
+        for version in ["2.21", "2.22"] {
+            let root = test_root(&format!("own-dialect-{version}"));
+            let path = config(&root, Some(version));
+            let mut args = Map::new();
+            args.insert(
+                "ConfigPath".into(),
+                Value::String(path.display().to_string()),
+            );
+            assert!(
+                matches!(
+                    evaluate_read_format_guard("cf-validate", &args, &context(&root)).unwrap(),
+                    FormatGuardCheck::Allow
+                ),
+                "{version}"
+            );
+            let FormatGuardCheck::Block { diagnostic, .. } =
+                evaluate_format_guard(spec("unica.cf.edit"), &args, &context(&root)).unwrap()
+            else {
+                panic!("{version}: an edit outside the writable format is refused");
+            };
+            assert_eq!(
+                diagnostic["code"], "platformVersionUnsupported",
+                "{version}"
+            );
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
     #[test]
     fn missing_root_version_is_classified_as_1_0() {
         let root = test_root("v1");
@@ -2091,18 +2124,18 @@ mod medium_tests {
         }
         std::fs::write(
             &catalog_xml,
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Catalog/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Catalog/></MetaDataObject>"#,
         )
         .unwrap();
         std::fs::write(
             &form_xml,
-            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.21"/>"#,
+            r#"<Form xmlns="http://v8.1c.ru/8.3/xcf/logform" version="2.23"/>"#,
         )
         .unwrap();
         for wrapper in [&dcs_wrapper, &mxl_wrapper] {
             std::fs::write(
                 wrapper,
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Template/></MetaDataObject>"#,
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Template/></MetaDataObject>"#,
             )
             .unwrap();
         }
@@ -2118,7 +2151,7 @@ mod medium_tests {
         .unwrap();
         std::fs::write(
             &interface_xml,
-            r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#,
+            r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.23"/>"#,
         )
         .unwrap();
 
@@ -2138,7 +2171,7 @@ mod medium_tests {
                 panic!("{tool} must warn for the newer XML resolved from its directory input");
             };
             assert_eq!(diagnostic["code"], "formatVersionUnverified", "{tool}");
-            assert_eq!(diagnostic["actualFormat"], "2.21", "{tool}");
+            assert_eq!(diagnostic["actualFormat"], "2.23", "{tool}");
         }
 
         std::fs::write(
@@ -2471,7 +2504,7 @@ mod medium_tests {
     #[test]
     fn newer_dump_warns_for_read_only_with_roadmap_copy() {
         let root = test_root("new");
-        let path = config(&root, Some("2.21"));
+        let path = config(&root, Some("2.23"));
         let mut args = Map::new();
         args.insert(
             "TemplatePath".into(),
@@ -2486,10 +2519,10 @@ mod medium_tests {
             panic!("newer read-only input must warn and continue");
         };
         assert_eq!(diagnostic["code"], "formatVersionUnverified");
-        assert_eq!(diagnostic["readAs"], "2.20");
+        assert_eq!(diagnostic["readAs"], "2.22");
         assert_eq!(diagnostic["family"], "platform_xml");
         assert!(
-            warning.contains("прочитан по диалекту формата 2.20"),
+            warning.contains("прочитан по диалекту формата 2.22"),
             "{warning}"
         );
         let _ = std::fs::remove_dir_all(root);
@@ -2758,7 +2791,7 @@ mod medium_tests {
         std::fs::create_dir_all(command_interface.parent().unwrap()).unwrap();
         std::fs::write(
             &command_interface,
-            r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.21"/>"#,
+            r#"<CommandInterface xmlns="http://v8.1c.ru/8.3/xcf/extrnprops" version="2.23"/>"#,
         )
         .unwrap();
         let args = Map::from_iter([(
@@ -2771,7 +2804,7 @@ mod medium_tests {
         let FormatGuardCheck::Warn { diagnostic, .. } = check else {
             panic!("newer direct command interface must produce a read-only warning");
         };
-        assert_eq!(diagnostic["actualFormat"], "2.21");
+        assert_eq!(diagnostic["actualFormat"], "2.23");
         assert_eq!(
             normalized_path(&std::path::PathBuf::from(
                 diagnostic["root"].as_str().unwrap()
@@ -2889,14 +2922,14 @@ mod medium_staged_root_tests {
             std::fs::create_dir_all(content.parent().unwrap()).unwrap();
             std::fs::write(
                 &wrapper,
-                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Template/></MetaDataObject>"#,
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Template/></MetaDataObject>"#,
             )
             .unwrap();
             std::fs::write(&content, body).unwrap();
         }
         std::fs::write(
             root.join("detached/Catalogs/Goods.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Catalog/></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Catalog/></MetaDataObject>"#,
         )
         .unwrap();
         for (operation, directory) in [("dcs-validate", &dcs_dir), ("mxl-validate", &mxl_dir)] {
@@ -2909,7 +2942,7 @@ mod medium_staged_root_tests {
                 panic!("{operation} must warn for the newer wrapper");
             };
             assert_eq!(diagnostic["code"], "formatVersionUnverified", "{operation}");
-            assert_eq!(diagnostic["actualFormat"], "2.21", "{operation}");
+            assert_eq!(diagnostic["actualFormat"], "2.23", "{operation}");
         }
         let _ = std::fs::remove_dir_all(root);
     }
