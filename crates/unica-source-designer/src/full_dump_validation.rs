@@ -1,5 +1,7 @@
 //! Designer full-dump semantic validation of workspace-observed immutable bytes.
-use crate::format_profile::{platform_line_for_export_format, writable_platform_xml_version};
+use crate::format_profile::{
+    platform_line_for_export_format, writable_platform_xml_version, WRITABLE_EXPORT_FORMATS,
+};
 use crate::roots::{
     platform_xml_publication_policy as staged_root_version_policy, root_version_literal,
     PlatformXmlPublicationPolicy as StagedRootVersionPolicy,
@@ -53,7 +55,7 @@ pub fn validate_required_owner_raw(
             "staged owner export format must be the exact raw literal of a writable format (2.20, 2.21 or 2.22); found {} in {}",
             version.as_deref().unwrap_or("<missing>"),
             path.display()
-        )));
+        )).with_version(DumpVersionRequirement::OneOf(&WRITABLE_EXPORT_FORMATS)));
     };
     let children = root
         .children()
