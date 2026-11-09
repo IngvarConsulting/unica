@@ -269,10 +269,7 @@ fn canonical_dcs_validation_keeps_large_configuration_owner_format_warning() {
         crate::infrastructure::native_operations::v13_analysis::validate_dcs_input(input),
     )
     .unwrap();
-    assert_eq!(
-        checked.diagnostics()[0].code(),
-        "formatVersionUnverified"
-    );
+    assert_eq!(checked.diagnostics()[0].code(), "formatVersionUnverified");
 }
 
 /// rule: INV.SOURCE.WRITABLE-PROFILE
