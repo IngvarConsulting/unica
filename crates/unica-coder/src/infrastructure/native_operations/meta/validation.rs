@@ -139,16 +139,13 @@ mod tests {
             mixed_catalog, catalog,
             "the catalog must declare a lock mode"
         );
-        unica_metadata_designer::format_contract::validate_metadata_enum_contract(
-            &catalog, "test",
+        unica_metadata_designer::format_contract::validate_metadata_enum_contract(&catalog, "test")
+            .unwrap();
+        let rejected = unica_metadata_designer::format_contract::validate_metadata_enum_contract(
+            &mixed_catalog,
+            "test",
         )
-        .unwrap();
-        let rejected =
-            unica_metadata_designer::format_contract::validate_metadata_enum_contract(
-                &mixed_catalog,
-                "test",
-            )
-            .unwrap_err();
+        .unwrap_err();
         assert!(rejected.contains("DataLockControlMode"), "{rejected}");
 
         let document = Document::parse(&mixed_catalog).unwrap();

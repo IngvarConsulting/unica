@@ -61,7 +61,10 @@ mod tests {
         // versions newer than every known one are read by it; a version the
         // family does not read falls back to the writable dialect for checks.
         for version in [Some("2.20"), Some("2.17"), Some("2.22"), Some("2.30"), None] {
-            assert!(std::ptr::eq(for_version(version), writable()), "{version:?}");
+            assert!(
+                std::ptr::eq(for_version(version), writable()),
+                "{version:?}"
+            );
         }
         assert_eq!(writable().version, super::root_version::writable());
         assert_eq!(
