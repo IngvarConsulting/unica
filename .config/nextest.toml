@@ -327,7 +327,7 @@ threads-required = "num-cpus"
 # замерами, выглядят как задержка от LSP. Допуск не меняется; тест занимает
 # машину целиком, и замеры делят её только с его собственным потоком hover.
 [[profile.default.overrides]]
-filter = 'binary(unica_daemon) & test(/^interfaces::lsp::tests::medium_an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call$/)'
+filter = 'binary(unica_daemon) & test(/^interfaces::lsp_door_tests::medium_an_lsp_hover_stream_does_not_delay_a_parallel_mcp_call$/)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]

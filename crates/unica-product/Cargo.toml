@@ -29,6 +29,7 @@ required-features = ["research"]
 
 [dependencies]
 unica-daemon = { path = "../unica-daemon" }
+unica-lsp = { path = "../unica-lsp" }
 unica-mcp = { path = "../unica-mcp" }
 
 [dev-dependencies]

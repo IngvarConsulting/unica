@@ -59,6 +59,7 @@ uuid.workspace = true
 flate2.workspace = true
 
 [dev-dependencies]
+unica-lsp = { path = "../unica-lsp", features = ["test-support"] }
 unica-mcp = { path = "../unica-mcp", features = ["test-support"] }
 unica-coder = { path = "../unica-coder", features = ["test-support"] }
 # `tests/medium_application` проверяет инструменты `unica-application` на портах продукта:

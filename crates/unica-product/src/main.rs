@@ -9,7 +9,9 @@ fn run() {
     // starting MCP, whose silence a client would only notice by its timeout.
     // `unica mcp` names the default explicitly; tooling starts it that way.
     match args.get(1).map(String::as_str) {
-        Some("lsp") => std::process::exit(unica_daemon::interfaces::lsp::run_stdio()),
+        Some("lsp") => std::process::exit(unica_lsp::run_stdio(
+            unica_daemon::interfaces::daemon::connect_user_daemon,
+        )),
         Some("mcp") => {}
         Some(command) if !command.starts_with('-') => {
             eprintln!("unica: unknown command `{command}`; supported commands: mcp, lsp");
