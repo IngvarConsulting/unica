@@ -792,7 +792,7 @@ where
                 .with_operation_index(operation_index),
             )
         })?;
-        validate_metadata_8_3_27_boolean_contract(&working, "meta.edit").map_err(|_| {
+        validate_metadata_boolean_contract(&working, "meta.edit").map_err(|_| {
             unica_metadata::request::MetaFailure::from(
                 typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -802,7 +802,7 @@ where
                 .with_operation_index(operation_index),
             )
         })?;
-        validate_metadata_8_3_27_enum_contract(&working, "meta.edit").map_err(|_| {
+        validate_metadata_enum_contract(&working, "meta.edit").map_err(|_| {
             unica_metadata::request::MetaFailure::from(
                 typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,

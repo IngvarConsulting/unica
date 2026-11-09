@@ -16,6 +16,11 @@ pub(crate) const fn writable() -> &'static str {
 
 /// The platform line that writes [`writable`].
 pub(crate) fn writable_platform_line() -> &'static str {
+    writable_platform_line_const()
+}
+
+/// [`writable_platform_line`] in a constant context.
+pub(crate) const fn writable_platform_line_const() -> &'static str {
     ACTIVE_FORMAT_PROFILE.platform_line
 }
 

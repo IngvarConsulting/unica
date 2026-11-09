@@ -30,10 +30,10 @@ pub(crate) fn validate_metadata_owner_shape_8_3_27(
         "Subsystem" => return validate_subsystem_owner_path(object_path, workspace),
         _ => {}
     }
-    unica_metadata_designer::format_contract::validate_metadata_8_3_27_boolean_contract(
+    unica_metadata_designer::format_contract::validate_metadata_boolean_contract(
         &xml_text, operation,
     )?;
-    unica_metadata_designer::format_contract::validate_metadata_8_3_27_enum_contract(
+    unica_metadata_designer::format_contract::validate_metadata_enum_contract(
         &xml_text, operation,
     )?;
 
@@ -139,12 +139,12 @@ mod tests {
             mixed_catalog, catalog,
             "the catalog must declare a lock mode"
         );
-        unica_metadata_designer::format_contract::validate_metadata_8_3_27_enum_contract(
+        unica_metadata_designer::format_contract::validate_metadata_enum_contract(
             &catalog, "test",
         )
         .unwrap();
         let rejected =
-            unica_metadata_designer::format_contract::validate_metadata_8_3_27_enum_contract(
+            unica_metadata_designer::format_contract::validate_metadata_enum_contract(
                 &mixed_catalog,
                 "test",
             )
