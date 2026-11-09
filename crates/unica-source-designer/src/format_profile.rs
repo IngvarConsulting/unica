@@ -16,6 +16,10 @@ pub const ACTIVE_FORMAT_PROFILE: FormatProfile = FormatProfile {
     export_format: ACTIVE_SERIALIZATION_FORMAT,
 };
 
+/// The Designer export formats codecs write (INV.SOURCE.WRITABLE-PROFILE):
+/// those with codec dialects and a reference export, oldest first.
+pub const WRITABLE_EXPORT_FORMATS: [&str; 3] = [ACTIVE_SERIALIZATION_FORMAT, "2.21", "2.22"];
+
 /// Which platform line writes each version of the Designer export format
 /// (INV.RUNTIME.PLATFORM-LINE). A line writes exactly one version, so the
 /// line follows from the version of the dump. Every row is a measured export
@@ -276,6 +280,22 @@ pub fn platform_xml_dialects() -> Vec<FormatKey> {
         .into_iter()
         .map(|version| FormatKey::new([version]))
         .collect()
+}
+
+/// The writable Designer export version a root records as `raw`, as a
+/// static literal; `None` for any other spelling or version.
+pub fn writable_platform_xml_version(raw: Option<&str>) -> Option<&'static str> {
+    WRITABLE_EXPORT_FORMATS
+        .into_iter()
+        .find(|version| raw == Some(*version))
+}
+
+/// The writable Designer export version a platform line writes.
+pub fn writable_platform_xml_version_of_line(line: PlatformLine) -> Option<&'static str> {
+    EXPORT_FORMAT_PLATFORM_LINES
+        .iter()
+        .find(|(_, writer)| PlatformLine::parse(writer) == Some(line))
+        .and_then(|(version, _)| writable_platform_xml_version(Some(version)))
 }
 
 /// Which dialect reads a root recording `raw` (INV.SOURCE.WRITABLE-PROFILE);

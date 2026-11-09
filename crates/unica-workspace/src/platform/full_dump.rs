@@ -1821,6 +1821,11 @@ impl std::fmt::Display for FullDumpFailure {
 }
 
 impl VerifiedFullDumpPublication {
+    /// The export format of the source set the dump replaces, if any.
+    pub fn existing_export_format(&self) -> Option<&'static str> {
+        self.prepared.existing_export_format
+    }
+
     pub fn from_prepared(prepared: PreparedPublication) -> Self {
         Self {
             prepared,
@@ -2240,6 +2245,8 @@ pub struct PreparedPublication {
     source_kind: SourceSetKind,
     source_set_name: Option<String>,
     extension: Option<String>,
+    /// The export format of the source set the dump replaces, if any.
+    existing_export_format: Option<&'static str>,
 }
 
 impl PreparedPublication {
@@ -7790,7 +7797,7 @@ fn validate_physical_dump_target(
     snapshot: &TreeSnapshot,
     kind: SourceSetKind,
     validator: &dyn DumpSemanticValidator,
-) -> Result<(), String> {
+) -> Result<Option<&'static str>, String> {
     let read = BoundDumpTree {
         root: target,
         snapshot,
@@ -7868,9 +7875,14 @@ pub struct DumpTargetCapture {
     source_kind: SourceSetKind,
     source_set_name: Option<String>,
     extension: Option<String>,
+    existing_export_format: Option<&'static str>,
     semantic_validator: std::sync::Arc<dyn DumpSemanticValidator>,
 }
 impl DumpTargetCapture {
+    /// The export format of the source set the dump replaces, if any.
+    pub fn existing_export_format(&self) -> Option<&'static str> {
+        self.existing_export_format
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn capture(
         context: &WorkspaceContext,
@@ -7942,7 +7954,7 @@ impl DumpTargetCapture {
             target_parent.identity,
             &target_parent.path,
         )?;
-        validate_physical_dump_target(
+        let existing_export_format = validate_physical_dump_target(
             &target,
             &target_snapshot,
             source_kind,
@@ -7962,6 +7974,7 @@ impl DumpTargetCapture {
             source_kind,
             source_set_name,
             extension,
+            existing_export_format,
             semantic_validator,
         })
     }
@@ -7991,6 +8004,7 @@ impl DumpTargetCapture {
                 source_kind: self.source_kind,
                 source_set_name: self.source_set_name,
                 extension: self.extension,
+                existing_export_format: self.existing_export_format,
             },
         })
     }
