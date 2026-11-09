@@ -12,6 +12,8 @@ pub mod inventory;
 
 pub mod language;
 
+pub mod extension_mode;
+
 pub mod project_sources;
 
 pub mod selection;

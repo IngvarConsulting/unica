@@ -127,6 +127,7 @@ pub const META_INFO_PROPERTY_NAMES: &[&str] = &[
     "LinkByType",
     "ListPresentation",
     "MainAddressingAttribute",
+    "MainAnalyticsSystemSchema",
     "MainDataCompositionSchema",
     "MainFilterOnPeriod",
     "MarkNegatives",
@@ -410,7 +411,7 @@ fn mutation_property_is_observable(kind: MetadataKind, key: MetaPropertyKey) -> 
 
     match key {
         // Constant Type is observed through MetaInfoDetails, not scalar properties.
-        Type | ClientOrdinaryApplication => false,
+        Type | ClientOrdinaryApplication | Key => false,
         Synonym | Comment => true,
         EditType => matches!(kind, Catalog | InformationRegister),
         ActionPeriod | BasePeriod => kind == CalculationRegister,
@@ -777,6 +778,7 @@ fn additional_property_is_observable(kind: MetadataKind, name: &str) -> bool {
             "DefaultForm"
                 | "AuxiliaryForm"
                 | "MainDataCompositionSchema"
+                | "MainAnalyticsSystemSchema"
                 | "DefaultSettingsForm"
                 | "AuxiliarySettingsForm"
                 | "DefaultVariantForm"

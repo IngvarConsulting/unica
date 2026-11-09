@@ -17,13 +17,15 @@ use unica_address::address::QualifiedAddress;
 use unica_code_intelligence::completion::{CompletionMethod, PlatformMember};
 use unica_code_intelligence::symbols::SymbolRequestContext;
 use unica_diagnostics::model::DiagnosticProviderRegistry;
-use unica_execution_contract::invocation::SafeIdentityHash;
-use unica_lsp::{
+use unica_editor_analysis::{
     AdmittedWorkspace, LspAnalysis, LspDiagnosticGap, LspDiagnostics, LspFinding, LspModuleReads,
     LspSymbolAnswer, LspSymbolOperation, LspSymbolRequest, LspSymbols, LspWorkspaces,
     ModuleSourceRead, SourceSetLayout,
 };
-use unica_lsp::{LspCompletion, LspCompletionAnswer, LspCompletionRequest, ModuleDocument};
+use unica_editor_analysis::{
+    LspCompletion, LspCompletionAnswer, LspCompletionRequest, ModuleDocument,
+};
+use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_lsp_contract::protocol::V5LspFailure;
 use unica_refusal::RefusalCode;
 use unica_work_control::cancellation::CancellationToken;

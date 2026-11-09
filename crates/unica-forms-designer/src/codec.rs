@@ -1,4 +1,5 @@
 //! Designer form parser, validator, compiler and in-memory editor.
+use crate::dialect::root_version::{self, RootVersionReport};
 use crate::event_context::context_from_root;
 use crate::root::{form_edit_opening_tag_end, require_form_root, FORM_LOGFORM_NS};
 use roxmltree::Document;
@@ -13,14 +14,12 @@ use unica_metadata::support_state::ObjectSupportData as DomainObjectSupportData;
 use unica_operation_contract::input::*;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::ScriptVariant;
-use unica_source_designer::format_profile::{
-    classify_root_version, format_compatibility_warning, FormatCompatibility,
-};
 use unica_source_designer::read::{path_exists, read_string, read_utf8_sig_snapshot};
 use unica_source_designer::roots::root_version_literal;
 use unica_xml_format::text::*;
 use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
 
+pub(crate) mod attribute_remove;
 mod command_properties;
 mod conditional_appearance;
 mod dynamic_list;
@@ -7352,68 +7351,8 @@ fn form_root_xml_property(
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub fn form_8_3_27_enum_values_for_test(xml_name: &str) -> Option<&'static [&'static str]> {
-    form_8_3_27_enum_values(xml_name)
-}
-
-fn form_8_3_27_enum_values(xml_name: &str) -> Option<&'static [&'static str]> {
-    match xml_name {
-        "TableRepresentation" => Some(&["List", "HierarchicalList", "Tree"]),
-        "FormChildrenGroup" => Some(&[
-            "Horizontal",
-            "Vertical",
-            "HorizontalIfPossible",
-            "AlwaysHorizontal",
-        ]),
-        "UsualGroupBehavior" => Some(&["Usual", "Collapsible", "PopUp", "Auto"]),
-        "UsualGroupRepresentation" => Some(&[
-            "None",
-            "StrongSeparation",
-            "WeakSeparation",
-            "NormalSeparation",
-            "GroupBox",
-            "Line",
-            "Margin",
-        ]),
-        "PagesRepresentation" => Some(&[
-            "None",
-            "TabsOnTop",
-            "TabsOnBottom",
-            "TabsOnLeftHorizontal",
-            "TabsOnRightHorizontal",
-            "Swipe",
-            "Auto",
-        ]),
-        "CurrentRowUse" => Some(&["Use", "DontUse", "Auto"]),
-        "InitialTreeView" => Some(&["NoExpand", "ExpandTopLevel", "ExpandAllLevels"]),
-        "ChoiceFoldersAndItems" => Some(&["Items", "Folders", "FoldersAndItems"]),
-        "UpdateOnDataChange" => Some(&["Auto", "DontUpdate"]),
-        "CheckBoxType" => Some(&["Auto", "CheckBox", "Tumbler", "Switcher"]),
-        "FormElementTitleLocation" => Some(&["None", "Auto", "Left", "Top", "Right", "Bottom"]),
-        "ManagedFormButtonType" => Some(&[
-            "CommandBarButton",
-            "UsualButton",
-            "Hyperlink",
-            "CommandBarHyperlink",
-        ]),
-        "ButtonRepresentation" => Some(&["Text", "Picture", "PictureAndText", "Auto"]),
-        // `logform:FormCommand.Representation` is `DefaultRepresentation`,
-        // not the button set: 8.3.27 refuses `PictureAndText` on a command.
-        "DefaultRepresentation" => Some(&["Text", "Picture", "TextPicture", "Auto"]),
-        "ButtonLocationInCommandBar" => Some(&[
-            "Auto",
-            "InAdditionalSubmenu",
-            "InCommandBar",
-            "InCommandBarAndInAdditionalSubmenu",
-        ]),
-        // Свойства корня формы: перечисления общей таблицы 8.3.27.
-        _ => unica_forms::root_properties::root_property(xml_name).and_then(|(_, property)| {
-            match property.value {
-                unica_forms::root_properties::RootValue::Choice(choices) => Some(choices),
-                _ => None,
-            }
-        }),
-    }
+pub fn form_enum_values_for_test(xml_name: &str) -> Option<&'static [&'static str]> {
+    crate::dialect::enum_values(xml_name)
 }
 
 fn form_compile_validate_element_properties(defn: &Value) -> Result<(), String> {
@@ -7443,7 +7382,7 @@ fn form_compile_validate_commands(defn: &Value) -> Result<(), String> {
 }
 
 fn form_command_representation_error(name: &str, value: &str) -> String {
-    let allowed = form_8_3_27_enum_values("DefaultRepresentation")
+    let allowed = crate::dialect::enum_values("DefaultRepresentation")
         .expect("form command representation has an 8.3.27 contract");
     format!(
         "Command '{name}': Representation '{value}' is not valid for 8.3.27; expected one of {}",
@@ -7619,7 +7558,7 @@ fn form_compile_validate_element_enum(
     let text = value
         .as_str()
         .ok_or_else(|| format!("form element property {json_name} must be a string"))?;
-    let allowed = form_8_3_27_enum_values(xml_name)
+    let allowed = crate::dialect::enum_values(xml_name)
         .ok_or_else(|| format!("missing 8.3.27 enum contract for {json_name}"))?;
     if !allowed.contains(&text) {
         return Err(format!(
@@ -7642,7 +7581,7 @@ fn form_compile_validate_normalized_element_enum(
     let text = value
         .as_str()
         .ok_or_else(|| format!("form element property {json_name} must be a string"))?;
-    let allowed = form_8_3_27_enum_values(contract_name)
+    let allowed = crate::dialect::enum_values(contract_name)
         .ok_or_else(|| format!("missing 8.3.27 enum contract for {json_name}"))?;
     let normalized = normalize(text);
     if normalized.is_none_or(|value| !allowed.contains(&value)) {
@@ -10023,10 +9962,10 @@ fn validate_form_image_inner(
 
     let has_base_form = form_validation_child(root, "BaseForm").is_some();
     let version_literal = root_version_literal(source, root);
-    match classify_root_version(version_literal.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-        Ok(compatibility) => report.warn(format_compatibility_warning(&compatibility)),
-        Err(error) => report.error(error.to_string()),
+    match root_version::report(version_literal.as_deref()) {
+        RootVersionReport::Ok(line) => report.ok(line),
+        RootVersionReport::Warn(line) => report.warn(line),
+        RootVersionReport::Error(line) => report.error(line),
     }
 
     if !report.stopped {
@@ -10173,7 +10112,7 @@ fn validate_form_image_inner(
         if let Some(element) = form_validation_child(*cmd, "Representation") {
             let representation = form_ml_text(element);
             let representation = representation.trim();
-            if form_8_3_27_enum_values("DefaultRepresentation")
+            if crate::dialect::enum_values("DefaultRepresentation")
                 .is_some_and(|allowed| !allowed.contains(&representation))
             {
                 report.error(form_command_representation_error(cmd_name, representation));

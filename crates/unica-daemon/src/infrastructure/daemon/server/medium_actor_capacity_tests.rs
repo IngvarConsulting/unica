@@ -7,7 +7,7 @@ include!(concat!(
 
 use super::super::runner_015::VERSION as RUNNER_VERSION;
 use super::*;
-use unica_analysis_services::provider_host::ProviderHostKey;
+use crate::infrastructure::analysis_composition::provider_host::ProviderHostKey;
 use unica_artifact_delivery::shared::{ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey};
 use unica_daemon_protocol::client_v5::V5DaemonProcessOwner;
 use unica_daemon_protocol::identity::DaemonStateDirectory;
@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Barrier, Condvar, Mutex};
 use std::thread;
 use std::time::Instant;
-use unica_adapter_v8_runner::request::RuntimeJobRequest;
+use unica_coder::infrastructure::daemon_adapters::runtime::RuntimeJobRequest;
 use unica_execution::runner::operation::RuntimeJobOperation;
 use unica_execution_contract::invocation::InvocationStatus;
 use unica_work_control::provider_deadline::ProviderDeadline;
@@ -1582,8 +1582,8 @@ fn canonical_form_check_keeps_owner_format_warnings() {
         for path in [wrapper, owner] {
             let original = std::fs::read_to_string(&path).unwrap();
             for (version, code) in [
-                ("2.19", "formatMigrationAvailable"),
-                ("2.21", "platformVersionUnsupported"),
+                ("2.17", "formatVersionUnverified"),
+                ("2.23", "formatVersionUnverified"),
             ] {
                 std::fs::write(&path, original.replace("2.20", version)).unwrap();
                 let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
@@ -1709,7 +1709,7 @@ fn canonical_dcs_check_accepts_external_report_processor_and_configuration() {
 #[test]
 fn canonical_template_read_warns_while_writes_keep_the_exact_owner_profile() {
     for kind in ["Report", "ExternalReport", "ExternalDataProcessor"] {
-        for version in [Some("2.21"), Some("2.19"), None] {
+        for version in [Some("2.23"), Some("2.17"), None] {
             let (workspace, at, body) = dcs_check_workspace(kind);
             let wrapper = body
                 .parent()
@@ -1765,10 +1765,11 @@ fn canonical_template_read_warns_while_writes_keep_the_exact_owner_profile() {
             assert!(viewed.ok, "{kind} {version:?}: {viewed:?}");
             let checked = call(ToolIdentity::Check, serde_json::json!({"at": at}));
             assert!(checked.ok, "{kind} {version:?}: {checked:?}");
-            let expected = if version == Some("2.21") {
-                "platformVersionUnsupported"
+            // A known version is read by the 2.20 dialect; format 1.0 is not read.
+            let expected = if version.is_some() {
+                "formatVersionUnverified"
             } else {
-                "formatMigrationAvailable"
+                "formatVersionUnsupported"
             };
             assert!(
                 checked.data.as_ref().unwrap()["diagnostics"]
@@ -2549,7 +2550,7 @@ impl LiveV5Daemon {
             Arc::new(TokioClock),
             Arc::clone(&actors),
         ));
-        let host = Arc::new(unica_lsp::UnicaLspHost::new(Arc::new(
+        let host = Arc::new(unica_editor_analysis::UnicaLspHost::new(Arc::new(
             super::super::lsp_workspaces::ProductLspWorkspaces::new(
                 actors,
                 Arc::new(
@@ -9595,10 +9596,9 @@ fn canonical_object_borrow_previews_publishes_and_rejects_changed_parent_revisio
     std::fs::create_dir_all(&forms).unwrap();
     std::fs::write(
         forms.join("ItemForm.xml"),
-        std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/fixtures/platform_8_3_27/cfe_borrow/parent-catalog-form.xml"),
-        )
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/parent-catalog-form.xml",
+        ))
         .unwrap()
         .replace("<Name>CorpusForm</Name>", "<Name>ItemForm</Name>"),
     )
@@ -11810,7 +11810,7 @@ fn default_operation_paths_reach_providers_without_a_deadline() {
     assert!(viewed.ok, "{viewed:?}");
 
     let (provider, analyzer) =
-        unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::recording_provider();
+        unica_coder::infrastructure::analysis_composition::diagnostics_probe::recording_provider();
     crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
         .with(|slot| *slot.borrow_mut() = Some(provider));
     let check = admit(
@@ -11887,7 +11887,7 @@ fn execution_boundary_names_a_changed_workspace_only_for_a_lost_binding() {
 /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
 #[test]
 fn module_check_names_why_the_analyzer_gave_no_result() {
-    use unica_adapter_bsl_analyzer::adapter::AnalyzerRunFailureKind;
+    use unica_coder::infrastructure::analysis_composition::diagnostics_probe::AnalyzerRunFailureKind;
     let workspace =
         scheduled_handler_workspace("CONFIGURATION", "Procedure Run() Export\nEndProcedure\n");
     let runtime = bootstrap_runtime();
@@ -11938,7 +11938,7 @@ fn module_check_names_why_the_analyzer_gave_no_result() {
             .unwrap();
             crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| {
                 *slot.borrow_mut() =
-                    Some(unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::failing_provider(kind))
+                    Some(unica_coder::infrastructure::analysis_composition::diagnostics_probe::failing_provider(kind))
             });
             let checked = service.execute(&check, cancellation.clone()).unwrap();
             crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
@@ -12429,7 +12429,7 @@ fn module_check_fails_a_variable_declared_after_methods() {
         .begin_execution(&cancellation)
         .unwrap();
         let (provider, _analyzer) =
-            unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::recording_provider();
+            unica_coder::infrastructure::analysis_composition::diagnostics_probe::recording_provider();
         crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
             .with(|slot| *slot.borrow_mut() = Some(provider));
         let checked = service.execute(&check, cancellation.clone());
@@ -15169,7 +15169,7 @@ fn daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownershi
     .unwrap();
     let runtime_service = Arc::new(RuntimeJobService::new(
         runtime_authority.path(),
-        Arc::new(unica_adapter_v8_runner::backend::CoordinationOnlyRunner),
+        Arc::new(unica_coder::infrastructure::daemon_adapters::runtime::CoordinationOnlyRunner),
     ));
 
     for kind in [

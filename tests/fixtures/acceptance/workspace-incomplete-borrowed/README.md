@@ -5,7 +5,7 @@ configuration is registered, so local observations must remain available without
 resolving inherited values.
 
 The five descriptors are byte-exact copies of `extension-*.xml` in
-`../../platform_8_3_27/incomplete_borrowed/`. That directory documents two
+`../../formats/platform_xml/2.20/incomplete_borrowed/`. That directory documents two
 independent successful import/check/apply/export cycles using 1C 8.3.27.2130,
 XML 2.20, and records descriptor and executable hashes. `Configuration.xml` and
 `Languages/Русский.xml` come from the first cycle's unmodified extension export.

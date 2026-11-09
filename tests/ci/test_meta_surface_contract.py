@@ -25,7 +25,7 @@ META_OPERATION_REGISTRY = (
 )
 META_CAPABILITY_LEDGER = REPO_ROOT / "tests/fixtures/migration/meta-capability-parity.json"
 META_INFO_FIXTURE_MANIFEST = (
-    REPO_ROOT / "tests/fixtures/platform_8_3_27/meta_info/manifest.json"
+    REPO_ROOT / "tests/fixtures/formats/platform_xml/2.20/meta_info/manifest.json"
 )
 RETIRED_META_TYPE_REFERENCE = (
     REPO_ROOT

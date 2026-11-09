@@ -128,7 +128,9 @@ fn registered(owner: &[u8], kind: &str, name: &str) -> Result<bool, ApplyPlanErr
         .filter(|node| node.is_element())
         .collect::<Vec<_>>();
     if !root.has_tag_name((NS, "MetaDataObject"))
-        || root.attribute("version") != Some("2.20")
+        || !unica_source_designer::format_profile::is_writable_root_version(
+            root.attribute("version"),
+        )
         || objects.len() != 1
         || !objects[0].has_tag_name((NS, "Configuration"))
     {
@@ -261,6 +263,13 @@ fn plan_object(
                 "extension Configuration descriptor is missing",
             )
         })?;
+    if requested_overrides.is_some_and(|overrides| !overrides.is_empty()) {
+        unica_source_designer::extension_mode::admit_by_extension_configuration(
+            Some(&destination_owner),
+            unica_source_contract::compatibility::ExtensionOperation::OverrideBorrowedProperty,
+            &format!("ops[{index}].args.overrides"),
+        )?;
+    }
     let existing = staged
         .read(&relative)
         .map_err(|error| ApplyPlanError::staging(error, parent.to_string()))?;
@@ -1314,7 +1323,7 @@ mod tests {
     fn platform(name: &str) -> Vec<u8> {
         std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/fixtures/platform_8_3_27/cfe_borrow")
+                .join("../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow")
                 .join(name),
         )
         .unwrap()

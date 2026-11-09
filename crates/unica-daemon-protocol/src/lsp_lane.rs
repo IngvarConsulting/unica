@@ -116,10 +116,11 @@ impl LspLane {
     pub fn open(
         &self,
         folders: &[V5LspWorkspaceFolder],
+        diagnostics_refresh: bool,
         deadline: Instant,
     ) -> Result<(V5LspSessionId, V5LspOpening), V5LspFailure> {
         let session = V5LspSessionId::new();
-        let (client, inbox) = LspClientChannel::pair();
+        let (client, inbox) = LspClientChannel::pair(diagnostics_refresh);
         let opening = guarded(|| {
             self.shared
                 .host

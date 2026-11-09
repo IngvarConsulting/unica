@@ -18,8 +18,9 @@ crates do not meet in one list. A lowered count does not fail;
 `--write-baseline` lowers the baselines to the current counts.
 
 Production code is a crate's `.rs` files outside `tests/`, `*_tests.rs`,
-`tests.rs`, test-support and fixture files, cut at the first `#[cfg(test)]`
-module; comment lines are skipped. The files that own versions are allowed.
+`tests.rs`, test-support and fixture files and files gated whole by a leading
+`#![cfg(test)]`, cut at the first `#[cfg(test)]` module; comment lines are
+skipped. The files that own versions are allowed.
 """
 from __future__ import annotations
 
@@ -52,6 +53,8 @@ OWNERS = (
 )
 OWNER_DIRECTORIES = ("/dialect/",)
 TEST_MODULE = re.compile(r"\n\s*#\[cfg\(test\)\]\s*\n\s*(?:pub(?:\([^)]*\))?\s+)?mod\s")
+# A file whose first item is `#![cfg(test)]`, after comments, compiles only in tests.
+TEST_FILE = re.compile(r"\A(?:\s*//[^\n]*\n)*\s*#!\[cfg\(test\)\]")
 
 
 @dataclass
@@ -106,7 +109,9 @@ def is_owner(relative: str) -> bool:
 
 
 def production_text(source: str) -> str:
-    """The text before the first test module."""
+    """The text before the first test module; nothing for a file gated whole by `#![cfg(test)]`."""
+    if TEST_FILE.match(source):
+        return ""
     match = TEST_MODULE.search(source)
     return source[: match.start()] if match else source
 

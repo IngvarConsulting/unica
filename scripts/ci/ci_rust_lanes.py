@@ -53,8 +53,11 @@ def lanes(profile: str, host: str | None = None) -> tuple[str, ...]:
 
 
 def profile_hosts(profile: str, *, full_matrix: bool = True) -> list[str]:
-    """Runners of a gate profile; a pull request adds macOS only with `ci:full`."""
-    if profile == "large":
+    """Runners of a gate profile; a pull request adds macOS only with `ci:full`.
+
+    A release runs every runner the night runs: its inventory is compared with
+    the night's, and a tag is checked as fully as the slice it was cut from."""
+    if profile in ("large", "release"):
         return list(HOSTS)
     if profile == "queue" or (profile == "pr" and not full_matrix):
         return [LINUX]

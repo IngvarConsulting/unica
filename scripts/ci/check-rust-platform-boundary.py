@@ -101,6 +101,8 @@ DOMAIN_FLOOR = frozenset({
 FILE_IO_FLOOR = frozenset({
     "unica-operations", "unica-navigation", "unica-diagnostics",
     "unica-code-intelligence", "unica-code-model", "unica-xml-format", "unica-work-control",
+    # The LSP door reads the editor's stdio and talks to the daemon; files are not its business.
+    "unica-lsp",
 })
 DESIGNER_CODEC_PACKAGE = re.compile(r"unica-[a-z0-9-]+-designer")
 DOMAIN_COMPONENTS = DOMAIN_FLOOR | crate_declarations.packages(crate_declarations.repository(), file_io="domain")

@@ -20,6 +20,8 @@ pub enum DumpValidationReason {
 #[serde(tag = "kind", content = "literal", rename_all = "camelCase")]
 pub enum DumpVersionRequirement {
     Exact(&'static str),
+    /// One of these literal versions, as an owner of any writable format.
+    OneOf(&'static [&'static str]),
     Absent,
 }
 
@@ -124,11 +126,13 @@ pub trait DumpSemanticValidator: Send + Sync {
         tree: &DumpTreeObservation<'_>,
         kind: SourceSetKind,
     ) -> Result<(), DumpValidationFailure>;
+    /// Validates the target a dump replaces; returns the export format the
+    /// existing target records, `None` when there is no existing source set.
     fn validate_existing_target(
         &self,
         tree: &DumpTreeObservation<'_>,
         kind: SourceSetKind,
-    ) -> Result<(), String>;
+    ) -> Result<Option<&'static str>, String>;
 }
 
 pub type DumpInventoryClassifier = fn(SourceSetKind, &[&Path]) -> SourceFormat;

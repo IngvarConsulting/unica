@@ -54,7 +54,7 @@ allowed-tools:
 
 ## Формат корня
 
-Образцы сняты с рабочей заготовки, выгруженной платформой 8.3.27 в формате 2.20 (`tests/fixtures/platform_8_3_27/template-new-xml/seed/`), без её объектов и с новыми UUID.
+Образцы сняты с рабочей заготовки, выгруженной платформой 8.3.27 в формате 2.20 (`tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed/`), без её объектов и с новыми UUID.
 Полное описание свойств, их порядка и состава — в
 [спецификации конфигурации](../../references/specs/1c-configuration-spec.md):
 §2 — `Configuration.xml`, §4.2 — `ClientApplicationInterface.xml`,

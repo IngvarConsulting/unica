@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use unica_code_intelligence::coordinator::CodeIntelligenceDeadlines;
 use unica_code_intelligence::coordinator::CodeSearchExecution;
-use unica_code_intelligence::deadlines::CodeIntelligenceDeadlines;
 use unica_code_intelligence::model::CodeIntelligenceContext;
 use unica_code_intelligence::model::CodeIntelligenceProvider;
 use unica_code_intelligence::model::CodeIntelligenceRegistry;
@@ -3615,14 +3615,15 @@ fn literal_search_reads_submodules_and_embedded_repositories() {
             );
             git(workspace.path(), &["add", "src/Aaa"]);
         }
-        let corpus = unica_adapter_lexical::lines::CandidateCorpus {
+        let corpus = unica_code_intelligence::candidate_lines::CandidateCorpus {
             subtree: None,
             excluded: Vec::new(),
             excluded_name_prefixes: Vec::new(),
         };
+        // Both roots lie inside the outer work tree, so the engine refuses a
+        // root exactly when it holds a work tree of its own.
         let foreign = |root: &std::path::Path| {
-            unica_adapter_lexical::lines::holds_foreign_work_tree(
-                unica_process::runner::system_process_runner(),
+            !crate::infrastructure::analysis_composition::candidate_lines().reads(
                 root,
                 &corpus,
                 1 << 16,

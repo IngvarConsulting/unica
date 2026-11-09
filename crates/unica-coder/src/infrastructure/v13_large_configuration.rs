@@ -1915,7 +1915,7 @@ mod tests {
             parser
                 .feed(
                     &std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
-                        "../../tests/fixtures/platform_8_3_27/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
+                        "../../tests/fixtures/formats/platform_xml/2.20/support-edit-bin-only/src/Ext/ParentConfigurations.bin",
                     ))
                     .unwrap(),
                 )

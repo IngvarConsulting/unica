@@ -3,6 +3,7 @@ mod predefined_code_type_plan;
 pub use predefined_code_type_plan::PredefinedCodeTypePlan;
 
 use crate::decode::*;
+use crate::dialect::root_version;
 use crate::edit::apply_typed_operations_to_image_with_seed;
 use crate::layout::metadata_layout;
 use crate::template_catalog::MetadataTemplateSource;
@@ -449,6 +450,26 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
             )
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
+        if let MetaEditOperation::Add { collection, .. } = edit {
+            if authority.source_kind() == SourceSetKind::Extension
+                && unica_source_designer::extension_mode::descriptor_is_borrowed(&preimage)
+            {
+                use unica_source_contract::compatibility::ExtensionOperation;
+                let operation = match collection {
+                    MetaCollection::Attributes => ExtensionOperation::AddAttributeToBorrowed,
+                    MetaCollection::TabularSections => {
+                        ExtensionOperation::AddTabularSectionToBorrowed
+                    }
+                    _ => ExtensionOperation::AddChildToBorrowed,
+                };
+                unica_source_designer::extension_mode::admit_extension_operation(
+                    staged,
+                    authority.source_kind(),
+                    operation,
+                    &format!("ops[{op_index}]"),
+                )?;
+            }
+        }
         crate::edit_type::guard(
             staged,
             authority.source_kind(),
@@ -784,6 +805,23 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
+    let own = match kind {
+        MetadataKind::Catalog => {
+            Some(unica_source_contract::compatibility::ExtensionOperation::AddOwnCatalog)
+        }
+        MetadataKind::InformationRegister => Some(
+            unica_source_contract::compatibility::ExtensionOperation::AddOwnInformationRegister,
+        ),
+        _ => None,
+    };
+    if let Some(operation) = own {
+        unica_source_designer::extension_mode::admit_extension_operation(
+            staged,
+            source_kind,
+            operation,
+            &format!("ops[{op_index}]"),
+        )?;
+    }
     reader.with_creation_source(op_index, &mut |source| {
         // The new descriptor's synonym is written in the source set's default
         // language, read from the staged image like every other edit (#909).
@@ -1595,8 +1633,8 @@ fn stage_descriptor_properties(
             )
             .map_err(|error| invalid(error.message))?;
             if source_kind != SourceSetKind::Configuration
-                || root.version() != Some("2.20")
-                || owner.version() != Some("2.20")
+                || !root_version::is_writable(root.version())
+                || !root_version::is_writable(owner.version())
                 || !root.registers("WSReference", name)
                 || owner.artifact_kind() != "WSReference"
                 || owner.artifact_name() != Some(name)
@@ -2092,17 +2130,18 @@ fn stage_exchange_content(
         .read(&relative)
         .map_err(|e| ApplyPlanError::staging(e, path.clone()))?;
     let template = if borrowed {
-        crate::exchange_content::EMPTY_EXTENSION_CONTENT.as_bytes()
+        crate::exchange_content::empty_extension_content(authority.expected_format())
     } else {
-        crate::exchange_content::EMPTY_CONTENT.as_bytes()
+        crate::exchange_content::empty_content(authority.expected_format())
     };
-    let text = std::str::from_utf8(before.as_deref().unwrap_or(template)).map_err(|_| {
-        ApplyPlanError::new(
-            ApplyPlanErrorKind::InvalidSource,
-            "ExchangePlan Content.xml is not UTF-8",
-        )
-        .at_path(path.clone())
-    })?;
+    let text =
+        std::str::from_utf8(before.as_deref().unwrap_or(template.as_bytes())).map_err(|_| {
+            ApplyPlanError::new(
+                ApplyPlanErrorKind::InvalidSource,
+                "ExchangePlan Content.xml is not UTF-8",
+            )
+            .at_path(path.clone())
+        })?;
     let after = crate::exchange_content::update_content(text, items, borrowed)
         .map_err(|e| {
             ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, e).at_path(path.clone())
@@ -2110,7 +2149,7 @@ fn stage_exchange_content(
         .into_bytes();
     let changed = match before {
         Some(before) if before != after => staged.replace(&relative, &before, after).map(|()| true),
-        None if after != template => staged.create(&relative, after).map(|()| true),
+        None if after != template.as_bytes() => staged.create(&relative, after).map(|()| true),
         _ => Ok(false),
     };
     let changed = changed.map_err(|e| ApplyPlanError::staging(e, path))?;
@@ -2143,20 +2182,22 @@ pub fn final_exchange_content(
             ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path("ops")
         };
         let relative = metadata_descriptor_relative(&owner, source_kind).map_err(fail)?;
-        if staged
+        let Some(descriptor) = staged
             .read(&relative)
             .map_err(|e| ApplyPlanError::staging(e, "ops"))?
-            .is_none()
-        {
+        else {
             continue;
-        }
+        };
         let content = relative.with_extension("").join("Ext/Content.xml");
         let bytes = staged
             .read(&content)
             .map_err(|e| ApplyPlanError::staging(e, "ops"))?;
         // An absent file is the platform's empty composition.
-        let bytes =
-            bytes.unwrap_or_else(|| crate::exchange_content::EMPTY_CONTENT.as_bytes().to_vec());
+        let bytes = bytes.unwrap_or_else(|| {
+            let version =
+                crate::dialect::root_version::of_set(&String::from_utf8_lossy(&descriptor));
+            crate::exchange_content::empty_content(&version).into_bytes()
+        });
         let text = std::str::from_utf8(&bytes).map_err(|e| fail(e.to_string()))?;
         let observed = crate::exchange_content::read_content(text).map_err(fail)?;
         if !observed.errors.is_empty() {
@@ -2232,6 +2273,14 @@ fn stage_template_add(
     use unica_metadata::MetaTemplateKind;
     let (owner_relative, owner_preimage, owner_source) =
         owner_descriptor_and_text(staged, authority, owner, op_index)?;
+    if unica_source_designer::extension_mode::descriptor_is_borrowed(&owner_preimage) {
+        unica_source_designer::extension_mode::admit_extension_operation(
+            staged,
+            authority.source_kind(),
+            unica_source_contract::compatibility::ExtensionOperation::AddChildToBorrowed,
+            &format!("ops[{op_index}]"),
+        )?;
+    }
     // The registration writes `<Template>` in the default namespace; a
     // prefixed owner is edited in that form and restored before writing.
     let (mut owner_text, owner_form) =

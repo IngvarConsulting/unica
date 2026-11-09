@@ -73,7 +73,12 @@ def candidate_names(profile: str) -> list[list[str]]:
     # target line, tested by the queue on main and by pushes on release lines.
     if profile == "pr":
         return [[ARTIFACT + "queue", ARTIFACT + "main"]]
-    return [[ARTIFACT + name] for name in dict.fromkeys([profile, "queue"])]
+    # A release tag stands on a slice the night checked: the buttons cut it
+    # from an alpha or from a release line that left `main`. `release` and
+    # `large` select one plan on every runner, so the night's inventory is the
+    # release's baseline when no earlier release is nearer.
+    nightly = ["large"] if profile == "release" else []
+    return [[ARTIFACT + name] for name in dict.fromkeys([profile, *nightly, "queue"])]
 
 
 def nearest(artifacts: list[dict], ancestors: list[str], repository_id: int) -> dict | None:

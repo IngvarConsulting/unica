@@ -5,9 +5,9 @@ use crate::infrastructure::daemon::lsp_workspaces::ProductLspWorkspaces;
 use crate::infrastructure::daemon::protocol::InvocationRequest;
 use std::fs;
 use std::time::Duration;
+use unica_editor_analysis::UnicaLspHost;
 use unica_execution::clock::TokioClock;
 use unica_execution::invocation_store::ToolIdentity;
-use unica_lsp::UnicaLspHost;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
     V5LspCall, V5LspFailure, V5LspOutcome, V5LspSessionId, V5LspWorkspaceFolder,
@@ -225,4 +225,37 @@ fn a_replaced_root_is_temporarily_unavailable_while_a_call_holds_the_old_actor()
     assert!(stale.upgrade().is_none());
     assert!(admit_editor_folder(root, &runtime.workspace_actors, soon())
         .is_some_and(|editor| Arc::ptr_eq(&editor.actor, &next.actor)));
+}
+
+/// Набор получает строку профиля по версии своего корня; корень другой
+/// версии или без неё остаётся в профиле 2.20.
+#[test]
+fn a_source_set_is_admitted_with_the_profile_of_its_root_version() {
+    let root = tempfile::tempdir().unwrap();
+    let descriptor = |version: &str| {
+        format!(
+            "\u{feff}<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"{version}\"><Configuration/></MetaDataObject>"
+        )
+    };
+    for (version, expected) in [
+        ("2.20", "platform-xml-8.3.27-format-2.20"),
+        ("2.21", "platform-xml-8.5.1-format-2.21"),
+        ("2.22", "platform-xml-8.5.4-format-2.22"),
+        ("2.23", "platform-xml-8.3.27-format-2.20"),
+        ("2.21.0", "platform-xml-8.3.27-format-2.20"),
+    ] {
+        fs::write(root.path().join("Configuration.xml"), descriptor(version)).unwrap();
+        for kind in [SourceSetKind::Configuration, SourceSetKind::Extension] {
+            assert_eq!(
+                platform_xml_source_profile(kind, root.path()).canonical_id(),
+                expected,
+                "{version} {kind:?}"
+            );
+        }
+    }
+    fs::remove_file(root.path().join("Configuration.xml")).unwrap();
+    assert_eq!(
+        platform_xml_source_profile(SourceSetKind::Configuration, root.path()),
+        SourceProfile::platform_xml_8_3_27_format_2_20()
+    );
 }

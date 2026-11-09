@@ -24,6 +24,30 @@ use unica_workspace::apply::ApplyStagedState;
 /// mutators proved this through the dispatcher's format guard; the canonical
 /// planner proves it here, over the owner chain of the addressed node, read
 /// through the staged state so no ambient file is touched after admission.
+/// The compatibility mode the request sets when all it does is set the
+/// set's own mode property on its root (`props.set` at `Configuration`).
+fn raised_compatibility_mode(
+    request: &ApplyRequest,
+    source_kind: SourceSetKind,
+) -> Option<unica_source_contract::compatibility::CompatibilityMode> {
+    let property = unica_source_designer::extension_mode::compatibility_mode_property(source_kind)?;
+    let mut raised = None;
+    for operation in request.ops() {
+        let at_root = operation.at().segments().len() == 1
+            && operation.at().segments()[0].kind()
+                == unica_address::address::NodeKind::Configuration;
+        let values = operation.args().get("values")?.as_object()?;
+        if operation.name() != "props.set" || !at_root || values.len() != 1 {
+            return None;
+        }
+        let mode = unica_source_contract::compatibility::CompatibilityMode::parse(
+            values.get(property)?.as_str()?,
+        )?;
+        raised = Some(mode);
+    }
+    raised
+}
+
 fn refuse_targets_outside_writable_profile(
     request: &ApplyRequest,
     binding: &ProviderRootBinding,
@@ -1026,30 +1050,34 @@ fn staged_form_xml(
 }
 
 /// Есть ли узел `at` в стадированном состоянии допуска. Узел с собственным
-/// описанием есть, когда есть его файл; член объекта метаданных (реквизит,
-/// табличная часть) при существующем описании владельца считается
-/// отсутствующим — отказ «не найден» по адресу операции говорит о нём.
+/// описанием есть, когда есть его файл; член объекта метаданных и узел СКД
+/// проверяются штатным читателем представления и публичной проекцией.
 /// `None` — по описаниям этого не установить.
 pub fn staged_node_existence(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
     at: &unica_address::address::QualifiedAddress,
 ) -> Option<bool> {
+    if matches!(at.segments(), [root] if root.kind() == unica_address::address::NodeKind::Configuration)
+    {
+        return Some(
+            admission
+                .staged_state()
+                .ok()?
+                .read(std::path::Path::new("Configuration.xml"))
+                .ok()?
+                .is_some(),
+        );
+    }
     let (address, covered) = descriptor_node(at)?;
     let relative = unica_source_designer::layout::metadata_descriptor_relative(
         &address,
         binding.source_kind(),
     )
     .ok()?;
-    if admission
-        .staged_state()
-        .ok()?
-        .read(&relative)
-        .ok()?
-        .is_none()
-    {
+    let Some(descriptor) = admission.staged_state().ok()?.read(&relative).ok()? else {
         return Some(false);
-    }
+    };
     if covered == at.segments().len() {
         // Описание есть: «не найден» касается присоединённого ресурса
         // (`Rights.xml`, `Form.xml`), а не узла.
@@ -1075,7 +1103,60 @@ pub fn staged_node_existence(
         admission.staged_state().ok()?.read(&relative).ok()?
     };
     match (route, terminal.kind(), at.segments().len() - covered) {
-        (RouteClass::Metadata, _, _) => Some(false),
+        (RouteClass::Metadata, _, _) => {
+            let tail = &at.segments()[covered..];
+            let (member, scope) = match tail {
+                [member] => (member, None),
+                [section, member]
+                    if section.kind() == NodeKind::TabularSection
+                        && member.kind() == NodeKind::Attribute =>
+                {
+                    (member, section.name())
+                }
+                _ => return None,
+            };
+            let text = std::str::from_utf8(&descriptor).ok()?;
+            match unica_metadata_designer::edit::find_typed_element_identity(
+                text,
+                member.kind().as_str(),
+                scope,
+                member.name()?,
+            ) {
+                Ok(_) => Some(true),
+                Err(error) if error.code == unica_metadata::MetaDiagnosticCode::TargetNotFound => {
+                    Some(false)
+                }
+                Err(_) => None,
+            }
+        }
+        (RouteClass::Dcs, _, _) => {
+            let bytes = resource("Template.xml")?;
+            let text = std::str::from_utf8(&bytes).ok()?;
+            // Membership does not consume or expose support properties.
+            let facts = crate::infrastructure::family_codecs::dcs_codec()
+                .read(
+                    text,
+                    unica_metadata::support_state::ObjectSupportData {
+                        state: unica_metadata::support_state::ObjectSupportState::NotSupported,
+                        direct_edit_safe: None,
+                    },
+                )
+                .ok()?;
+            let profile = crate::domain::source_capabilities::bsl_profile_for_source(
+                binding.source_profile(),
+            )?;
+            let logical =
+                crate::infrastructure::logical_tree::route_logical_address(at, profile).ok()?;
+            match crate::infrastructure::v13_read_projection::project_typed_payload_for_source(
+                &logical,
+                serde_json::to_value(facts).ok()?,
+                binding.source_kind(),
+            ) {
+                Ok(_) => Some(true),
+                Err(error) if error.code() == unica_refusal::RefusalCode::NotFound => Some(false),
+                Err(_) => None,
+            }
+        }
         (RouteClass::Role, NodeKind::Right, 1) => {
             let (kind, name) = terminal.name()?.split_once('_')?;
             unica_roles_designer::planner::staged_rights_entry_exists(
@@ -1135,6 +1216,16 @@ pub fn plan_hidden_v13_apply(
     let mut staged = admission
         .staged_state()
         .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
+    // A set older than the oldest editable compatibility mode is read-only.
+    let configuration = staged
+        .read(std::path::Path::new("Configuration.xml"))
+        .map_err(|error| ApplyPlanError::staging(error, request.at().to_string()))?;
+    unica_source_designer::extension_mode::refuse_edit_below_minimum_mode(
+        configuration.as_deref(),
+        binding.source_kind(),
+        raised_compatibility_mode(request, binding.source_kind()),
+        &request.at().to_string(),
+    )?;
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
     let support_warning =
         refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;
@@ -1372,6 +1463,12 @@ pub fn plan_hidden_v13_apply(
             _ => None,
         }),
     )?;
+    // Values the compatibility mode of the set forbids are refused before the
+    // apply publishes; the platform would refuse them on import.
+    unica_metadata_designer::mode_checks::check_changed_descriptors(
+        &mut staged.proposal(),
+        binding.source_kind(),
+    )?;
     let legacy_inline = collapse_legacy_inline_registrations(&mut staged, binding)?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
     for warning in code_support_warnings {
@@ -1399,6 +1496,9 @@ pub fn plan_hidden_v13_apply(
 
 #[cfg(test)]
 mod calculation_code_type_tests;
+
+#[cfg(test)]
+mod mode_rule_tests;
 
 #[cfg(test)]
 mod inherited_content_tests;

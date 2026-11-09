@@ -25,7 +25,7 @@ impl Fixture {
         let workspace =
             unica_workspace::test_support::canonical_path(root.path()).join("workspace");
         let image = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tests/fixtures/platform_8_3_27/empty_configuration");
+            .join("../../tests/fixtures/formats/platform_xml/2.20/empty_configuration");
         for (relative, bytes) in unica_workspace::test_support::tree_snapshot(&image) {
             let path = workspace.join(relative);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();

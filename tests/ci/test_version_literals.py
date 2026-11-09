@@ -64,10 +64,15 @@ class VersionLiteralTests(unittest.TestCase):
             "src/reader_tests.rs": 'const V: &str = "2.21";\n',
             "tests/integration.rs": 'const V: &str = "2.22";\n',
             "src/dialect/v2_20.rs": 'pub const VERSION: &str = "2.20";\n',
+            "src/door/cases.rs": '//! Cases.\n#![cfg(test)]\nconst V: &str = "2.20";\n',
         }
         self.workspace.crate("sample", files)
         self.assertEqual(guard.check(self.workspace.root), [])
         self.assertEqual(guard.report(self.workspace.root), "")
+
+    def test_a_cfg_test_attribute_later_in_a_file_does_not_hide_it(self) -> None:
+        source = 'const V: &str = "2.20";\n#![cfg(test)]\n'
+        self.assertEqual(len(guard.source_literals("crates/sample/src/lib.rs", source)), 1)
 
     def test_every_class_of_version_literal_is_counted(self) -> None:
         source = "\n".join(

@@ -9,66 +9,16 @@
 
 use crate::provider::{generated_corpus_exclusion, git_glob_literal_prefix, process_exit_code_is};
 use std::ffi::OsString;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
+use unica_code_intelligence::candidate_lines::CandidateLines;
 use unica_process::runner::{ProcessCommand, ProcessRunner, ProcessStreamFailure};
 use unica_process::StreamControl;
 use unica_work_control::cancellation::CancellationToken;
 
-/// How `git grep` selects candidate lines.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CandidatePattern {
-    /// One literal byte string (`-F`).
-    Fixed(String),
-    /// A POSIX extended expression matched byte-wise (`-E`, `LC_ALL=C`).
-    Extended(String),
-}
-
-/// Which part of the source root the engine reads.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CandidateCorpus {
-    /// Source-root-relative directory to read, `/`-separated; `None` reads
-    /// the whole root.
-    pub subtree: Option<String>,
-    /// Source-root-relative directories that belong to another source set.
-    pub excluded: Vec<String>,
-    /// Entries whose name starts with one of these are not source, at any
-    /// depth.
-    pub excluded_name_prefixes: Vec<String>,
-}
-
-/// One candidate line: the source-root-relative path as Git prints it, the
-/// one-based line number and the line bytes without the line feed.
-pub struct CandidateLine<'a> {
-    pub path: &'a [u8],
-    pub line: usize,
-    pub text: &'a [u8],
-}
-
-/// How the stream ended.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CandidateEnd {
-    /// Git read the whole corpus.
-    Completed,
-    /// The consumer stopped the stream.
-    Stopped,
-    /// Cancellation stopped the process.
-    Cancelled,
-    /// The root is not inside a Git work tree, or Git cannot be started:
-    /// nothing was read and another engine must answer.
-    Unavailable(String),
-    /// Git failed after it started.
-    Failed(String),
-}
-
-/// What the consumer learns besides the lines themselves.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct CandidateStream {
-    /// Output lines longer than the line bound: Git selected them, their
-    /// path is not known.
-    pub overlong_lines: usize,
-    /// Output records without the `path NUL line NUL text` shape.
-    pub malformed_records: usize,
-}
+pub use unica_code_intelligence::candidate_lines::{
+    CandidateCorpus, CandidateEnd, CandidateLine, CandidatePattern, CandidateStream,
+};
 
 /// Whether `root` lies inside a Git work tree that a candidate stream can
 /// read. A missing Git or any failure answers `false`.
@@ -275,4 +225,51 @@ pub fn stream_candidate_lines(
         CandidateEnd::Failed(format!("git grep: {}", output.stderr.trim()))
     };
     (end, stream)
+}
+
+/// Candidate lines through `git grep` of the given process runner.
+pub struct GitCandidateLines {
+    runner: &'static (dyn ProcessRunner + Send + Sync),
+}
+
+impl GitCandidateLines {
+    pub fn new(runner: &'static (dyn ProcessRunner + Send + Sync)) -> Self {
+        Self { runner }
+    }
+}
+
+impl CandidateLines for GitCandidateLines {
+    fn reads(
+        &self,
+        root: &Path,
+        corpus: &CandidateCorpus,
+        max_line_bytes: usize,
+        cancellation: &CancellationToken,
+    ) -> bool {
+        inside_work_tree(self.runner, root, cancellation)
+            && !holds_foreign_work_tree(self.runner, root, corpus, max_line_bytes, cancellation)
+    }
+
+    fn stream(
+        &self,
+        root: &Path,
+        pattern: &CandidatePattern,
+        corpus: &CandidateCorpus,
+        max_line_bytes: usize,
+        cancellation: &CancellationToken,
+        on_line: &mut dyn FnMut(CandidateLine<'_>) -> ControlFlow<()>,
+    ) -> (CandidateEnd, CandidateStream) {
+        stream_candidate_lines(
+            self.runner,
+            root,
+            pattern,
+            corpus,
+            max_line_bytes,
+            cancellation,
+            &mut |line| match on_line(line) {
+                ControlFlow::Continue(()) => StreamControl::Continue,
+                ControlFlow::Break(()) => StreamControl::Stop,
+            },
+        )
+    }
 }

@@ -43,6 +43,27 @@ until its source-set problem is fixed. In particular, `sourceSet.path: .` is an
 error: explain how to move the export into a strict child such as `src/` and
 update `v8project.yaml` safely.
 
+### Headless pull
+
+For Designer XML export without the Designer agent, set
+`providers: {pull: ibcmd}` in `v8project.local.yaml`; the local platform must
+provide a verifiable `ibcmd` from 1C 8.3.27. The same provider can export the
+main configuration or an installed extension.
+
+Read the `unica.run {}` dictionary first. For an extension source set named
+`Sales` containing the installed extension `Sales`, preview:
+
+```json
+{"op":"pull","args":{"sourceSet":"Sales","extension":"Sales","force":true},"dryRun":true}
+```
+
+The source-set name must match `extension`; its directory may have a different
+name. Check the returned target and replacement plan, then repeat with
+`dryRun:false`. For the main configuration, use its source-set name and omit
+`extension`. `force:true` replaces the entire target, including local and
+untracked files; this interface does not provide incremental `--sync` export.
+A preview does not write sources or read the current extension contents.
+
 ### Work the call must not wait for
 
 A long operation does not need a separate call: any `unica.run` invocation

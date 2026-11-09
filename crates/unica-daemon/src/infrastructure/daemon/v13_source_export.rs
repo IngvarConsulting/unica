@@ -26,8 +26,8 @@ use super::v13_infobase_exports::{
     valid_1c_identifier, RunnerAbsence, CONFIG_NAME, LOCAL_CONFIG_NAME, RUNNER_OUTPUT_LIMIT,
 };
 use super::v13_source_set_name::{source_set_name_guidance, valid_source_set_name};
-use unica_adapter_v8_runner::full_dump::FullDumpSelection;
 use unica_artifact_delivery::engine::BundledTool;
+use unica_coder::infrastructure::daemon_adapters::runtime::FullDumpSelection;
 use unica_execution::invocation_store::ToolIdentity;
 #[cfg(test)]
 use unica_process::runner::ProcessOutput;
@@ -508,7 +508,7 @@ mod medium_tests {
     use super::*;
     use std::fs;
     use std::sync::Mutex;
-    use unica_adapter_v8_runner::full_dump::with_test_platform;
+    use unica_coder::infrastructure::daemon_adapters::runtime::with_test_platform;
     use unica_process::runner::{ProcessStreamFailure, ProcessStreamOutput};
     use unica_process::ProcessLineReply;
     use unica_refusal::Outcome;
@@ -528,6 +528,7 @@ mod medium_tests {
         replies: Mutex<Vec<Value>>,
         stage_writes: Mutex<Vec<PathBuf>>,
         terminals: Mutex<Vec<Value>>,
+        selections: Mutex<Vec<Value>>,
     }
 
     enum PublicationFault {
@@ -560,6 +561,7 @@ mod medium_tests {
                 replies: Mutex::new(Vec::new()),
                 stage_writes: Mutex::new(Vec::new()),
                 terminals: Mutex::new(Vec::new()),
+                selections: Mutex::new(Vec::new()),
             }
         }
 
@@ -666,8 +668,13 @@ mod medium_tests {
             if let Some(PublicationFault::SelectedExecutor(value)) = &self.fault {
                 executor = value.clone();
             }
+            let provider = local["providers"]["pull"]
+                .as_str()
+                .or_else(|| yaml["providers"]["pull"].as_str())
+                .unwrap_or("designer");
             let selected = json!({"version":1,"nonce":nonce,"phase":"selected",
-                "provider":{"selected":"designer"},"executor":executor});
+                "provider":{"selected":provider},"executor":executor});
+            self.selections.lock().unwrap().push(selected.clone());
             let response = on_line(1, &serde_json::to_vec(&selected).unwrap());
             let authorized =
                 self.decision(&response, &nonce, "selected").as_deref() == Some("continue");
@@ -1561,7 +1568,10 @@ mod medium_tests {
                 assert_eq!(data["validation"]["reason"], reason, "{defect}");
                 assert_eq!(data["validation"]["path"], json!(path), "{defect}");
                 let (version, qname) = match defect {
-                    "wrong_version" => (json!({"kind":"exact","literal":"2.20"}), Value::Null),
+                    "wrong_version" => (
+                        json!({"kind":"oneOf","literal":["2.20","2.21","2.22"]}),
+                        Value::Null,
+                    ),
                     "versionless_with_version" => (
                         json!({"kind":"absent"}),
                         json!("{http://v8.1c.ru/8.1/data-composition-system/schema}DataCompositionSchema"),
@@ -1630,6 +1640,159 @@ mod medium_tests {
                 "{defect}"
             );
             assert!(result.changed.is_empty(), "{defect}");
+        }
+    }
+
+    #[test]
+    fn adapter_preparation_projects_the_effective_local_provider_without_selecting_it() {
+        for local_provider in ["ibcmd", "designer"] {
+            let root = workspace();
+            let config_path = root.path().join(CONFIG_NAME);
+            let primary = format!(
+                "{}providers: {{pull: {}}}\n",
+                fs::read_to_string(&config_path).unwrap(),
+                if local_provider == "ibcmd" {
+                    "designer"
+                } else {
+                    "ibcmd"
+                }
+            );
+            fs::write(&config_path, &primary).unwrap();
+            let local = format!(
+                "providers: {{pull: {local_provider}}}\ntools:\n  platform:\n    path: local-platform\n    version: 8.3.27.2074\n    strict: true\n"
+            );
+            fs::write(root.path().join(LOCAL_CONFIG_NAME), &local).unwrap();
+            write_valid_dump(&root.path().join("main"), false);
+            let prepared = prepared(root.path(), ExportMode::Full, Some("main"), None, true);
+            let runner = SequenceRunner::new(Vec::new());
+            let cancellation = CancellationToken::new();
+            let store = lock_project(root.path(), &cancellation).unwrap();
+            let guard = unica_coder::infrastructure::daemon_adapters::runtime::prepare_publication(
+                &prepared.context,
+                FullDumpSelection {
+                    config_path: &config_path,
+                    source_set: Some("main"),
+                    extension: None,
+                    expected_target: None,
+                },
+                store,
+                &runner,
+                &cancellation,
+                normalize_full_export_config,
+                project_full_export_config,
+                crate::infrastructure::runtime_composition::full_dump_semantics(),
+            )
+            .unwrap();
+            let primary_projection: serde_yaml::Value =
+                serde_yaml::from_slice(&fs::read(guard.effective_config()).unwrap()).unwrap();
+            let local_projection: serde_yaml::Value = serde_yaml::from_slice(
+                &fs::read(
+                    guard
+                        .effective_config()
+                        .parent()
+                        .unwrap()
+                        .join(LOCAL_CONFIG_NAME),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(primary_projection.get("providers").is_none());
+            assert!(primary_projection.get("tools").is_none());
+            assert_eq!(
+                local_projection["providers"]["pull"].as_str(),
+                Some(local_provider)
+            );
+            assert_eq!(
+                local_projection["tools"]["platform"]["version"].as_str(),
+                Some("8.3.27.2074")
+            );
+            let expected_platform = root.path().join("local-platform");
+            assert_eq!(
+                local_projection["tools"]["platform"]["path"].as_str(),
+                expected_platform.to_str()
+            );
+            assert_eq!(local_projection["tools"]["platform"]["strict"], true);
+            assert_eq!(
+                runner.call_count(),
+                0,
+                "provider choice belongs to the runner"
+            );
+            assert_eq!(fs::read_to_string(&config_path).unwrap(), primary);
+            assert_eq!(
+                fs::read_to_string(root.path().join(LOCAL_CONFIG_NAME)).unwrap(),
+                local
+            );
+            drop(guard);
+        }
+    }
+
+    /// The protocol admits the selected ibcmd without asking for a Designer executable.
+    /// This fixture checks Unica's projection and publication, not the platform's export.
+    #[test]
+    fn ibcmd_pull_preserves_local_selection_for_configuration_and_extension() {
+        for (set, extension) in [("main", None), ("Sales", Some("Sales"))] {
+            let root = workspace();
+            let config_path = root.path().join(CONFIG_NAME);
+            let config = fs::read_to_string(&config_path).unwrap();
+            fs::write(
+                &config_path,
+                format!("{config}providers: {{pull: designer}}\n"),
+            )
+            .unwrap();
+            fs::write(
+                root.path().join(LOCAL_CONFIG_NAME),
+                "providers: {pull: ibcmd}\n",
+            )
+            .unwrap();
+            let target = root.path().join(set);
+            write_valid_dump(&target, extension.is_some());
+            fs::write(target.join("local-only.bsl"), "replace only after preview").unwrap();
+            let platform = root.path().join("platform/8.3.27.2074/ibcmd");
+            fs::create_dir_all(platform.parent().unwrap()).unwrap();
+            fs::write(&platform, b"controlled ibcmd identity").unwrap();
+            // Windows resolves the executable with its suffix.
+            fs::write(
+                platform.with_file_name("ibcmd.exe"),
+                b"controlled ibcmd identity",
+            )
+            .unwrap();
+            assert!(!platform.with_file_name("1cv8").exists());
+            let mut runner = SequenceRunner::exporting(
+                vec![
+                    process(envelope(root.path(), set, "FULL", extension, false), true),
+                    process(envelope(root.path(), set, "FULL", extension, true), true),
+                ],
+                target.clone(),
+            );
+            runner.fault = Some(PublicationFault::SelectedExecutor(json!({
+                "kind":"local", "executable":platform, "endpoint":null
+            })));
+            let result = with_test_platform(&platform, "8.3.27.2074", || {
+                execute_with_resolved_runner(
+                    &prepared(root.path(), ExportMode::Full, Some(set), extension, false),
+                    &runner,
+                    CancellationToken::new(),
+                    &tool(root.path()),
+                    super::super::runner_015::VERSION,
+                )
+            });
+            assert!(result.ok, "{set}: {result:?}");
+            let data = result.data.as_ref().unwrap();
+            assert_eq!(data["sourceSet"], set);
+            assert_eq!(data["extension"], json!(extension));
+            assert_eq!(data["state"], "replaced");
+            assert_eq!(data["performedMode"], "full");
+            assert_eq!(data["providerDispatched"], true);
+            assert!(target.join("Configuration.xml").is_file());
+            assert!(!target.join("local-only.bsl").exists());
+            assert_eq!(runner.call_count(), 2);
+            let selections = runner.selections.lock().unwrap();
+            assert_eq!(selections.len(), 2);
+            for selected in selections.iter() {
+                assert_eq!(selected["provider"]["selected"], "ibcmd");
+                assert_eq!(selected["executor"]["executable"], json!(platform));
+            }
+            assert!(!platform.with_file_name("1cv8").exists());
         }
     }
 
@@ -1777,6 +1940,11 @@ mod medium_tests {
             );
             assert!(!result.ok, "local={local}: {result:?}");
             assert_eq!(result.diagnostics[0]["code"], "concurrent_change");
+            assert_eq!(result.data.as_ref().unwrap()["changed"], "project");
+            assert!(
+                result.summary.contains("during its internal preview"),
+                "{result:?}"
+            );
             assert_eq!(
                 runner.call_count(),
                 1,

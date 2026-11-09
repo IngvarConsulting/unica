@@ -36,15 +36,52 @@ def load(name: str, path: Path):
 
 
 class AlphaPageTests(unittest.TestCase):
-    """На страницу alpha ведут прямой ссылкой, поэтому сайт о ней молчит."""
+    """Страница alpha закрыта от поисковиков, а с сайта на неё ведут только карточки alpha."""
 
-    def test_the_page_is_closed_to_robots_and_nothing_links_to_it(self) -> None:
+    def test_the_page_is_closed_to_robots_and_only_alpha_cards_link_to_it(self) -> None:
         pages = REPO_ROOT / "docs" / "pages"
         self.assertIn('<meta name="robots" content="noindex, nofollow">', (pages / "alpha.html").read_text(encoding="utf-8"))
+        # No template names the page itself: the link comes from the card data.
         for page in pages.glob("*.html"):
             if page.name != "alpha.html":
                 with self.subTest(page=page.name):
                     self.assertNotIn("alpha.html", page.read_text(encoding="utf-8"))
+        render = load("render_pages", REPO_ROOT / "scripts" / "ci" / "render-pages.py")
+        site_status = load("site_status", REPO_ROOT / "scripts" / "ci" / "site-status.py")
+        template = HOME.read_text(encoding="utf-8")
+        status: dict[str, object] = {name: f"<{name}>" for name in render.placeholders(render.REPEAT.sub("", template))}
+        state = {"next_tag": "v0.13.0-rc.3", "next_url": f"{RELEASES_URL}/tag/v0.13.0-rc.3",
+                 "stable_tag": "v0.12.3", "version": "v0.12.3"}
+        status["versions"] = [site_status.version_card(kind, release, None, "IngvarConsulting/unica")
+                              for kind, release in site_status.site_versions(state, RELEASES)]
+        page = render.render(template, status)
+        cards = page.split('<div class="card card-line">')[1:]
+        linking = [card.split("</h3>", 1)[0].rsplit(">", 1)[-1] for card in cards if "alpha.html" in card]
+        self.assertEqual(linking, ["Alpha", "Alpha"])
+        self.assertEqual(page.count("alpha.html"), 2)
+
+
+class AlphaListTests(unittest.TestCase):
+    """Страница alpha показывает все alpha из Releases, новейшую первой."""
+
+    def test_two_alphas_are_both_shown_newest_first_and_downloads_take_the_newest(self) -> None:
+        render = load("render_pages", REPO_ROOT / "scripts" / "ci" / "render-pages.py")
+        site_status = load("site_status", REPO_ROOT / "scripts" / "ci" / "site-status.py")
+        template = (REPO_ROOT / "docs" / "pages" / "alpha.html").read_text(encoding="utf-8")
+        releases = [release for release in RELEASES if release["tag_name"] in ("v0.13.0-alpha.7", "v0.13.0-alpha.8")]
+        outside = render.REPEAT.sub("", template)
+        status: dict[str, object] = {name: f"<{name}>" for name in render.placeholders(outside)}
+        status.update(site_status.latest_alpha(releases, "IngvarConsulting/unica"))
+        status["alphas"] = site_status.alpha_list(releases, "IngvarConsulting/unica")
+        page = render.render(template, status)
+        newest, older = page.find(">v0.13.0-alpha.8<"), page.find(">v0.13.0-alpha.7<")
+        self.assertGreater(newest, 0)
+        self.assertGreater(older, newest)
+        self.assertIn(f'commit/{"d" * 40}"', page)
+        self.assertIn(f'commit/{"c" * 40}"', page)
+        self.assertIn(f'href="{RELEASES_URL}/tag/v0.13.0-alpha.7"', page)
+        self.assertIn(f"{RELEASES_URL}/download/v0.13.0-alpha.8</span>/unica-full-linux-x64.tar.gz", page)
+        self.assertNotIn("{{", page)
 
 
 class HomeStateCardsTests(unittest.TestCase):
@@ -74,6 +111,21 @@ class HomeStateCardsTests(unittest.TestCase):
         # The candidate leaves once the stable version catches up with it.
         kinds = [kind for kind, _ in self.site_status.site_versions(self.status("v0.12.3"), RELEASES)]
         self.assertNotIn("Кандидат", kinds)
+
+    def test_every_card_says_how_to_install_its_kind_of_version_beside_its_report(self) -> None:
+        cards = self.site_status.site_versions(self.status("v0.13.0-rc.3"), RELEASES)
+        links = {release["tag_name"]: self.site_status.version_card(kind, release, None, "IngvarConsulting/unica")["install_url"]
+                 for kind, release in cards}
+        self.assertEqual(links, {"v0.12.3": "#install", "v0.13.0-rc.3": "next.html",
+                                 "v0.13.0-alpha.8": "alpha.html", "v0.13.0-alpha.7": "alpha.html"})
+        page = self.page("v0.13.0-rc.3")
+        # The candidate is installed from the `next` channel, not from the stable section.
+        self.assertIn('<a href="next.html">Как поставить <span class="vh">v0.13.0-rc.3</span>', page)
+        self.assertIn('<a href="#install">Как поставить <span class="vh">v0.12.3</span>', page)
+        self.assertIn('<a href="alpha.html">Как поставить <span class="vh">v0.13.0-alpha.8</span>', page)
+        # Each footer keeps its report link next to the install link.
+        self.assertEqual(page.count("Как поставить <span"), len(cards))
+        self.assertEqual(page.count('class="card-foot"'), len(cards))
 
     def test_a_version_with_a_stored_report_shows_its_counts_skips_by_os_and_report(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

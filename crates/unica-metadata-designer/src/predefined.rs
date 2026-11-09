@@ -1,10 +1,10 @@
+use crate::dialect::root_version;
 use roxmltree::{Document, Node};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
 use unica_address::source_target::MetadataAddress;
 use unica_metadata::*;
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 use unica_source_designer::roots::{platform_xml_publication_policy, PlatformXmlPublicationPolicy};
 use unica_xml_format::text::{
     resolve_line_ending, EolPolicy, LineEndingProfile, SourceTextSnapshot,
@@ -356,7 +356,11 @@ fn predefined_post_image_with_code_type(
             )
         }
         None => (
-            empty_document(kind, source_eol(descriptor_text).unwrap_or("\n")),
+            empty_document(
+                kind,
+                source_eol(descriptor_text).unwrap_or("\n"),
+                &root_version::of_set(descriptor_text),
+            ),
             true,
         ),
     };
@@ -520,13 +524,14 @@ pub fn validate_predefined_text_with_checkpoint(
         || platform_xml_publication_policy(namespace, local_name)
             != Some(PlatformXmlPublicationPolicy::ExactRootVersion)
         || root.attribute((XSI_NS, "type")) != Some(root_type(kind)?)
-        || unica_source_designer::roots::root_version_literal(text, root).as_deref()
-            != Some(ACTIVE_FORMAT_PROFILE.export_format)
+        || !root_version::is_writable(
+            unica_source_designer::roots::root_version_literal(text, root).as_deref(),
+        )
     {
         return Err(format!(
             "Predefined.xml does not match the exact {}/{} profile for {}",
-            ACTIVE_FORMAT_PROFILE.platform_line,
-            ACTIVE_FORMAT_PROFILE.export_format,
+            root_version::writable_platform_line(),
+            root_version::writable(),
             kind.as_str()
         ));
     }
@@ -2565,13 +2570,13 @@ pub fn root_type(kind: MetadataKind) -> Result<&'static str, String> {
         _ => Err(format!("{} does not own predefined data", kind.as_str())),
     }
 }
-pub fn empty_document(kind: MetadataKind, eol: &str) -> String {
+pub fn empty_document(kind: MetadataKind, eol: &str, version: &str) -> String {
     let root_type = root_type(kind).expect("domain capability validated predefined owner");
     // Новый companion наследует EOL описателя, рядом с которым живёт, и, как
     // платформенный экспорт, не несёт хвостового перевода строки.
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>{eol}<PredefinedData xmlns=\"{PREDEFINED_NS}\" xmlns:v8=\"{V8_NS}\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"{XSI_NS}\" xsi:type=\"{root_type}\" version=\"{}\">{eol}</PredefinedData>",
-        ACTIVE_FORMAT_PROFILE.export_format
+        version
     )
 }
 pub fn source_eol(text: &str) -> Result<&'static str, String> {
@@ -2746,7 +2751,11 @@ pub fn plan_predefined_resource_after_descriptor_edit<G>(
             )
         }
         None => (
-            empty_document(kind, source_eol(descriptor_post_image).unwrap_or("\n")),
+            empty_document(
+                kind,
+                source_eol(descriptor_post_image).unwrap_or("\n"),
+                &root_version::of_set(descriptor_post_image),
+            ),
             true,
         ),
     };

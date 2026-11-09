@@ -114,7 +114,8 @@ fn common_module_synonym_of_a_borrowed_module_is_local_and_keeps_unknown_flags()
                 "<CommonModule>CorpusModule</CommonModule></ChildObjects>",
             ),
         );
-        let mut descriptor = fixture_text("platform_8_3_27/cfe_borrow/extension-common-module.xml");
+        let mut descriptor =
+            fixture_text("formats/platform_xml/2.20/cfe_borrow/extension-common-module.xml");
         let start = descriptor.find("<Synonym>").unwrap();
         let end = descriptor.find("</Synonym>").unwrap() + "</Synonym>".len();
         let replacement = if local {
