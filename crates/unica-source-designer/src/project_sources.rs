@@ -30,6 +30,16 @@ use unsafe_libyaml::{
     YAML_SEQUENCE_START_EVENT, YAML_STREAM_END_EVENT,
 };
 
+// resource-limit: project.source-map-read-chunk-bytes
+// class: step
+// unit: bytes
+// scope: file
+// value: 65536
+// resource: Размер одной порции чтения карты исходников проекта и ConfigDumpInfo.xml между проверками отмены и срока.
+// status: unproven
+// origin: коммит 6ab5b211d (fix(project): harden typed health inspection)
+// problem: неизвестно
+// on-reach: файл читается следующей порцией после проверки отмены и срока
 const PROJECT_SOURCE_MAP_READ_CHUNK_BYTES: usize = 64 * 1024;
 /// The source-set name the base configuration owns. `INV-SOURCE-SINGLE-RESOLVED-ROOT`
 /// makes it the deterministic winner of default selection, so exactly one entry may

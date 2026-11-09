@@ -1,0 +1,38 @@
+{
+  "area": "Навигация и чтение",
+  "task": "Узнать файл и строки метода, чтобы открыть его вне Unica",
+  "wire": [
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/kind",
+          "eq": "Method"
+        },
+        {
+          "pointer": "/data/path",
+          "eq": "CommonModules/GoogleПереводчик/Ext/Module.bsl"
+        },
+        {
+          "pointer": "/data/lines",
+          "eq": {
+            "state": "range",
+            "from": 11,
+            "to": 19
+          }
+        },
+        {
+          "pointer": "/rev",
+          "absent": true
+        }
+      ]
+    }
+  ],
+  "id": "S308"
+}

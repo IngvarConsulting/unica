@@ -1,0 +1,23 @@
+{
+  "id": "S285",
+  "area": "Поддержка поставщика",
+  "task": "Удалить объект поставщика на замке — отказ стража поддержки",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.НастройкиПоставщика",
+        "ops": [
+          {
+            "op": "object.remove",
+            "args": {}
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; take the object off support with `supportRule.set` and the rule `off-support`"
+    }
+  ]
+}

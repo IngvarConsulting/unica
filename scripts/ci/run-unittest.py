@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import sys
-import tomllib
+import tempfile
+import time
 import traceback
 import unittest
 from pathlib import Path
@@ -27,13 +30,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results  # noqa: E402
+import python_sizes  # noqa: E402
 
 
 class Sizes:
-    """Размер теста по манифесту `.config/python-sizes.toml`.
+    """Размер теста по объявлениям модулей набора (`scripts/ci/python_sizes.py`).
 
-    Запись манифеста — `модуль`, `модуль.Класс` или `модуль.Класс.тест`;
-    побеждает самая длинная подходящая. Без записи размер — размер набора.
+    Имя — `модуль.Класс` или `модуль.Класс.тест`; побеждает самое длинное
+    подходящее. Без объявления размер — размер набора.
     """
 
     def __init__(self, medium: list[str], default: str = "small"):
@@ -41,17 +45,63 @@ class Sizes:
         self.default = default
 
     @classmethod
-    def load(cls, path: Path | None, default: str = "small") -> "Sizes":
-        if path is None or not path.is_file():
-            return cls([], default)
-        config = tomllib.loads(path.read_text(encoding="utf-8"))
-        return cls(list(config.get("medium", {}).get("entries", [])), default)
+    def declared(cls, directory: Path, default: str = "small") -> "Sizes":
+        """Размеры, объявленные модулями каталога набора."""
+        return cls(python_sizes.suite_medium(directory), default)
 
     def size_of(self, test_id: str) -> str:
         for entry in self.medium:
             if test_id == entry or test_id.startswith(entry + "."):
                 return "medium"
         return self.default
+
+
+class TempLedger:
+    """Своё TEMP на прогон и учёт того, что каждый тест в нём оставил.
+
+    Прогон получает пустой каталог и ставит его в `TEMP`/`TMP`/`TMPDIR`:
+    туда пишут и тесты, и запущенные ими процессы, а соседние прогоны — нет.
+    После теста новые записи в нём — оставленное этим тестом; их имена
+    называют тест в выводе. В конце каталог удаляется с повтором: на Windows
+    файл держит процесс, который ещё не вышел.
+    """
+
+    def __init__(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="unittest-run-"))
+        self.left: dict[str, list[str]] = {}
+        # A test may run a whole suite in-process: the outer TEMP comes back on close.
+        self.saved = ({name: os.environ.get(name) for name in ("TEMP", "TMP", "TMPDIR")}, tempfile.tempdir)
+        for name in ("TEMP", "TMP", "TMPDIR"):
+            os.environ[name] = str(self.root)
+        tempfile.tempdir = str(self.root)
+
+    def entries(self) -> set[str]:
+        try:
+            return {entry.name for entry in self.root.iterdir()}
+        except OSError:
+            return set()
+
+    def record(self, test_id: str, before: set[str]) -> list[str]:
+        new = sorted(self.entries() - before)
+        if new:
+            self.left[test_id] = new
+        return new
+
+    def close(self, stream) -> None:
+        environment, tempfile.tempdir = self.saved
+        for name, value in environment.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        for test_id, names in self.left.items():
+            print(f"временные каталоги не убраны: {test_id}: {', '.join(names)}", file=stream)
+        for _ in range(5):
+            shutil.rmtree(self.root, ignore_errors=True)
+            if not self.root.exists():
+                return
+            time.sleep(1)
+        print(f"временный каталог прогона не удалён (занят процессом): {self.root}", file=stream)
 
 
 class AllureResult(unittest.TextTestResult):
@@ -62,10 +112,19 @@ class AllureResult(unittest.TextTestResult):
     profile = "all"
     suite_name = ""
     sizes = Sizes([])
+    temp: TempLedger | None = None
 
     def startTest(self, test):
         super().startTest(test)
         self._started = (test, allure_results.now_ms())
+        self._temp_before = self.temp.entries() if self.temp is not None else set()
+
+    def stopTest(self, test):
+        super().stopTest(test)
+        if self.temp is not None:
+            left = self.temp.record(test.id(), getattr(self, "_temp_before", set()))
+            if left:
+                self.stream.writeln(f"\nоставил во временном каталоге: {test.id()}: {', '.join(left)}")
 
     def _emit(self, test, status, message=None, trace=None, *, scope_skip=False):
         if self.out is None:
@@ -154,8 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--results", type=Path, default=None, help="каталог allure-results")
     parser.add_argument("--runner", default="local")
     parser.add_argument("--profile", default="all")
-    parser.add_argument("--size", default="small", help="размер набора: умолчание для тестов без записи в манифесте")
-    parser.add_argument("--sizes", type=Path, default=None, help="манифест размеров .config/python-sizes.toml")
+    parser.add_argument("--size", default="small", help="размер набора: умолчание для тестов без объявления в модуле")
     parser.add_argument("--admit", default="", help="какие размеры гонять, через запятую; пусто — все")
     parser.add_argument("--plan-only", action="store_true", help="перечислить тесты и выйти")
     parser.add_argument("--lane", default="", help="полоса размера этой джобы: идёт в план, чтобы сайт нашёл её джобу")
@@ -163,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="queue docs-only: сохранить обнаруженные medium как намеренно пропущенные")
     args = parser.parse_args(argv)
 
-    sizes = Sizes.load(args.sizes, args.size)
+    sizes = Sizes.declared(Path(args.start_directory), args.size)
     admitted = {size.strip() for size in args.admit.split(",") if size.strip()}
     if args.scope_skip_medium and (args.profile != "queue" or admitted != {"small"} or args.lane != "small"):
         parser.error("--scope-skip-medium требует --profile queue --admit small --lane small")
@@ -201,7 +259,11 @@ def main(argv: list[str] | None = None) -> int:
     options = {"resultclass": AllureResult, "verbosity": 1}
     if args.durations is not None:
         options["durations"] = args.durations
-    result = unittest.TextTestRunner(**options).run(suite)
+    AllureResult.temp = TempLedger()
+    try:
+        result = unittest.TextTestRunner(**options).run(suite)
+    finally:
+        AllureResult.temp.close(sys.stderr)
     return 0 if result.wasSuccessful() else 1
 
 

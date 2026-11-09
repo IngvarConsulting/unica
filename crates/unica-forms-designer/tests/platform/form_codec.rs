@@ -262,7 +262,7 @@ fn form_info_projects_direct_command_action_as_execute_binding() {
     assert_eq!(action.call_type, None);
 }
 
-/// #1385: a form is registered in the platform slot of forms, which
+/// A form is registered in the platform slot of forms, which
 /// depends on the owner kind: a catalog writes its forms after its tabular
 /// sections, a document before them; templates and commands follow.
 /// rule: INV.SOURCE.CHILD-OBJECTS-PLATFORM-ORDER
@@ -686,7 +686,7 @@ fn form_compile_writes_command_properties_in_platform_order() {
 }
 
 /// Each command key `command.add` publishes is written exactly as an
-/// 8.3.27 dump writes it (#1439). Every expected block repeats, with
+/// 8.3.27 dump writes it. Every expected block repeats, with
 /// neutral names and texts, the shape of a `<Command>` from a platform
 /// dump that carries only the keys under test: tabs, element order,
 /// multilingual ToolTip, Shortcut text, Picture with `xr:Ref` and
@@ -819,7 +819,7 @@ fn form_compile_writes_the_same_command_block_as_form_command_add() {
 }
 
 /// The button value set is not the command one: 8.3.27 does not load
-/// `PictureAndText` on a form command (#1436), so compile writes nothing.
+/// `PictureAndText` on a form command, so compile writes nothing.
 #[test]
 fn form_compile_refuses_button_representation_on_command() {
     for invalid in ["PictureAndText", "None", "Compact"] {
@@ -2904,7 +2904,7 @@ fn text_document_binding_uses_the_qname_namespace_and_requires_a_path() {
 }
 
 #[test]
-fn retired_form_compiler_does_not_accept_text_document_field() {
+fn form_compiler_refuses_text_doc_as_an_unknown_element_key() {
     let error = form_compile_xml(
         &json!({
             "attributes":[{"name":"Protocol","type":"d5p1:TextDocument"}],
@@ -2913,7 +2913,10 @@ fn retired_form_compiler_does_not_accept_text_document_field() {
         "2.20",
     )
     .unwrap_err();
-    assert!(error.contains("only by item.add"), "{error}");
+    assert!(
+        error.contains("unknown element key `textDoc`") && !error.contains("item.add"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -2969,9 +2972,9 @@ fn html_document_field_matches_platform_fixture_and_preserves_requested_properti
         .filter(|node| node.is_element())
         .map(|node| node.tag_name().name())
         .collect::<Vec<_>>();
-    // Канон ревью #1389 задаёт общий порядок HTML- и TextDocumentField.
+    // Канон задаёт общий порядок HTML- и TextDocumentField.
     // Положение SkipOnInput после ReadOnly подтверждено живым кругом
-    // 8.3.27.2074 при ревью #1389; выгрузка HTML ниже сверяет значения
+    // 8.3.27.2074 при сверке; выгрузка HTML ниже сверяет значения
     // DataPath, SkipOnInput, TitleLocation и companions.
     assert_eq!(
         child_names,
@@ -3235,7 +3238,7 @@ const DUMP_SHAPED_REFRESH_COMMAND: &str = concat!(
 );
 
 /// A form edit takes the line endings of the form: a CRLF export stays CRLF,
-/// an LF or mixed form keeps them as they were (#1996).
+/// an LF or mixed form keeps them as they were.
 #[test]
 fn form_edit_inserts_lines_with_the_form_line_ending() {
     let form = |newline: &str| {

@@ -1,7 +1,7 @@
 use super::super::info::{parse_typed_meta_local_info, parse_typed_meta_local_info_for_source};
 
 use serde_json::json;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::{MetaElementData, MetaSupportStatus};
 use unica_source_contract::SourceSetKind;
 
@@ -22,7 +22,7 @@ fn read(
     owner: &str,
     source_kind: Option<SourceSetKind>,
 ) -> unica_metadata::validation_subject::MetaLocalInfo {
-    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, owner).unwrap();
+    let address = MetadataAddress::parse_logical(owner).unwrap();
     match source_kind {
         Some(kind) => parse_typed_meta_local_info_for_source(
             xml.as_bytes(),

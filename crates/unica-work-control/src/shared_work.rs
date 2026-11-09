@@ -569,7 +569,7 @@ mod tests {
     type TestKey = (String, String, String, String, &'static str);
     fn delivery(sha256: &str) -> TestKey {
         (
-            "rlm-tools-bsl".into(),
+            "bsl-analyzer".into(),
             "1.33.0".into(),
             "aarch64-apple-darwin".into(),
             sha256.into(),

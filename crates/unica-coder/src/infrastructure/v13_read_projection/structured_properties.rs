@@ -4,7 +4,7 @@
 use super::{bounded_prop, safe_prop, LogicalReader, Map, NodeKind, Value};
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum WriteTarget {
+pub enum WriteTarget {
     SelfNode,
     Parent,
     Package,
@@ -15,7 +15,7 @@ pub(crate) enum WriteTarget {
     dead_code,
     reason = "read-profile role metadata is consumed by the Can parity guard"
 )]
-pub(crate) enum PropertyRole {
+pub enum PropertyRole {
     WriteName {
         operation: &'static str,
         target: WriteTarget,
@@ -26,7 +26,7 @@ pub(crate) enum PropertyRole {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PropertySpec {
+pub struct PropertySpec {
     pub name: &'static str,
     // None: an existing specialized builder supplies this value.
     input: Option<&'static str>,
@@ -305,7 +305,7 @@ pub(super) fn direct_props(
     dead_code,
     reason = "contextual read-profile metadata is verified by the Can parity guard"
 )]
-pub(crate) fn property(
+pub fn property(
     reader: LogicalReader,
     kind: NodeKind,
     address: &unica_address::address::QualifiedAddress,

@@ -5,7 +5,7 @@ use roxmltree::Document;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::{
     MetaCollection, MetaDiagnosticCode, MetaEditOperation, MetaPublicationAction,
     MetaPublicationPlanEntry, MetaPublicationResource,
@@ -1064,20 +1064,17 @@ fn typed_child_logical_address(
         }
         _ => unreachable!(),
     };
-    MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{object_kind}.{object_name}.{child_kind}.{name}"),
-    )
-    .map_err(|_| {
-        unica_metadata::request::MetaFailure::from(
-            crate::edit::typed_diagnostic(
-                MetaDiagnosticCode::ProviderUnavailable,
-                "typed child logical address cannot be represented",
-                Some("collection"),
+    MetadataAddress::parse_logical(&format!("{object_kind}.{object_name}.{child_kind}.{name}"))
+        .map_err(|_| {
+            unica_metadata::request::MetaFailure::from(
+                crate::edit::typed_diagnostic(
+                    MetaDiagnosticCode::ProviderUnavailable,
+                    "typed child logical address cannot be represented",
+                    Some("collection"),
+                )
+                .with_metadata_path(owner.clone()),
             )
-            .with_metadata_path(owner.clone()),
-        )
-    })
+        })
 }
 
 fn read_typed_child_file(
@@ -1267,4 +1264,14 @@ impl TypedChildTreeError {
 
 pub type TypedChildTree = (Vec<(PathBuf, Vec<u8>)>, Vec<PathBuf>);
 
+// resource-limit: metadata.child-tree-depth
+// class: format
+// unit: depth
+// scope: traversal
+// value: 64
+// resource: Глубина обхода дерева дочерних ресурсов объекта метаданных.
+// status: unproven
+// origin: #309
+// problem: неизвестно
+// on-reach: отказ ProviderUnavailable «typed child resource topology is unavailable»
 const TYPED_CHILD_TREE_MAX_DEPTH: usize = 64;

@@ -150,7 +150,7 @@ fn translations(xml: &str, tag: &str, key: &str, name: &str, text: &str) -> Vec<
         })
         .collect()
 }
-/// #1257: a plain-string title is written in the default language of the
+/// A plain-string title is written in the default language of the
 /// source set; a set keeps the translations of the other languages.
 #[test]
 fn dcs_titles_write_the_configuration_default_language() {
@@ -316,7 +316,7 @@ fn typed_dcs_role_changes_the_existing_field_instead_of_a_skipped_renamed_target
             && node.tag_name().name() == "dimension"
             && node.text() == Some("true")));
 }
-/// Поле с составным `dataPath` адресуется `Field.A\.B` (#1356):
+/// Поле с составным `dataPath` адресуется `Field.A\.B`:
 /// `field.set` и `fieldRole.set` по этому адресу меняют именно его,
 /// а не поле `A` и не несуществующую ветвь `B`.
 #[test]
