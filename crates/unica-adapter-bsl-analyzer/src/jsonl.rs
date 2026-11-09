@@ -237,6 +237,9 @@ impl DiagnosticsJsonlParser {
                 if event.version.trim().is_empty() {
                     return Err(StreamErrorKind::EmptyVersion);
                 }
+                if event.line_base.unwrap_or(0) != 0 || event.column_base.unwrap_or(0) != 0 {
+                    return Err(StreamErrorKind::CoordinateBase);
+                }
                 self.started = true;
                 self.discovered = Some(event.total_files);
                 self.version = Some(event.version);
@@ -378,6 +381,10 @@ enum JsonlEvent {
 struct StartEvent {
     total_files: usize,
     version: String,
+    /// bsl-analyzer 0.4.4+ states the coordinate base of every finding; the
+    /// adapter reads 0-based lines and columns only.
+    line_base: Option<u32>,
+    column_base: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1094,6 +1101,38 @@ mod tests {
                 parser.finish().outcome.error.unwrap().code,
                 "diagnostics_invalid"
             );
+        }
+    }
+
+    /// rule: INV.ANALYSIS.ANALYZER-JSONL-COMPLETION
+    /// bsl-analyzer 0.4.4+ states the coordinate base in `start`: the adapter
+    /// reads 0-based coordinates, so a stream on another base is invalid.
+    #[test]
+    fn start_states_a_zero_coordinate_base_or_the_stream_is_invalid() {
+        let done = r#"{"type":"done","elapsed_secs":0.0,"total_files":0,"total_diagnostics":0,"failed_files":0}"#;
+        let mut accepted = parser();
+        feed(
+            &mut accepted,
+            &[
+                r#"{"type":"start","total_files":0,"version":"0.4.5","line_base":0,"column_base":0}"#,
+                done,
+            ],
+        );
+        let accepted = accepted.finish();
+        assert!(
+            accepted.outcome.error.is_none(),
+            "{:?}",
+            accepted.outcome.error
+        );
+        for start in [
+            r#"{"type":"start","total_files":0,"version":"0.4.5","line_base":1,"column_base":0}"#,
+            r#"{"type":"start","total_files":0,"version":"0.4.5","line_base":0,"column_base":1}"#,
+        ] {
+            let mut rejected = parser();
+            feed(&mut rejected, &[start, done]);
+            let error = rejected.finish().outcome.error.unwrap();
+            assert_eq!(error.code, "diagnostics_invalid", "{start}");
+            assert!(error.message.contains("line_base"), "{}", error.message);
         }
     }
 
