@@ -389,7 +389,7 @@ fn public_interface_edit_prioritizes_newer_metadata_owner_over_older_command_int
 
     let owner_path = context.cwd.join("src/Subsystems/AuditSubsystem.xml");
     let newer_owner = subsystem_document("AuditSubsystem", "true")
-        .replacen(r#"version="2.20""#, r#"version="2.21""#, 1)
+        .replacen(r#"version="2.20""#, r#"version="2.23""#, 1)
         .into_bytes();
     fs::write(&owner_path, &newer_owner).unwrap();
 
@@ -423,7 +423,7 @@ fn public_interface_edit_prioritizes_newer_metadata_owner_over_older_command_int
     assert!(!outcome.ok, "{outcome:?}");
     let diagnostic = &outcome.diagnostics.as_ref().unwrap()["formatCompatibility"];
     assert_eq!(diagnostic["code"], "platformVersionUnsupported");
-    assert_eq!(diagnostic["actualFormat"], "2.21");
+    assert_eq!(diagnostic["actualFormat"], "2.23");
     let warning = outcome.warnings.join("\n");
     assert!(warning.contains("1С 8.5"), "{warning}");
     assert!(!warning.contains("миграц"), "{warning}");
@@ -583,7 +583,7 @@ fn interface_edit_classifies_ci_and_metadata_owner_as_one_dependency_set() {
     let (owner_path, _) = write_valid_subsystem_owner(&context, ci_rel);
     let newer_owner = subsystem_document("AuditSubsystem", "true").replacen(
         r#"version="2.20""#,
-        r#"version="2.21""#,
+        r#"version="2.23""#,
         1,
     );
     fs::write(&owner_path, &newer_owner).unwrap();
@@ -599,8 +599,14 @@ fn interface_edit_classifies_ci_and_metadata_owner_as_one_dependency_set() {
 
     assert!(!outcome.ok, "{outcome:?}");
     let errors = outcome.errors.join("\n");
-    assert!(errors.contains("newer than supported 2.20"), "{outcome:?}");
-    assert!(errors.contains("1C 8.5 support is planned"), "{outcome:?}");
+    assert!(
+        errors.contains("newer than the newest supported 2.22"),
+        "{outcome:?}"
+    );
+    assert!(
+        errors.contains("does not support this export yet"),
+        "{outcome:?}"
+    );
     assert!(!errors.contains("re-export the source"), "{outcome:?}");
     assert_eq!(fs::read(&ci_path).unwrap(), ci_before);
     assert_eq!(fs::read_to_string(&owner_path).unwrap(), newer_owner);

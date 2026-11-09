@@ -17,7 +17,7 @@ pub fn validate_role_edit_descriptor(raw: &[u8], role_name: &str) -> Result<(), 
     {
         return Err(format!(
             "role descriptor must use exact MDClasses format {}",
-            crate::dialect::root_version::writable()
+            crate::dialect::root_version::writable_formats()
         ));
     }
     let roles = direct_role_children(root, "Role", ROLE_METADATA_NAMESPACE);

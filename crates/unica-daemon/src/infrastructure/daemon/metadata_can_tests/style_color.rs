@@ -341,7 +341,7 @@ fn canonical_style_color_bad_arguments_are_closed_and_saved_input_changes_are_fe
 #[test]
 fn canonical_style_color_contract_does_not_outlive_parent_format_admission() {
     for file in ["Configuration.xml", "StyleItems/Accent.xml"] {
-        for version in ["2.19", "2.21", "2.&#50;0"] {
+        for version in ["2.19", "2.23", "2.&#50;0"] {
             let fixture = color_fixture("#123456");
             let runtime = runtime();
             let path = fixture.source.join(file);

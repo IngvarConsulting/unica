@@ -240,6 +240,15 @@ pub(crate) fn platform_xml_profile_for_export_format(raw: &str) -> Option<crate:
     PlatformXmlRelease::for_export_format(raw).map(crate::SourceProfile::PlatformXmlRelease)
 }
 
+/// Whether codecs write sources of `profile` (INV.SOURCE.WRITABLE-PROFILE).
+pub(crate) const fn is_writable_platform_xml_profile(profile: crate::SourceProfile) -> bool {
+    matches!(
+        profile,
+        crate::SourceProfile::PlatformXml8_3_27Format2_20
+            | crate::SourceProfile::PlatformXmlRelease(_)
+    )
+}
+
 /// The platform lines whose capabilities are described, with their text.
 pub const DESCRIBED_PLATFORM_LINES: &[(PlatformLine, &str)] = &[
     (PlatformLine::new(8, 3, 27), "8.3.27"),

@@ -1015,15 +1015,16 @@ impl ApplyAdmission {
                 "admitted source does not provide writable Platform XML code",
             ));
         }
-        let profile = (binding.source_profile()
-            == SourceProfile::platform_xml_8_3_27_format_2_20())
-        .then_some(binding.source_profile())
-        .ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::ProviderUnavailable,
-                "admitted source has no supported Platform XML profile",
-            )
-        })?;
+        let profile = binding
+            .source_profile()
+            .is_writable_platform_xml()
+            .then_some(binding.source_profile())
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::ProviderUnavailable,
+                    "admitted source has no supported Platform XML profile",
+                )
+            })?;
         let expected_format = binding
             .source_profile()
             .serialization_format()
@@ -1063,7 +1064,7 @@ impl ApplyAdmission {
                 binding.source_kind(),
                 SourceSetKind::Configuration | SourceSetKind::Extension
             )
-            || binding.source_profile() != SourceProfile::platform_xml_8_3_27_format_2_20()
+            || !binding.source_profile().is_writable_platform_xml()
         {
             return Err(ApplyPlanError::new(
                 ApplyPlanErrorKind::ProviderUnavailable,
@@ -1115,15 +1116,16 @@ impl ApplyAdmission {
                 format!("admitted source does not provide writable Platform XML {family}"),
             ));
         }
-        let profile = (binding.source_profile()
-            == SourceProfile::platform_xml_8_3_27_format_2_20())
-        .then_some(binding.source_profile())
-        .ok_or_else(|| {
-            ApplyPlanError::new(
-                ApplyPlanErrorKind::ProviderUnavailable,
-                "admitted source has no supported Platform XML profile",
-            )
-        })?;
+        let profile = binding
+            .source_profile()
+            .is_writable_platform_xml()
+            .then_some(binding.source_profile())
+            .ok_or_else(|| {
+                ApplyPlanError::new(
+                    ApplyPlanErrorKind::ProviderUnavailable,
+                    "admitted source has no supported Platform XML profile",
+                )
+            })?;
         let expected_format = binding
             .source_profile()
             .serialization_format()
