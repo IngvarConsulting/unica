@@ -1405,6 +1405,7 @@ pub fn cf_edit_panel_entry_xml(
 pub fn cf_edit_set_home_page(
     value: &Value,
     config_dir: &Path,
+    format_version: &str,
 ) -> Result<CfEditExternalFilePlan, String> {
     let layout = cf_edit_json_object(value, "set-home-page value must be valid JSON object")?;
     if layout.is_empty() {
@@ -1452,7 +1453,6 @@ pub fn cf_edit_set_home_page(
          \t<WorkingAreaTemplate>{template}</WorkingAreaTemplate>\r\n\
          {columns_xml}\r\n\
          </HomePageWorkArea>",
-        format_version = root_version::writable()
     );
     Ok(CfEditExternalFilePlan {
         path: config_dir.join("Ext/HomePageWorkArea.xml"),
@@ -2576,7 +2576,8 @@ pub fn cf_edit_plan_image(
                 artifacts.push(path);
             }
             "set-home-page" => {
-                let plan = cf_edit_set_home_page(&op_value, config_dir)?;
+                let plan =
+                    cf_edit_set_home_page(&op_value, config_dir, &root_version::of_set(&text))?;
                 let path = plan.path.clone();
                 external_files.insert(plan.path, plan.bytes);
                 modify_count += 1;

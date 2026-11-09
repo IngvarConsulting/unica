@@ -356,7 +356,11 @@ fn predefined_post_image_with_code_type(
             )
         }
         None => (
-            empty_document(kind, source_eol(descriptor_text).unwrap_or("\n")),
+            empty_document(
+                kind,
+                source_eol(descriptor_text).unwrap_or("\n"),
+                &root_version::of_set(descriptor_text),
+            ),
             true,
         ),
     };
@@ -2566,13 +2570,13 @@ pub fn root_type(kind: MetadataKind) -> Result<&'static str, String> {
         _ => Err(format!("{} does not own predefined data", kind.as_str())),
     }
 }
-pub fn empty_document(kind: MetadataKind, eol: &str) -> String {
+pub fn empty_document(kind: MetadataKind, eol: &str, version: &str) -> String {
     let root_type = root_type(kind).expect("domain capability validated predefined owner");
     // Новый companion наследует EOL описателя, рядом с которым живёт, и, как
     // платформенный экспорт, не несёт хвостового перевода строки.
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>{eol}<PredefinedData xmlns=\"{PREDEFINED_NS}\" xmlns:v8=\"{V8_NS}\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"{XSI_NS}\" xsi:type=\"{root_type}\" version=\"{}\">{eol}</PredefinedData>",
-        root_version::writable()
+        version
     )
 }
 pub fn source_eol(text: &str) -> Result<&'static str, String> {
@@ -2747,7 +2751,11 @@ pub fn plan_predefined_resource_after_descriptor_edit<G>(
             )
         }
         None => (
-            empty_document(kind, source_eol(descriptor_post_image).unwrap_or("\n")),
+            empty_document(
+                kind,
+                source_eol(descriptor_post_image).unwrap_or("\n"),
+                &root_version::of_set(descriptor_post_image),
+            ),
             true,
         ),
     };

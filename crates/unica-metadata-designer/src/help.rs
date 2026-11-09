@@ -138,7 +138,7 @@ use unica_metadata::{
     MetaPublicationPlanEntry, MetaPublicationResource,
 };
 use unica_source_contract::discovery::ProjectDiscoveryRead;
-use unica_source_designer::read::{path_exists, path_is_dir, read_utf8_sig_snapshot};
+use unica_source_designer::read::{path_exists, path_is_dir, read_string, read_utf8_sig_snapshot};
 
 use std::path::Path;
 use unica_address::source_target::MetadataAddress;
@@ -197,7 +197,14 @@ pub fn plan_help_resource_after_descriptor_edit<G>(
             ));
         }
     }
-    let format_version = root_version::writable().to_string();
+    let owner_xml = read_string(reader, descriptor_path).map_err(|error| {
+        failure(
+            owner,
+            MetaDiagnosticCode::TargetNotFound,
+            format!("owner descriptor is unreadable: {error}"),
+        )
+    })?;
+    let format_version = root_version::of_set(&owner_xml);
     let help_xml = help_metadata_xml(lang, &format_version);
     validate_help_xml(&help_xml_path, &help_xml)
         .map_err(|message| failure(owner, MetaDiagnosticCode::ValidationFailed, message))?;

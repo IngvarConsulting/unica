@@ -5129,7 +5129,7 @@ pub(crate) mod tests {
         std::fs::create_dir_all(form_content.parent().unwrap()).unwrap();
         std::fs::write(
             &form_content,
-            minimal_typed_form_content("Document", "Order").as_bytes(),
+            minimal_typed_form_content("Document", "Order", "2.20").as_bytes(),
         )
         .unwrap();
         let child_before = std::fs::read(&child_descriptor).unwrap();

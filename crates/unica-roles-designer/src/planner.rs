@@ -301,7 +301,7 @@ pub fn parse_role_operation(
         }
     }
 }
-fn minimal_rights_xml() -> String {
+fn minimal_rights_xml(version: &str) -> String {
     format!(
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
@@ -311,7 +311,7 @@ fn minimal_rights_xml() -> String {
             "\t<independentRightsOfChildObjects>false</independentRightsOfChildObjects>\n",
             "</Rights>\n",
         ),
-        crate::dialect::root_version::writable()
+        version
     )
 }
 /// Ensures `<object><name>X</name></object>` exists in the rights document.
@@ -609,7 +609,7 @@ pub fn stage_role_plan(
             unica_source_designer::registration::stage_new_file(
                 staged,
                 &rights_relative,
-                minimal_rights_xml().as_bytes(),
+                minimal_rights_xml(authority.expected_format()).as_bytes(),
                 &name_path,
             )?;
             touched.push(rights_relative);
