@@ -58,7 +58,6 @@ unica-templates-designer = { path = "../unica-templates-designer" }
 unica-forms-designer = { path = "../unica-forms-designer" }
 unica-metadata-designer = { path = "../unica-metadata-designer" }
 unica-xdto-designer = { path = "../unica-xdto-designer" }
-unica-runner = { path = "../unica-runner" }
 unica-adapter-v8-runner = { path = "../unica-adapter-v8-runner" }
 unica-workspace = { path = "../unica-workspace" }
 unica-redaction = { path = "../unica-redaction" }

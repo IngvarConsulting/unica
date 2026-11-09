@@ -1,5 +1,5 @@
 use serde_json::{Map, Value};
-use unica_runner::admission::{runtime_risk_notice, RuntimeRiskOutcome};
+use unica_execution::runner::admission::{runtime_risk_notice, RuntimeRiskOutcome};
 #[test]
 fn canonical_runtime_surface_has_an_explicit_risk_classification() {
     for operation in super::tool_contracts::RUNTIME_OPERATIONS {
