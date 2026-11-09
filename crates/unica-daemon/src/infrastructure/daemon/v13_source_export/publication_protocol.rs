@@ -176,7 +176,7 @@ pub(super) fn execute(
             )
         }
     };
-    let mut guard = match unica_adapter_v8_runner::full_dump::prepare_publication(
+    let mut guard = match unica_coder::infrastructure::daemon_adapters::runtime::prepare_publication(
         &prepared.context,
         FullDumpSelection {
             config_path: &prepared.context.workspace_root.join(CONFIG_NAME),
@@ -262,7 +262,7 @@ pub(super) fn execute(
                     return reply(nonce.as_deref().unwrap(), "selected", "reject");
                 };
                 let check = guard.recheck_before_dispatch()
-                    .and_then(|()| unica_adapter_v8_runner::full_dump::attest_selected_local(&mut guard, &executable, runner, &cancellation))
+                    .and_then(|()| unica_coder::infrastructure::daemon_adapters::runtime::attest_selected_local(&mut guard, &executable, runner, &cancellation))
                     .and_then(|()| if prepared.dry_run { Ok(()) } else { guard.prepare_dispatch_parent(&cancellation) });
                 if let Err(error) = check {
                     problem = Some(failure(&root, error));

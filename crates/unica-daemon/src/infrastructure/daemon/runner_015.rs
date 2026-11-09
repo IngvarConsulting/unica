@@ -174,7 +174,11 @@ fn with_projected_config_in_store<T>(
     let (base, local) = project(base, local, &root)?;
     let directory = store.directory().to_path_buf();
     let config = directory.join(BASE_NAME);
-    unica_adapter_v8_runner::full_dump::write_projection(store, &base, local.as_ref())?;
+    unica_coder::infrastructure::daemon_adapters::runtime::write_projection(
+        store,
+        &base,
+        local.as_ref(),
+    )?;
     let mut projected = command.clone();
     projected.args[position] = config.display().to_string();
     store.verify()?;

@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Barrier, Condvar, Mutex};
 use std::thread;
 use std::time::Instant;
-use unica_adapter_v8_runner::request::RuntimeJobRequest;
+use unica_coder::infrastructure::daemon_adapters::runtime::RuntimeJobRequest;
 use unica_execution_contract::invocation::InvocationStatus;
 use unica_runner::operation::RuntimeJobOperation;
 use unica_work_control::provider_deadline::ProviderDeadline;
@@ -11810,7 +11810,7 @@ fn default_operation_paths_reach_providers_without_a_deadline() {
     assert!(viewed.ok, "{viewed:?}");
 
     let (provider, analyzer) =
-        unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::recording_provider();
+        unica_coder::infrastructure::daemon_adapters::diagnostics_probe::recording_provider();
     crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
         .with(|slot| *slot.borrow_mut() = Some(provider));
     let check = admit(
@@ -11887,7 +11887,7 @@ fn execution_boundary_names_a_changed_workspace_only_for_a_lost_binding() {
 /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
 #[test]
 fn module_check_names_why_the_analyzer_gave_no_result() {
-    use unica_adapter_bsl_analyzer::adapter::AnalyzerRunFailureKind;
+    use unica_coder::infrastructure::daemon_adapters::diagnostics_probe::AnalyzerRunFailureKind;
     let workspace =
         scheduled_handler_workspace("CONFIGURATION", "Procedure Run() Export\nEndProcedure\n");
     let runtime = bootstrap_runtime();
@@ -11938,7 +11938,7 @@ fn module_check_names_why_the_analyzer_gave_no_result() {
             .unwrap();
             crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| {
                 *slot.borrow_mut() =
-                    Some(unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::failing_provider(kind))
+                    Some(unica_coder::infrastructure::daemon_adapters::diagnostics_probe::failing_provider(kind))
             });
             let checked = service.execute(&check, cancellation.clone()).unwrap();
             crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
@@ -12429,7 +12429,7 @@ fn module_check_fails_a_variable_declared_after_methods() {
         .begin_execution(&cancellation)
         .unwrap();
         let (provider, _analyzer) =
-            unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::recording_provider();
+            unica_coder::infrastructure::daemon_adapters::diagnostics_probe::recording_provider();
         crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
             .with(|slot| *slot.borrow_mut() = Some(provider));
         let checked = service.execute(&check, cancellation.clone());
@@ -15169,7 +15169,7 @@ fn daemon_long_work_capabilities_handoff_before_wait_and_preserve_exact_ownershi
     .unwrap();
     let runtime_service = Arc::new(RuntimeJobService::new(
         runtime_authority.path(),
-        Arc::new(unica_adapter_v8_runner::backend::CoordinationOnlyRunner),
+        Arc::new(unica_coder::infrastructure::daemon_adapters::runtime::CoordinationOnlyRunner),
     ));
 
     for kind in [
