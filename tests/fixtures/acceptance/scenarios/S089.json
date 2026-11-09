@@ -1,0 +1,107 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить предопределённый элемент и уточнить его описание по адресу элемента одним пакетом (превью)",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "predefinedItem.add",
+            "args": {
+              "items": [
+                {
+                  "name": "Рубль",
+                  "id": "a1b2c3d4-1111-4111-8111-111111111111"
+                }
+              ]
+            }
+          },
+          {
+            "op": "predefinedItem.set",
+            "args": {
+              "at": "main:Catalog.Валюты.PredefinedItem.Рубль",
+              "values": {
+                "description": "Российский рубль"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        },
+        {
+          "pointer": "/data/executable",
+          "eq": true
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "exists",
+          "path": "src/Catalogs/Валюты/Ext/Predefined.xml",
+          "eq": false
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Ext/Predefined.xml",
+          "select": ".//{*}Item/{*}Name",
+          "eq": [
+            "Рубль"
+          ]
+        },
+        {
+          "kind": "xml",
+          "path": "src/Catalogs/Валюты/Ext/Predefined.xml",
+          "select": ".//{*}Item/{*}Description",
+          "eq": [
+            "Российский рубль"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты.PredefinedItem.Рубль"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/id",
+          "eq": "a1b2c3d4-1111-4111-8111-111111111111"
+        },
+        {
+          "pointer": "/data/props/description",
+          "eq": "Российский рубль"
+        }
+      ]
+    }
+  ],
+  "id": "S089"
+}

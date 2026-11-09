@@ -3,7 +3,7 @@ pub mod info;
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 
 // Публикуемые схемы читает ECMA-262: там `\p{...}` без флага `u` — это
 // литеральная `p`, а не класс символов. Поэтому наружу уходит сегментная форма
@@ -191,7 +191,7 @@ pub fn parse_role_edit_request(
             "metadataPath role name must be a valid 1C identifier",
         ));
     }
-    let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_metadata_path)
+    let metadata_path = MetadataAddress::parse_logical(raw_metadata_path)
         .map_err(|error| request_error("metadata_address_invalid", error.to_string()))?;
 
     let raw_operations = args
@@ -1015,5 +1015,3 @@ mod tests {
 
 pub mod applicability;
 pub mod operations;
-
-pub mod recovery;

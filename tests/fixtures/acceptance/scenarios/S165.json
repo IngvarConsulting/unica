@@ -1,0 +1,16 @@
+{
+  "area": "Код BSL",
+  "task": "Открыть конкретный метод модуля",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:CommonModule.GoogleПереводчик.Method.ПеревестиТекст"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S165"
+}

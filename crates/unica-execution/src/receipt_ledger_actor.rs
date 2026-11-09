@@ -18,9 +18,29 @@ use std::time::{Duration, Instant};
 use unica_execution_contract::invocation::SafeIdentityHash;
 use unica_work_control::operation_deadline::OperationDeadline;
 
+// resource-limit: receipt.ledger-actor-queue
+// class: concurrency
+// unit: count
+// scope: daemon
+// value: 64
+// resource: Ёмкость очереди команд к актору журнала квитанций.
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: отправитель ждёт места в очереди до своего срока, затем DeadlineExceeded
 const RECEIPT_LEDGER_CHANNEL_CAPACITY: usize = 64;
 const READY: u8 = 0;
 const RECOVERY_REQUIRED: u8 = 1;
+// resource-limit: receipt.ledger-enqueue-retry
+// class: step
+// unit: ms
+// scope: daemon
+// value: 1
+// resource: Пауза перед повторной постановкой команды в заполненную очередь актора журнала квитанций.
+// status: unproven
+// origin: коммит 7f6b8536e (feat(v13): add receipt actor and exact recovery)
+// problem: неизвестно
+// on-reach: попытки повторяются до срока операции, затем ReceiptLedgerError::DeadlineExceeded
 const ENQUEUE_RETRY_SLICE: Duration = Duration::from_millis(1);
 
 struct HeavyResultSlot {
@@ -3923,7 +3943,7 @@ mod tests {
         }
     }
 
-    /// #1387: a step queued behind a slow one starts with little of its
+    /// A step queued behind a slow one starts with little of its
     /// caller's deadline left. Once begun it is held to the actor's running
     /// floor from its own start, not to the caller's remainder: overrunning
     /// the caller's deadline is neither uncertain nor a fail-stop.
