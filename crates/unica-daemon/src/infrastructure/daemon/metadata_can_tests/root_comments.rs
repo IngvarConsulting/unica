@@ -212,18 +212,19 @@ fn medium_root_comments_preview_publish_read_and_repeat_preserve_native_companio
                 .as_object()
                 .unwrap()
                 .len(),
+            // The schema publishes canonical names only; aliases stay accepted.
             if kind == "FunctionalOption" {
-                6
-            } else if kind == "WSReference" {
-                4
-            } else if kind == "StyleItem" || kind == "Language" {
-                // Comment, its alias and Value or LanguageCode.
                 3
-            } else if kind == "DocumentNumerator" {
-                // Five numerator scalars plus Comment and its alias.
-                7
-            } else {
+            } else if kind == "WSReference" {
                 2
+            } else if kind == "StyleItem" || kind == "Language" {
+                // Comment and Value or LanguageCode.
+                2
+            } else if kind == "DocumentNumerator" {
+                // Five numerator scalars plus Comment.
+                6
+            } else {
+                1
             },
             "{at}"
         );

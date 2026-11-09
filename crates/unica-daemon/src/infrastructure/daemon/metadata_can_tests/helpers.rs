@@ -227,7 +227,8 @@ pub(super) fn assert_parity(
 pub(super) fn assert_props_can_and_preview(
     at: &str,
     preview_args: Value,
-    samples: &[(Value, bool)],
+    compatibility_preview: Option<Value>,
+    samples: &[(Value, bool, bool)],
 ) {
     let fixture = Fixture::new("workspace");
     let runtime = runtime();
@@ -257,8 +258,17 @@ pub(super) fn assert_props_can_and_preview(
     assert!(contract["exampleArgs"].get("at").is_none());
     let oracle = jsonschema::validator_for(schema).expect("Props Can publishes valid JSON Schema");
     assert!(oracle.is_valid(&preview_args), "{at}: {preview_args}");
-    for (args, expected) in samples {
-        assert_eq!(oracle.is_valid(args), *expected, "{at}: {args}");
+    let binding = fixture.binding(false);
+    for (args, published, accepted) in samples {
+        assert_eq!(oracle.is_valid(args), *published, "published {at}: {args}");
+        let parsed = parse(&binding, at, "props.set", args);
+        assert_eq!(parsed.is_ok(), *accepted, "parser {at}: {args}: {parsed:?}");
+    }
+    if let Some(alias_args) = &compatibility_preview {
+        assert!(
+            !oracle.is_valid(alias_args),
+            "compatibility spellings stay unpublished: {at}: {alias_args}"
+        );
     }
     for args in [
         json!({}),
@@ -282,29 +292,31 @@ pub(super) fn assert_props_can_and_preview(
         project_before
     );
 
-    let preview = call(
-        &runtime,
-        &fixture,
-        ToolIdentity::Apply,
-        json!({"at":at,"ops":[{"op":"props.set","args":preview_args}]}),
-    );
-    assert!(preview.ok, "real props.set preview at {at}: {preview:?}");
-    let planned = preview.data.unwrap();
-    assert_eq!(planned["mode"], "preview");
-    assert!(planned["executionToken"]
-        .as_str()
-        .is_some_and(|token| !token.is_empty()));
-    assert!(planned["effects"]
-        .as_u64()
-        .is_some_and(|effects| effects > 0));
-    assert_eq!(
-        unica_workspace::test_support::tree_snapshot(&fixture.source),
-        before
-    );
-    assert_eq!(
-        std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap(),
-        project_before
-    );
+    for preview_args in std::iter::once(preview_args).chain(compatibility_preview) {
+        let preview = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":at,"ops":[{"op":"props.set","args":preview_args}]}),
+        );
+        assert!(preview.ok, "real props.set preview at {at}: {preview:?}");
+        let planned = preview.data.unwrap();
+        assert_eq!(planned["mode"], "preview");
+        assert!(planned["executionToken"]
+            .as_str()
+            .is_some_and(|token| !token.is_empty()));
+        assert!(planned["effects"]
+            .as_u64()
+            .is_some_and(|effects| effects > 0));
+        assert_eq!(
+            unica_workspace::test_support::tree_snapshot(&fixture.source),
+            before
+        );
+        assert_eq!(
+            std::fs::read(fixture.workspace.join("v8project.yaml")).unwrap(),
+            project_before
+        );
+    }
 }
 
 pub(super) fn changed_paths(

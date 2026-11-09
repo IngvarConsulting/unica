@@ -17,10 +17,7 @@ fn ws_reference_url_can_preview_publication_preserve_every_neighbor_and_noop() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(
-        keys,
-        BTreeSet::from(["LocationURL", "locationURL", "Comment", "comment"])
-    );
+    assert_eq!(keys, BTreeSet::from(["LocationURL", "Comment"]));
     let initial = view(&runtime, &fixture, AT);
     assert!(initial["can"].as_array().unwrap().iter().all(|v| !matches!(
         v["op"].as_str(),
@@ -351,8 +348,8 @@ fn mixed_url_comment_and_extension_contract() {
     let keys = can["argsSchema"]["properties"]["values"]["properties"]
         .as_object()
         .unwrap();
-    assert_eq!(keys.len(), 2);
-    assert!(keys.contains_key("Comment") && keys.contains_key("comment"));
+    assert_eq!(keys.len(), 1);
+    assert!(keys.contains_key("Comment"));
     publish(
         &runtime,
         &extension,
