@@ -11,6 +11,10 @@
 use std::cmp::Ordering;
 use std::fmt;
 
+/// The oldest compatibility mode a set may be edited in; a set in an older
+/// mode is read, searched, analysed and checked, but not edited.
+pub const MINIMUM_EDITABLE_MODE: [u32; 3] = [8, 3, 8];
+
 /// A compatibility mode as the set records it: `DontUse` (the behaviour of the
 /// platform line) or `Version8_3_12` and the like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -50,6 +54,12 @@ impl CompatibilityMode {
             Self::DontUse => None,
             Self::Version(version) => Some(version),
         }
+    }
+
+    /// Whether a set in this mode may be edited (INV.SOURCE.WRITABLE-PROFILE):
+    /// a mode older than [`MINIMUM_EDITABLE_MODE`] leaves the set read-only.
+    pub fn editable(self) -> bool {
+        !self.below(MINIMUM_EDITABLE_MODE)
     }
 
     /// Whether the set behaves as `version` or an older one. `DontUse` is
@@ -224,6 +234,22 @@ mod tests {
             "Version8__3",
         ] {
             assert_eq!(CompatibilityMode::parse(raw), None, "{raw}");
+        }
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_set_older_than_mode_8_3_8_is_read_only() {
+        for raw in [
+            "Version8_1",
+            "Version8_2_16",
+            "Version8_3_1",
+            "Version8_3_7",
+        ] {
+            assert!(!CompatibilityMode::parse(raw).unwrap().editable(), "{raw}");
+        }
+        for raw in ["Version8_3_8", "Version8_3_27", "Version8_5_4", "DontUse"] {
+            assert!(CompatibilityMode::parse(raw).unwrap().editable(), "{raw}");
         }
     }
 

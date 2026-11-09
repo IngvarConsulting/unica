@@ -53,6 +53,40 @@ pub fn source_set_compatibility_mode(
     CompatibilityMode::parse(raw.trim())
 }
 
+/// Refuses an edit of a set whose compatibility mode is older than the
+/// oldest editable one (INV.SOURCE.WRITABLE-PROFILE): the set stays readable,
+/// and the refusal names its mode and the minimum. A set without a known mode
+/// is not refused here.
+pub fn refuse_edit_below_minimum_mode(
+    configuration: Option<&[u8]>,
+    source_kind: SourceSetKind,
+    at_path: &str,
+) -> Result<(), ApplyPlanError> {
+    let Some(mode) =
+        configuration.and_then(|bytes| source_set_compatibility_mode(bytes, source_kind))
+    else {
+        return Ok(());
+    };
+    if mode.editable() {
+        return Ok(());
+    }
+    let [major, minor, release] = unica_source_contract::compatibility::MINIMUM_EDITABLE_MODE;
+    let message = format!(
+        "the source set is read-only: its compatibility mode {mode} is older than Version{major}_{minor}_{release}, the oldest mode Unica edits; reading, search, analysis and check still work"
+    );
+    Err(
+        ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message.clone())
+            .at_path(at_path)
+            .with_diagnostics(vec![serde_json::json!({
+                "code": "compatibilityModeUnsupported",
+                "severity": "error",
+                "message": message,
+                "mode": mode.to_string(),
+                "minimumMode": format!("Version{major}_{minor}_{release}"),
+            })]),
+    )
+}
+
 /// Whether a metadata descriptor is a borrowed object: its properties name
 /// the object of the main configuration it extends.
 pub fn descriptor_is_borrowed(descriptor: &[u8]) -> bool {

@@ -1135,6 +1135,15 @@ pub fn plan_hidden_v13_apply(
     let mut staged = admission
         .staged_state()
         .map_err(|error| ApplyPlanError::staging(error, "ops"))?;
+    // A set older than the oldest editable compatibility mode is read-only.
+    let configuration = staged
+        .read(std::path::Path::new("Configuration.xml"))
+        .map_err(|error| ApplyPlanError::staging(error, request.at().to_string()))?;
+    unica_source_designer::extension_mode::refuse_edit_below_minimum_mode(
+        configuration.as_deref(),
+        binding.source_kind(),
+        &request.at().to_string(),
+    )?;
     refuse_targets_outside_writable_profile(request, binding, &mut staged)?;
     let support_warning =
         refuse_targets_on_locked_vendor_objects(request, binding, admission, &mut staged)?;

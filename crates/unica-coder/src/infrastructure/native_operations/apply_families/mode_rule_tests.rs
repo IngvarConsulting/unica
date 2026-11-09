@@ -61,7 +61,46 @@ fn a_fixed_string_longer_than_the_mode_allows_is_refused_before_publishing() {
     );
     assert_eq!(tree_snapshot(&seam.source_dir()), before);
 
-    // 100 fits every mode; only mode 8.1 allows more.
+    // 100 fits every mode Unica edits.
     plan(&seam, add_fixed_string(100)).unwrap();
-    plan(&fixture("Version8_1"), add_fixed_string(150)).unwrap();
+}
+
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn a_set_older_than_mode_8_3_8_is_read_only() {
+    let refused = fixture("Version8_3_7");
+    let before = tree_snapshot(&refused.source_dir());
+    let error = plan(&refused, add_fixed_string(10)).expect_err("mode 8.3.7 is read-only");
+    assert_eq!(error.kind(), ApplyPlanErrorKind::InvalidSource, "{error:?}");
+    let diagnostic = &error.diagnostics()[0];
+    assert_eq!(diagnostic["code"], "compatibilityModeUnsupported");
+    assert_eq!(diagnostic["mode"], "Version8_3_7");
+    assert_eq!(diagnostic["minimumMode"], "Version8_3_8");
+    assert_eq!(tree_snapshot(&refused.source_dir()), before);
+
+    plan(&fixture("Version8_3_8"), add_fixed_string(10)).unwrap();
+}
+
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn an_extension_is_read_only_by_its_own_mode() {
+    let extension = |mode: &str| {
+        let seam = ApplySeamFixture::with_kind(SourceSetKind::Extension);
+        std::fs::write(
+            seam.source_dir().join("Configuration.xml"),
+            format!(
+                r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.20"><Configuration><Properties><ObjectBelonging>Adopted</ObjectBelonging><Name>Ext</Name><ConfigurationExtensionPurpose>Customization</ConfigurationExtensionPurpose><CompatibilityMode>Version8_3_27</CompatibilityMode><ConfigurationExtensionCompatibilityMode>{mode}</ConfigurationExtensionCompatibilityMode><DefaultLanguage>Language.Русский</DefaultLanguage></Properties><ChildObjects><Language>Русский</Language><Document>First</Document><Document>Second</Document></ChildObjects></Configuration></MetaDataObject>"#
+            ),
+        )
+        .unwrap();
+        seam
+    };
+    let edit = json!({"op": "props.set", "args": {"at": "main:Document.First", "values": {"Comment": "x"}}});
+    let error = plan(&extension("Version8_3_7"), edit.clone())
+        .expect_err("the extension's own mode 8.3.7 is read-only");
+    assert_eq!(
+        error.diagnostics()[0]["code"],
+        "compatibilityModeUnsupported"
+    );
+    plan(&extension("Version8_3_8"), edit).unwrap();
 }
