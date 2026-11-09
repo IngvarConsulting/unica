@@ -689,6 +689,13 @@ fn canonical_comment_retains_a_locally_declared_default_namespace() {
     );
 }
 
+/// The writable export formats: the fixture's own first, then the newer ones.
+const WRITABLE: [&str; 3] = unica_source_designer::format_profile::WRITABLE_EXPORT_FORMATS;
+
+fn version_attribute(version: &str) -> String {
+    format!("version=\"{version}\"")
+}
+
 /// Rewrites the version of every root in the fixture's source set.
 fn set_source_version(fixture: &Fixture, version: &str) {
     fn visit(dir: &std::path::Path, version: &str) {
@@ -700,7 +707,7 @@ fn set_source_version(fixture: &Fixture, version: &str) {
                 let text = std::fs::read_to_string(&path).unwrap();
                 std::fs::write(
                     &path,
-                    text.replace("version=\"2.20\"", &format!("version=\"{version}\"")),
+                    text.replace(&version_attribute(WRITABLE[0]), &version_attribute(version)),
                 )
                 .unwrap();
             }
@@ -714,7 +721,7 @@ fn set_source_version(fixture: &Fixture, version: &str) {
 /// roots record different writable formats is refused without byte changes.
 #[test]
 fn canonical_style_color_edits_keep_the_export_format_of_the_set() {
-    for version in ["2.21", "2.22"] {
+    for version in &WRITABLE[1..] {
         let fixture = color_fixture("#123456");
         set_source_version(&fixture, version);
         let runtime = runtime();
@@ -737,17 +744,19 @@ fn canonical_style_color_edits_keep_the_export_format_of_the_set() {
             std::fs::read_to_string(fixture.source.join("StyleItems/Accent.xml")).unwrap();
         assert!(written.contains("changed"), "{version}: {written}");
         assert!(
-            written.contains(&format!("version=\"{version}\"")) && !written.contains("2.20"),
+            written.contains(&version_attribute(version))
+                && !written.contains(&version_attribute(WRITABLE[0])),
             "{version}: {written}"
         );
     }
 
     let fixture = color_fixture("#123456");
     let configuration = fixture.source.join("Configuration.xml");
-    let in_2_21 = std::fs::read_to_string(&configuration)
-        .unwrap()
-        .replace("version=\"2.20\"", "version=\"2.21\"");
-    std::fs::write(&configuration, in_2_21).unwrap();
+    let newer = std::fs::read_to_string(&configuration).unwrap().replace(
+        &version_attribute(WRITABLE[0]),
+        &version_attribute(WRITABLE[1]),
+    );
+    std::fs::write(&configuration, newer).unwrap();
     let runtime = runtime();
     let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
     let refused = call(
@@ -762,7 +771,7 @@ fn canonical_style_color_edits_keep_the_export_format_of_the_set() {
         .as_str()
         .unwrap_or_default();
     assert!(
-        message.contains("2.20") && message.contains("2.21"),
+        message.contains(WRITABLE[0]) && message.contains(WRITABLE[1]),
         "{message}"
     );
     assert_eq!(
