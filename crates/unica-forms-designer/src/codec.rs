@@ -19,6 +19,7 @@ use unica_source_designer::roots::root_version_literal;
 use unica_xml_format::text::*;
 use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
 
+pub(crate) mod attribute_remove;
 mod command_properties;
 mod conditional_appearance;
 mod dynamic_list;
