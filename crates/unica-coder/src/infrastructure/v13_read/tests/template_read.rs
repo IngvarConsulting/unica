@@ -265,7 +265,7 @@ fn retained_mxl_check_keeps_unbounded_body_read_and_format_warnings() {
     let wrapper =
         fixture_text("acceptance/workspace-mxl/src/cf/Reports/F06Report/Templates/F06Template.xml")
             .replace("F06Template", "Print")
-            .replace("version=\"2.20\"", "version=\"2.19\"");
+            .replace("version=\"2.20\"", "version=\"2.17\"");
     write(
         &fixture
             .source
