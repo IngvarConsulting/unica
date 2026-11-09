@@ -21,7 +21,9 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use unica_configuration::deadlines::CodeIntelligenceDeadlines;
+/// The deadlines the coordinator takes. The type belongs to `unica-configuration`;
+/// it is re-exported here for callers that reach analysis through this port.
+pub use unica_configuration::deadlines::CodeIntelligenceDeadlines;
 use unica_work_control::cancellation::{cancelled_error, CancellationToken};
 use unica_work_control::progress::ProgressSink;
 use unica_work_control::provider_deadline::ProviderDeadline;

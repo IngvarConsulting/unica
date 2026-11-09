@@ -560,7 +560,7 @@ fn search_selected_role(
     request: &SearchRequest,
     context: &CodeIntelligenceContext,
     cancellation: &CancellationToken,
-    deadlines: unica_configuration::deadlines::CodeIntelligenceDeadlines,
+    deadlines: unica_code_intelligence::coordinator::CodeIntelligenceDeadlines,
 ) -> Result<unica_code_intelligence::coordinator::CodeSearchExecution, String> {
     use unica_code_intelligence::coordinator::CodeSearchCoordinator;
 
@@ -1761,11 +1761,11 @@ fn bsl_structure_findings(
     cancellation: &CancellationToken,
 ) -> Result<Vec<unica_diagnostics::model::DiagnosticItem>, Box<DomainResult>> {
     use unica_address::source_target::TargetKind;
-    use unica_bsl_parser::MISPLACED_VARIABLE_MESSAGE;
     use unica_diagnostics::model::DiagnosticFocus;
     use unica_diagnostics::model::DiagnosticItem;
     use unica_diagnostics::model::DiagnosticSeverity;
     use unica_diagnostics::source_ranges::misplaced_variable_declarations;
+    use unica_diagnostics::source_ranges::MISPLACED_VARIABLE_MESSAGE;
     use unica_source_contract::location::SourceLocation;
 
     // Объект и корень не модуль: структуру модуля у них не проверить.
