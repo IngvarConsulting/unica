@@ -1,4 +1,4 @@
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::{
     DateFractions, EventSourceClass, MetaEventSource, MetaFillValue, MetadataType,
     MetadataTypeVariant, NumberSign, StringLengthMode,
@@ -403,10 +403,9 @@ pub fn parse_event_source_generated(
         }
         format!("{owner_kind}.{name}")
     };
-    let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &logical_path)
-        .map_err(|_| {
-            format!("EventSubscription Source configuration type {wire_type} is malformed")
-        })?;
+    let metadata_path = MetadataAddress::parse_logical(&logical_path).map_err(|_| {
+        format!("EventSubscription Source configuration type {wire_type} is malformed")
+    })?;
     Ok(match generated_kind {
         EventSourceGeneratedKind::Object => MetaEventSource::Object { metadata_path },
         EventSourceGeneratedKind::Manager => MetaEventSource::Manager {
@@ -1612,7 +1611,7 @@ mod tests {
     }
 
     fn metadata_path(value: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, value).unwrap()
+        MetadataAddress::parse_logical(value).unwrap()
     }
 
     fn event_subscription_xml(source: &str) -> String {

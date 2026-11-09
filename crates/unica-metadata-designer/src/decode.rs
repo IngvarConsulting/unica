@@ -2,7 +2,7 @@
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::apply_operations::MetadataOperation as RegisteredMetadataOperation;
 use unica_metadata::contracts::{
     metadata_help_create_input_schema, metadata_object_create_input_schema,
@@ -859,14 +859,11 @@ fn removable_object(
     if let [owner] = target.segments() {
         if owner.kind() == NodeKind::CommonTemplate {
             if let Some(name) = owner.name() {
-                let address = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("CommonTemplate.{name}"),
-                )
-                .map_err(|error| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
-                        .at_path(format!("ops[{op_index}].args.at"))
-                })?;
+                let address = MetadataAddress::parse_logical(&format!("CommonTemplate.{name}"))
+                    .map_err(|error| {
+                        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
+                            .at_path(format!("ops[{op_index}].args.at"))
+                    })?;
                 let layout = unica_source_designer::layout::metadata_kind("CommonTemplate")
                     .expect("a common template has a physical layout");
                 return Ok((address, layout));
@@ -957,14 +954,11 @@ pub fn metadata_owner(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
             .at_path(format!("ops[{op_index}].args.at"))
     })?;
-    let address = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{name}", owner.kind().as_str()),
-    )
-    .map_err(|error| {
-        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
-            .at_path(format!("ops[{op_index}].args.at"))
-    })?;
+    let address = MetadataAddress::parse_logical(&format!("{}.{name}", owner.kind().as_str()))
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
+                .at_path(format!("ops[{op_index}].args.at"))
+        })?;
     Ok((address, kind))
 }
 pub fn attribute_owner_and_name(
@@ -1811,11 +1805,8 @@ pub fn parse_exchange_content(
                 "content target must be a Catalog, Document, Constant, ChartOfCharacteristicTypes, ChartOfAccounts, ChartOfCalculationTypes, InformationRegister, AccumulationRegister, AccountingRegister, CalculationRegister, BusinessProcess or Task",
             ));
         }
-        let target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{}.{name}", segment.kind().as_str()),
-        )
-        .map_err(|_| bad_field("at", "content target must be a metadata object"))?;
+        let target = MetadataAddress::parse_logical(&format!("{}.{name}", segment.kind().as_str()))
+            .map_err(|_| bad_field("at", "content target must be a metadata object"))?;
         if !seen.insert(target.as_str().to_lowercase()) {
             return Err(bad_field("at", "content target is repeated in items"));
         }
