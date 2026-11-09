@@ -18,9 +18,7 @@ unica-coder = { path = "../unica-coder" }
 unica-daemon-protocol = { path = "../unica-daemon-protocol" }
 unica-lsp-contract = { path = "../unica-lsp-contract" }
 unica-lsp = { path = "../unica-lsp" }
-unica-adapter-lexical = { path = "../unica-adapter-lexical" }
 unica-analysis-services = { path = "../unica-analysis-services" }
-unica-adapter-v8-runner = { path = "../unica-adapter-v8-runner" }
 unica-workspace = { path = "../unica-workspace" }
 unica-redaction = { path = "../unica-redaction" }
 unica-bsl = { path = "../unica-bsl" }
@@ -71,11 +69,8 @@ unica-lsp-contract = { path = "../unica-lsp-contract", features = ["test-support
 unica-project-health = { path = "../unica-project-health", features = ["test-support"] }
 unica-bsl = { path = "../unica-bsl", features = ["test-support"] }
 unica-metadata-designer = { path = "../unica-metadata-designer", features = ["test-support"] }
-unica-adapter-lexical = { path = "../unica-adapter-lexical", features = ["test-support"] }
-unica-adapter-bsl-analyzer = { path = "../unica-adapter-bsl-analyzer", features = ["test-support"] }
 unica-analysis-services = { path = "../unica-analysis-services", features = ["test-support"] }
 unica-artifact-delivery = { path = "../unica-artifact-delivery", features = ["test-support"] }
-unica-adapter-v8-runner = { path = "../unica-adapter-v8-runner", features = ["test-support"] }
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
 unica-redaction = { path = "../unica-redaction", features = ["test-support"] }
 unica-forms = { path = "../unica-forms", features = ["test-support"] }
