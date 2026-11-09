@@ -161,7 +161,7 @@ impl rmcp::Service<RoleServer> for ObservedServer {
         rmcp::Service::<RoleServer>::handle_notification(&self.0, notification, context).await
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         ServerHandler::get_info(&self.0)
     }
 
