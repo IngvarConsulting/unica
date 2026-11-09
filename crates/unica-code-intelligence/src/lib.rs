@@ -1,5 +1,6 @@
 //! Provider-neutral code search and read orchestration.
 
+pub mod candidate_lines;
 pub mod completion;
 pub mod coordinator;
 pub mod model;
