@@ -1125,9 +1125,8 @@ pub fn parse_properties(
             let name = target.segments()[0]
                 .name()
                 .expect("CatalogOwner proves a named catalog");
-            let owner =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("Catalog.{name}"))
-                    .expect("qualified address already validated the owner");
+            let owner = MetadataAddress::parse_logical(&format!("Catalog.{name}"))
+                .expect("qualified address already validated the owner");
             return Ok(MetadataPlanKind::Edit {
                 target: owner,
                 operation: MetaEditOperation::SetOwnerFillingValue {
@@ -1921,7 +1920,7 @@ mod owner_filling_tests {
 
     #[test]
     fn owner_filling_decoder_keeps_source_and_address_boundaries() {
-        let registry = OperationRegistry::new(&[], &[], RegistryContext::new(|_, _| None));
+        let registry = OperationRegistry::new(&[], RegistryContext::new(|_, _| None));
         for kind in [
             SourceSetKind::Configuration,
             SourceSetKind::Extension,
