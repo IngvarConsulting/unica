@@ -359,6 +359,8 @@ mod medium_tests {
                 expected_cache.into_os_string(),
                 "--mode".into(),
                 "stdio".into(),
+                "--enable-tool".into(),
+                "references".into(),
             ]
         );
         assert_eq!(
