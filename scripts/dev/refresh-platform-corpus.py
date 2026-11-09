@@ -69,6 +69,8 @@ class Target:
 
 TARGETS: Dict[str, Target] = {
     "2.17": Target("8.3.24", lowered_to="Version8_3_24"),
+    "2.18": Target("8.3.25", lowered_to="Version8_3_25"),
+    "2.19": Target("8.3.26", lowered_to="Version8_3_26"),
     "2.21": Target("8.5.1"),
     "2.22": Target("8.5.4"),
 }
