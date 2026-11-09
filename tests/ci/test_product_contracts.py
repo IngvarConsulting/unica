@@ -2289,7 +2289,7 @@ fn test_only() { std::process::Command::new("git"); }
     def write_executable(self, tools_dir: Path, name: str, body: str) -> None:
         commands = {
             "bsl-analyzer": [("analyze", "--help"), ("mcp", "serve", "--help")],
-            "v8-runner": [("--version",), ("push", "--help")],
+            "v8-runner": [("--version",), ("push", "--help"), ("pull", "--help")],
         }[name]
         routed_outputs = {
             tuple(route.split()): output
@@ -2398,12 +2398,31 @@ fn test_only() { std::process::Command::new("git"); }
             self.write_executable(
                 tools_dir,
                 "v8-runner",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push'\n",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push pull --force'\n",
             )
 
             errors = module.check_tool_contracts(tools_dir)
 
         self.assertEqual(errors, [])
+
+    def test_tool_help_contracts_refuse_a_runner_without_full_dump_force(self) -> None:
+        """Полная выгрузка продукта — `dump --force`: раннер без `--force` у `pull` её не выполнит."""
+        module = load_contract_module()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tools_dir = Path(tmp)
+            self.write_executable(tools_dir, "bsl-analyzer", self.BSL_ANALYZER_HELP)
+            self.write_executable(
+                tools_dir,
+                "v8-runner",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push pull --mode'\n",
+            )
+
+            errors = module.check_tool_contracts(tools_dir)
+
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("v8-runner full dump", errors[0])
+        self.assertIn("--force", errors[0])
 
     def test_tool_help_failure_includes_bounded_sanitized_diagnostics(self) -> None:
         module = load_contract_module()
@@ -2449,7 +2468,7 @@ fn test_only() { std::process::Command::new("git"); }
             self.write_executable(
                 tools_dir,
                 "v8-runner",
-                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push'\n",
+                "#!/usr/bin/env sh\nprintf '%s\\n' 'v8-runner 0.5.1 version Usage: v8-runner push pull --force'\n",
             )
 
             yield cwd, tools_dir.relative_to(cwd)
