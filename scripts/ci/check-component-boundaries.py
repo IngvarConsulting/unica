@@ -33,13 +33,13 @@ def _declared(component: str, declarations: dict | None = None) -> frozenset[str
     )
 
 
-ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
+ABSTRACTIONS = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction", "code-model"})
 # Named apart from ABSTRACTIONS so that a new shared contract does not widen
 # what the publication owner may import without a review of this list.
 WORKSPACE_DEPENDENCIES = frozenset({"address", "source-contract", "operation-contract", "work-control", "refusal", "execution-contract", "xml-format", "redaction"})
 COORDINATOR_FLOOR = frozenset({
     "operations", "bindings", "navigation", "code-intelligence", "diagnostics", "documentation",
-    "analysis-services", "application", "domain",
+    "analysis-services", "application", "domain", "lsp",
 })
 # A family is ruled by its semantic dependencies, which only this guard grants.
 FAMILIES = FAMILY_FLOOR | (_declared("family") & SEMANTIC_DEPENDENCIES.keys())
@@ -140,7 +140,10 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
     if name == "operations" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
         reasons.append("generic operation orchestration must not import a family or backend")
     if name in PORT_CALLERS and dependency.startswith("unica-"):
-        if target.startswith("adapter-") or target.endswith("-designer"):
+        # `source-designer` is the shared Designer layout, not a family codec:
+        # the LSP service finds the file of a module address through it.
+        layout = name == "lsp" and target == "source-designer"
+        if target.startswith("adapter-") or (target.endswith("-designer") and not layout):
             reasons.append("coordinators invoke ports without importing their concrete implementations")
     if name == "source-designer" and dependency.startswith("unica-") and target not in ABSTRACTIONS:
         reasons.append("source layout uses source contracts without concrete families")
