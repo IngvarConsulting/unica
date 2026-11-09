@@ -2610,10 +2610,13 @@ fn supported_actor_source_projection(
             let relative = closed_source_selection_relative_path(&source.path)?;
             Ok(WorkspaceSourceSetIdentity {
                 name: source.name.clone(),
-                root: workspace_root.join(relative),
                 kind: source.kind,
                 source_format: source.source_format,
-                source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
+                source_profile: crate::source_profile::platform_xml_source_profile(
+                    source.kind,
+                    &workspace_root.join(&relative),
+                ),
+                root: workspace_root.join(relative),
             })
         })
         .collect::<Result<Vec<_>, String>>()?;

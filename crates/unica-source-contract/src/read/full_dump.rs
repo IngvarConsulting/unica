@@ -20,6 +20,8 @@ pub enum DumpValidationReason {
 #[serde(tag = "kind", content = "literal", rename_all = "camelCase")]
 pub enum DumpVersionRequirement {
     Exact(&'static str),
+    /// One of these literal versions, as an owner of any writable format.
+    OneOf(&'static [&'static str]),
     Absent,
 }
 
