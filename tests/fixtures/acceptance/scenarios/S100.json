@@ -1,0 +1,25 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Добавить стандартный реквизит нельзя — словарь этого не предлагает",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "attribute.add",
+            "args": "items"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S100"
+}

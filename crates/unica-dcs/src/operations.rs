@@ -111,19 +111,6 @@ impl Primitive {
 }
 
 impl unica_operations::FamilyOperation for Primitive {
-    fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
-        crate::recovery::RETIRED_ARGUMENTS
-    }
-    fn prepare_redirect(
-        self,
-        template: &str,
-        at: &unica_address::address::QualifiedAddress,
-        args: &serde_json::Map<String, serde_json::Value>,
-        value: &str,
-        members: unica_operations::recovery::MemberPathLookup<'_>,
-    ) -> Option<unica_operations::recovery::PreparedRedirect> {
-        crate::recovery::prepare(template, at, args, value, members)
-    }
     fn additional_recovery_candidates(
         self,
         site: &unica_source_contract::context::OperationSite<'_>,
@@ -136,14 +123,6 @@ impl unica_operations::FamilyOperation for Primitive {
         .flatten()
         .into_iter()
         .collect()
-    }
-    fn retired_query_alias_target(
-        self,
-        site: &unica_source_contract::context::OperationSite<'_>,
-        context: unica_source_contract::context::RegistryContext,
-        members: unica_operations::recovery::MemberPathLookup<'_>,
-    ) -> Option<unica_address::address::QualifiedAddress> {
-        crate::recovery::query_alias(self, site, context, members)
     }
     type Observation = unica_templates::TemplateFormat;
     fn family(self) -> unica_operations::OperationFamily {

@@ -12,7 +12,7 @@ use unica_source_designer::probe::{
     classify_already_read_config_dump_info_xml, ConfigDumpInfoXmlKind,
 };
 
-pub(crate) fn read_inventory(
+pub fn read_inventory(
     root: &SourceDirectory,
     source_kind: SourceSetKind,
     checkpoint: &mut dyn FnMut() -> Result<(), ViewError>,

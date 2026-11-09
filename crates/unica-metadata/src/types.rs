@@ -450,7 +450,7 @@ mod tests {
 
     /// Тип пишущего вызова и прочитанный тип реквизита сериализуются одинаково:
     /// предопределённый элемент называет ссылку `metadataPath`, как реквизит
-    /// (#1942).
+    /// .
     #[test]
     fn a_metadata_type_serializes_like_the_observed_attribute_type() {
         let address = |raw| MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw).unwrap();

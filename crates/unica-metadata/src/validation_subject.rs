@@ -228,3 +228,12 @@ impl MetaLocalInfo {
         }
     }
 }
+
+/// Read the top-level template through the same closed type vocabulary and
+/// descriptor admission as a physical child template. This is a read profile,
+/// not a new metadata creation kind.
+pub struct CommonTemplateDescriptorFacts {
+    pub template_type: MetadataTemplateType,
+    pub synonym: Option<String>,
+    pub unreadable_synonym: Option<String>,
+}

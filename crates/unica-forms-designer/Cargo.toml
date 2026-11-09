@@ -11,7 +11,6 @@ test-support = []
 
 [dependencies]
 unica-address = { path = "../unica-address" }
-unica-operations = { path = "../unica-operations" }
 serde_json.workspace = true
 unica-operation-contract = { path = "../unica-operation-contract" }
 unica-bsl-parser = { path = "../unica-bsl-parser" }
@@ -24,3 +23,15 @@ roxmltree.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[package.metadata.unica]
+component = "codec"
+file-io = "none"
+inputs = [
+    "crates/unica-metadata-designer/tests/platform/dump_parity",
+    "plugins/unica/skills/form-compile/SKILL.md",
+    "tests/fixtures/platform_8_3_27/external_artifacts",
+    "tests/fixtures/platform_8_3_27/meta_info_surface",
+    "tests/fixtures/platform_8_3_27/support-edit-bin-only",
+    "tests/fixtures/platform_8_3_27/template-new-xml/seed",
+]

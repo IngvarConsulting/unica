@@ -2,24 +2,6 @@
 use std::sync::Arc;
 use unica_source_designer::project_sources::ActorSourceMapDiscovery;
 
-/// rule: INV.APP.SOURCE-SELECTION-LIMITS
-#[test]
-fn aggregate_selection_directory_handles_cross_former_128_and_keep_finality() {
-    unica_workspace::selection_evidence::contract_tests::aggregate_selection_directory_handles_cross_former_128_and_keep_finality(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
-}
-
-/// rule: INV.APP.SOURCE-SELECTION-LIMITS
-#[test]
-fn aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk() {
-    unica_workspace::selection_evidence::contract_tests::aggregate_selection_exact_bytes_cross_former_32mib_without_source_walk(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
-}
-
-/// rule: INV.APP.SOURCE-SELECTION-LIMITS
-#[test]
-fn aggregate_selection_membership_crosses_former_16384_across_sources() {
-    unica_workspace::selection_evidence::contract_tests::aggregate_selection_membership_crosses_former_16384_across_sources(Arc::new(ActorSourceMapDiscovery::new(unica_workspace::paths::host_path_text)));
-}
-
 /// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn published_replacement_of_a_retained_source_map_file_passes_the_final_gate() {

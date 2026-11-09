@@ -402,9 +402,6 @@ impl PropertiesOperation {
 }
 
 impl unica_operations::FamilyOperation for PropertiesOperation {
-    fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
-        crate::recovery::RETIRED_ARGUMENTS
-    }
     type Observation = crate::style_color::StyleItemPropertiesObservation;
     fn needs_observation(
         self,
