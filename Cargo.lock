@@ -2545,7 +2545,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "unica-documentation-sources",
 ]
 
 [[package]]
@@ -2824,6 +2823,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "toml",
+ "unica-bsl-types",
  "unica-configuration",
  "unica-documentation",
  "unica-metadata",
