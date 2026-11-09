@@ -95,3 +95,8 @@ crates/unica-forms-designer/tests/platform/dump_parity/*.xml -text -whitespace
 
 # The meta.add source snapshot keeps the BOM and CRLF its writer produced.
 crates/unica-coder/tests/fixtures/meta-add-sources/** -text -whitespace
+# Platform exports of empty configuration and extension for formats 2.17, 2.21
+# and 2.22 (scripts/dev/refresh-platform-corpus.py): bytes as the platform wrote them.
+/tests/fixtures/formats/platform_xml/2.17/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.21/** -text whitespace=cr-at-eol
+/tests/fixtures/formats/platform_xml/2.22/** -text whitespace=cr-at-eol
