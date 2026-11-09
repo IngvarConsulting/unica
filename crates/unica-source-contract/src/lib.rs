@@ -187,6 +187,18 @@ impl SourceProfile {
         }
     }
 
+    /// The platform line of the format this profile identifies, when that
+    /// format is a known one (INV.SOURCE.FORMAT-IDENTITY): the line follows
+    /// from the format. Legacy and test identities name no known format.
+    pub const fn semantic_line(self) -> Option<format_identity::PlatformLine> {
+        match self {
+            Self::PlatformXml8_3_27Format2_20 => Some(format_identity::PlatformLine::new(8, 3, 27)),
+            Self::LegacyWorkspaceServiceCompatibility => None,
+            #[cfg(any(test, feature = "test-support"))]
+            Self::TestPlatform8_3_28Format2_20 | Self::TestPlatform8_3_27Format2_21 => None,
+        }
+    }
+
     pub const fn canonical_id(self) -> &'static str {
         match self {
             Self::PlatformXml8_3_27Format2_20 => PLATFORM_XML_8_3_27_FORMAT_2_20,
