@@ -179,7 +179,8 @@ impl CanonicalV13ReadService {
                     )
                 };
                 let refusal = with_missing_target_parent(refusal, &request, &error, &node_exists);
-                return with_unknown_argument_contract(refusal, &request, traits);
+                let refusal = with_unknown_argument_contract(refusal, &request, traits);
+                return with_argument_dictionary(refusal, &request, &error, traits, &node_exists);
             }
             Ok(planned) => planned,
         };
@@ -434,6 +435,62 @@ fn schema_branches(schema: &Value) -> Vec<&Value> {
         }
     }
     levels
+}
+
+/// Enum errors may need the full domain after a bounded preview. Keep
+/// a planner's more specific continuation and never point to an unknown node.
+pub(in crate::infrastructure::daemon) fn with_argument_dictionary(
+    result: DomainResult,
+    request: &crate::domain::apply::ApplyRequest,
+    error: &unica_source_contract::proposal::ApplyPlanError,
+    source: unica_source_contract::context::SourceSetTraits,
+    node_exists: &dyn Fn(&QualifiedAddress) -> Option<bool>,
+) -> DomainResult {
+    if error.kind() != ApplyPlanErrorKind::BadValue || !result.next.is_empty() {
+        return result;
+    }
+    let Some((index, tail)) = error.path().and_then(|path| {
+        let rest = path.strip_prefix("ops[")?;
+        let (index, tail) = rest.split_once(']')?;
+        Some((index.parse::<usize>().ok()?, tail))
+    }) else {
+        return result;
+    };
+    if tail != ".args" && !tail.starts_with(".args.") && !tail.starts_with(".args[") {
+        return result;
+    }
+    let Some(operation) = request.ops().get(index) else {
+        return result;
+    };
+    let Some(site) = crate::domain::apply::operation_site(operation.at(), source) else {
+        return result;
+    };
+    let Some(descriptor) =
+        crate::domain::apply::operation_registry().lookup_at(operation.name(), &site)
+    else {
+        return result;
+    };
+    let Some(contract) = descriptor.argument_contract_at(&site) else {
+        return result;
+    };
+    // Reuse the schema at the addressed node to distinguish enum failures
+    // from other bad values, such as a duplicate member name.
+    let cause = contract.normalize(
+        &Value::Object(operation.args().clone()),
+        &format!("ops[{index}].args"),
+    );
+    if !cause.is_err_and(|cause| cause.enum_value && Some(cause.path.as_str()) == error.path())
+        || node_exists(operation.at()) != Some(true)
+    {
+        return result;
+    }
+    let mut result = result;
+    result.next.push(json!({
+        "tool":"unica.view",
+        "args":{"at":format!("{}.Can.{}", operation.at(), operation.name())},
+        "reason":"полный контракт аргументов операции",
+    }));
+    result
 }
 
 #[cfg(test)]

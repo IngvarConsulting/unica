@@ -81,6 +81,7 @@ type DecodeResult<T> = Result<T, ContractError>;
 
 fn invalid(path: impl Into<String>, message: impl Into<String>) -> ContractError {
     ContractError {
+        enum_value: false,
         path: path.into(),
         message: message.into(),
     }
