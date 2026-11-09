@@ -1,0 +1,221 @@
+{
+  "family": "Metadata",
+  "operations": [
+    {
+      "variant": "ObjectBorrow",
+      "operation": "object.borrow",
+      "applicability": "ExtensionRoot",
+      "skeleton": "From"
+    },
+    {
+      "variant": "ObjectCreate",
+      "operation": "object.create",
+      "applicability": "Configuration",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "ObjectRemove",
+      "operation": "object.remove",
+      "applicability": "MetadataOrCommonTemplate",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "ContentSet",
+      "operation": "content.set",
+      "applicability": "ExchangePlan",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "RelationAdd",
+      "operation": "relation.add",
+      "applicability": "Metadata",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "RelationRemove",
+      "operation": "relation.remove",
+      "applicability": "Metadata",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "RelationReplace",
+      "operation": "relation.replace",
+      "applicability": "Metadata",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "HelpCreate",
+      "operation": "help.create",
+      "applicability": "Metadata",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "AttributeAdd",
+      "operation": "attribute.add",
+      "applicability": "MetadataAttributeContainer",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "AttributeSet",
+      "operation": "attribute.set",
+      "applicability": "MetadataAttribute",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "AttributeRemove",
+      "operation": "attribute.remove",
+      "applicability": "MetadataAttribute",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "AttributeCopy",
+      "operation": "attribute.copy",
+      "applicability": "CatalogTabularAttribute",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "TabularSectionAdd",
+      "operation": "tabularSection.add",
+      "applicability": "MetadataTabularSections",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "TabularSectionSet",
+      "operation": "tabularSection.set",
+      "applicability": "MetadataTabularSection",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "TabularSectionRemove",
+      "operation": "tabularSection.remove",
+      "applicability": "MetadataTabularSection",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "DimensionAdd",
+      "operation": "dimension.add",
+      "applicability": "MetadataDimensions",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "DimensionSet",
+      "operation": "dimension.set",
+      "applicability": "MetadataDimension",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "DimensionRemove",
+      "operation": "dimension.remove",
+      "applicability": "MetadataDimension",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "ResourceAdd",
+      "operation": "resource.add",
+      "applicability": "MetadataResources",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ResourceSet",
+      "operation": "resource.set",
+      "applicability": "MetadataResource",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "ResourceRemove",
+      "operation": "resource.remove",
+      "applicability": "MetadataResource",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "EnumValueAdd",
+      "operation": "enumValue.add",
+      "applicability": "MetadataEnumValues",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "EnumValueSet",
+      "operation": "enumValue.set",
+      "applicability": "MetadataEnumValue",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "EnumValueRemove",
+      "operation": "enumValue.remove",
+      "applicability": "MetadataEnumValue",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "ColumnAdd",
+      "operation": "column.add",
+      "applicability": "MetadataColumns",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ColumnSet",
+      "operation": "column.set",
+      "applicability": "MetadataColumn",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "ColumnRemove",
+      "operation": "column.remove",
+      "applicability": "MetadataColumn",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "TemplateAdd",
+      "operation": "template.add",
+      "applicability": "MetadataTemplates",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "TemplateSet",
+      "operation": "template.set",
+      "applicability": "MetadataTemplate",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "TemplateRemove",
+      "operation": "template.remove",
+      "applicability": "MetadataTemplate",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "CommandAdd",
+      "operation": "command.add",
+      "applicability": "MetadataCommands",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "CommandSet",
+      "operation": "command.set",
+      "applicability": "MetadataCommand",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "CommandRemove",
+      "operation": "command.remove",
+      "applicability": "MetadataCommand",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "PredefinedItemAdd",
+      "operation": "predefinedItem.add",
+      "applicability": "MetadataPredefinedItems",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "PredefinedItemSet",
+      "operation": "predefinedItem.set",
+      "applicability": "MetadataPredefinedItem",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "PredefinedItemRemove",
+      "operation": "predefinedItem.remove",
+      "applicability": "MetadataPredefinedItem",
+      "skeleton": "Target"
+    }
+  ]
+}

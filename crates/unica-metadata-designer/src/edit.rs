@@ -2,7 +2,7 @@ use roxmltree::Document;
 use serde_json::{Map as JsonMap, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::*;
 use unica_xml_format::text::{resolve_observed_line_ending, LineEnding, SourceTextSnapshot};
 
@@ -972,17 +972,14 @@ pub fn typed_operation_effect_value(
             None,
         )
     })?;
-    let target = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{kind_name}.{object_name}"),
-    )
-    .map_err(|_| {
-        typed_diagnostic(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata descriptor address is unavailable for semantic effect",
-            None,
-        )
-    })?;
+    let target =
+        MetadataAddress::parse_logical(&format!("{kind_name}.{object_name}")).map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor address is unavailable for semantic effect",
+                None,
+            )
+        })?;
     let document = Document::parse(xml.trim_start_matches('\u{feff}')).map_err(|_| {
         typed_diagnostic(
             MetaDiagnosticCode::ProviderUnavailable,
@@ -1271,17 +1268,14 @@ where
             None,
         )
     })?;
-    let owner = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{object_kind}.{object_name}"),
-    )
-    .map_err(|_| {
-        typed_diagnostic(
-            MetaDiagnosticCode::ProviderUnavailable,
-            "metadata descriptor identity is not a canonical logical address",
-            None,
-        )
-    })?;
+    let owner =
+        MetadataAddress::parse_logical(&format!("{object_kind}.{object_name}")).map_err(|_| {
+            typed_diagnostic(
+                MetaDiagnosticCode::ProviderUnavailable,
+                "metadata descriptor identity is not a canonical logical address",
+                None,
+            )
+        })?;
     validate_metadata_operation_capabilities(owner_kind, &owner, operation)?;
     match operation {
         // ADR-0072: справка живёт рядом с дескриптором, сам текст дескриптора
@@ -2866,11 +2860,8 @@ pub fn parse_typed_fill_value_node(
                         Some("fillValue"),
                     ));
                 }
-                let metadata_path = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("Enum.{}", parts[1]),
-                )
-                .map_err(|error| {
+                let metadata_path = MetadataAddress::parse_logical(&format!("Enum.{}", parts[1]))
+                    .map_err(|error| {
                     typed_diagnostic(
                         MetaDiagnosticCode::ValidationFailed,
                         error.to_string(),
@@ -2882,9 +2873,7 @@ pub fn parse_typed_fill_value_node(
                     item: format!("EnumValue.{}", parts[3]),
                 }));
             }
-            if let Ok(metadata_path) =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &value)
-            {
+            if let Ok(metadata_path) = MetadataAddress::parse_logical(&value) {
                 return Ok(Some(MetaFillValue::Reference(
                     unica_metadata::MetadataReference { metadata_path },
                 )));
@@ -2896,14 +2885,13 @@ pub fn parse_typed_fill_value_node(
                     Some("fillValue"),
                 ));
             };
-            let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, prefix)
-                .map_err(|_| {
-                    typed_diagnostic(
-                        MetaDiagnosticCode::ValidationFailed,
-                        "existing reference fill value is not a metadata address",
-                        Some("fillValue"),
-                    )
-                })?;
+            let metadata_path = MetadataAddress::parse_logical(prefix).map_err(|_| {
+                typed_diagnostic(
+                    MetaDiagnosticCode::ValidationFailed,
+                    "existing reference fill value is not a metadata address",
+                    Some("fillValue"),
+                )
+            })?;
             if item.is_empty() {
                 return Err(typed_diagnostic(
                     MetaDiagnosticCode::ValidationFailed,
@@ -4106,7 +4094,7 @@ mod legacy_inline_collapse_tests {
 
     /// An inline form or template with a standalone descriptor becomes the
     /// by-name reference in the owner's own namespace prefix; one without a
-    /// descriptor, a by-name reference and an inline command stay (#1370).
+    /// descriptor, a by-name reference and an inline command stay.
     #[test]
     fn only_described_inline_forms_and_templates_are_collapsed() {
         let owner = concat!(

@@ -1,7 +1,7 @@
 """Каналы публикации проверяются исполнением самих шагов workflow.
 
 Шаги `stage`, `anchor`, `promote` и загрузка каталога кандидата в проверках
-установки берутся из publish-unica-marketplace.yml как есть и выполняются над
+установки берутся из release.yml как есть и выполняются над
 локальным репозиторием вместо маркетплейса: `gh repo clone` клонирует его,
 а `git push` пишет в него. Так проверяется то, что увидят потребители каналов,
 — ref каталогов на ветках `main` и `next` и внутри тегов, — а не текст шагов.
@@ -20,14 +20,17 @@ from collections.abc import Callable
 from pathlib import Path
 
 from tests.ci.test_release_channel import write_payload
-from tests.ci.test_unica_workflow import PUBLISH_WORKFLOW, REPO_ROOT, job, load, step_named
+from tests.ci.test_unica_workflow import PUBLISH_WORKFLOW, REPO_ROOT, job, load, step_by_id
+
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+PR_SKIP = "дольше бюджета модуля уровня PR"
 
 CHANNEL_SCRIPT = REPO_ROOT / "scripts" / "ci" / "release-channel.py"
-STAGE_STEP = ("stage", "Push the staged payload without changing any catalog")
-ANCHOR_STEP = ("anchor", "Create the candidate anchor at the staged payload")
-PROMOTE_STEP = ("promote", "Publish the channel catalogs and the release tag in one push")
-FRESH_CATALOG_STEP = ("verify-fresh-install", "Download the candidate catalog")
-UPGRADE_CATALOG_STEP = ("verify-upgrade", "Download the candidate catalog")
+STAGE_STEP = ("stage", "push")
+ANCHOR_STEP = ("anchor", "anchor")
+PROMOTE_STEP = ("promote", "promote")
+FRESH_CATALOG_STEP = ("verify-fresh-install", "catalog")
+UPGRADE_CATALOG_STEP = ("verify-upgrade", "catalog")
 CODEX = ".agents/plugins/marketplace.json"
 CLAUDE = ".claude-plugin/marketplace.json"
 FAKE_GH = """#!/usr/bin/env bash
@@ -134,7 +137,7 @@ class PublishChannelTests(unittest.TestCase):
             "DOWNLOAD_TOKEN": "unused",
             "FAKE_PAYLOAD": str(payload),
         }
-        text = step_named(job(self.publish, step[0]), step[1])["run"]
+        text = step_by_id(job(self.publish, step[0]), step[1])["run"]
         result = subprocess.run(["bash", "-c", text], cwd=workspace, env=env, capture_output=True, text=True)
         if step == STAGE_STEP and result.returncode == 0:
             self.staging_sha = output.read_text(encoding="utf-8").split("staging_sha=", 1)[1].split()[0]

@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use unica_address::address::QualifiedAddress;
 use unica_address::source_target::{
     MetadataAddress, ResolvedTarget, SourceTarget, SourceTargetError, SourceTargetErrorCode,
-    TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+    TargetKind,
 };
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_forms::facts::*;
@@ -774,7 +774,7 @@ pub(crate) fn code_patch_source_target(
                 "metadataPath must identify one existing module",
             )
         })?;
-    let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_metadata_path)?;
+    let metadata_path = MetadataAddress::parse_logical(raw_metadata_path)?;
     Ok(SourceTarget {
         source_set: source_set.to_string(),
         metadata_path: Some(metadata_path),
@@ -807,7 +807,7 @@ pub(crate) fn metadata_object_source_target(
                 "metadataPath must identify one existing metadata object",
             )
         })?;
-    let metadata_path = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw_metadata_path)?;
+    let metadata_path = MetadataAddress::parse_logical(raw_metadata_path)?;
     Ok(SourceTarget {
         source_set: source_set.to_string(),
         metadata_path: Some(metadata_path),

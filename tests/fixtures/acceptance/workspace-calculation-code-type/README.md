@@ -4,7 +4,7 @@
 import/apply. Основа — платформенная workspace-register-dimensions.
 Добавлен план ПустойПлан без предопределённых данных, а ВидыРасчета получил
 два явных строковых предопределённых кода. Первый элемент происходит из
-platform_8_3_27/predefined/ChartOfCalculationTypes.xml, второй добавлен во
+crates/unica-coder/tests/fixtures/predefined/ChartOfCalculationTypes.xml, второй добавлен во
 вход по тому же формату. UUID нового плана и его GeneratedType независимы.
 Сохранены BOM, CRLF и исходные байты платформенного экспорта;
 ConfigDumpInfo.xml исключён. Порядок предопределённых элементов выбран
