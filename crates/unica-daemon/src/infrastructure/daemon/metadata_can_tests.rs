@@ -1180,6 +1180,49 @@ fn canonical_unmodelled_type_is_a_localized_warning_in_check_and_view() {
     );
 }
 
+/// `check` сообщает значение, которое режим совместимости набора запрещает:
+/// строка фиксированной длины больше 100 символов вне режима 8.1 — ошибка у
+/// типа. Набор в режиме 8.1 только для чтения, но проверяется.
+/// rule: INV.SOURCE.PROFILE-CAPABILITIES
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+#[test]
+fn canonical_check_reports_a_value_the_mode_of_the_set_forbids() {
+    let runtime = runtime();
+    let fixture = catalog_and_constant(&runtime);
+    let configuration = fixture.source.join("Configuration.xml");
+    rewrite(
+        &configuration,
+        "<Name>Store</Name>",
+        "<Name>Store</Name><CompatibilityMode>Version8_3_24</CompatibilityMode>",
+    );
+    let catalog = fixture.source.join("Catalogs/Products.xml");
+    rewrite(
+        &catalog,
+        "<v8:Length>10</v8:Length>",
+        "<v8:Length>150</v8:Length>",
+    );
+    rewrite(
+        &catalog,
+        "<v8:AllowedLength>Variable</v8:AllowedLength>",
+        "<v8:AllowedLength>Fixed</v8:AllowedLength>",
+    );
+
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "failed", "{diagnostics:?}");
+    let error = finding(&diagnostics, "validation_failed", "type");
+    assert_eq!(error["severity"], "error");
+    let message = error["message"].as_str().unwrap();
+    assert!(
+        message.contains("150") && message.contains("Version8_3_24"),
+        "{message}"
+    );
+
+    // Mode 8.1 allows it; the set is read-only there, and check still runs.
+    rewrite(&configuration, "Version8_3_24", "Version8_1");
+    let (status, diagnostics) = check(&runtime, &fixture, "main:Catalog.Products");
+    assert_eq!(status, "passed", "{diagnostics:?}");
+}
+
 /// INV.SOURCE.OBSERVED-TYPE-CAPABILITY: повреждённый квалификатор остаётся
 /// ошибкой, а не превращается в предупреждение о неподдержанном типе.
 /// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
