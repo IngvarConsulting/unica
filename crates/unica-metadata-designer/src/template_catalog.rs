@@ -842,7 +842,7 @@ pub fn minimal_metadata_xml_for_tests(
     minimal_metadata_xml(
         kind,
         name,
-        "2.20",
+        crate::dialect::root_version::writable(),
         &MinimalTemplateContext::<()> {
             chart_of_accounts: None,
             chart_of_calculation_types: None,
