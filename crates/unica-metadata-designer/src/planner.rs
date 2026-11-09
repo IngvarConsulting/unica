@@ -450,6 +450,26 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
             )
             .at_path(format!("ops[{op_index}].args.at"))
         })?;
+        if let MetaEditOperation::Add { collection, .. } = edit {
+            if authority.source_kind() == SourceSetKind::Extension
+                && unica_source_designer::extension_mode::descriptor_is_borrowed(&preimage)
+            {
+                use unica_source_contract::compatibility::ExtensionOperation;
+                let operation = match collection {
+                    MetaCollection::Attributes => ExtensionOperation::AddAttributeToBorrowed,
+                    MetaCollection::TabularSections => {
+                        ExtensionOperation::AddTabularSectionToBorrowed
+                    }
+                    _ => ExtensionOperation::AddChildToBorrowed,
+                };
+                unica_source_designer::extension_mode::admit_extension_operation(
+                    staged,
+                    authority.source_kind(),
+                    operation,
+                    &format!("ops[{op_index}]"),
+                )?;
+            }
+        }
         crate::edit_type::guard(
             staged,
             authority.source_kind(),
@@ -785,6 +805,23 @@ pub fn stage_object_create<R: MetadataPlanningRead>(
     op_index: usize,
     provisional: &mut Vec<ProvisionalApplyEffect>,
 ) -> Result<(), ApplyPlanError> {
+    let own = match kind {
+        MetadataKind::Catalog => {
+            Some(unica_source_contract::compatibility::ExtensionOperation::AddOwnCatalog)
+        }
+        MetadataKind::InformationRegister => Some(
+            unica_source_contract::compatibility::ExtensionOperation::AddOwnInformationRegister,
+        ),
+        _ => None,
+    };
+    if let Some(operation) = own {
+        unica_source_designer::extension_mode::admit_extension_operation(
+            staged,
+            source_kind,
+            operation,
+            &format!("ops[{op_index}]"),
+        )?;
+    }
     reader.with_creation_source(op_index, &mut |source| {
         // The new descriptor's synonym is written in the source set's default
         // language, read from the staged image like every other edit (#909).
@@ -2236,6 +2273,14 @@ fn stage_template_add(
     use unica_metadata::MetaTemplateKind;
     let (owner_relative, owner_preimage, owner_source) =
         owner_descriptor_and_text(staged, authority, owner, op_index)?;
+    if unica_source_designer::extension_mode::descriptor_is_borrowed(&owner_preimage) {
+        unica_source_designer::extension_mode::admit_extension_operation(
+            staged,
+            authority.source_kind(),
+            unica_source_contract::compatibility::ExtensionOperation::AddChildToBorrowed,
+            &format!("ops[{op_index}]"),
+        )?;
+    }
     // The registration writes `<Template>` in the default namespace; a
     // prefixed owner is edited in that form and restored before writing.
     let (mut owner_text, owner_form) =

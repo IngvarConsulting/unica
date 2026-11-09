@@ -1304,6 +1304,14 @@ pub fn stage_form_add(
         "the form owner descriptor",
         &at_path,
     )?;
+    if unica_source_designer::extension_mode::descriptor_is_borrowed(&owner_preimage) {
+        unica_source_designer::extension_mode::admit_extension_operation(
+            staged,
+            authority.source_kind(),
+            unica_source_contract::compatibility::ExtensionOperation::AddChildToBorrowed,
+            &at_path,
+        )?;
+    }
     let owner_source = utf8_body(&owner_preimage, "the form owner descriptor", &at_path)?;
     let (object_type, object_name) =
         crate::codec::detect_form_add_object(&owner_source).map_err(|message| {

@@ -263,6 +263,13 @@ fn plan_object(
                 "extension Configuration descriptor is missing",
             )
         })?;
+    if requested_overrides.is_some_and(|overrides| !overrides.is_empty()) {
+        unica_source_designer::extension_mode::admit_by_extension_configuration(
+            Some(&destination_owner),
+            unica_source_contract::compatibility::ExtensionOperation::OverrideBorrowedProperty,
+            &format!("ops[{index}].args.overrides"),
+        )?;
+    }
     let existing = staged
         .read(&relative)
         .map_err(|error| ApplyPlanError::staging(error, parent.to_string()))?;
