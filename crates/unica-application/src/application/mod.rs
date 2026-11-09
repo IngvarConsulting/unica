@@ -8,8 +8,8 @@ use std::time::Duration;
 use unica_code_intelligence::coordinator as code_intelligence;
 use unica_code_intelligence::model::CodeIntelligenceReadRequest;
 use unica_code_intelligence::model::SearchRequest;
+use unica_execution::runner::operation::runtime_event_kind;
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
-use unica_runner::operation::runtime_event_kind;
 use unica_source_contract::events::{DomainEvent, DomainEventKind};
 use unica_source_contract::workspace::WorkspaceContext;
 use unica_work_control::cancellation::CancellationToken;
@@ -23,7 +23,7 @@ pub(crate) mod metadata;
 pub mod operation_descriptors;
 pub(crate) mod operational_config;
 pub mod ports;
-pub(crate) use unica_runner::admission as runtime_admission;
+pub(crate) use unica_execution::runner::admission as runtime_admission;
 #[cfg(test)]
 mod medium_application_tests;
 #[cfg(test)]

@@ -10,5 +10,5 @@ serde.workspace = true
 unica-work-control = { path = "../unica-work-control" }
 
 [package.metadata.unica]
-component = "service"
+component = "abstraction"
 file-io = "none"

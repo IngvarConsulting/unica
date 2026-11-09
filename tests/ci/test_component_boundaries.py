@@ -177,6 +177,7 @@ class ComponentBoundaryTests(unittest.TestCase):
             ("unica-lsp", "unica-forms"),
             ("unica-lsp", "unica-adapter-bsl-analyzer"),
             ("unica-lsp", "unica-code-intelligence"),
+            ("unica-lsp", "unica-forms-designer"),
             ("unica-code-model", "unica-bsl-parser"),
             ("unica-code-model", "unica-code-intelligence"),
             ("unica-lsp-contract", "unica-daemon-protocol"),
@@ -202,6 +203,14 @@ class ComponentBoundaryTests(unittest.TestCase):
         ):
             with self.subTest(owner=owner, target=target):
                 self.assertEqual(checker.edge_errors(owner, target, "dependencies"), [])
+
+    def test_only_the_lsp_coordinator_reaches_the_shared_designer_layout(self) -> None:
+        """rule: INV.APP.COMPONENT-DEPENDENCIES"""
+        self.assertEqual(checker.required_component("unica-lsp"), "coordinator")
+        self.assertEqual(checker.required_component("unica-code-model"), "abstraction")
+        for owner in ("unica-application", "unica-domain", "unica-navigation", "unica-code-intelligence"):
+            with self.subTest(owner=owner):
+                self.assertTrue(checker.edge_errors(owner, "unica-source-designer", "dependencies"))
 
     def test_only_the_product_composition_depends_on_the_composition(self) -> None:
         """rule: INV.APP.COMPONENT-DEPENDENCIES"""

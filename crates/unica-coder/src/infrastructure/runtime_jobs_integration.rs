@@ -35,7 +35,7 @@ use unica_process::runtime_job::{
 };
 use unica_process::STDOUT_CAPTURE_LIMIT;
 
-use unica_runner::{
+use unica_execution::runner::{
     attempt::{RuntimeAttemptScope, RuntimeJobRunner},
     operation::RuntimeJobOperation,
 };
