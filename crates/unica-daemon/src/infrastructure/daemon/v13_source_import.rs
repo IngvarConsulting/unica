@@ -1163,14 +1163,14 @@ fn base_divergence_choice(source_set: &str, push_args: Value, pull_args: Value) 
             HumanChoiceOption {
                 id: "overwrite".to_string(),
                 title: "Перезаписать базу".to_string(),
-                description: "Изменения, сделанные в базе, пропадут".to_string(),
+                description: "изменения, сделанные в базе, пропадут".to_string(),
                 tool: "unica.run".to_string(),
                 arguments: call(OPERATION, push_args),
             },
             HumanChoiceOption {
                 id: "pull".to_string(),
                 title: "Перезаписать исходники".to_string(),
-                description: "Несохранённые правки файлов пропадут".to_string(),
+                description: "несохранённые правки файлов пропадут".to_string(),
                 tool: "unica.run".to_string(),
                 arguments: call("pull", pull_args),
             },
@@ -2352,12 +2352,12 @@ pub(super) mod tests {
                 (
                     "overwrite",
                     "Перезаписать базу",
-                    "Изменения, сделанные в базе, пропадут"
+                    "изменения, сделанные в базе, пропадут"
                 ),
                 (
                     "pull",
                     "Перезаписать исходники",
-                    "Несохранённые правки файлов пропадут"
+                    "несохранённые правки файлов пропадут"
                 ),
             ]
         );

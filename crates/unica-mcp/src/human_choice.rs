@@ -272,6 +272,40 @@ Take the infobase into the set: unsaved file edits are lost."
         assert_eq!(form["requestedSchema"]["required"], json!([CHOICE_FIELD]));
     }
 
+    /// The agreed text of the base divergence question: the heading, a line
+    /// per option with what it loses, short labels and «Отменить». Labels
+    /// change only together with this test.
+    /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
+    #[test]
+    fn the_base_divergence_question_reads_as_agreed() {
+        let mut agreed = choice();
+        agreed.question = "База «origin» и исходники набора «main» разошлись.".into();
+        agreed.options[0].title = "Перезаписать базу".into();
+        agreed.options[0].description = "изменения, сделанные в базе, пропадут".into();
+        agreed.options[1].title = "Перезаписать исходники".into();
+        agreed.options[1].description = "несохранённые правки файлов пропадут".into();
+
+        let form = serde_json::to_value(elicitation_params(&agreed)).unwrap();
+
+        assert_eq!(
+            form["message"],
+            "База «origin» и исходники набора «main» разошлись.
+
+             Перезаписать базу: изменения, сделанные в базе, пропадут.
+             Перезаписать исходники: несохранённые правки файлов пропадут."
+        );
+        let titles: Vec<&str> = form["requestedSchema"]["properties"][CHOICE_FIELD]["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["title"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            titles,
+            ["Перезаписать базу", "Перезаписать исходники", "Отменить"]
+        );
+    }
+
     /// Only an accepted offered option is a choice; everything else keeps
     /// the refusal, and Unica adds no `force` on its own.
     /// rule: INV.RUNTIME.RUNNER-BASE-REFUSALS
