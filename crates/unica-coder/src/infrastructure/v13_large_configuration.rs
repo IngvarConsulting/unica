@@ -20,6 +20,16 @@ use unica_source_contract::read::{FileStamp, ReadFile, RetainedSourceRead, Sourc
 use xml::name::OwnedName;
 use xml::reader::{ParserConfig, XmlEvent};
 
+// resource-limit: view.registration-run-bytes
+// class: step
+// unit: bytes
+// scope: request
+// value: 1048576
+// resource: Объём одной отсортированной порции регистраций при потоковом чтении большого Configuration.xml.
+// status: unproven
+// origin: #1130
+// problem: неизвестно
+// on-reach: порция сбрасывается, чтение продолжается следующей
 const REGISTRATION_RUN_BYTES: usize = 1024 * 1024;
 const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
@@ -222,7 +232,7 @@ impl Default for RegistrationSorter {
 /// The data run is sorted and unique; a second file stores fixed-width offsets
 /// so a named read requires logarithmically many seeks without keeping every
 /// registration key in process memory. Both files disappear on drop.
-pub(crate) struct RegistrationIndex {
+pub struct RegistrationIndex {
     inner: Mutex<RegistrationIndexFiles>,
     count: u64,
 }
@@ -237,7 +247,7 @@ pub(crate) struct RegistrationIndex {
 /// если штамп устоялся (обе метки времени известны и старше окна); иначе
 /// файл разбирается при каждом обращении. Обхода дерева нет. Отравленная
 /// блокировка сбрасывает запись, а не отказывает дальше.
-pub(crate) struct RegistrationCache {
+pub struct RegistrationCache {
     /// Which modules of the set spell a name, built in the background.
     names: Arc<crate::infrastructure::name_index::SourceNameIndex>,
     registrations: Mutex<Option<(FileStamp, Arc<RegistrationIndex>)>>,
@@ -245,13 +255,23 @@ pub(crate) struct RegistrationCache {
     support: Mutex<Option<RetainedSupportState>>,
     subsystems: Mutex<Option<RetainedSubsystemTopology>>,
     settle_window: std::time::Duration,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     registration_builds: std::sync::atomic::AtomicUsize,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     after_parse: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// Timestamp granularity window: a stamp younger than this is never cached.
+// resource-limit: view.registration-settle-window-ms
+// class: retention
+// unit: ms
+// scope: cache
+// value: 2000
+// resource: Окно гранулярности отметки времени: файл моложе окна не кешируется в индексе регистраций и перечитывается индексом имён при следующем обходе.
+// status: unproven
+// origin: b054c6196 (#1457, #1481)
+// problem: Отметка времени моложе окна не доказывает неизменность файла (комментарий в v13_large_configuration.rs).
+// on-reach: Запись не кешируется, корень разбирается заново при следующем вызове.
 pub(crate) const SETTLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Default for RegistrationCache {
@@ -263,9 +283,9 @@ impl Default for RegistrationCache {
             support: Mutex::new(None),
             subsystems: Mutex::new(None),
             settle_window: SETTLE_WINDOW,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             registration_builds: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             after_parse: Mutex::new(None),
         }
     }
@@ -341,7 +361,7 @@ fn slot<T>(mutex: &Mutex<Option<T>>) -> std::sync::MutexGuard<'_, Option<T>> {
 }
 
 impl RegistrationCache {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn with_settle_window_for_test(window: std::time::Duration) -> Self {
         Self {
             settle_window: window,
@@ -350,13 +370,13 @@ impl RegistrationCache {
     }
 
     /// Runs once after the next parse, before its stamp is checked again.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn after_next_parse_for_test(&self, hook: impl FnOnce() + Send + 'static) {
         *slot(&self.after_parse) = Some(Box::new(hook));
     }
 
     fn parsed(&self) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(hook) = slot(&self.after_parse).take() {
             hook();
         }
@@ -373,7 +393,7 @@ impl RegistrationCache {
 
     /// The registration index of `Configuration.xml` under `root`, parsed
     /// again unless a settled, unchanged stamp proves the retained one.
-    pub(crate) fn registrations(
+    pub fn registrations(
         &self,
         root: &SourceDirectory,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
@@ -390,7 +410,7 @@ impl RegistrationCache {
                 return Ok(Arc::clone(index));
             }
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.registration_builds
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let built = Arc::new(read_configuration_registration_index(file, checkpoint)?);
@@ -513,8 +533,8 @@ impl RegistrationCache {
         Ok(topology)
     }
 
-    #[cfg(test)]
-    pub(crate) fn registration_builds_for_test(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn registration_builds_for_test(&self) -> usize {
         self.registration_builds
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -576,7 +596,7 @@ impl RegistrationIndex {
         })
     }
 
-    pub(crate) fn contains(
+    pub fn contains(
         &self,
         kind: &str,
         name: &str,
@@ -623,7 +643,7 @@ impl RegistrationIndex {
     /// Return the complete duplicate-free branch in `ChildObjects` order. The
     /// collection response itself holds these names, so only output-sized
     /// memory is used.
-    pub(crate) fn names_for_kind(
+    pub fn names_for_kind(
         &self,
         kind: &str,
         checkpoint: &dyn Fn() -> Result<(), ViewError>,
@@ -1720,7 +1740,7 @@ mod tests {
 
     /// One topology answers every object of a source state: it is reused
     /// while every file it was built from keeps its stamp, and built again
-    /// once a subsystem descriptor changes (#2235).
+    /// once a subsystem descriptor changes.
     /// rule: INV.SOURCE.RELATIONS-ANSWER-IN-ONE-BRANCH
     #[test]
     fn retained_subsystem_topology_is_reused_until_a_descriptor_changes() {

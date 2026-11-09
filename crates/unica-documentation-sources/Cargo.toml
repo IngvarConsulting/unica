@@ -15,6 +15,7 @@ research = []
 serde.workspace = true
 percent-encoding.workspace = true
 unica-documentation = { path = "../unica-documentation" }
+unica-bsl-types = { path = "../unica-bsl-types" }
 unica-configuration = { path = "../unica-configuration" }
 unica-network = { path = "../unica-network" }
 unica-work-control = { path = "../unica-work-control" }
@@ -31,4 +32,6 @@ tempfile.workspace = true
 unica-network = { path = "../unica-network", features = ["test-support"] }
 
 [package.metadata.unica]
+component = "service"
+file-io = "owned"
 inputs = ["crates/unica-metadata/src/platform-event-catalog-8.3.27.2074.json"]

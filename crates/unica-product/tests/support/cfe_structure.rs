@@ -46,7 +46,7 @@ fn configuration(children: &str, extension: bool) -> String {
     )
 }
 
-// Ported from #621 to the current check/task protocol. Inputs are deliberately
+// Uses the current check/task protocol. Inputs are deliberately
 // damaged on disk: the checker must diagnose existing sources without repairing them.
 /// rule: CTR.FORMAT.CFE-BORROWED-STRUCTURE
 #[test]

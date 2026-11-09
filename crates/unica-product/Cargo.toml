@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [features]
 default = []
-receipt-ledger-test-support = ["unica-coder/receipt-ledger-test-support"]
+receipt-ledger-test-support = ["unica-daemon/receipt-ledger-test-support"]
 # Исследования — не тесты: их цели собираются только с этой функцией, в
 # конвейера их нет. Запуск — scripts/research/.
 research = []
@@ -28,13 +28,13 @@ path = "tests/research/xml_corpus.rs"
 required-features = ["research"]
 
 [dependencies]
-unica-coder = { path = "../unica-coder" }
+unica-daemon = { path = "../unica-daemon" }
 
 [dev-dependencies]
 unica-analysis-services = { path = "../unica-analysis-services", features = ["test-support"] }
 unica-artifact-delivery = { path = "../unica-artifact-delivery", features = ["test-support"] }
 unica-bootstrap = { path = "../unica-bootstrap" }
-unica-daemon = { path = "../unica-daemon", features = ["test-support"] }
+unica-daemon-protocol = { path = "../unica-daemon-protocol", features = ["test-support"] }
 unica-execution = { path = "../unica-execution", features = ["test-support"] }
 unica-metadata-designer = { path = "../unica-metadata-designer", features = ["test-support"] }
 unica-process = { path = "../unica-process", features = ["test-support"] }
@@ -62,5 +62,7 @@ libc.workspace = true
 windows-sys.workspace = true
 
 [package.metadata.unica]
-inputs = ["crates/unica-coder/src/receipt_ledger_test_support.rs", "crates/unica-coder/tests/support", "tests/fixtures/acceptance", "tests/fixtures/platform_8_3_27", "tests/fixtures/mcp", "tests/fixtures/xdto"]
-read-outside-baseline = 4
+component = "product"
+file-io = "owned"
+inputs = ["crates/unica-daemon/src/receipt_ledger_test_support.rs", "crates/unica-daemon/tests/support", "tests/fixtures/acceptance", "tests/fixtures/platform_8_3_27", "tests/fixtures/mcp", "tests/fixtures/xdto"]
+read-outside-baseline = 1

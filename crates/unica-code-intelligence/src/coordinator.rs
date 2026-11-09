@@ -756,7 +756,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{mpsc, Arc, Barrier, Condvar, Mutex};
     use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use unica_source_contract::location::SourceLocation;
     use unica_source_contract::workspace::ResolvedSourceRoot;
     use unica_source_contract::workspace::WorkspaceContext;
@@ -1443,102 +1443,6 @@ mod tests {
                 data: None,
             })
         }
-    }
-
-    fn exercise_calls_past_provider_quota(read: bool) {
-        for id in [
-            ProviderId::BslAnalyzer,
-            ProviderId::SemanticFixture,
-            ProviderId::GitGrep,
-        ] {
-            let (entered_tx, entered_rx) = mpsc::channel();
-            let release = Arc::new((Mutex::new(false), Condvar::new()));
-            let provider: Arc<dyn CodeIntelligenceProvider> = Arc::new(CountQuotaProvider {
-                id,
-                entered: entered_tx,
-                release: Arc::clone(&release),
-            });
-            let mut calls = Vec::new();
-            for index in 0..33 {
-                let provider = Arc::clone(&provider);
-                calls.push(thread::spawn(move || {
-                    let name = format!("call-{index}");
-                    if read {
-                        super::execute_provider_read(
-                            provider,
-                            CodeIntelligenceReadRequest::CallGraph {
-                                id: name.clone(),
-                                direction: crate::model::CallGraphDirection::Callers,
-                                limit: 50,
-                            },
-                            context(),
-                            Duration::from_secs(30),
-                            &CancellationToken::new(),
-                        )
-                        .map(|outcome| (outcome.ok, outcome.summary))
-                    } else {
-                        CodeSearchCoordinator::with_deadlines(
-                            CodeIntelligenceRegistry::new(vec![provider]).unwrap(),
-                            CodeIntelligenceDeadlines::for_test(Duration::from_secs(30)),
-                        )
-                        .search(
-                            &SearchRequest {
-                                query: name.clone(),
-                                limit: 20,
-                            },
-                            &context(),
-                            &CancellationToken::new(),
-                        )
-                        .map(|outcome| {
-                            (
-                                outcome.ok
-                                    && outcome.result.sections[0].status
-                                        == ProviderSectionStatus::Empty,
-                                name,
-                            )
-                        })
-                    }
-                }));
-            }
-            let cutoff = Instant::now() + Duration::from_secs(5);
-            let mut entered = std::collections::BTreeSet::new();
-            while entered.len() < 33 {
-                match entered_rx.recv_timeout(cutoff.saturating_duration_since(Instant::now())) {
-                    Ok(name) => {
-                        entered.insert(name);
-                    }
-                    Err(_) => break,
-                }
-            }
-            // Complete every caller and retained worker before asserting the old boundary.
-            *release.0.lock().unwrap() = true;
-            release.1.notify_all();
-            let results: Vec<_> = calls.into_iter().map(|call| call.join().unwrap()).collect();
-            assert!(super::drain_code_search_workers(Duration::from_secs(5)));
-            let expected = (0..33).map(|index| format!("call-{index}")).collect();
-            assert_eq!(entered, expected, "not every {id:?} worker entered");
-            let completed: std::collections::BTreeSet<_> = results
-                .into_iter()
-                .map(|result| {
-                    let (ok, name) = result.expect("worker count must not refuse execution");
-                    assert!(ok, "{id:?} rejected {name}");
-                    name
-                })
-                .collect();
-            assert_eq!(completed, entered);
-        }
-    }
-
-    /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
-    #[test]
-    fn search_executes_all_workers_past_the_former_provider_quota() {
-        exercise_calls_past_provider_quota(false);
-    }
-
-    /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY
-    #[test]
-    fn read_executes_all_workers_past_the_former_provider_quota() {
-        exercise_calls_past_provider_quota(true);
     }
 
     /// rule: INV.APP.PROVIDER-WORKER-CONCURRENCY

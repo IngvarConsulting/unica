@@ -9,17 +9,15 @@
 не выпускается. Ядро, вышедшее полной версией, тоже: такой alpha был бы младше
 своего выпуска, и выпускать нечего, пока main не поднимет версию.
 
-`prune` оставляет последние опубликованные alpha и удаляет остальные вместе с
-тегами. У обычного релиза сначала удаляется тег: если правило репозитория его
-защищает, релиз остаётся целым и отказ называет, что поправить. Тег неизменяемого
-релиза GitHub может не отдать: тогда удаляется релиз, а тег остаётся. Номер от
-этого не страдает, он только растёт.
+`prune` оставляет последние опубликованные alpha и удаляет релизы остальных.
+Теги остаются: номер следующей alpha и выпущенный срез читаются из тегов, поэтому
+номер только растёт, а ruleset может запретить всем удаление и переписывание
+тегов `v*`.
 """
 
 from __future__ import annotations
 
 import argparse
-import base64
 import json
 import os
 import re
@@ -29,13 +27,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tag_push  # noqa: E402
+
 ALPHA = re.compile(r"\Av(?P<core>\d+\.\d+\.\d+)-alpha\.(?P<number>0|[1-9]\d*)\Z")
 CORE = re.compile(r'(?m)^\[workspace\.package\](?:\n(?!\[).*)*?\nversion = "(\d+\.\d+\.\d+)')
 KEEP = 2
-RULE_HINT = (
-    "удаление тега запрещено правилом репозитория: в ruleset тегов нужно исключение "
-    "refs/tags/v*-alpha.*"
-)
 
 
 class AlphaError(RuntimeError):
@@ -150,8 +147,14 @@ def publish(root: Path, repo: str, *, force: bool, dry_run: bool, gh: Gh = gh_ap
     identity = ["-c", "user.name=github-actions[bot]", "-c", "user.email=41898282+github-actions[bot]@users.noreply.github.com"]
     runner(["git", *identity, "commit", "--all", "--message", f"alpha {version}: срез main {head}"], cwd=root)
     runner(["git", *identity, "tag", "--annotate", plan.tag, "--message", f"Срез main {head}"], cwd=root)
-    runner(["git", "push", "origin", f"refs/tags/{plan.tag}"], cwd=root, env=push_env())
-    # Тег, поставленный токеном прогона, не будит `on: push`: собирает этот же прогон.
+    # Тег ставит ключ из секрета окружения `alpha`, а не токен прогона: теги `v*`
+    # защищены ruleset. Push ключом будит `on: push`, поэтому `release.yml` не
+    # слушает теги alpha: собирает этот же прогон.
+    try:
+        with tag_push.ssh_remote(repo) as (remote, env):
+            runner(["git", "push", remote, f"refs/tags/{plan.tag}"], cwd=root, env=env)
+    except tag_push.TagKeyMissing as error:
+        raise AlphaError(str(error)) from error
     outputs = os.environ.get("GITHUB_OUTPUT")
     if outputs:
         sha = runner(["git", "rev-parse", "HEAD"], cwd=root).strip()
@@ -160,26 +163,11 @@ def publish(root: Path, repo: str, *, force: bool, dry_run: bool, gh: Gh = gh_ap
     return plan.tag
 
 
-def push_env() -> dict[str, str]:
-    """Токен идёт заголовком из окружения: не в аргументах и не в конфиге на диске."""
-
-    token = os.environ.get("GH_TOKEN")
-    if not token:
-        raise AlphaError("для push нужен GH_TOKEN")
-    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    return {
-        **os.environ,
-        "GIT_CONFIG_COUNT": "1",
-        "GIT_CONFIG_KEY_0": "http.https://github.com/.extraheader",
-        "GIT_CONFIG_VALUE_0": f"AUTHORIZATION: basic {basic}",
-    }
-
-
 def stale_alphas(tags: list[str], published: set[str], keep: int) -> list[str]:
-    """Что удалить: всё старше последних `keep` опубликованных.
+    """Чьи релизы удалить: alpha старше последних `keep` опубликованных.
 
-    Тег новее них, возможно, ещё собирается. Тег без релиза старше них — сборка,
-    которая не дошла до публикации.
+    Alpha новее них, возможно, ещё собирается. Удаляется только релиз: тег
+    остаётся, поэтому номер следующей alpha растёт дальше и не повторяется.
     """
 
     alphas = alpha_tags(tags)
@@ -190,37 +178,25 @@ def stale_alphas(tags: list[str], published: set[str], keep: int) -> list[str]:
 
 
 def prune(repo: str, *, keep: int, dry_run: bool, gh: Gh = gh_api) -> list[str]:
+    """Удалить релизы старых alpha; их теги не трогаются.
+
+    Номер следующей alpha и «срез уже выпущен» читаются из тегов, поэтому
+    после удаления релиза номер не повторяется. Тегу ruleset ничего не
+    разрешает: удаление и переписывание тегов `v*` можно запретить всем.
+    """
+
     releases = {release["tag_name"]: release for release in gh(f"repos/{repo}/releases") or []}
     published = {tag for tag, release in releases.items() if not release.get("draft")}
-    stale = stale_alphas(version_tags(repo, gh), published, keep)
-    deleted = []
+    stale = [tag for tag in stale_alphas(version_tags(repo, gh), published, keep) if tag in releases]
     for tag in stale:
         if dry_run:
-            print(f"проба: удалился бы {tag}")
+            print(f"проба: удалился бы релиз {tag}, тег остаётся")
             continue
-        release = releases.get(tag)
-        immutable = release is not None and release.get("immutable") is True
-        if immutable:
-            gh(f"repos/{repo}/releases/{release['id']}", method="DELETE")
-        try:
-            gh(f"repos/{repo}/git/refs/tags/{tag}", method="DELETE")
-        except AlphaError as error:
-            # Обычный релиз ещё цел, и отказ чинится настройкой. Без релиза —
-            # остался тег неизменяемого выпуска: чинить нечего.
-            if release is not None and not immutable and isinstance(error, RuleRefused):
-                raise RuleRefused(f"{tag}: {RULE_HINT}. Ответ GitHub: {error}") from error
-            if release is not None and not immutable:
-                raise
-            print(f"::warning::{tag}: релиз удалён, тег остаётся: {error}")
-            deleted.append(tag)
-            continue
-        if release is not None and not immutable:
-            gh(f"repos/{repo}/releases/{release['id']}", method="DELETE")
-        deleted.append(tag)
-        print(f"удалён {tag}")
+        gh(f"repos/{repo}/releases/{releases[tag]['id']}", method="DELETE")
+        print(f"удалён релиз {tag}, тег остаётся")
     if not stale:
         print("удалять нечего")
-    return deleted
+    return [] if dry_run else stale
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -231,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     publish_command.add_argument("--root", type=Path, default=Path("."))
     publish_command.add_argument("--force", action="store_true", help="выпустить, даже если срез уже выпущен")
     publish_command.add_argument("--dry-run", action="store_true", help="назвать номер и ничего не менять")
-    prune_command = commands.add_parser("prune", help="удалить старые alpha вместе с тегами")
+    prune_command = commands.add_parser("prune", help="удалить релизы старых alpha, теги оставить")
     prune_command.add_argument("--keep", type=int, default=KEEP)
     prune_command.add_argument("--dry-run", action="store_true", help="назвать, что удалилось бы")
     args = parser.parse_args(argv)

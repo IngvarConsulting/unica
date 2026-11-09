@@ -1,12 +1,12 @@
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::HashSet;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::path::{Path, PathBuf};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type MetaRemoveSubsystemChildInspectionHook = Box<dyn FnOnce(&Path)>;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static META_REMOVE_FORCED_REPARSE_PATHS:
         std::cell::RefCell<HashSet<PathBuf>> =
@@ -16,7 +16,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_meta_remove_forced_reparse_paths<T>(
     paths: impl IntoIterator<Item = PathBuf>,
     action: impl FnOnce() -> T,
@@ -36,14 +36,14 @@ fn with_meta_remove_forced_reparse_paths<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn force_meta_remove_reparse_path(path: impl Into<PathBuf>) {
     META_REMOVE_FORCED_REPARSE_PATHS.with(|slot| {
         slot.borrow_mut().insert(path.into());
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn with_before_meta_remove_subsystem_child_inspection_hook<T>(
     hook: impl FnOnce(&Path) + 'static,
     action: impl FnOnce() -> T,
@@ -63,7 +63,7 @@ fn with_before_meta_remove_subsystem_child_inspection_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_before_meta_remove_subsystem_child_inspection_hook(path: &Path) {
     if let Some(hook) =
         META_REMOVE_SUBSYSTEM_CHILD_INSPECTION_HOOK.with(|slot| slot.borrow_mut().take())
@@ -82,7 +82,7 @@ mod publisher;
 pub(crate) mod remove;
 pub(crate) mod template_source;
 mod validation;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod validation_context;
 
 pub(crate) use edit::{
@@ -90,14 +90,14 @@ pub(crate) use edit::{
 };
 
 pub(crate) use info::read_typed_meta_info;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use info::{
     with_meta_info_descriptor_image_hook, with_registrar_processing_hook,
     with_subsystem_evidence_processing_hook,
 };
 
 pub(crate) use publisher::prepare_meta_add;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) use publisher::{
     with_meta_add_after_authorization_hook, with_meta_edit_before_reauthorization_hook,
 };

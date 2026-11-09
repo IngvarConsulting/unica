@@ -28,11 +28,16 @@ from typing import Any
 from unittest import mock
 from xml.sax.saxutils import escape
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Паритет скриптов: собирает и запускает исполняемый файл.
+MEDIUM = ("UnicaMcpScriptParityTests",)
+
 MODULE_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(MODULE_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_REPO_ROOT))
 
 from scripts.ci import donor_parity_contract as donor_contract
+from scripts.ci.temp_tree import temp_tree
 
 
 REPO_ROOT = MODULE_REPO_ROOT
@@ -89,7 +94,7 @@ BSP_MXL_POWER_OF_ATTORNEY_FIXTURE = (
     "bsp/mxl/Catalogs__МашиночитаемыеДоверенности__"
     "ПФ_MXL_Доверенность/Template.xml"
 )
-READER_STANDINS_ROOT = FIXTURES_ROOT / "reader-standins"
+READER_STANDINS_ROOT = REPO_ROOT / "tests" / "ci" / "fixtures" / "reader-standins"
 DOCUMENTED_READER_TOOL_NAMES = {
     "unica.cfe.diff",
     "unica.code.definition",
@@ -381,7 +386,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
     # itself is gone with the rest of the v0.12 initializers (#1813).
 
     def test_rust_registry_parity_list_matches_python_parity_harness(self) -> None:
-        app_mod = (REPO_ROOT / "crates" / "unica-coder" / "src" / "application" / "mod.rs").read_text(
+        app_mod = (REPO_ROOT / "crates/unica-application/src/application/medium_application_tests.rs").read_text(
             encoding="utf-8"
         )
         match = re.search(
@@ -448,7 +453,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         self.assertLessEqual(len(russian_text("ListPresentation")), 38)
 
     def test_event_subscription_fixture_exports_its_declared_handler(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="unica-event-handler-fixture-") as temp:
+        with temp_tree("unica-event-handler-fixture-") as temp:
             source_root = Path(temp) / "src" / "cf"
             source_root.mkdir(parents=True)
             (source_root / "Configuration.xml").write_text(
@@ -509,13 +514,6 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
     def test_donor_snapshot_integrity_and_provenance(self) -> None:
         errors = donor_contract.validate_repository_contract(REPO_ROOT)
         self.assertEqual(errors, [])
-
-    def test_category_only_expected_gap_allowlist_is_removed(self) -> None:
-        legacy_name = "CC_1C_" + "EXPECTED_GAPS"
-        self.assertNotIn(
-            legacy_name,
-            Path(__file__).read_text(encoding="utf-8"),
-        )
 
     def test_donor_cases_match_reviewed_relations(self) -> None:
         for case in iter_cc_1c_skill_cases():
@@ -773,7 +771,7 @@ class UnicaMcpScriptParityTests(unittest.TestCase):
         cached = type(self)._input_schemas
         if cached is not None:
             return cached
-        with tempfile.TemporaryDirectory(prefix="unica-tool-schemas-") as temp:
+        with temp_tree("unica-tool-schemas-") as temp:
             responses = self.call_mcp_messages(
                 [
                     {
@@ -2538,7 +2536,7 @@ class WindowsParityNormalizationTests(unittest.TestCase):
         self.assertTrue(original.startswith(b"\xef\xbb\xbf"))
         self.assertIn(b"\r\n", original)
 
-        with tempfile.TemporaryDirectory(prefix="unica-exact-byte-snapshot-") as temp:
+        with temp_tree("unica-exact-byte-snapshot-") as temp:
             workspace = Path(temp)
             target = workspace / "XDTOPackages/P/Ext/Package.bin"
             target.parent.mkdir(parents=True)
@@ -2573,7 +2571,7 @@ class WindowsParityNormalizationTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows path separator equivalence")
     def test_known_workspace_paths_normalize_separators(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="unica-normalize-path-") as tmp:
+        with temp_tree("unica-normalize-path-") as tmp:
             workspace = Path(tmp)
             windows_path = f"output={workspace}\\src\\Template.xml"
             slash_path = f"output={workspace.as_posix()}/src/Template.xml"

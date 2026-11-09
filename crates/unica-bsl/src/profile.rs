@@ -3,12 +3,14 @@ use unica_address::module_routes::{
     has_direct_module_route, has_nested_module_route, module_prefix_route, module_route,
     ModuleRole, ModuleRoute, ModuleRouteKind,
 };
+use unica_source_contract::format_identity::PlatformLine;
 
 pub const PLATFORM_PROFILE_8_3_27: &str = "8.3.27";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformProfile {
     id: &'static str,
+    line: PlatformLine,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +52,20 @@ impl PlatformProfile {
     pub const fn v8_3_27() -> Self {
         Self {
             id: PLATFORM_PROFILE_8_3_27,
+            line: PlatformLine::new(8, 3, 27),
         }
+    }
+
+    /// The semantic profile of a platform line: which modules, events and
+    /// roles exist (axis 2 of the source profile). `None` for a line whose
+    /// capabilities are not described yet.
+    pub fn for_line(line: PlatformLine) -> Option<Self> {
+        let known = Self::v8_3_27();
+        (line == known.line).then_some(known)
+    }
+
+    pub const fn line(self) -> PlatformLine {
+        self.line
     }
 
     pub const fn id(self) -> &'static str {

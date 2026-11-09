@@ -81,7 +81,7 @@ fn stage_metadata_publication_state(
     Ok((vec![event], Some(cache)))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 thread_local! {
     static META_ADD_AFTER_AUTHORIZATION_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
@@ -89,7 +89,7 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn with_meta_add_after_authorization_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -109,7 +109,7 @@ pub(crate) fn with_meta_add_after_authorization_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_meta_add_after_authorization_hook() {
     META_ADD_AFTER_AUTHORIZATION_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -118,7 +118,7 @@ fn run_meta_add_after_authorization_hook() {
     });
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn with_meta_edit_before_reauthorization_hook<T>(
     hook: impl FnOnce() + 'static,
     action: impl FnOnce() -> T,
@@ -138,7 +138,7 @@ pub(crate) fn with_meta_edit_before_reauthorization_hook<T>(
     action()
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn run_meta_edit_before_reauthorization_hook() {
     META_EDIT_BEFORE_REAUTHORIZATION_HOOK.with(|slot| {
         if let Some(hook) = slot.borrow_mut().take() {
@@ -190,7 +190,7 @@ impl PreparedMetaEdit {
                 "unchanged metadata preview cannot contain filesystem mutations".to_string(),
             ));
         }
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         run_meta_edit_before_reauthorization_hook();
         let mut transaction = CompileTransaction::new();
         bind_resolved_support_guard_evidence(&mut transaction, &resolved.descriptor_path, context)
@@ -583,7 +583,7 @@ pub(crate) fn prepare_meta_add(
     }];
     mutation_effects.extend(effects);
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     run_meta_add_after_authorization_hook();
 
     // The transaction starts only after template operations and every derived
@@ -1128,7 +1128,7 @@ fn commit_failure_from_meta(failure: &unica_metadata::request::MetaFailure) -> C
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn registered_language_images(
     source_root: &Path,
     owner_preimage: &[u8],

@@ -333,10 +333,10 @@ fn outside_rows_drawings_and_other_column_sets_stay_untouched() {
     assert_eq!(window, "Резерв");
 }
 
-/// The hand-made templates the former whole-document writer refused (#1311):
-/// the cell changes and every other byte stays.
+/// Hand-made templates outside the whole-document layout: the cell changes
+/// and every other byte stays.
 #[test]
-fn templates_the_former_writer_refused_change_only_the_cell() {
+fn hand_made_templates_change_only_the_cell() {
     macro_rules! fixture {
         ($name:literal) => {
             (

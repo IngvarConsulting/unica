@@ -59,12 +59,32 @@ pub const BSL_ANALYZER_PROVIDER: DiagnosticProviderId =
 
 pub const LIVE_DIAGNOSTIC_PROVIDERS: &[DiagnosticProviderId] = &[BSL_ANALYZER_PROVIDER];
 
+// resource-limit: diagnostics.default-limit
+// class: step
+// unit: count
+// scope: request
+// value: 200
+// resource: Число диагностик в ответе координатора диагностики, если limit не задан.
+// status: unproven
+// origin: коммит 9214a5e20 (provider-neutral domain model)
+// problem: неизвестно
+// on-reach: список усекается до limit, ответ помечен truncated: true с полным items_total
 pub const DIAGNOSTIC_LIMIT_DEFAULT: usize = 200;
 
 /// Budget for the resident actions that never resolve an `OperationalConfig`
 /// (INV-APP-CONFIG-SNAPSHOT): `findings`, `status` and `catalog` of the
 /// retired `code.diagnostics` surface. `analyze`, the action `check` runs,
 /// does not use it: without a configured timeout it has no deadline.
+// resource-limit: diagnostics.resident-action-budget
+// class: deadline
+// unit: ms
+// scope: request
+// value: 120000
+// resource: Срок резидентных действий диагностики findings, status и catalog без снимка настроек.
+// status: unproven
+// origin: коммит 2401f0e8f (localize mapping failures)
+// problem: неизвестно
+// on-reach: действие прерывается по сроку поставщика; analyze этим сроком не ограничен
 pub const DIAGNOSTIC_BUDGET_WITHOUT_CONFIG: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -466,6 +486,32 @@ impl DiagnosticProviderDescriptor {
     }
 }
 
+/// A provider finding in Unica's own words, for surfaces that must not show
+/// the provider (the editor, #2176): a Unica code and a fixed Unica message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditorFinding {
+    pub code: &'static str,
+    pub message: &'static str,
+}
+
+impl EditorFinding {
+    /// The code of a finding Unica has no word for yet.
+    pub const GENERIC_CODE: &'static str = "bsl.finding";
+
+    /// A finding Unica has no word for: only its severity is told.
+    pub fn generic(severity: DiagnosticSeverity) -> Self {
+        Self {
+            code: Self::GENERIC_CODE,
+            message: match severity {
+                DiagnosticSeverity::Error => "Ошибка, найденная анализом кода",
+                DiagnosticSeverity::Warning => "Предупреждение анализа кода",
+                DiagnosticSeverity::Info => "Замечание анализа кода",
+                DiagnosticSeverity::Hint => "Подсказка анализа кода",
+            },
+        }
+    }
+}
+
 pub trait DiagnosticProvider: Send + Sync {
     fn descriptor(&self) -> &'static DiagnosticProviderDescriptor;
 
@@ -476,6 +522,13 @@ pub trait DiagnosticProvider: Send + Sync {
         deadline: ProviderDeadline,
         cancellation: &CancellationToken,
     ) -> DiagnosticProviderOutcome;
+
+    /// The Unica code and message of one of this provider's findings. A
+    /// provider without its own table answers generically.
+    fn editor_finding(&self, code: &str, severity: DiagnosticSeverity) -> EditorFinding {
+        let _ = code;
+        EditorFinding::generic(severity)
+    }
 }
 
 pub struct DiagnosticProviderRegistry {
@@ -662,9 +715,7 @@ mod tests {
     use serde_json::{json, Value};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
-    use unica_address::source_target::{
-        MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, TargetKind};
 
     const BSL_LANGUAGE_SERVER_PROVIDER: DiagnosticProviderId =
         DiagnosticProviderId::new_const("bsl-language-server");
@@ -743,7 +794,7 @@ mod tests {
     }
 
     fn metadata_address(value: &str) -> MetadataAddress {
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, value).unwrap()
+        MetadataAddress::parse_logical(value).unwrap()
     }
 
     #[test]

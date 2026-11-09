@@ -3,7 +3,7 @@ use crate::domain::apply::SourceSetWriteSupport;
 mod borrow;
 pub(crate) mod dcs_mxl;
 pub(crate) mod form_resource;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod metadata;
 
 use crate::domain::apply::ApplyRequest;
@@ -778,8 +778,8 @@ fn parse_family_operation(
 /// реестра для адреса вызова (общее имя `attribute.add` объекта и формы,
 /// #1465), но применимость не проверяется. Двусторонняя проверка `can`
 /// ищет так адреса, которые семейство приняло бы, а реестр — нет.
-#[cfg(test)]
-pub(crate) fn parse_family_operation_for_test(
+#[cfg(any(test, feature = "test-support"))]
+pub fn parse_family_operation_for_test(
     op_index: usize,
     operation: &crate::domain::apply::ApplyOp,
     binding: &ProviderRootBinding,
@@ -787,7 +787,7 @@ pub(crate) fn parse_family_operation_for_test(
     parse_family_operation(op_index, operation, binding).map(|_| ())
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn parse_apply_operation_for_test(
     op_index: usize,
     operation: &crate::domain::apply::ApplyOp,
@@ -826,7 +826,7 @@ fn descriptor_node(
 }
 
 /// Recovery hints may omit evidence; productive admission uses the Result below.
-pub(crate) fn staged_style_item_properties_hint(
+pub fn staged_style_item_properties_hint(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
     at: &unica_address::address::QualifiedAddress,
@@ -836,7 +836,7 @@ pub(crate) fn staged_style_item_properties_hint(
         .flatten()
 }
 
-pub(crate) fn staged_style_item_properties(
+pub fn staged_style_item_properties(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
     at: &unica_address::address::QualifiedAddress,
@@ -915,7 +915,7 @@ pub(crate) fn staged_style_item_properties(
     })
 }
 
-pub(crate) fn staged_template_format(
+pub fn staged_template_format(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
     template: &unica_address::address::QualifiedAddress,
@@ -932,73 +932,6 @@ pub(crate) fn staged_template_format(
     let bytes = admission.staged_state().ok()?.read(&relative).ok()??;
     unica_templates_designer::descriptor::template_type_of(&bytes)
         .map(|raw| unica_templates::TemplateFormat::parse(&raw))
-}
-
-/// Поиск узла схемы по имени в стадированном макете: владелец — адрес
-/// макета (набор данных, в том числе член объединения, #1353) или его
-/// варианта настроек (именованный элемент структуры, #1357). Схемы нет —
-/// `Missing`.
-fn staged_schema_lookup(
-    admission: &ApplyAdmission,
-    binding: &ProviderRootBinding,
-    owner: &unica_address::address::QualifiedAddress,
-    name: &str,
-) -> unica_operations::recovery::NamedLookup {
-    use unica_address::address::NodeKind;
-    use unica_operations::recovery::NamedLookup;
-    let segments = owner.segments();
-    let (template, variant) = match segments.last() {
-        Some(last) if last.kind() == NodeKind::Template => (owner.clone(), None),
-        Some(last) if last.kind() == NodeKind::Setting && segments.len() > 1 => (
-            unica_address::address::QualifiedAddress {
-                line_range: None,
-                source_set: owner.source_set().to_string(),
-                segments: segments[..segments.len() - 1].to_vec(),
-            },
-            last.name(),
-        ),
-        _ => return NamedLookup::Missing,
-    };
-    let Some((address, covered)) = descriptor_node(&template) else {
-        return NamedLookup::Missing;
-    };
-    if covered != template.segments().len() {
-        return NamedLookup::Missing;
-    }
-    let Ok(mut staged) = admission.staged_state() else {
-        return NamedLookup::Missing;
-    };
-    let member = match variant {
-        Some(variant) => unica_dcs::codec::DcsMember::StructureItem { variant, name },
-        None => unica_dcs::codec::DcsMember::DataSet(name),
-    };
-    crate::infrastructure::family_codecs::dcs_codec().member_path(
-        &mut staged.proposal(),
-        binding.source_kind(),
-        &address,
-        member,
-    )
-}
-
-/// Путь узла с именем `name` под контейнером в стадированном состоянии:
-/// набора схемы под макетом, элемента структуры под вариантом настроек или
-/// элемента под формой. Им снятый аргумент, называвший узел по имени, ведёт
-/// к его настоящему адресу (#1353, #1355, #1357).
-pub(crate) fn staged_member_path(
-    admission: &ApplyAdmission,
-    binding: &ProviderRootBinding,
-    container: &unica_address::address::QualifiedAddress,
-    name: &str,
-) -> unica_operations::recovery::NamedLookup {
-    match container.segments().last().map(|segment| segment.kind()) {
-        Some(unica_address::address::NodeKind::Form) => {
-            match staged_form_items(admission, binding, container) {
-                Some(items) => unica_forms_designer::planner::form_item_path(&items, name),
-                None => unica_operations::recovery::NamedLookup::Missing,
-            }
-        }
-        _ => staged_schema_lookup(admission, binding, container, name),
-    }
 }
 
 /// Роль элемента стадированной формы по его адресу
@@ -1033,7 +966,7 @@ pub(crate) fn staged_form_item_role(
 }
 
 /// Form facts for the same admission predicate used by the published dictionary.
-pub(crate) fn staged_form_observation(
+pub fn staged_form_observation(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
     at: &unica_address::address::QualifiedAddress,
@@ -1107,7 +1040,7 @@ fn staged_form_xml(
 /// табличная часть) при существующем описании владельца считается
 /// отсутствующим — отказ «не найден» по адресу операции говорит о нём.
 /// `None` — по описаниям этого не установить.
-pub(crate) fn staged_node_existence(
+pub fn staged_node_existence(
     admission: &ApplyAdmission,
     binding: &ProviderRootBinding,
     at: &unica_address::address::QualifiedAddress,
@@ -1197,7 +1130,7 @@ pub(crate) fn staged_node_existence(
     }
 }
 
-pub(crate) fn plan_hidden_v13_apply(
+pub fn plan_hidden_v13_apply(
     request: &ApplyRequest,
     binding: &ProviderRootBinding,
     admission: &ApplyAdmission,

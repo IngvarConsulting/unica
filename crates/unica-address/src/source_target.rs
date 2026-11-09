@@ -23,6 +23,14 @@ impl MetadataAddress {
         AddressProfile::new(profile)?.parse(raw)
     }
 
+    /// A logical metadata address, `Kind.Name[.Kind.Name…]`. Its syntax and its
+    /// vocabulary of kinds do not depend on the format version or the format
+    /// family (INV.SOURCE.FORMAT-IDENTITY); whether a kind exists in a source
+    /// set is a question for the set's profile, not for the address.
+    pub fn parse_logical(raw: &str) -> Result<Self, SourceTargetError> {
+        LOGICAL.parse(raw)
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -50,6 +58,11 @@ pub struct MetadataAddressPrefix(String);
 impl MetadataAddressPrefix {
     pub fn parse(profile: &str, raw: &str) -> Result<Self, SourceTargetError> {
         AddressProfile::new(profile)?.parse_prefix(raw)
+    }
+
+    /// A logical address prefix; see [`MetadataAddress::parse_logical`].
+    pub fn parse_logical(raw: &str) -> Result<Self, SourceTargetError> {
+        LOGICAL.parse_prefix(raw)
     }
 }
 
@@ -142,6 +155,11 @@ impl std::error::Error for SourceTargetError {}
 pub struct AddressProfile {
     id: &'static str,
 }
+
+/// The grammar of logical addresses; one for every format.
+const LOGICAL: AddressProfile = AddressProfile {
+    id: PLATFORM_XML_8_3_27_FORMAT_2_20,
+};
 
 impl AddressProfile {
     pub fn new(id: &str) -> Result<Self, SourceTargetError> {
@@ -311,6 +329,26 @@ struct AddressKind {
     canonical: &'static str,
     russian_aliases: &'static [&'static str],
     collection_aliases: &'static [&'static str],
+    /// Its manager is a property of the global context: `Справочники`.
+    manager: bool,
+    /// Its objects carry attributes and tabular sections.
+    object: bool,
+}
+
+impl AddressKind {
+    const fn manager(self) -> Self {
+        Self {
+            manager: true,
+            ..self
+        }
+    }
+
+    const fn object(self) -> Self {
+        Self {
+            object: true,
+            ..self
+        }
+    }
 }
 
 const ADDRESS_KINDS: &[AddressKind] = &[
@@ -331,7 +369,8 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         "SessionParameter",
         &["ПараметрСеанса"],
         &["SessionParameters", "ПараметрыСеанса"],
-    ),
+    )
+    .manager(),
     kind("Role", &["Роль"], &["Roles", "Роли"]),
     kind(
         "CommonTemplate",
@@ -342,7 +381,8 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         "FilterCriterion",
         &["КритерийОтбора"],
         &["FilterCriteria", "КритерииОтбора"],
-    ),
+    )
+    .manager(),
     kind(
         "CommonModule",
         &["ОбщийМодуль"],
@@ -358,7 +398,9 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         "ExchangePlan",
         &["ПланОбмена"],
         &["ExchangePlans", "ПланыОбмена"],
-    ),
+    )
+    .manager()
+    .object(),
     kind(
         "XDTOPackage",
         &["ПакетXDTO"],
@@ -370,7 +412,7 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         &["HTTPСервис"],
         &["HTTPServices", "HTTPСервисы"],
     ),
-    kind("WSReference", &["WSСсылка"], &["WSReferences", "WSСсылки"]),
+    kind("WSReference", &["WSСсылка"], &["WSReferences", "WSСсылки"]).manager(),
     kind(
         "EventSubscription",
         &["ПодпискаНаСобытие"],
@@ -385,7 +427,8 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         "SettingsStorage",
         &["ХранилищеНастроек"],
         &["SettingsStorages", "ХранилищаНастроек"],
-    ),
+    )
+    .manager(),
     kind(
         "FunctionalOption",
         &["ФункциональнаяОпция"],
@@ -414,14 +457,18 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         &["ГруппаКоманд"],
         &["CommandGroups", "ГруппыКоманд"],
     ),
-    kind("Constant", &["Константа"], &["Constants", "Константы"]),
+    kind("Constant", &["Константа"], &["Constants", "Константы"]).manager(),
     kind(
         "CommonForm",
         &["ОбщаяФорма"],
         &["CommonForms", "ОбщиеФормы"],
     ),
-    kind("Catalog", &["Справочник"], &["Catalogs", "Справочники"]),
-    kind("Document", &["Документ"], &["Documents", "Документы"]),
+    kind("Catalog", &["Справочник"], &["Catalogs", "Справочники"])
+        .manager()
+        .object(),
+    kind("Document", &["Документ"], &["Documents", "Документы"])
+        .manager()
+        .object(),
     kind(
         "DocumentNumerator",
         &["НумераторДокументов"],
@@ -431,48 +478,61 @@ const ADDRESS_KINDS: &[AddressKind] = &[
         "Sequence",
         &["Последовательность"],
         &["Sequences", "Последовательности"],
-    ),
+    )
+    .manager(),
     kind(
         "DocumentJournal",
         &["ЖурналДокументов"],
         &["DocumentJournals", "ЖурналыДокументов"],
-    ),
-    kind("Enum", &["Перечисление"], &["Enums", "Перечисления"]),
+    )
+    .manager(),
+    kind("Enum", &["Перечисление"], &["Enums", "Перечисления"]).manager(),
     kind(
         "Report",
         &["Отчет", "Отчёт"],
         &["Reports", "Отчеты", "Отчёты"],
-    ),
+    )
+    .manager()
+    .object(),
     kind(
         "DataProcessor",
         &["Обработка"],
         &["DataProcessors", "Обработки"],
-    ),
+    )
+    .manager()
+    .object(),
     kind(
         "InformationRegister",
         &["РегистрСведений"],
         &["InformationRegisters", "РегистрыСведений"],
-    ),
+    )
+    .manager(),
     kind(
         "AccumulationRegister",
         &["РегистрНакопления"],
         &["AccumulationRegisters", "РегистрыНакопления"],
-    ),
+    )
+    .manager(),
     kind(
         "ChartOfCharacteristicTypes",
         &["ПланВидовХарактеристик"],
         &["ChartsOfCharacteristicTypes", "ПланыВидовХарактеристик"],
-    ),
+    )
+    .manager()
+    .object(),
     kind(
         "ChartOfAccounts",
         &["ПланСчетов"],
         &["ChartsOfAccounts", "ПланыСчетов"],
-    ),
+    )
+    .manager()
+    .object(),
     kind(
         "AccountingRegister",
         &["РегистрБухгалтерии"],
         &["AccountingRegisters", "РегистрыБухгалтерии"],
-    ),
+    )
+    .manager(),
     kind(
         "ChartOfCalculationTypes",
         &["ПланВидовРасчета", "ПланВидовРасчёта"],
@@ -481,18 +541,25 @@ const ADDRESS_KINDS: &[AddressKind] = &[
             "ПланыВидовРасчета",
             "ПланыВидовРасчёта",
         ],
-    ),
+    )
+    .manager()
+    .object(),
     kind(
         "CalculationRegister",
         &["РегистрРасчета", "РегистрРасчёта"],
         &["CalculationRegisters", "РегистрыРасчета", "РегистрыРасчёта"],
-    ),
+    )
+    .manager(),
     kind(
         "BusinessProcess",
         &["БизнесПроцесс"],
         &["BusinessProcesses", "БизнесПроцессы"],
-    ),
-    kind("Task", &["Задача"], &["Tasks", "Задачи"]),
+    )
+    .manager()
+    .object(),
+    kind("Task", &["Задача"], &["Tasks", "Задачи"])
+        .manager()
+        .object(),
     kind(
         "IntegrationService",
         &["СервисИнтеграции"],
@@ -522,6 +589,8 @@ const fn kind(
         canonical,
         russian_aliases,
         collection_aliases,
+        manager: false,
+        object: false,
     }
 }
 
@@ -553,6 +622,30 @@ pub fn metadata_address_kind_matches(canonical: &str, raw: &str) -> bool {
         .iter()
         .find(|kind| kind.canonical == canonical)
         .is_some_and(|kind| kind.canonical == raw || kind.russian_aliases.contains(&raw))
+}
+
+/// The collection names of a canonical kind: English first, then Russian.
+pub fn metadata_collection_names(canonical: &str) -> Option<&'static [&'static str]> {
+    ADDRESS_KINDS
+        .iter()
+        .find(|kind| kind.canonical == canonical)
+        .map(|kind| kind.collection_aliases)
+}
+
+/// Kinds whose managers are properties of the global context, as code names
+/// them: `Справочники`, `Документы`.
+pub fn metadata_manager_kinds() -> impl Iterator<Item = &'static str> {
+    ADDRESS_KINDS
+        .iter()
+        .filter(|kind| kind.manager)
+        .map(|kind| kind.canonical)
+}
+
+/// Whether objects of a canonical kind carry attributes and tabular sections.
+pub fn metadata_kind_has_objects(canonical: &str) -> bool {
+    ADDRESS_KINDS
+        .iter()
+        .any(|kind| kind.canonical == canonical && kind.object)
 }
 
 pub fn metadata_address_kind_spellings(canonical: &str) -> Option<Vec<&'static str>> {
@@ -677,6 +770,63 @@ fn is_root_module_terminal(value: &str) -> bool {
 mod tests {
 
     #[test]
+    fn the_kind_table_names_global_managers_and_kinds_with_objects() {
+        let managers = metadata_manager_kinds().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            managers,
+            [
+                "AccountingRegister",
+                "AccumulationRegister",
+                "BusinessProcess",
+                "CalculationRegister",
+                "Catalog",
+                "ChartOfAccounts",
+                "ChartOfCalculationTypes",
+                "ChartOfCharacteristicTypes",
+                "Constant",
+                "DataProcessor",
+                "Document",
+                "DocumentJournal",
+                "Enum",
+                "ExchangePlan",
+                "FilterCriterion",
+                "InformationRegister",
+                "Report",
+                "Sequence",
+                "SessionParameter",
+                "SettingsStorage",
+                "Task",
+                "WSReference",
+            ]
+            .into_iter()
+            .collect()
+        );
+        let objects = ADDRESS_KINDS
+            .iter()
+            .map(|kind| kind.canonical)
+            .filter(|kind| metadata_kind_has_objects(kind))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            objects,
+            [
+                "BusinessProcess",
+                "Catalog",
+                "ChartOfAccounts",
+                "ChartOfCalculationTypes",
+                "ChartOfCharacteristicTypes",
+                "DataProcessor",
+                "Document",
+                "ExchangePlan",
+                "Report",
+                "Task",
+            ]
+            .into_iter()
+            .collect()
+        );
+        assert!(objects.is_subset(&managers));
+    }
+
+    #[test]
     fn a_manager_collection_in_code_names_its_kind_in_any_case() {
         use super::metadata_collection_kind;
         assert_eq!(metadata_collection_kind("Справочники"), Some("Catalog"));
@@ -691,8 +841,9 @@ mod tests {
     }
 
     use super::{
-        xml_ncname_is_valid, AddressProfile, MetadataAddress, MetadataAddressPrefix,
-        SourceTargetErrorCode, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
+        metadata_kind_has_objects, metadata_manager_kinds, xml_ncname_is_valid, AddressProfile,
+        MetadataAddress, MetadataAddressPrefix, SourceTargetErrorCode, TargetKind, ADDRESS_KINDS,
+        PLATFORM_XML_8_3_27_FORMAT_2_20,
     };
 
     /// rule: INV.SOURCE.LOGICAL-IDENTITY
@@ -841,6 +992,29 @@ mod tests {
             "{}",
             unknown.message
         );
+    }
+
+    /// rule: INV.SOURCE.FORMAT-IDENTITY
+    #[test]
+    fn a_logical_address_parses_without_a_format_version() {
+        for raw in [
+            "Catalog.Items",
+            "Справочник.Items.Реквизит.Code",
+            "Catalog.Items.Form.Main.Module",
+            "ManagedApplicationModule",
+        ] {
+            assert_eq!(
+                MetadataAddress::parse_logical(raw),
+                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw),
+                "{raw}"
+            );
+        }
+        assert_eq!(
+            MetadataAddressPrefix::parse_logical("Catalog").map(|prefix| prefix.0),
+            MetadataAddressPrefix::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog")
+                .map(|prefix| prefix.0)
+        );
+        assert!(MetadataAddress::parse_logical("Catalog..Items").is_err());
     }
 
     #[test]
