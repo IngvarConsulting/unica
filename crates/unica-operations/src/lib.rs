@@ -1,12 +1,9 @@
 //! Ordered operation registration through coherent family-owned typed bundles.
 //! This owner knows no family implementations or representation codecs.
 
-pub mod recovery;
 mod registry;
 pub use registry::OperationRegistry;
 
-use recovery::{MemberPathLookup, PreparedRedirect, RetiredArgument};
-use serde_json::{Map, Value};
 use std::any::{Any, TypeId};
 use std::fmt;
 use unica_address::address::QualifiedAddress;
@@ -76,34 +73,9 @@ pub trait FamilyOperation: Copy + fmt::Debug + Send + Sync + 'static {
         None
     }
 
-    fn creator(self) -> Option<&'static str> {
-        None
-    }
-    fn retired_arguments(self) -> &'static [RetiredArgument] {
-        &[]
-    }
-    fn prepare_redirect(
-        self,
-        template: &str,
-        _at: &QualifiedAddress,
-        _args: &Map<String, Value>,
-        _value: &str,
-        _members: MemberPathLookup<'_>,
-    ) -> Option<PreparedRedirect> {
-        Some(PreparedRedirect::literal(template))
-    }
     fn additional_recovery_candidates(self, _site: &OperationSite<'_>) -> Vec<QualifiedAddress> {
         Vec::new()
     }
-    fn retired_query_alias_target(
-        self,
-        _site: &OperationSite<'_>,
-        _context: RegistryContext,
-        _members: MemberPathLookup<'_>,
-    ) -> Option<QualifiedAddress> {
-        None
-    }
-
     /// `Some(site)` is the node dictionary/recovery phase. `None` is the
     /// backend's explicit context filter; no additional read is performed here.
     fn needs_observation(self, _site: Option<&OperationSite<'_>>) -> bool {
@@ -140,24 +112,7 @@ trait ErasedOperation: Sync {
         lookup: ObservationLookup<'_>,
     ) -> Option<OperationContract>;
     fn content_resource(&self) -> Option<&'static str>;
-    fn creator(&self) -> Option<&'static str>;
-    fn retired_arguments(&self) -> &'static [RetiredArgument];
-    fn prepare_redirect(
-        &self,
-        template: &str,
-        at: &QualifiedAddress,
-        args: &Map<String, Value>,
-        value: &str,
-        members: MemberPathLookup<'_>,
-    ) -> Option<PreparedRedirect>;
     fn additional_recovery_candidates(&self, site: &OperationSite<'_>) -> Vec<QualifiedAddress>;
-    fn retired_query_alias_target(
-        &self,
-        site: &OperationSite<'_>,
-        context: RegistryContext,
-        members: MemberPathLookup<'_>,
-    ) -> Option<QualifiedAddress>;
-
     fn operation(&self) -> &dyn Any;
     fn observation_type(&self) -> ObservationType;
     fn admits(
@@ -204,35 +159,8 @@ impl<O: FamilyOperation> ErasedOperation for TypedOperationBundle<O> {
     fn content_resource(&self) -> Option<&'static str> {
         self.operation.content_resource()
     }
-    fn creator(&self) -> Option<&'static str> {
-        self.operation.creator()
-    }
-
-    fn retired_arguments(&self) -> &'static [RetiredArgument] {
-        self.operation.retired_arguments()
-    }
-    fn prepare_redirect(
-        &self,
-        template: &str,
-        at: &QualifiedAddress,
-        args: &Map<String, Value>,
-        value: &str,
-        members: MemberPathLookup<'_>,
-    ) -> Option<PreparedRedirect> {
-        self.operation
-            .prepare_redirect(template, at, args, value, members)
-    }
     fn additional_recovery_candidates(&self, site: &OperationSite<'_>) -> Vec<QualifiedAddress> {
         self.operation.additional_recovery_candidates(site)
-    }
-    fn retired_query_alias_target(
-        &self,
-        site: &OperationSite<'_>,
-        context: RegistryContext,
-        members: MemberPathLookup<'_>,
-    ) -> Option<QualifiedAddress> {
-        self.operation
-            .retired_query_alias_target(site, context, members)
     }
     fn operation(&self) -> &dyn Any {
         &self.operation
@@ -296,9 +224,6 @@ impl OperationDescriptor {
     }
     pub fn content_resource(self) -> Option<&'static str> {
         self.binding.content_resource()
-    }
-    pub fn creator(self) -> Option<&'static str> {
-        self.binding.creator()
     }
     pub fn argument_contract(self) -> Option<OperationContract> {
         self.binding.contract()
@@ -374,29 +299,6 @@ impl OperationDescriptor {
 }
 
 impl OperationDescriptor {
-    pub fn retired_arguments(self) -> &'static [RetiredArgument] {
-        self.binding.retired_arguments()
-    }
-    pub fn prepare_redirect(
-        self,
-        template: &str,
-        at: &QualifiedAddress,
-        args: &Map<String, Value>,
-        value: &str,
-        members: MemberPathLookup<'_>,
-    ) -> Option<PreparedRedirect> {
-        self.binding
-            .prepare_redirect(template, at, args, value, members)
-    }
-    pub fn retired_query_alias_target(
-        self,
-        site: &OperationSite<'_>,
-        context: RegistryContext,
-        members: MemberPathLookup<'_>,
-    ) -> Option<QualifiedAddress> {
-        self.binding
-            .retired_query_alias_target(site, context, members)
-    }
     pub fn nearest_ancestor_with_observations(
         self,
         site: &OperationSite<'_>,

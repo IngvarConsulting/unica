@@ -379,10 +379,7 @@ fn command_group(value: &str) -> bool {
     {
         return true;
     }
-    let Ok(address) = unica_address::source_target::MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        value,
-    ) else {
+    let Ok(address) = unica_address::source_target::MetadataAddress::parse_logical(value) else {
         return false;
     };
     let parts = address.segments().collect::<Vec<_>>();

@@ -18,9 +18,35 @@ use std::time::{Duration, Instant, SystemTime};
 pub const TIMESTAMP_MARGIN: Duration = Duration::from_secs(2);
 /// Предел записей одной проверки. Больше — проверка не дешёвая, вызов
 /// исполняется сам.
+// resource-limit: join.freshness-checked-entries
+// class: retention
+// unit: count
+// scope: traversal
+// value: 500000
+// resource: Число записей исходников, которое проверяет одна проверка свежести перед присоединением чтения.
+// status: unproven
+// origin: #1376 (#1388)
+// problem: Проверка должна оставаться дешёвой: она идёт внутри бюджета прямого ответа присоединяющегося вызова.
+// on-reach: исходники считаются изменёнными, вызов не присоединяется и исполняется сам
+// decision: закреплено правилом
+// decision-date: 2026-10-12
+// decision-source: arch/rules/runtime/read-call-joining.md
 pub(super) const MAX_CHECKED_ENTRIES: usize = 500_000;
 /// Предел времени одной проверки: она идёт внутри бюджета прямого ответа
 /// присоединяющегося вызова.
+// resource-limit: join.freshness-check-duration
+// class: deadline
+// unit: ms
+// scope: operation
+// value: 2000
+// resource: Время одной проверки свежести исходников перед присоединением чтения.
+// status: unproven
+// origin: #1376 (#1388)
+// problem: Проверка идёт внутри бюджета прямого ответа присоединяющегося вызова.
+// on-reach: исходники считаются изменёнными, вызов не присоединяется и исполняется сам
+// decision: закреплено правилом
+// decision-date: 2026-10-12
+// decision-source: arch/rules/runtime/read-call-joining.md
 pub(super) const MAX_CHECK_DURATION: Duration = Duration::from_secs(2);
 
 /// Не менялись ли исходники рабочего пространства `workspace_hint` с момента

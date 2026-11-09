@@ -1,0 +1,11 @@
+{
+  "family": "Properties",
+  "operations": [
+    {
+      "variant": "Set",
+      "operation": "props.set",
+      "applicability": "MetadataOrRoleOrSubsystem",
+      "skeleton": "Values"
+    }
+  ]
+}

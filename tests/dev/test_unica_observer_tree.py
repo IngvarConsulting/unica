@@ -8,6 +8,10 @@ import subprocess
 import unittest
 from pathlib import Path
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Дерево наблюдателя проверяется в процессе Node.
+MEDIUM = ("ObserverTreeTests",)
+
 ROOT = Path(__file__).resolve().parents[2]
 SPEC = importlib.util.spec_from_file_location("observer_tree", ROOT / "scripts/dev/unica-observer.py")
 observer = importlib.util.module_from_spec(SPEC)

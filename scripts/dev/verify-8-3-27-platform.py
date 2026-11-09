@@ -570,7 +570,7 @@ def _is_xml_payload_path(path: PurePath) -> bool:
     suffix alone does not decide. The exception belongs to that layout and not
     to the file name, so a `Package.bin` reached any other way stays binary.
     Any drift between this rule and `is_xml_payload_path` in
-    `crates/unica-coder/tests/format_8_3_27_xml_corpus.rs` makes the corpus
+    `crates/unica-product/tests/format_8_3_27_xml_corpus.rs` makes the corpus
     declare a file the verifier cannot find.
     """
     if path.suffix.lower() == ".xml":

@@ -1,0 +1,26 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Изменить измерение регистра по его адресу",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.АдминистративнаяИерархия.Dimension.КодСубъектаРФ",
+        "ops": [
+          {
+            "op": "dimension.set",
+            "args": {
+              "values": {
+                "synonym": "Код субъекта"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S077"
+}

@@ -9,9 +9,9 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -82,65 +82,7 @@ def carry_history(results: Path, site: str | None, line: str) -> int:
     for name in HISTORY_FILES:
         if fetch(f"{site}/allure/{line}/history/{name}", target / name):
             carried += 1
-    migrate_history_keys(results)
     return carried
-
-
-def history_key(full_name: str, parameters: list[dict]) -> str:
-    """Ключ истории Allure: `md5(fullName)` и `md5` параметров через точку.
-
-    Считается так же, как считает CLI 2.46: параметры сводятся в
-    отсортированный список `имя:значение` через запятую, пустой список даёт
-    `md5("")`. Наш `historyId` в ключ не входит — CLI читает его только затем,
-    чтобы найти историю, записанную прежней версией.
-    """
-    digest = hashlib.md5(full_name.encode("utf-8")).hexdigest()
-    joined = ",".join(sorted(f"{one['name']}:{one['value']}" for one in parameters))
-    return f"{digest}.{hashlib.md5(joined.encode('utf-8')).hexdigest()}"
-
-
-def migrate_history_keys(results: Path) -> int:
-    """Переложить перенесённую историю с ключей Allure 2.35 на ключи 2.46.
-
-    2.35 ключевал историю нашим `historyId`, 2.46 считает ключ сам, и прежний
-    ключ он читать умеет: историю теста он находит и без переклейки. Но
-    прочитанную запись он оставляет в файле под старым ключом рядом со своей, и
-    файл удваивается навсегда — замер на опубликованной истории из 15 284
-    ключей: 62,5 МБ до сборки, 123,6 МБ после. Переклейка снимает удвоение:
-    видимая история после неё та же самая, размер прежний.
-
-    Соответствие берётся из результатов этого же прогона: в них лежит и старый
-    ключ (`historyId`), и то, из чего считается новый. Прогон публикует
-    результат каждого известного теста, поэтому старый ключ без пары — это
-    тест, которого больше нет; такие записи отбрасываются, иначе они остались
-    бы в истории навсегда. Голых ключей после переклейки не остаётся, и на
-    следующем прогоне работа не повторяется.
-    """
-    path = results / "history" / "history.json"
-    if not path.is_file():
-        return 0
-    history = json.loads(path.read_text(encoding="utf-8"))
-    legacy = [key for key in history if "." not in key]
-    if not legacy:
-        return 0
-    renamed = {}
-    for result in results.glob("*-result.json"):
-        entry = json.loads(result.read_text(encoding="utf-8"))
-        old = entry.get("historyId")
-        if old:
-            renamed[old] = history_key(entry.get("fullName", ""), entry.get("parameters", []))
-    # Сначала то, что уже в новом ключе: переклеенная запись не вытесняет
-    # свежую, если обе указывают на один тест.
-    migrated = {key: entry for key, entry in history.items() if "." in key}
-    moved = 0
-    for key in legacy:
-        new = renamed.get(key)
-        if new is None or new in migrated:
-            continue
-        migrated[new] = history[key]
-        moved += 1
-    path.write_text(json.dumps(migrated, ensure_ascii=False), encoding="utf-8")
-    return moved
 
 
 TREND_FILES = tuple(name for name in HISTORY_FILES if name != "history.json")
@@ -342,6 +284,174 @@ def publish_line(
     ) + f", профилей в объединении {len(stored) + (1 if fresh is not None else 0)}, {memory}"
 
 
+def final_results(results: Path) -> list[dict]:
+    """Итог каждого теста, как его считает Allure: по `historyId` побеждает поздняя попытка."""
+    latest: dict[str, dict] = {}
+    for record in results.glob("*-result.json"):
+        entry = json.loads(record.read_text(encoding="utf-8"))
+        key = entry.get("historyId") or record.name
+        if key not in latest or int(entry.get("stop") or 0) >= int(latest[key].get("stop") or 0):
+            latest[key] = entry
+    return list(latest.values())
+
+
+def breakdown(results: Path) -> dict:
+    """Исходы по ОС раннера: метка `host` у каждого результата."""
+    by_host: dict[str, dict[str, int]] = {}
+    for entry in final_results(results):
+        host = next((label["value"] for label in entry.get("labels", []) if label.get("name") == "host"), "—")
+        counts = by_host.setdefault(host, {"total": 0, "passed": 0, "failed": 0, "skipped": 0})
+        counts["total"] += 1
+        status = entry.get("status")
+        counts["passed" if status == "passed" else "skipped" if status == "skipped" else "failed"] += 1
+    return {"by_host": dict(sorted(by_host.items()))}
+
+
+# Журнал старого прогона: итог `cargo nextest` и `unittest` на каждую джобу.
+NEXTEST_SUMMARY = re.compile(r"Summary \[[^\]]*\] (\d+) tests? run: (\d+) passed(?:, (\d+) failed)?")
+UNITTEST_RAN = re.compile(r"\bRan (\d+) tests? in ")
+UNITTEST_END = re.compile(r"^(OK|FAILED)(?: \((.*)\))?\s*$")
+LOG_HOST = re.compile(r"\((ubuntu|macos|windows|win)[^)]*\)")
+
+
+def host_of_job(job: str) -> str:
+    """ОС джобы по её имени: `Rust (macos-14)`; джобы без ОС в имени шли на Linux."""
+    found = LOG_HOST.search(job)
+    if found is None:
+        return "ubuntu-latest"
+    name = found.group(0).strip("()")
+    return "windows-latest" if name.startswith("win") and not name.startswith("windows") else name
+
+
+def log_counts(log: str) -> dict[str, dict[str, int]]:
+    """Счётчики по ОС из журнала прогона: `gh run view --log`, строки `джоба<TAB>шаг<TAB>время текст`.
+
+    Пропуски nextest в журнале смешаны с тестами, которые фильтр не выбирал,
+    поэтому пропусками считаются только пропуски `unittest`.
+    """
+    by_host: dict[str, dict[str, int]] = {}
+    pending: dict[str, int] = {}
+    for line in log.splitlines():
+        parts = line.split("\t", 2)
+        if len(parts) < 3:
+            continue
+        job, text = parts[0], re.sub(r"\x1b\[[0-9;]*m|\^\[\[[0-9;]*m", "", parts[2]).partition(" ")[2].strip()
+        counts = by_host.setdefault(host_of_job(job), {"total": 0, "passed": 0, "failed": 0, "skipped": 0})
+        if found := NEXTEST_SUMMARY.search(text):
+            run, passed, failed = (int(value or 0) for value in found.groups())
+            counts["total"] += run
+            counts["passed"] += passed
+            counts["failed"] += failed or run - passed
+        elif found := UNITTEST_RAN.search(text):
+            pending[job] = int(found.group(1))
+        elif (found := UNITTEST_END.match(text)) and job in pending:
+            ran = pending.pop(job)
+            details = dict(part.strip().split("=", 1) for part in (found.group(2) or "").split(",") if "=" in part)
+            skipped = int(details.get("skipped", 0))
+            failed = int(details.get("failures", 0)) + int(details.get("errors", 0))
+            counts["total"] += ran
+            counts["skipped"] += skipped
+            counts["failed"] += failed
+            counts["passed"] += ran - skipped - failed
+    return {host: counts for host, counts in sorted(by_host.items()) if counts["total"]}
+
+
+def gh_json(*args: str):
+    completed = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8")
+    return json.loads(completed.stdout) if completed.returncode == 0 and completed.stdout.strip() else None
+
+
+LEGACY_RUNS = 6
+
+
+def legacy_record(repo: str, tag: str) -> dict | None:
+    """Прогон версии без сохранённых результатов: счётчики по ОС из его журнала, пока журнал жив.
+
+    Стабильную версию и кандидата проверял прогон по их тегу, alpha — ночь на
+    срезе `main@…` из описания её релиза. Из прогонов на этих коммитах с
+    тестами в журнале берётся самый полный.
+    """
+    commit = gh_json("api", f"repos/{repo}/commits/{tag}", "--jq", "{sha: .sha}")
+    release = gh_json("api", f"repos/{repo}/releases/tags/{tag}", "--jq", "{body: .body}") or {}
+    shas = [commit["sha"]] if commit else []
+    shas += re.findall(r"main@([0-9a-f]{40})", str(release.get("body") or ""))
+    best = None
+    for sha in dict.fromkeys(shas):
+        runs = (gh_json("api", f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100") or {}).get("workflow_runs", [])
+        # Тесты гоняют push тега, ночь и ручной запуск; публикации и страницы — нет.
+        runs = [run for run in runs if run.get("event") in ("push", "schedule", "workflow_dispatch")]
+        for run in sorted(runs, key=lambda item: item.get("created_at", ""), reverse=True)[:LEGACY_RUNS]:
+            log = subprocess.run(["gh", "run", "view", str(run["id"]), "--repo", repo, "--log"],
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace")
+            counts = log_counts(log.stdout) if log.returncode == 0 else {}
+            total = sum(item["total"] for item in counts.values())
+            if counts and (best is None or total > best[0]):
+                best = (total, {"tag": tag, "sha": sha, "url": run.get("html_url", ""), "at": run.get("created_at", ""),
+                                "conclusion": run.get("conclusion", ""), "by_host": counts})
+    return best[1] if best else None
+
+
+def publish_version(out: Path, tag: str, fresh: Path | None, args: argparse.Namespace, work: Path) -> str:
+    """Отчёт и сводка одной версии лежат под её тегом и не перезаписываются веткой.
+
+    Свежие результаты приходят только с прогона, который дал эту версию: по
+    тегу — стабильная и кандидат, ночь, выпустившая alpha, — alpha. Иначе
+    версия пересобирается из хранимого на сайте; без него — из журнала её
+    прогона, без отчёта Allure. Версия, которой нет в списке, не переносится:
+    вместе с alpha, удалённой `prune`, уходит и её отчёт.
+    """
+    data = out / "data" / "versions" / tag
+    data.mkdir(parents=True, exist_ok=True)
+    results = None
+    if fresh is not None:
+        results = fresh
+        with tarfile.open(data / "results.tar.gz", "w:gz") as bundle:
+            for item in sorted(fresh.iterdir()):
+                if item.name != "history":
+                    bundle.add(item, arcname=item.name)
+        record = {"tag": tag, "sha": args.run_sha, "url": args.run_url, "at": args.run_at,
+                  "profile": signature_of(fresh).get("profile", "")}
+        (data / "run.json").write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    elif args.site and fetch(f"{args.site}/data/versions/{tag}/results.tar.gz", data / "results.tar.gz"):
+        results = unpack(data / "results.tar.gz", work / "versions" / tag)
+        fetch(f"{args.site}/data/versions/{tag}/run.json", data / "run.json")
+    if results is None:
+        legacy = data / "legacy.json"
+        if args.site and fetch(f"{args.site}/data/versions/{tag}/legacy.json", legacy):
+            return f"{tag}: отчёта нет, счётчики журнала перенесены с сайта"
+        record = legacy_record(args.repo, tag) if args.repo else None
+        if record is None:
+            shutil.rmtree(data)
+            return f"{tag}: отчёта нет и журнала прогона нет"
+        legacy.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return f"{tag}: отчёта нет, счётчики взяты из журнала прогона {record['url']}"
+    if shutil.which(args.allure_command) is None:
+        raise SystemExit(f"{args.allure_command} не найден: поставьте Allure CLI")
+    report = out / "allure" / "versions" / tag
+    subprocess.run([args.allure_command, "generate", "--clean", "--output", str(report), str(results)], check=True)
+    summary = report / "widgets" / "summary.json"
+    if summary.is_file():
+        shutil.copy2(summary, data / "summary.json")
+    (data / "breakdown.json").write_text(json.dumps(breakdown(results), ensure_ascii=False, indent=2) + "\n",
+                                         encoding="utf-8")
+    return f"{tag}: отчёт собран, результаты " + ("свежие" if fresh is not None else "с сайта")
+
+
+def build_versions(out: Path, args: argparse.Namespace) -> list[str]:
+    work = out.parent / ".versions"
+    if work.exists():
+        shutil.rmtree(work)
+    work.mkdir(parents=True)
+    notes = []
+    for entry in args.version:
+        tag, _, fresh_dir = entry.partition("=")
+        fresh = Path(fresh_dir) if fresh_dir else None
+        if fresh is not None and not fresh.is_dir():
+            fresh = None
+        notes.append(publish_version(out, tag, fresh, args, work))
+    return notes
+
+
 def build_reports(out: Path, args: argparse.Namespace) -> list[str]:
     if not args.line:
         return ["отчёты не собирались: линии не переданы"]
@@ -392,6 +502,14 @@ def main() -> int:
     parser.add_argument("--run-at", default="", help="время этого прогона в ISO-8601")
     parser.add_argument("--allure-command", default="allure")
     parser.add_argument(
+        "--version",
+        action="append",
+        default=[],
+        metavar="ТЕГ[=КАТАЛОГ]",
+        help="версия для карточки сайта; с каталогом — свежие результаты её прогона",
+    )
+    parser.add_argument("--repo", default="", help="репозиторий: журнал прогона версии без хранимых результатов")
+    parser.add_argument(
         "--pages-only",
         action="store_true",
         help="перерисовать страницы поверх собранного сайта, не трогая отчёты",
@@ -410,6 +528,8 @@ def main() -> int:
         return 0
     for note in build_reports(out, args):
         print("allure: " + note)
+    for note in build_versions(out, args):
+        print("версия: " + note)
     return 0
 
 

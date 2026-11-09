@@ -2,7 +2,7 @@
 //! Общий разбор для семейств, которые пишут тело макета (СКД и табличный
 //! документ); узлы ниже макета разбирает семейство.
 use unica_address::address::{AddressSegment, NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_source_contract::proposal::{ApplyPlanError, ApplyPlanErrorKind};
 
 /// Адрес макета и сегменты под ним. Отказы называет семейство: `shape` —
@@ -31,13 +31,10 @@ pub fn template_owner<'a>(
     let template_name = template
         .name()
         .ok_or_else(|| bad("the template must be named"))?;
-    let template = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!(
-            "{}.{owner_name}.Template.{template_name}",
-            owner.kind().as_str()
-        ),
-    )
+    let template = MetadataAddress::parse_logical(&format!(
+        "{}.{owner_name}.Template.{template_name}",
+        owner.kind().as_str()
+    ))
     .map_err(|error| bad(&error.to_string()))?;
     Ok((template, rest))
 }

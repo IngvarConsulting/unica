@@ -1,0 +1,29 @@
+{
+  "area": "Макеты",
+  "task": "Добавить печатный макет справочнику",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "ПФ_MXL_СписокВалют",
+                  "templateType": "SpreadsheetDocument"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S196"
+}
