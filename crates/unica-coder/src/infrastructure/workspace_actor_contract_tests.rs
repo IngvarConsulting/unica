@@ -33,34 +33,32 @@ fn plan_events(
     )?;
     Ok((state, effects))
 }
+/// Каталог состояния поставщика: у привязанной к актору работы он свой на область.
 fn index_state_root(
     context: &WorkspaceContext,
     root: &Path,
     lease: Option<ProviderSourceLease>,
 ) -> Result<std::path::PathBuf, String> {
-    let service = unica_adapter_rlm::index::WorkspaceIndexService::new(
-        crate::infrastructure::analysis_composition::environment(),
-    );
-    match lease {
-        Some(lease) => service
-            .with_source_lease(lease)
-            .provider_state_root_for_test(context, root),
-        None => service.provider_state_root_for_test(context, root),
-    }
+    let base = unica_adapter_bsl_analyzer::session::bsl_analyzer_cache_dir(context, root)?;
+    Ok(
+        match lease.and_then(|lease| lease.state_scope().scoped_digest().map(str::to_owned)) {
+            Some(scope) => base.join("actor-scopes").join(scope),
+            None => base,
+        },
+    )
 }
 fn index_active_build(
-    context: &WorkspaceContext,
+    _context: &WorkspaceContext,
     root: &Path,
     lease: ProviderSourceLease,
 ) -> Result<(), String> {
-    unica_adapter_rlm::index::WorkspaceIndexService::new(
-        crate::infrastructure::analysis_composition::environment(),
-    )
-    .with_source_lease(lease)
-    .active_build(context, root)
-    .map(|_| ())
+    if lease.source_root() != root {
+        return Err("workspace index request escaped its actor-bound source root".to_string());
+    }
+    lease
+        .validate_named_identity()
+        .map_err(|error| format!("source root changed after admission: {error}"))
 }
-
 #[test]
 fn workspace_actor_poisoned_mutation_lane_fails_closed_before_publication() {
     unica_workspace::actor::policy_contract_tests::workspace_actor_poisoned_mutation_lane_fails_closed_before_publication(policies());
@@ -71,11 +69,13 @@ fn prepared_apply_lock_deadline_is_not_reclassified_by_later_cancellation() {
     unica_workspace::actor::policy_contract_tests::prepared_apply_lock_deadline_is_not_reclassified_by_later_cancellation(policies());
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 #[test]
 fn capabilities_do_not_cross_distinct_actor_instances_with_equal_identity() {
     unica_workspace::actor::policy_contract_tests::capabilities_do_not_cross_distinct_actor_instances_with_equal_identity(policies());
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 #[test]
 fn workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication() {
     unica_workspace::actor::policy_contract_tests::workspace_actor_capabilities_enforce_identity_physical_and_bounded_publication(policies());
@@ -106,16 +106,21 @@ fn borrow_dependency_rejects_capability_from_equal_identity_other_actor() {
     unica_workspace::actor::policy_contract_tests::borrow_dependency_rejects_capability_from_equal_identity_other_actor(policies());
 }
 
+/// rule: INV.SOURCE.RETAINED-APPLY-WRITE-FREE
+/// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
+/// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
 #[test]
 fn apply_plan_fence_is_targeted_and_binds_read_only_inputs() {
     unica_workspace::actor::policy_contract_tests::apply_plan_fence_is_targeted_and_binds_read_only_inputs(policies());
 }
 
+/// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
 #[test]
 fn disjoint_apply_plans_publish_without_a_global_revision_conflict() {
     unica_workspace::actor::policy_contract_tests::disjoint_apply_plans_publish_without_a_global_revision_conflict(policies());
 }
 
+/// rule: INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS
 #[test]
 fn apply_admission_rejects_source_inside_cache() {
     unica_workspace::actor::policy_contract_tests::apply_admission_rejects_source_inside_cache(
@@ -123,11 +128,14 @@ fn apply_admission_rejects_source_inside_cache() {
     );
 }
 
+/// rule: INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS
+/// rule: INV.SOURCE.REVISION-EXCLUDES-GENERATED-DIRECTORY
 #[test]
 fn workspace_root_source_allows_exact_generated_cache_descendant() {
     unica_workspace::actor::policy_contract_tests::workspace_root_source_allows_exact_generated_cache_descendant(policies());
 }
 
+/// rule: INV.SOURCE.REVISION-EXCLUDES-GENERATED-DIRECTORY
 #[test]
 fn source_role_rejects_platform_equivalent_generated_components() {
     if let Err(skip) = unica_workspace::actor::policy_contract_tests::source_role_rejects_platform_equivalent_generated_components(policies()) {
@@ -135,6 +143,7 @@ fn source_role_rejects_platform_equivalent_generated_components() {
     }
 }
 
+/// rule: INV.APP.RETAINED-APPLY-CLOSED-PARTICIPANTS
 #[test]
 fn workspace_root_source_and_missing_cache_publish_through_disjoint_shared_anchor() {
     unica_workspace::actor::policy_contract_tests::workspace_root_source_and_missing_cache_publish_through_disjoint_shared_anchor(policies());
@@ -169,11 +178,13 @@ fn remove_create_batch_preserves_unmodified_sibling() {
     );
 }
 
+/// rule: INV.SOURCE.RETAINED-APPLY-TRANSIENT-ENTRY-AUTHORITY
 #[test]
 fn actor_revision_recovery_identity_swap_is_rejected_before_revision_install() {
     unica_workspace::actor::policy_contract_tests::actor_revision_recovery_identity_swap_is_rejected_before_revision_install(policies());
 }
 
+/// rule: INV.SOURCE.RETAINED-APPLY-TRANSIENT-ENTRY-AUTHORITY
 #[test]
 fn actor_revision_recovery_hard_link_alias_is_never_discounted_or_restored() {
     unica_workspace::actor::policy_contract_tests::actor_revision_recovery_hard_link_alias_is_never_discounted_or_restored(policies());
@@ -199,16 +210,19 @@ fn retained_cleanup_failure_preserves_foreign_names_across_restart() {
     unica_workspace::actor::policy_contract_tests::retained_cleanup_failure_preserves_foreign_names_across_restart(policies());
 }
 
+/// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
 #[test]
 fn retained_apply_stop_causes_preserve_rollback_at_every_late_gate() {
     unica_workspace::actor::policy_contract_tests::retained_apply_stop_causes_preserve_rollback_at_every_late_gate(policies());
 }
 
+/// rule: CTR.SOURCE.REVISION-ARTIFACT-PROFILE
 #[test]
 fn actor_revision_unknown_staged_artifact_is_rejected_before_publication() {
     unica_workspace::actor::policy_contract_tests::actor_revision_unknown_staged_artifact_is_rejected_before_publication(policies());
 }
 
+/// rule: CTR.SOURCE.REVISION-ARTIFACT-PROFILE
 #[test]
 fn actor_revision_lookalike_resource_is_rejected_before_publication() {
     unica_workspace::actor::policy_contract_tests::actor_revision_lookalike_resource_is_rejected_before_publication(policies());
@@ -234,11 +248,13 @@ fn prepared_apply_success_publishes_source_cache_and_state_without_revision_reco
     unica_workspace::actor::policy_contract_tests::prepared_apply_success_publishes_source_cache_and_state_without_revision_record(policies());
 }
 
+/// rule: INV.CACHE.RETAINED-APPLY-REVISION-ROLLBACK
 #[test]
 fn retained_apply_failures_restore_source_cache_and_revision_machine_exactly() {
     unica_workspace::actor::policy_contract_tests::retained_apply_failures_restore_source_cache_and_revision_machine_exactly(policies());
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn unchanged_selection_input_replaced_after_writes_refuses_and_rolls_back() {
     unica_workspace::actor::policy_contract_tests::unchanged_selection_input_replaced_after_writes_refuses_and_rolls_back(policies());
@@ -266,7 +282,9 @@ fn retained_apply_publication_preserves_exact_typed_causes_end_to_end() {
 
 #[test]
 fn prepared_apply_cache_authority_diagnostic_never_exposes_absolute_root() {
-    unica_workspace::actor::policy_contract_tests::prepared_apply_cache_authority_diagnostic_never_exposes_absolute_root(policies());
+    if let Err(skip) = unica_workspace::actor::policy_contract_tests::prepared_apply_cache_authority_diagnostic_never_exposes_absolute_root(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
 }
 
 #[test]
@@ -291,6 +309,7 @@ fn rollback_incomplete_failure_has_a_typed_non_success_category() {
     unica_workspace::actor::policy_contract_tests::rollback_incomplete_failure_has_a_typed_non_success_category(policies());
 }
 
+/// rule: INV.SOURCE.RETAINED-APPLY-WRITE-FREE
 #[test]
 fn apply_admission_and_dry_run_are_cache_tree_write_free() {
     unica_workspace::actor::policy_contract_tests::apply_admission_and_dry_run_are_cache_tree_write_free(policies());
@@ -301,46 +320,55 @@ fn prepared_apply_dry_run_is_byte_identical_and_real_apply_commits_the_same_plan
     unica_workspace::actor::policy_contract_tests::prepared_apply_dry_run_is_byte_identical_and_real_apply_commits_the_same_plan_once(policies());
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn apply_selection_rejects_v8project_kind_change_after_prepare() {
     unica_workspace::actor::policy_contract_tests::apply_selection_rejects_v8project_kind_change_after_prepare(policies());
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn apply_selection_rejects_v8project_absence_to_appearance_after_prepare() {
     unica_workspace::actor::policy_contract_tests::apply_selection_rejects_v8project_absence_to_appearance_after_prepare(policies());
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn apply_selection_rejects_autodetected_extension_membership_change() {
     unica_workspace::actor::policy_contract_tests::apply_selection_rejects_autodetected_extension_membership_change(policies());
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn apply_selection_rejects_unselected_declared_parent_appearance() {
     unica_workspace::actor::policy_contract_tests::apply_selection_rejects_unselected_declared_parent_appearance(policies());
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn apply_selection_rejects_unselected_non_platform_map_input_change() {
     unica_workspace::actor::policy_contract_tests::apply_selection_rejects_unselected_non_platform_map_input_change(policies());
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn apply_selection_rejects_repaired_large_unselected_external_descriptor() {
     unica_workspace::actor::policy_contract_tests::apply_selection_rejects_repaired_large_unselected_external_descriptor(policies());
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn apply_selection_dry_run_rejects_late_map_change_without_receipt() {
     unica_workspace::actor::policy_contract_tests::apply_selection_dry_run_rejects_late_map_change_without_receipt(policies());
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn apply_selection_late_change_rolls_back_source_cache_revision_and_receipt() {
     unica_workspace::actor::policy_contract_tests::apply_selection_late_change_rolls_back_source_cache_revision_and_receipt(policies());
 }
 
+/// rule: INV.APP.RETAINED-SOURCE-SELECTION-FINALITY
 #[test]
 fn apply_selection_rejects_autodetection_container_identity_replacement() {
     unica_workspace::actor::policy_contract_tests::apply_selection_rejects_autodetection_container_identity_replacement(policies());
@@ -356,6 +384,7 @@ fn apply_preparation_classifies_an_occupied_absent_final_file_by_cause() {
     unica_workspace::actor::policy_contract_tests::apply_preparation_classifies_an_occupied_absent_final_file_by_cause(policies());
 }
 
+/// rule: INV.SOURCE.ROLLBACK-DIAGNOSTIC-CLASS
 #[test]
 fn prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic() {
     if let Err(skip) = unica_workspace::actor::policy_contract_tests::prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic(policies()) {
@@ -363,17 +392,20 @@ fn prepared_apply_cleanup_race_surfaces_a_relative_actor_diagnostic() {
     }
 }
 
+/// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
 #[test]
 fn prepared_apply_rejects_stale_revision_source_change_cancellation_and_deadline_before_publication(
 ) {
     unica_workspace::actor::policy_contract_tests::prepared_apply_rejects_stale_revision_source_change_cancellation_and_deadline_before_publication(policies());
 }
 
+/// rule: INV.SOURCE.REVISION-READ-PROVENANCE
 #[test]
 fn prepared_apply_root_and_actor_capabilities_cannot_be_redirected_or_replayed() {
     unica_workspace::actor::policy_contract_tests::prepared_apply_root_and_actor_capabilities_cannot_be_redirected_or_replayed(policies());
 }
 
+/// rule: INV.SOURCE.REVISION-READ-PROVENANCE
 #[test]
 fn prepared_apply_root_replacement_during_commit_rolls_back_before_result() {
     unica_workspace::actor::policy_contract_tests::prepared_apply_root_replacement_during_commit_rolls_back_before_result(policies());
@@ -414,11 +446,13 @@ fn prepared_apply_remove_preserves_a_destination_replaced_at_the_mutation_bounda
     unica_workspace::actor::policy_contract_tests::prepared_apply_remove_preserves_a_destination_replaced_at_the_mutation_boundary(policies());
 }
 
+/// rule: INV.SOURCE.REVISION-READ-PROVENANCE
 #[test]
 fn prepared_apply_dry_run_rejects_root_replacement_before_result() {
     unica_workspace::actor::policy_contract_tests::prepared_apply_dry_run_rejects_root_replacement_before_result(policies());
 }
 
+/// rule: INV.APP.BOUNDED-OPEN-DESCRIPTORS
 #[test]
 fn saved_apply_plans_do_not_retain_per_change_descriptors() {
     unica_workspace::actor::policy_contract_tests::saved_apply_plans_do_not_retain_per_change_descriptors(policies());
@@ -429,16 +463,19 @@ fn saved_source_diff_detects_changed_inputs_without_consuming_plan() {
     unica_workspace::actor::policy_contract_tests::saved_source_diff_detects_changed_inputs_without_consuming_plan(policies(), super::source_diff::layout);
 }
 
+/// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
 #[test]
 fn saved_apply_rebinds_nested_namespace_guards_to_the_execution_budget() {
     unica_workspace::actor::policy_contract_tests::saved_apply_rebinds_nested_namespace_guards_to_the_execution_budget(policies());
 }
 
+/// rule: INV.WIRE.APPLY-REQUIRES-THE-FENCE
 #[test]
 fn saved_apply_large_retained_inputs_can_be_saved_and_executed() {
     unica_workspace::actor::policy_contract_tests::saved_apply_large_retained_inputs_can_be_saved_and_executed(policies());
 }
 
+/// rule: INV.SOURCE.REVISION-PROJECTION-CAPTURE-EQUALITY
 #[test]
 fn saved_apply_shared_cache_preimage_refuses_second_token_without_overwriting_either_source() {
     unica_workspace::actor::policy_contract_tests::saved_apply_shared_cache_preimage_refuses_second_token_without_overwriting_either_source(policies());
@@ -449,31 +486,37 @@ fn saved_apply_read_only_input_conflict_explains_dependency_without_publishing()
     unica_workspace::actor::policy_contract_tests::saved_apply_read_only_input_conflict_explains_dependency_without_publishing(policies());
 }
 
+/// rule: INV.SAFETY.SUPPORT-POLICY-DOWNGRADE
 #[test]
 fn apply_policy_preserves_workspace_ancestor_precedence_over_source_local_policy() {
     unica_workspace::actor::policy_contract_tests::apply_policy_preserves_workspace_ancestor_precedence_over_source_local_policy(policies());
 }
 
+/// rule: INV.APP.RETAINED-APPLY-SUPPORT-POLICY-EVIDENCE
 #[test]
 fn apply_policy_absent_chain_rejects_nearer_policy_insertion_before_publication() {
     unica_workspace::actor::policy_contract_tests::apply_policy_absent_chain_rejects_nearer_policy_insertion_before_publication(policies());
 }
 
+/// rule: INV.APP.RETAINED-APPLY-SUPPORT-POLICY-EVIDENCE
 #[test]
 fn apply_policy_exact_file_rejects_byte_change_and_rename_replacement() {
     unica_workspace::actor::policy_contract_tests::apply_policy_exact_file_rejects_byte_change_and_rename_replacement(policies());
 }
 
+/// rule: INV.APP.RETAINED-APPLY-SUPPORT-POLICY-EVIDENCE
 #[test]
 fn apply_policy_stable_deny_evidence_allows_unrelated_dry_run_and_real_publication() {
     unica_workspace::actor::policy_contract_tests::apply_policy_stable_deny_evidence_allows_unrelated_dry_run_and_real_publication(policies());
 }
 
+/// rule: INV.APP.RETAINED-APPLY-SUPPORT-POLICY-EVIDENCE
 #[test]
 fn apply_policy_category_and_identity_transitions_are_rejected() {
     unica_workspace::actor::policy_contract_tests::apply_policy_category_and_identity_transitions_are_rejected(policies());
 }
 
+/// rule: INV.APP.RETAINED-APPLY-SUPPORT-POLICY-EVIDENCE
 #[test]
 fn apply_policy_dry_run_churn_is_write_free_and_returns_no_receipt() {
     unica_workspace::actor::policy_contract_tests::apply_policy_dry_run_churn_is_write_free_and_returns_no_receipt(policies());
@@ -484,11 +527,13 @@ fn apply_policy_churn_before_source_publication_is_write_free() {
     unica_workspace::actor::policy_contract_tests::apply_policy_churn_before_source_publication_is_write_free(policies());
 }
 
+/// rule: INV.APP.RETAINED-APPLY-SUPPORT-POLICY-EVIDENCE
 #[test]
 fn apply_policy_churn_after_source_publication_rolls_back_all_retained_state() {
     unica_workspace::actor::policy_contract_tests::apply_policy_churn_after_source_publication_rolls_back_all_retained_state(policies());
 }
 
+/// rule: INV.APP.RETAINED-APPLY-SUPPORT-POLICY-EVIDENCE
 #[test]
 fn apply_policy_same_inode_churn_during_late_final_gate_rolls_back_all_retained_state() {
     unica_workspace::actor::policy_contract_tests::apply_policy_same_inode_churn_during_late_final_gate_rolls_back_all_retained_state(policies());
@@ -504,11 +549,13 @@ fn apply_policy_deadline_and_cancellation_during_capture_are_write_free() {
     unica_workspace::actor::policy_contract_tests::apply_policy_deadline_and_cancellation_during_capture_are_write_free(policies());
 }
 
+/// rule: INV.APP.SUPPORT-POLICY-READ-BOUNDS
 #[test]
 fn apply_policy_capture_stops_after_first_retained_read_chunk_write_free() {
     unica_workspace::actor::policy_contract_tests::apply_policy_capture_stops_after_first_retained_read_chunk_write_free(policies());
 }
 
+/// rule: INV.APP.SUPPORT-POLICY-READ-BOUNDS
 #[test]
 fn apply_policy_all_absent_capture_rejects_terminal_cancellation_and_deadline_write_free() {
     unica_workspace::actor::policy_contract_tests::apply_policy_all_absent_capture_rejects_terminal_cancellation_and_deadline_write_free(policies());
@@ -519,11 +566,13 @@ fn apply_policy_deadline_and_cancellation_during_final_validation_roll_back() {
     unica_workspace::actor::policy_contract_tests::apply_policy_deadline_and_cancellation_during_final_validation_roll_back(policies());
 }
 
+/// rule: INV.APP.SUPPORT-POLICY-READ-BOUNDS
 #[test]
 fn apply_policy_final_gate_stops_after_first_retained_read_chunk_and_rolls_back() {
     unica_workspace::actor::policy_contract_tests::apply_policy_final_gate_stops_after_first_retained_read_chunk_and_rolls_back(policies());
 }
 
+/// rule: INV.APP.SUPPORT-POLICY-READ-BOUNDS
 #[test]
 fn apply_policy_warn_off_deny_database_and_malformed_match_v12() {
     unica_workspace::actor::policy_contract_tests::apply_policy_warn_off_deny_database_and_malformed_match_v12(policies());
@@ -534,16 +583,21 @@ fn retained_apply_support_policy_evidence_does_not_add_a_third_writer_participan
     unica_workspace::actor::policy_contract_tests::retained_apply_support_policy_evidence_does_not_add_a_third_writer_participant(policies());
 }
 
+/// rule: INV.CACHE.RETAINED-APPLY-EFFECT-RESULT
 #[test]
 fn prepared_apply_effects_are_retained_from_planner_to_result() {
     unica_workspace::actor::event_contract_tests::prepared_apply_effects_are_retained_from_planner_to_result(policies(), plan_events);
 }
 
+/// rule: INV.CACHE.REPORTED-EFFECTS
+/// rule: INV.CACHE.RETAINED-APPLY-EFFECT-RESULT
+/// rule: INV.SOURCE.RETAINED-APPLY-WRITE-FREE
 #[test]
 fn prepared_apply_dry_run_returns_projected_effect_receipt_without_any_write() {
     unica_workspace::actor::event_contract_tests::prepared_apply_dry_run_returns_projected_effect_receipt_without_any_write(policies(), plan_events);
 }
 
+/// rule: INV.CACHE.RETAINED-APPLY-EFFECT-RESULT
 #[test]
 fn prepared_apply_success_returns_committed_effect_receipt_after_one_commit() {
     unica_workspace::actor::event_contract_tests::prepared_apply_success_returns_committed_effect_receipt_after_one_commit(policies(), plan_events);
@@ -559,11 +613,13 @@ fn event_implement_op_failure_returns_no_effect_receipt_and_preserves_all_state(
     unica_workspace::actor::event_contract_tests::event_implement_op_failure_returns_no_effect_receipt_and_preserves_all_state(policies(), plan_events);
 }
 
+/// rule: INV.CACHE.RETAINED-APPLY-EFFECT-RESULT
 #[test]
 fn retained_apply_effect_failure_matrix_rolls_back_and_returns_no_receipt() {
     unica_workspace::actor::event_contract_tests::retained_apply_effect_failure_matrix_rolls_back_and_returns_no_receipt(policies(), plan_events);
 }
 
+/// rule: INV.CACHE.RETAINED-APPLY-EFFECT-RESULT
 #[test]
 fn retained_apply_effect_races_never_publish_or_return_effects() {
     unica_workspace::actor::event_contract_tests::retained_apply_effect_races_never_publish_or_return_effects(policies(), plan_events);
@@ -574,11 +630,13 @@ fn real_effect_foreign_actor_replay_preserves_both_actor_states() {
     unica_workspace::actor::event_contract_tests::real_effect_foreign_actor_replay_preserves_both_actor_states(policies(), plan_events);
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 #[test]
 fn real_effect_mutation_lane_cancellation_preserves_exact_state() {
     unica_workspace::actor::event_contract_tests::real_effect_mutation_lane_cancellation_preserves_exact_state(policies(), plan_events);
 }
 
+/// rule: INV.APP.ACTOR-AUTHENTICATED-SOURCE-CAPABILITIES
 #[test]
 fn real_effect_mutation_lane_deadline_preserves_exact_state() {
     unica_workspace::actor::event_contract_tests::real_effect_mutation_lane_deadline_preserves_exact_state(policies(), plan_events);
@@ -594,11 +652,13 @@ fn real_effect_input_confirmation_deadline_preserves_exact_state() {
     unica_workspace::actor::event_contract_tests::real_effect_input_confirmation_deadline_preserves_exact_state(policies(), plan_events);
 }
 
+/// rule: INV.CACHE.RETAINED-APPLY-REVISION-ROLLBACK
 #[test]
 fn real_effect_after_all_postimages_cancellation_rolls_back_exact_state() {
     unica_workspace::actor::event_contract_tests::real_effect_after_all_postimages_cancellation_rolls_back_exact_state(policies(), plan_events);
 }
 
+/// rule: INV.CACHE.RETAINED-APPLY-REVISION-ROLLBACK
 #[test]
 fn real_effect_after_all_postimages_deadline_rolls_back_exact_state() {
     unica_workspace::actor::event_contract_tests::real_effect_after_all_postimages_deadline_rolls_back_exact_state(policies(), plan_events);
@@ -624,6 +684,7 @@ fn saved_apply_stale_sources_refuse_without_replanning_and_replay_refusal() {
     unica_workspace::actor::event_contract_tests::saved_apply_stale_sources_refuse_without_replanning_and_replay_refusal(policies(), plan_events);
 }
 
+/// rule: INV.APP.BOUNDED-OPEN-DESCRIPTORS
 #[test]
 fn saved_apply_rechecks_same_inode_same_length_hash_before_first_write() {
     unica_workspace::actor::event_contract_tests::saved_apply_rechecks_same_inode_same_length_hash_before_first_write(policies(), plan_events);
@@ -669,6 +730,7 @@ fn apply_policy_foreign_actor_and_sibling_worktree_replay_are_rejected() {
     unica_workspace::actor::event_contract_tests::apply_policy_foreign_actor_and_sibling_worktree_replay_are_rejected(policies(), plan_events);
 }
 
+/// rule: INV.CACHE.ACTOR-AUTHENTICATED-STATE-SCOPE
 #[test]
 fn remapped_names_and_profiles_do_not_share_index_or_coordination_state() {
     unica_workspace::actor::index_contract_tests::remapped_names_and_profiles_do_not_share_index_or_coordination_state(index_state_root);
@@ -693,7 +755,9 @@ fn external_cache_route_rejects_links_including_components_cancelled_by_parent()
 
 #[test]
 fn external_cache_ancestor_replacement_does_not_publish_source_or_foreign_cache() {
-    unica_workspace::actor::cache_authority_contract_tests::external_cache_ancestor_replacement_does_not_publish_source_or_foreign_cache(policies());
+    if let Err(skip) = unica_workspace::actor::cache_authority_contract_tests::external_cache_ancestor_replacement_does_not_publish_source_or_foreign_cache(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
 }
 
 #[test]
@@ -725,6 +789,73 @@ fn relative_cache_uses_process_cwd_when_workspace_has_an_alias() {
 #[test]
 fn cache_override_drive_prefix_follows_host_path_semantics_without_erasing_links() {
     if let Err(skip) = unica_workspace::actor::cache_authority_contract_tests::cache_override_drive_prefix_follows_host_path_semantics_without_erasing_links(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn apply_policy_stable_unreadable_deny_evidence_allows_publication() {
+    if let Err(skip) = unica_workspace::actor::policy_contract_tests::apply_policy_stable_unreadable_deny_evidence_allows_publication(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn apply_policy_symlink_transition_is_rejected() {
+    if let Err(skip) =
+        unica_workspace::actor::policy_contract_tests::apply_policy_symlink_transition_is_rejected(
+            policies(),
+        )
+    {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn apply_policy_oversized_identity_transition_is_rejected() {
+    if let Err(skip) = unica_workspace::actor::policy_contract_tests::apply_policy_oversized_identity_transition_is_rejected(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn apply_policy_unreadable_transition_is_rejected() {
+    if let Err(skip) = unica_workspace::actor::policy_contract_tests::apply_policy_unreadable_transition_is_rejected(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn apply_policy_unreadable_mode_matches_v12() {
+    if let Err(skip) =
+        unica_workspace::actor::policy_contract_tests::apply_policy_unreadable_mode_matches_v12(
+            policies(),
+        )
+    {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn workspace_actor_rejects_nested_directory_link_read() {
+    if let Err(skip) = unica_workspace::actor::policy_contract_tests::workspace_actor_rejects_nested_directory_link_read(policies()) {
+        unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
+    }
+}
+
+#[test]
+fn prepared_apply_cache_authority_allows_unchanged_root() {
+    unica_workspace::actor::policy_contract_tests::prepared_apply_cache_authority_allows_unchanged_root(policies());
+}
+
+#[test]
+fn external_cache_unchanged_ancestor_allows_publication() {
+    unica_workspace::actor::cache_authority_contract_tests::external_cache_unchanged_ancestor_allows_publication(policies());
+}
+
+#[test]
+fn native_path_identities_do_not_share_actor_state() {
+    if let Err(skip) = unica_workspace::actor::index_contract_tests::native_path_identities_do_not_share_actor_state() {
         unica_process::test_support::skip_named_host_capability(skip.capability, skip.reason);
     }
 }

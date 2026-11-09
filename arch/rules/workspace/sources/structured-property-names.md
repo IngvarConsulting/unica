@@ -1,9 +1,5 @@
 ---
 id: INV.SOURCE.STRUCTURED-PROPERTY-NAMES
-check:
-  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests/property_name_parity.rs::dcs_and_xdto_final_props_have_explicit_roles_and_match_corresponding_can
-  - crates/unica-coder/src/infrastructure/daemon/metadata_can_tests/property_name_parity.rs::profile_guard_detects_unknown_props_changed_operands_and_wrong_anonymous_context
-  - crates/unica-coder/src/infrastructure/v13_read/tests/structured_property_names.rs::xdto_explicit_bounds_keep_their_xml_names_and_all_observed_facts
 ---
 
 # Имена свойств DCS и XDTO согласованы с операцией записи

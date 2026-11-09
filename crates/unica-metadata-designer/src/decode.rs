@@ -2,7 +2,7 @@
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 use unica_address::address::{NodeKind, QualifiedAddress};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::apply_operations::MetadataOperation as RegisteredMetadataOperation;
 use unica_metadata::contracts::{
     metadata_help_create_input_schema, metadata_object_create_input_schema,
@@ -88,9 +88,19 @@ pub enum MetadataPlanKind {
 }
 #[derive(Debug, Clone)]
 pub enum DescriptorPropertyChanges {
-    StyleItem(unica_metadata::style_color::StyleItemColor),
+    LanguageCode {
+        code: String,
+        comment: Option<String>,
+    },
+    CommentOnly {
+        kind: NodeKind,
+        comment: String,
+    },
+    DocumentNumerator(unica_metadata::document_numerator::DocumentNumeratorChanges),
+    StyleItem(unica_metadata::property_input::StyleItemPropertyChanges),
     FunctionalOption(unica_metadata::property_input::FunctionalOptionPropertyChanges),
     Role(unica_metadata::property_input::RolePropertyChanges),
+    WSReference(unica_metadata::property_input::WsReferencePropertyChanges),
     Subsystem(unica_metadata::property_input::SubsystemPropertyChanges),
     Configuration(unica_metadata::property_input::ConfigurationPropertyChanges),
 }
@@ -102,6 +112,8 @@ pub enum AddressedFields {
     Items,
     /// Changed fields of the member in `values`.
     Values,
+    /// Relation operands live directly under values, not elements[0].
+    RelationValues,
     /// No arguments beyond the address.
     None,
 }
@@ -119,6 +131,7 @@ impl AddressedFields {
         Some(match self {
             Self::Items => field.replacen("elements", "items", 1),
             Self::Values => field.replacen("elements[0]", "values", 1),
+            Self::RelationValues => format!("values.{field}"),
             Self::None => field.to_string(),
         })
     }
@@ -846,14 +859,11 @@ fn removable_object(
     if let [owner] = target.segments() {
         if owner.kind() == NodeKind::CommonTemplate {
             if let Some(name) = owner.name() {
-                let address = MetadataAddress::parse(
-                    PLATFORM_XML_8_3_27_FORMAT_2_20,
-                    &format!("CommonTemplate.{name}"),
-                )
-                .map_err(|error| {
-                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
-                        .at_path(format!("ops[{op_index}].args.at"))
-                })?;
+                let address = MetadataAddress::parse_logical(&format!("CommonTemplate.{name}"))
+                    .map_err(|error| {
+                        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
+                            .at_path(format!("ops[{op_index}].args.at"))
+                    })?;
                 let layout = unica_source_designer::layout::metadata_kind("CommonTemplate")
                     .expect("a common template has a physical layout");
                 return Ok((address, layout));
@@ -944,14 +954,11 @@ pub fn metadata_owner(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, diagnostic.message)
             .at_path(format!("ops[{op_index}].args.at"))
     })?;
-    let address = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{}.{name}", owner.kind().as_str()),
-    )
-    .map_err(|error| {
-        ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
-            .at_path(format!("ops[{op_index}].args.at"))
-    })?;
+    let address = MetadataAddress::parse_logical(&format!("{}.{name}", owner.kind().as_str()))
+        .map_err(|error| {
+            ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.to_string())
+                .at_path(format!("ops[{op_index}].args.at"))
+        })?;
     Ok((address, kind))
 }
 pub fn attribute_owner_and_name(
@@ -1066,7 +1073,7 @@ pub fn parse_properties(
     ) {
         PropertiesSite::root_of(binding.source_kind)
     } else {
-        PropertiesSite::from_address(&target)
+        PropertiesSite::from_address(&target, binding.source_kind)
     }
     .ok_or_else(|| {
         ApplyPlanError::new(
@@ -1075,6 +1082,21 @@ pub fn parse_properties(
         )
         .at_path(format!("ops[{op_index}].args.at"))
     })?;
+    // An extension adopts WS references and languages; only their own
+    // Comment belongs to the extension.
+    let site = match site {
+        PropertiesSite::WSReference
+            if binding.source_kind != unica_source_contract::SourceSetKind::Configuration =>
+        {
+            PropertiesSite::CommentOnly(NodeKind::WsReference)
+        }
+        PropertiesSite::Language
+            if binding.source_kind != unica_source_contract::SourceSetKind::Configuration =>
+        {
+            PropertiesSite::CommentOnly(NodeKind::Language)
+        }
+        site => site,
+    };
     // ApplyRequest has already resolved the operation address. It is an
     // internal carrier key, not part of the published property arguments.
     let mut payload = args.clone();
@@ -1097,6 +1119,19 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::CommentOnly { kind, comment } => {
+            let directory = unica_source_designer::layout::metadata_kind(kind.as_str())
+                .expect("comment owner has a Designer layout")
+                .directory;
+            (
+                directory,
+                DescriptorPropertyChanges::CommentOnly { kind, comment },
+            )
+        }
+        unica_metadata::property_input::PropertiesIntent::DocumentNumerator(values) => (
+            "DocumentNumerators",
+            DescriptorPropertyChanges::DocumentNumerator(values),
+        ),
         unica_metadata::property_input::PropertiesIntent::FunctionalOption(values) => (
             "FunctionalOptions",
             DescriptorPropertyChanges::FunctionalOption(values),
@@ -1108,6 +1143,31 @@ pub fn parse_properties(
                 operation: MetaEditOperation::SetProperties { values },
                 addressed: None,
             });
+        }
+        unica_metadata::property_input::PropertiesIntent::LanguageCode { code, comment } => (
+            "Languages",
+            DescriptorPropertyChanges::LanguageCode { code, comment },
+        ),
+        unica_metadata::property_input::PropertiesIntent::WSReference(values) => {
+            crate::ws_reference::validate_location_url(&values.location_url).map_err(
+                |message| {
+                    let spelling = if args
+                        .get("values")
+                        .and_then(|values| values.get("locationURL"))
+                        .is_some()
+                    {
+                        "locationURL"
+                    } else {
+                        "LocationURL"
+                    };
+                    ApplyPlanError::new(ApplyPlanErrorKind::BadValue, message)
+                        .at_path(format!("ops[{op_index}].args.values.{spelling}"))
+                },
+            )?;
+            (
+                "WSReferences",
+                DescriptorPropertyChanges::WSReference(values),
+            )
         }
         unica_metadata::property_input::PropertiesIntent::StyleItem(value) => {
             ("StyleItems", DescriptorPropertyChanges::StyleItem(value))
@@ -1179,7 +1239,6 @@ pub fn parse_attribute_add(
     };
     let items = required_array(args, "items", op_index)?.to_vec();
     let mut legacy = json!({"op": "add", "collection": "attributes", "elements": items});
-    let in_section = section.is_some();
     if let Some(section) = section {
         legacy["scope"] = json!({"tabularSection": section});
     }
@@ -1196,12 +1255,7 @@ pub fn parse_attribute_add(
         },
         op_index,
     )?;
-    // Табличная часть названа адресом: её отсутствие — «не найден» по `at`.
-    Ok(if in_section {
-        addressed_edit(edit, AddressedFields::Items)
-    } else {
-        edit
-    })
+    Ok(addressed_edit(edit, AddressedFields::Items))
 }
 pub fn parse_attribute_set(
     args: &Map<String, Value>,
@@ -1354,6 +1408,7 @@ pub fn parse_member_add(
         },
         op_index,
     )
+    .map(|edit| addressed_edit(edit, AddressedFields::Items))
 }
 #[derive(Debug, Clone, Copy)]
 pub enum AddressedMemberChange {
@@ -1421,7 +1476,7 @@ pub fn parse_addressed_member_change(
         AddressedFields::Values,
     ))
 }
-/// Marks a typed edit whose member is named by the operation address.
+/// Maps writer diagnostics of a typed edit to its public argument layout.
 pub fn addressed_edit(kind: MetadataPlanKind, fields: AddressedFields) -> MetadataPlanKind {
     match kind {
         MetadataPlanKind::Edit {
@@ -1750,11 +1805,8 @@ pub fn parse_exchange_content(
                 "content target must be a Catalog, Document, Constant, ChartOfCharacteristicTypes, ChartOfAccounts, ChartOfCalculationTypes, InformationRegister, AccumulationRegister, AccountingRegister, CalculationRegister, BusinessProcess or Task",
             ));
         }
-        let target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{}.{name}", segment.kind().as_str()),
-        )
-        .map_err(|_| bad_field("at", "content target must be a metadata object"))?;
+        let target = MetadataAddress::parse_logical(&format!("{}.{name}", segment.kind().as_str()))
+            .map_err(|_| bad_field("at", "content target must be a metadata object"))?;
         if !seen.insert(target.as_str().to_lowercase()) {
             return Err(bad_field("at", "content target is repeated in items"));
         }
@@ -1830,14 +1882,17 @@ pub fn parse_relation(
         )
         .at_path(format!("ops[{op_index}].args.values")));
     }
-    parse_legacy_edit(
-        binding.source_set_name(),
-        owner,
-        kind,
-        json!({"op": "editRelations", "relation": relation, "mode": mode.as_str(), "targets": targets}),
-        |field| format!("ops[{op_index}].args.values.{field}"),
-        op_index,
-    )
+    Ok(addressed_edit(
+        parse_legacy_edit(
+            binding.source_set_name(),
+            owner,
+            kind,
+            json!({"op": "editRelations", "relation": relation, "mode": mode.as_str(), "targets": targets}),
+            |field| format!("ops[{op_index}].args.values.{field}"),
+            op_index,
+        )?,
+        AddressedFields::RelationValues,
+    ))
 }
 
 const PREDEFINED_PLACEHOLDER_ID: &str = "00000000-0000-4000-8000-000000000000";

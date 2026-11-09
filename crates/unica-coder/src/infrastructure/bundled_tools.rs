@@ -41,7 +41,7 @@ struct ManifestTool {
     name: String,
     version: Option<String>,
     /// Из какого архива приходит инструмент. Несколько инструментов делят
-    /// один: `rlm-tools-bsl` несёт два. Отсутствует — артефакт зовётся как
+    /// один: `archive-tools` несёт два. Отсутствует — артефакт зовётся как
     /// инструмент.
     artifact: Option<String>,
     binaries: Option<BTreeMap<String, ManifestBinary>>,
@@ -101,7 +101,7 @@ struct LockTool {
 /// предупреждения предпросмотра.
 type ManifestBinaryError = (EngineStage, String);
 
-pub(crate) fn bundled_tool_version(plugin_root: &Path, tool_name: &str) -> Result<String, String> {
+pub fn bundled_tool_version(plugin_root: &Path, tool_name: &str) -> Result<String, String> {
     let manifest_path = selected_manifest_path(plugin_root);
     if let Ok(text) = fs::read_to_string(&manifest_path) {
         let manifest: BundledManifest = serde_json::from_str(&text)
@@ -132,7 +132,7 @@ pub(crate) fn bundled_tool_version(plugin_root: &Path, tool_name: &str) -> Resul
 /// рядом с плагином.
 const ARTIFACT_CACHE_ENV: &str = "UNICA_ARTIFACT_CACHE";
 
-pub(crate) fn resolve_bundled_tool(
+pub fn resolve_bundled_tool(
     plugin_root: &Path,
     tool_name: &str,
     verify: bool,
@@ -155,7 +155,7 @@ pub(crate) fn resolve_bundled_tool(
 ///
 /// Нужна там, где запуск уже не удался, а причину надо назвать типом: хеш
 /// считается только на этом пути, а не на каждом вызове.
-pub(crate) fn engine_absence(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
+pub fn engine_absence(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
     match resolve_bundled_tool(plugin_root, tool_name, true) {
         Err(BundledToolError::Missing(engine)) => Some(*engine),
         Ok(_) | Err(BundledToolError::Io(_)) => None,
@@ -164,11 +164,7 @@ pub(crate) fn engine_absence(plugin_root: &Path, tool_name: &str) -> Option<Miss
 
 /// Движок проверен, но его процесс не запустился. Без корня плагина пин и
 /// режим установки неизвестны: следующий шаг от них на этом шаге не зависит.
-pub(crate) fn start_failure(
-    plugin_root: Option<&Path>,
-    tool_name: &str,
-    program: &Path,
-) -> MissingEngine {
+pub fn start_failure(plugin_root: Option<&Path>, tool_name: &str, program: &Path) -> MissingEngine {
     let target = current_target_id()
         .map(str::to_owned)
         .unwrap_or_else(|_| host_label());
@@ -194,7 +190,7 @@ pub(crate) fn start_failure(
 /// Причина незапуска движка для ответа: текст ОС без служебного префикса,
 /// без пути к самому движку и после общей редакции секретов. Другие пути,
 /// если ОС их назвала, редакция не обещает убрать.
-pub(crate) fn launch_failure_cause(error: &str, tool_name: &str, program: &Path) -> String {
+pub fn launch_failure_cause(error: &str, tool_name: &str, program: &Path) -> String {
     let error = error.strip_prefix("process_failed: ").unwrap_or(error);
     unica_redaction::redactor(&error.replace(&program.display().to_string(), tool_name))
 }
@@ -210,7 +206,7 @@ pub(crate) fn launch_failure_cause(error: &str, tool_name: &str, program: &Path)
 /// неудачное подключение процесса к дереву — не незапуск движка (#549).
 ///
 /// [`ManagedSpawnFailure::Launch`]: unica_process::ManagedSpawnFailure::Launch
-pub(crate) fn launch_probe_failure(
+pub fn launch_probe_failure(
     plugin_root: &Path,
     tool_name: &str,
 ) -> Option<(MissingEngine, String)> {
@@ -222,7 +218,33 @@ pub(crate) fn launch_probe_failure(
         cwd: plugin_root.to_path_buf(),
         env: Vec::new(),
         env_remove: Vec::new(),
+        // resource-limit: bundled-tools.launch-probe-capture-bytes
+        // class: retention
+        // unit: bytes
+        // scope: process
+        // value: 4096
+        // literal: capture_limits: Some((4096, 4096))
+        // count: 1
+        // expr: 4096
+        // resource: Байты stdout и stderr, захватываемые пробным запуском поставляемого движка при разборе отказа старта.
+        // status: unproven
+        // origin: неизвестно
+        // problem: неизвестно
+        // on-reach: вывод сверх предела не удерживается; проба смотрит только на факт запуска
         capture_limits: Some((4096, 4096)),
+        // resource-limit: bundled-tools.launch-probe-timeout
+        // class: deadline
+        // unit: ms
+        // scope: process
+        // value: 1000
+        // literal: timeout: Some(std::time::Duration::from_secs(1))
+        // count: 1
+        // expr: std::time::Duration::from_secs(1)
+        // resource: Срок пробного запуска поставляемого движка при разборе отказа старта.
+        // status: unproven
+        // origin: неизвестно
+        // problem: неизвестно
+        // on-reach: запущенный процесс сразу завершается; срок ограничивает зависший запуск
         timeout: Some(std::time::Duration::from_secs(1)),
         cancellation: unica_work_control::cancellation::CancellationToken::new(),
     });
@@ -249,7 +271,7 @@ pub(crate) fn delivery_failure(plugin_root: &Path, tool_name: &str) -> MissingEn
 }
 
 /// Корень плагина не найден: поставки, из которой взялся бы движок, нет.
-pub(crate) fn plugin_root_missing(tool_name: &str) -> MissingEngine {
+pub fn plugin_root_missing(tool_name: &str) -> MissingEngine {
     let target = current_target_id()
         .map(str::to_owned)
         .unwrap_or_else(|_| host_label());
@@ -401,7 +423,7 @@ fn artifact_delivery_key(
 }
 
 /// Имя архива, в котором приезжает инструмент. Несколько инструментов делят
-/// один: `rlm-tools-bsl` несёт два.
+/// один: `archive-tools` несёт два.
 pub(crate) fn artifact_for(plugin_root: &Path, tool_name: &str) -> Option<String> {
     let manifest = read_manifest(plugin_root)?;
     if manifest.source_manifest {
@@ -420,7 +442,7 @@ pub(crate) fn artifact_for(plugin_root: &Path, tool_name: &str) -> Option<String
 /// Проверяется наличие файла, а не его сумма: сумму сверит запуск, а доставке
 /// довольно знать, чего ещё нет. Считать хеш десятков мегабайт на каждый вызов
 /// значит платить за ответ, который уже дала файловая система.
-pub(crate) fn installed_engine_path(plugin_root: &Path, tool_name: &str) -> Option<PathBuf> {
+pub fn installed_engine_path(plugin_root: &Path, tool_name: &str) -> Option<PathBuf> {
     engine_path_for(plugin_root, tool_name, current_target_id().ok()?)
 }
 
@@ -446,7 +468,7 @@ fn engine_path_for(plugin_root: &Path, tool_name: &str, target_id: &str) -> Opti
 /// от режима: исходный чекаут собирает инструменты сам, опубликованная
 /// поставка их доставляет. Контрольная сумма здесь не считается: её сверяет
 /// [`engine_absence`] на пути отказа.
-pub(crate) fn missing_engine(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
+pub fn missing_engine(plugin_root: &Path, tool_name: &str) -> Option<MissingEngine> {
     let Ok(target_id) = current_target_id() else {
         return Some(describe_missing(
             plugin_root,
@@ -821,11 +843,10 @@ fn target_triple_for_id(target_id: &str) -> Result<&'static str, String> {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::Path;
 
     #[test]
     fn resolves_windows_binary_from_manifest_without_script_wrapper() {
@@ -1036,11 +1057,15 @@ mod tests {
 
     #[test]
     fn tools_sharing_one_archive_resolve_to_one_artifact() {
-        // rlm-tools-bsl несёт два инструмента в одном файле на 69 МБ: кеш по
+        // archive-tools несёт два инструмента в одном файле на 69 МБ: кеш по
         // имени инструмента скачал бы его дважды.
         let plugin_root = temp_plugin_root("shared-artifact");
         fs::create_dir_all(plugin_root.join("bin/darwin-arm64")).unwrap();
-        fs::write(plugin_root.join("bin/darwin-arm64/rlm-bsl-index"), "index").unwrap();
+        fs::write(
+            plugin_root.join("bin/darwin-arm64/archive-tool-index"),
+            "index",
+        )
+        .unwrap();
         fs::write(
             plugin_root.join("third-party/manifest.json"),
             r#"{
@@ -1048,10 +1073,10 @@ mod tests {
   "targetTriple": "aarch64-apple-darwin",
   "tools": [
     {
-      "name": "rlm-bsl-index",
+      "name": "archive-tool-index",
       "version": "1.33.0",
-      "artifact": "rlm-tools-bsl",
-      "binaryPath": "bin/darwin-arm64/rlm-bsl-index",
+      "artifact": "archive-tools",
+      "binaryPath": "bin/darwin-arm64/archive-tool-index",
       "sha256": "3c9b8f2e6d1a4c7b0e5f8a2d6c9b3e7f1a4d8c2b5e9f3a7d1c4b8e2f6a9d3c7b"
     }
   ]
@@ -1060,17 +1085,17 @@ mod tests {
         .unwrap();
         let cache = plugin_root.join("..").join("shared-cache");
         let installed = cache
-            .join("rlm-tools-bsl")
+            .join("archive-tools")
             .join("1.33.0")
             .join("darwin-arm64")
             .join("bin/darwin-arm64");
         fs::create_dir_all(&installed).unwrap();
-        fs::write(installed.join("rlm-bsl-index"), "index").unwrap();
+        fs::write(installed.join("archive-tool-index"), "index").unwrap();
 
         let tool = resolve_bundled_tool_in(
             &plugin_root,
             Some(cache.as_path()),
-            "rlm-bsl-index",
+            "archive-tool-index",
             "darwin-arm64",
             false,
         )
@@ -1078,7 +1103,7 @@ mod tests {
 
         assert_eq!(
             tool.program,
-            installed.join("rlm-bsl-index"),
+            installed.join("archive-tool-index"),
             "путь строится по артефакту, а не по имени инструмента"
         );
     }
@@ -1090,13 +1115,13 @@ mod tests {
         }
     }
 
-    pub(super) fn temp_plugin_root(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!("unica-bundled-tools-{name}-{nanos}"));
-        let plugin_root = root.join("plugins/unica");
+    pub(super) fn temp_plugin_root(
+        name: &str,
+    ) -> crate::infrastructure::temp_test_root::TempTestRoot {
+        let plugin_root = crate::infrastructure::temp_test_root::TempTestRoot::new(
+            &format!("unica-bundled-tools-{name}"),
+            "plugins/unica",
+        );
         fs::create_dir_all(plugin_root.join("third-party")).unwrap();
         fs::create_dir_all(plugin_root.join("skills")).unwrap();
         plugin_root
@@ -1169,12 +1194,12 @@ mod tests {
 }
 
 #[cfg(test)]
-mod delivery_tests {
+mod medium_delivery_tests {
     use super::*;
     use std::fs;
 
     #[test]
-    fn installer_and_runtime_resolve_both_tools_from_one_immutable_rlm_delivery() {
+    fn installer_and_runtime_resolve_both_tools_from_one_immutable_delivery() {
         use flate2::write::GzEncoder;
         use flate2::Compression;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1234,10 +1259,10 @@ mod delivery_tests {
         for host in HostTarget::ALL {
             let target = host.as_str();
             let suffix = if target == "win-x64" { ".exe" } else { "" };
-            let mcp = format!("rlm-bsl-mcp{suffix}");
-            let index = format!("rlm-bsl-index{suffix}");
+            let mcp = format!("archive-tool-server{suffix}");
+            let index = format!("archive-tool-index{suffix}");
             let bytes = archive(&[(mcp.as_str(), script), (index.as_str(), script)]);
-            let asset_name = format!("rlm-tools-bsl-{target}.tar.gz");
+            let asset_name = format!("archive-tools-{target}.tar.gz");
             let asset_sha = format!("{:x}", Sha256::digest(&bytes));
             archives.insert(asset_name.clone(), bytes);
             let analyzer_name = format!("bsl-analyzer-{target}{suffix}");
@@ -1262,7 +1287,7 @@ mod delivery_tests {
             engine_targets.insert(target.to_owned(), serde_json::json!({
                 "asset": {
                     "name": asset_name,
-                    "url": format!("https://github.com/IngvarConsulting/unica-toolchain/releases/download/rlm-tools-bsl-v1.33.0-build.3/{asset_name}"),
+                    "url": format!("https://github.com/IngvarConsulting/unica-toolchain/releases/download/archive-tools-v1.33.0-build.3/{asset_name}"),
                     "mediaType": "application/gzip",
                     "sha256": asset_sha,
                 },
@@ -1313,7 +1338,7 @@ mod delivery_tests {
             },
             "artifacts": {
                 "unica": {"version": env!("CARGO_PKG_VERSION"), "role": "core", "targets": core_targets},
-                "rlm-tools-bsl": {"version": "1.33.0", "role": "engine", "targets": engine_targets},
+                "archive-tools": {"version": "1.33.0", "role": "engine", "targets": engine_targets},
                 "bsl-analyzer": {"version": "0.2.67", "role": "engine", "targets": analyzer_targets},
             },
         }))
@@ -1329,16 +1354,16 @@ mod delivery_tests {
         for host in HostTarget::ALL {
             let target = host.as_str();
             let asset = &runtime
-                .artifact_target("rlm-tools-bsl", host)
+                .artifact_target("archive-tools", host)
                 .unwrap()
                 .asset;
             let analyzer_asset = &runtime.artifact_target("bsl-analyzer", host).unwrap().asset;
             let plugin_manifest = serde_json::json!({
                 "schemaVersion": 2,
-                "artifactAssets": {"rlm-tools-bsl": asset, "bsl-analyzer": analyzer_asset},
+                "artifactAssets": {"archive-tools": asset, "bsl-analyzer": analyzer_asset},
                 "tools": [
-                    {"name": "rlm-bsl-index", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaries": index_binaries},
-                    {"name": "rlm-bsl-mcp", "artifact": "rlm-tools-bsl", "version": "1.33.0", "binaries": mcp_binaries},
+                    {"name": "archive-tool-index", "artifact": "archive-tools", "version": "1.33.0", "binaries": index_binaries},
+                    {"name": "archive-tool-server", "artifact": "archive-tools", "version": "1.33.0", "binaries": mcp_binaries},
                     {"name": "bsl-analyzer", "version": "0.2.67", "binaries": analyzer_binaries},
                 ],
             });
@@ -1348,16 +1373,16 @@ mod delivery_tests {
             )
             .unwrap();
             let installed = installer
-                .ensure_artifact(&runtime, "rlm-tools-bsl", host, &SilentDownload)
+                .ensure_artifact(&runtime, "archive-tools", host, &SilentDownload)
                 .unwrap();
             assert_eq!(
                 installed,
                 cache
-                    .join("rlm-tools-bsl")
+                    .join("archive-tools")
                     .join(format!("1.33.0--{}", asset.sha256))
                     .join(target)
             );
-            for tool in ["rlm-bsl-index", "rlm-bsl-mcp"] {
+            for tool in ["archive-tool-index", "archive-tool-server"] {
                 let resolved = resolve_from_artifact_cache(&plugin, &cache, tool, target, true)
                     .unwrap()
                     .expect("installed tool is resolved");
@@ -1365,7 +1390,7 @@ mod delivery_tests {
                 assert_eq!(fs::read(&resolved.program).unwrap(), script);
                 if target != "win-x64"
                     && target == crate::infrastructure::platform::current_target_id().unwrap()
-                    && tool == "rlm-bsl-mcp"
+                    && tool == "archive-tool-server"
                 {
                     let output = std::process::Command::new(&resolved.program)
                         .output()
@@ -1375,7 +1400,7 @@ mod delivery_tests {
                 }
             }
             installer
-                .ensure_artifact(&runtime, "rlm-tools-bsl", host, &SilentDownload)
+                .ensure_artifact(&runtime, "archive-tools", host, &SilentDownload)
                 .unwrap();
             let analyzer_root = installer
                 .ensure_artifact(&runtime, "bsl-analyzer", host, &SilentDownload)
@@ -1402,7 +1427,7 @@ mod delivery_tests {
 
     #[test]
     fn artifact_cache_resolution_uses_the_delivery_digest_not_only_the_version() {
-        let plugin_root = tests::temp_plugin_root("immutable-cache-identity");
+        let plugin_root = medium_tests::temp_plugin_root("immutable-cache-identity");
         fs::write(
             plugin_root.join("third-party/manifest.json"),
             r#"{
@@ -1456,8 +1481,8 @@ mod delivery_tests {
 
     #[test]
     fn an_engine_in_the_artifact_cache_counts_as_installed() {
-        let plugin_root = tests::temp_plugin_root("installed-in-cache");
-        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let plugin_root = medium_tests::temp_plugin_root("installed-in-cache");
+        medium_tests::write_manifest_with_bsl_analyzer(&plugin_root);
         let cache = plugin_root.join("..").join("installed-cache");
         let installed = cache
             .join("bsl-analyzer")
@@ -1487,21 +1512,21 @@ mod delivery_tests {
         // Тулчейн издаёт архив своей раскладкой, и переупаковка ради раскладки
         // плагина вернула бы ту самую копию, от которой ушли. Кеш повторяет
         // архив, а не дерево разработки.
-        let plugin_root = tests::temp_plugin_root("delivered-layout");
+        let plugin_root = medium_tests::temp_plugin_root("delivered-layout");
         fs::write(
             plugin_root.join("third-party/manifest.json"),
             r#"{
   "schemaVersion": 2,
   "tools": [
     {
-      "name": "rlm-bsl-mcp",
+      "name": "archive-tool-server",
       "version": "1.33.0",
-      "artifact": "rlm-tools-bsl",
+      "artifact": "archive-tools",
       "binaries": {
         "darwin-arm64": {
           "targetTriple": "aarch64-apple-darwin",
-          "binaryPath": "bin/darwin-arm64/rlm-bsl-mcp",
-          "deliveredPath": "rlm-bsl-mcp",
+          "binaryPath": "bin/darwin-arm64/archive-tool-server",
+          "deliveredPath": "archive-tool-server",
           "sha256": "e4002e1adb76d4e2bb4846ab27463ff6368d18b727eb2bd519e1579f0baf491b"
         }
       }
@@ -1512,16 +1537,16 @@ mod delivery_tests {
         .unwrap();
         let cache = plugin_root.join("..").join("delivered-cache");
         let installed = cache
-            .join("rlm-tools-bsl")
+            .join("archive-tools")
             .join("1.33.0")
             .join("darwin-arm64");
         fs::create_dir_all(&installed).unwrap();
-        fs::write(installed.join("rlm-bsl-mcp"), "engine").unwrap();
+        fs::write(installed.join("archive-tool-server"), "engine").unwrap();
 
         let found = resolve_from_artifact_cache(
             &plugin_root,
             cache.as_path(),
-            "rlm-bsl-mcp",
+            "archive-tool-server",
             "darwin-arm64",
             false,
         )
@@ -1529,13 +1554,13 @@ mod delivery_tests {
 
         assert_eq!(
             found.map(|tool| tool.program),
-            Some(installed.join("rlm-bsl-mcp"))
+            Some(installed.join("archive-tool-server"))
         );
     }
 
     #[test]
     fn a_delivered_path_cannot_escape_the_verified_cache_root() {
-        let plugin_root = tests::temp_plugin_root("delivered-path-traversal");
+        let plugin_root = medium_tests::temp_plugin_root("delivered-path-traversal");
         fs::write(
             plugin_root.join("third-party/manifest.json"),
             r#"{
@@ -1570,7 +1595,7 @@ mod delivery_tests {
         .expect_err("deliveredPath traversal must fail closed");
 
         assert_eq!(
-            tests::stage_of(&error),
+            medium_tests::stage_of(&error),
             Some(EngineStage::Manifest),
             "{error}"
         );
@@ -1580,8 +1605,8 @@ mod delivery_tests {
     fn a_tree_without_a_delivered_path_keeps_the_path_it_has() {
         // Дерево разработки собирает инструменты на месте: доставки не было,
         // и раскладка остаётся его собственной.
-        let plugin_root = tests::temp_plugin_root("no-delivered-path");
-        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let plugin_root = medium_tests::temp_plugin_root("no-delivered-path");
+        medium_tests::write_manifest_with_bsl_analyzer(&plugin_root);
         let cache = plugin_root.join("..").join("legacy-cache");
         let installed = cache
             .join("bsl-analyzer")
@@ -1608,8 +1633,8 @@ mod delivery_tests {
 
     #[test]
     fn an_engine_that_never_arrived_is_not_installed() {
-        let plugin_root = tests::temp_plugin_root("never-arrived");
-        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let plugin_root = medium_tests::temp_plugin_root("never-arrived");
+        medium_tests::write_manifest_with_bsl_analyzer(&plugin_root);
         let cache = plugin_root.join("..").join("empty-cache");
 
         let found = resolve_from_artifact_cache(
@@ -1624,16 +1649,17 @@ mod delivery_tests {
         assert!(found.is_none(), "чего нет на диске, то и не установлено");
     }
 
+    /// rule: INV.PKG.ARTIFACT-CACHE-IDENTITY
     #[test]
     fn tools_sharing_one_archive_name_one_artifact() {
-        let plugin_root = tests::temp_plugin_root("artifact-name");
+        let plugin_root = medium_tests::temp_plugin_root("artifact-name");
         fs::write(
             plugin_root.join("third-party/manifest.json"),
             r#"{
   "schemaVersion": 2,
   "tools": [
-    {"name": "rlm-bsl-index", "version": "1.33.0", "artifact": "rlm-tools-bsl"},
-    {"name": "rlm-bsl-mcp", "version": "1.33.0", "artifact": "rlm-tools-bsl"},
+    {"name": "archive-tool-index", "version": "1.33.0", "artifact": "archive-tools"},
+    {"name": "archive-tool-server", "version": "1.33.0", "artifact": "archive-tools"},
     {"name": "v8-runner", "version": "0.4.0"}
   ]
 }"#,
@@ -1641,12 +1667,12 @@ mod delivery_tests {
         .unwrap();
 
         assert_eq!(
-            artifact_for(&plugin_root, "rlm-bsl-index").as_deref(),
-            Some("rlm-tools-bsl")
+            artifact_for(&plugin_root, "archive-tool-index").as_deref(),
+            Some("archive-tools")
         );
         assert_eq!(
-            artifact_for(&plugin_root, "rlm-bsl-mcp").as_deref(),
-            Some("rlm-tools-bsl")
+            artifact_for(&plugin_root, "archive-tool-server").as_deref(),
+            Some("archive-tools")
         );
         assert_eq!(
             artifact_for(&plugin_root, "v8-runner").as_deref(),
@@ -1658,7 +1684,7 @@ mod delivery_tests {
 }
 
 #[cfg(test)]
-mod missing_engine_tests {
+mod medium_missing_engine_tests {
     use super::*;
     use std::fs;
 
@@ -1666,7 +1692,7 @@ mod missing_engine_tests {
     fn a_source_checkout_is_told_to_build_the_tool() {
         // Плейсхолдер исходного чекаута инструментов не описывает, и доставке
         // взяться неоткуда: следующий шаг — собрать их на месте.
-        let plugin_root = tests::temp_plugin_root("source-mode");
+        let plugin_root = medium_tests::temp_plugin_root("source-mode");
         fs::write(
             plugin_root.join("third-party/manifest.json"),
             r#"{"schemaVersion":2,"sourceManifest":true,"tools":[]}"#,
@@ -1705,7 +1731,7 @@ mod missing_engine_tests {
             missing
                 .expected_path
                 .replace('\\', "/")
-                .ends_with(&tests::host_binary("v8-runner")),
+                .ends_with(&medium_tests::host_binary("v8-runner")),
             "путь назван: {}",
             missing.expected_path
         );
@@ -1718,9 +1744,9 @@ mod missing_engine_tests {
 
     #[test]
     fn a_published_install_is_told_the_tool_will_be_delivered() {
-        let plugin_root = tests::temp_plugin_root("marketplace-mode");
-        tests::write_manifest_with_bsl_analyzer(&plugin_root);
-        fs::remove_file(plugin_root.join(tests::host_binary("bsl-analyzer"))).unwrap();
+        let plugin_root = medium_tests::temp_plugin_root("marketplace-mode");
+        medium_tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        fs::remove_file(plugin_root.join(medium_tests::host_binary("bsl-analyzer"))).unwrap();
 
         let missing = missing_engine(&plugin_root, "bsl-analyzer").expect("движка нет");
 
@@ -1737,8 +1763,8 @@ mod missing_engine_tests {
         // Резолвер движка смотрит на цель прогона. Фикстура на две цели из трёх
         // делала набор зелёным только на машине автора: три теста прошли на
         // macOS и упали на Linux и Windows в первом же прогоне CI.
-        let plugin_root = tests::temp_plugin_root("fixture-targets");
-        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let plugin_root = medium_tests::temp_plugin_root("fixture-targets");
+        medium_tests::write_manifest_with_bsl_analyzer(&plugin_root);
         let manifest: BundledManifest = serde_json::from_slice(
             &std::fs::read(plugin_root.join("third-party/manifest.json")).unwrap(),
         )
@@ -1754,20 +1780,20 @@ mod missing_engine_tests {
                 declared.binary_path
             );
         }
-        assert!(binaries.contains_key(tests::host_target()));
+        assert!(binaries.contains_key(medium_tests::host_target()));
     }
 
     #[test]
     fn an_engine_on_disk_is_not_missing() {
-        let plugin_root = tests::temp_plugin_root("present");
-        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let plugin_root = medium_tests::temp_plugin_root("present");
+        medium_tests::write_manifest_with_bsl_analyzer(&plugin_root);
 
         assert_eq!(missing_engine(&plugin_root, "bsl-analyzer"), None);
     }
 }
 
 #[cfg(test)]
-mod missing_binary_refusal_tests {
+mod medium_missing_binary_refusal_tests {
     use super::*;
     use std::fs;
 
@@ -1780,13 +1806,13 @@ mod missing_binary_refusal_tests {
 
     #[test]
     fn a_missing_binary_is_refused_with_a_typed_delivery_stage() {
-        // #549: «Unica binary is missing: <path>» не машиночитаемо и не
+        // «Unica binary is missing: <path>» не машиночитаемо и не
         // подсказывает действие. Отказ называет инструмент, цель, путь, пин,
         // шаг поставки и следующий шаг полями, а не фразой.
-        let plugin_root = tests::temp_plugin_root("missing-code");
-        tests::write_manifest_with_bsl_analyzer(&plugin_root);
-        let target = tests::host_target();
-        let binary = plugin_root.join(tests::host_binary("bsl-analyzer"));
+        let plugin_root = medium_tests::temp_plugin_root("missing-code");
+        medium_tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let target = medium_tests::host_target();
+        let binary = plugin_root.join(medium_tests::host_binary("bsl-analyzer"));
         fs::remove_file(&binary).unwrap();
 
         let engine = missing(
@@ -1805,9 +1831,9 @@ mod missing_binary_refusal_tests {
 
     #[test]
     fn the_refusal_names_the_target_it_resolved_not_the_host() {
-        let plugin_root = tests::temp_plugin_root("foreign-target");
-        tests::write_manifest_with_bsl_analyzer(&plugin_root);
-        let host = tests::host_target();
+        let plugin_root = medium_tests::temp_plugin_root("foreign-target");
+        medium_tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let host = medium_tests::host_target();
         let foreign = ["darwin-arm64", "linux-x64", "win-x64"]
             .into_iter()
             .find(|target| *target != host)
@@ -1827,11 +1853,12 @@ mod missing_binary_refusal_tests {
     /// Каждая причина отсутствия выходит своим шагом поставки, и ни одна не
     /// требует читать текст: нет манифеста, движок в нём не назван, не
     /// упакован под платформу, файла нет, сумма не совпала.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn every_delivery_step_is_named_by_type_without_reading_text() {
-        let target = tests::host_target();
+        let target = medium_tests::host_target();
 
-        let no_manifest = tests::temp_plugin_root("stage-no-manifest");
+        let no_manifest = medium_tests::temp_plugin_root("stage-no-manifest");
         let engine = missing(
             resolve_bundled_tool_for_target(&no_manifest, "bsl-analyzer", target, true)
                 .unwrap_err(),
@@ -1841,7 +1868,7 @@ mod missing_binary_refusal_tests {
         // собрать движок получает только дерево со сборщиком рядом.
         assert_eq!(engine.install_mode, InstallMode::Marketplace);
 
-        let unreadable = tests::temp_plugin_root("stage-unreadable-manifest");
+        let unreadable = medium_tests::temp_plugin_root("stage-unreadable-manifest");
         fs::write(unreadable.join("third-party/manifest.json"), "{not json").unwrap();
         let engine = missing(
             resolve_bundled_tool_for_target(&unreadable, "bsl-analyzer", target, true).unwrap_err(),
@@ -1854,7 +1881,7 @@ mod missing_binary_refusal_tests {
             "{engine:?}"
         );
 
-        let checkout = tests::temp_plugin_root("stage-unreadable-in-checkout");
+        let checkout = medium_tests::temp_plugin_root("stage-unreadable-in-checkout");
         let checkout_plugin = checkout.join("plugins").join("unica");
         fs::create_dir_all(checkout_plugin.join("third-party")).unwrap();
         fs::write(
@@ -1871,8 +1898,8 @@ mod missing_binary_refusal_tests {
         assert_eq!(engine.install_mode, InstallMode::Source);
         assert!(engine.next_step.contains("build-unica-tools"), "{engine:?}");
 
-        let unnamed = tests::temp_plugin_root("stage-unnamed");
-        tests::write_manifest_with_bsl_analyzer(&unnamed);
+        let unnamed = medium_tests::temp_plugin_root("stage-unnamed");
+        medium_tests::write_manifest_with_bsl_analyzer(&unnamed);
         assert_eq!(
             missing(
                 resolve_bundled_tool_for_target(&unnamed, "v8-runner", target, true).unwrap_err()
@@ -1881,7 +1908,7 @@ mod missing_binary_refusal_tests {
             EngineStage::Manifest
         );
 
-        let foreign_platform = tests::temp_plugin_root("stage-target");
+        let foreign_platform = medium_tests::temp_plugin_root("stage-target");
         fs::write(
             foreign_platform.join("third-party/manifest.json"),
             r#"{"schemaVersion":2,"tools":[{"name":"bsl-analyzer","version":"test",
@@ -1897,9 +1924,9 @@ mod missing_binary_refusal_tests {
             EngineStage::Target
         );
 
-        let absent = tests::temp_plugin_root("stage-delivery");
-        tests::write_manifest_with_bsl_analyzer(&absent);
-        fs::remove_file(absent.join(tests::host_binary("bsl-analyzer"))).unwrap();
+        let absent = medium_tests::temp_plugin_root("stage-delivery");
+        medium_tests::write_manifest_with_bsl_analyzer(&absent);
+        fs::remove_file(absent.join(medium_tests::host_binary("bsl-analyzer"))).unwrap();
         assert_eq!(
             missing(
                 resolve_bundled_tool_for_target(&absent, "bsl-analyzer", target, true).unwrap_err()
@@ -1908,9 +1935,9 @@ mod missing_binary_refusal_tests {
             EngineStage::Delivery
         );
 
-        let tampered = tests::temp_plugin_root("stage-checksum");
-        tests::write_manifest_with_bsl_analyzer(&tampered);
-        let binary = tampered.join(tests::host_binary("bsl-analyzer"));
+        let tampered = medium_tests::temp_plugin_root("stage-checksum");
+        medium_tests::write_manifest_with_bsl_analyzer(&tampered);
+        let binary = tampered.join(medium_tests::host_binary("bsl-analyzer"));
         fs::write(&binary, "tampered").unwrap();
         let engine = missing(
             resolve_bundled_tool_for_target(&tampered, "bsl-analyzer", target, true).unwrap_err(),
@@ -1921,12 +1948,13 @@ mod missing_binary_refusal_tests {
 
     /// Наличие проверяется без хеша, а полная проверка на пути отказа
     /// различает подменённый файл.
+    /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn presence_skips_the_checksum_and_absence_on_the_failure_path_does_not() {
-        let plugin_root = tests::temp_plugin_root("presence-vs-absence");
-        tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let plugin_root = medium_tests::temp_plugin_root("presence-vs-absence");
+        medium_tests::write_manifest_with_bsl_analyzer(&plugin_root);
         fs::write(
-            plugin_root.join(tests::host_binary("bsl-analyzer")),
+            plugin_root.join(medium_tests::host_binary("bsl-analyzer")),
             "tampered",
         )
         .unwrap();
@@ -1937,16 +1965,16 @@ mod missing_binary_refusal_tests {
             Some(EngineStage::Checksum)
         );
 
-        let intact = tests::temp_plugin_root("presence-intact");
-        tests::write_manifest_with_bsl_analyzer(&intact);
+        let intact = medium_tests::temp_plugin_root("presence-intact");
+        medium_tests::write_manifest_with_bsl_analyzer(&intact);
         assert_eq!(engine_absence(&intact, "bsl-analyzer"), None);
     }
 
     #[test]
     fn a_failed_start_names_the_start_step_and_the_program() {
-        let plugin_root = tests::temp_plugin_root("start-failure");
-        tests::write_manifest_with_bsl_analyzer(&plugin_root);
-        let program = plugin_root.join(tests::host_binary("bsl-analyzer"));
+        let plugin_root = medium_tests::temp_plugin_root("start-failure");
+        medium_tests::write_manifest_with_bsl_analyzer(&plugin_root);
+        let program = plugin_root.join(medium_tests::host_binary("bsl-analyzer"));
 
         let engine = start_failure(Some(&plugin_root), "bsl-analyzer", &program);
 

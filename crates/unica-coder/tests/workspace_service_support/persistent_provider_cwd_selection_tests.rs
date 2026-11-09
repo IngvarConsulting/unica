@@ -120,6 +120,7 @@ fn directory_alias(source: &Path, alias: &Path) {
     );
 }
 
+/// rule: INV.APP.PERSISTENT-PROVIDER-CWD
 #[test]
 fn working_directory_selection_uses_physical_candidate_and_root_identity() {
     let fixture = CwdFixture::new(true);
@@ -198,15 +199,6 @@ fn persistent_commands_reject_when_every_candidate_is_inside_workspace_or_source
     ));
     let identity = WorkspaceServiceIdentity::new(&context, source).unwrap();
     let commands = [
-        (
-            "RLM",
-            rlm_transport_command_for_build(
-                PathBuf::from("never-spawned-rlm"),
-                &context,
-                source,
-                &fixture.build,
-            ),
-        ),
         (
             "BSL",
             bsl_analyzer_command(Path::new("never-spawned-bsl"), &context, source),

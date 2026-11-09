@@ -3,7 +3,7 @@
 
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashSet};
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::contracts::metadata_predefined_element_input_schema;
 use unica_metadata::request::*;
 use unica_metadata::*;
@@ -17,11 +17,7 @@ fn object(value: Value) -> Map<String, Value> {
 
 #[test]
 fn metadata_kind_rejects_one_segment_root_module_address() {
-    let address = MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        "ManagedApplicationModule",
-    )
-    .unwrap();
+    let address = MetadataAddress::parse_logical("ManagedApplicationModule").unwrap();
 
     let diagnostic = metadata_kind_for_address(&address).unwrap_err();
 
@@ -130,8 +126,7 @@ fn constant_type_property_preserves_reference_type_through_add_and_edit_schema()
             panic!("Type must stay in existing SetProperties operation");
         };
         let expected = MetadataType::new(vec![MetadataTypeVariant::Reference {
-            metadata_path: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items")
-                .unwrap(),
+            metadata_path: MetadataAddress::parse_logical("Catalog.Items").unwrap(),
         }])
         .unwrap();
         assert!(
@@ -623,6 +618,7 @@ fn common_module_ordinary_client_property_is_shared_by_add_and_edit() {
     }
 }
 
+/// rule: INV.WIRE.COMMON-MODULE-ORDINARY-CLIENT
 #[test]
 fn add_and_edit_report_the_same_supported_common_module_properties() {
     let calls = [
@@ -650,7 +646,7 @@ fn add_and_edit_report_the_same_supported_common_module_properties() {
             }),
         ),
     ];
-    let expected = "unknown metadata property `ClientOrdinaryApplications`; supported properties for CommonModule: Synonym, Comment, ClientManagedApplication, ClientOrdinaryApplication, ExternalConnection, Global, Privileged, ReturnValuesReuse, Server, ServerCall";
+    let expected = "unknown metadata property `ClientOrdinaryApplications`; supported properties for CommonModule: ClientManagedApplication, ClientOrdinaryApplication, Comment, ExternalConnection, Global, Privileged, ReturnValuesReuse, Server, ServerCall, Synonym";
 
     for (operation, call) in calls {
         let error = diagnostic(operation, call);
@@ -1649,6 +1645,7 @@ fn raw_event_source_manager_keeps_optional_class_before_domain_correlation() {
     assert_eq!(error.message, "unsupported event source class `unknown`");
 }
 
+/// rule: INV.APP.EVENT-SOURCE
 #[test]
 fn source_parser_accepts_the_closed_nonempty_logical_event_source_algebra() {
     let call = |targets: Value| {

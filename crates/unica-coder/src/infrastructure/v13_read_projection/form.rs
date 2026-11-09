@@ -1,4 +1,4 @@
-use super::{dropped_by_size, item_identity, select_named, selected_scalar_props};
+use super::{dropped_by_size, item_identity, place_prop, select_named, selected_scalar_props};
 use crate::domain::node_view::{BranchRef, CollectionView, NodeView, NodeViewData};
 use unica_bsl::projection::EventProjection;
 use unica_execution_contract::view_error::ViewError;
@@ -65,6 +65,29 @@ fn root_properties(payload: &Value) -> Option<Value> {
         })
         .collect::<Map<String, Value>>();
     (!properties.is_empty()).then_some(Value::Object(properties))
+}
+
+fn missing_form_child(address: &QualifiedAddress, parent: &Value, message: String) -> ViewError {
+    let mut error = ViewError::new(RefusalCode::NotFound, message);
+    let Some((child, prefix)) = address.segments().split_last() else {
+        return error;
+    };
+    if child.kind() == NodeKind::Column
+        && child.name().is_some()
+        && unica_forms::applicability::is_form_attribute(prefix)
+        && parent.get("type").and_then(Value::as_str) == Some("ValueTable")
+    {
+        let parent = QualifiedAddress {
+            source_set: address.source_set().to_string(),
+            segments: prefix.to_vec(),
+            line_range: None,
+        };
+        error.set_next(serde_json::json!({
+            "tool":"unica.view", "args":{"at":format!("{parent}.Can.column.add")},
+            "reason":"отсутствующую колонку создаёт column.add на реквизите ValueTable",
+        }));
+    }
+    error
 }
 
 pub(super) fn project_form(
@@ -176,8 +199,9 @@ pub(super) fn project_form(
     for (index, segment) in suffix[1..].iter().enumerate() {
         kind = segment.kind();
         values = form_nested_values(item, kind).ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::NotFound,
+            missing_form_child(
+                address,
+                item,
                 format!("form node has no {} collection", kind.as_str()),
             )
         })?;
@@ -192,8 +216,9 @@ pub(super) fn project_form(
             return form_collection(address, kind, values, semantic_events);
         };
         item = select_named(values, name).ok_or_else(|| {
-            ViewError::new(
-                RefusalCode::NotFound,
+            missing_form_child(
+                address,
+                item,
                 format!("form {} `{name}` was not found", kind.as_str()),
             )
         })?;
@@ -321,6 +346,41 @@ fn form_node(
 ) -> NodeView {
     let mut props = node_props(kind, item);
     let mut limits = dropped_by_size(item, &props, address, |probe| node_props(kind, probe));
+    if kind == NodeKind::Attribute
+        && item.get("type").and_then(Value::as_str) == Some("DynamicList")
+    {
+        if let Some(settings) = item.get("dynamicList").and_then(Value::as_object) {
+            for (key, value) in settings {
+                let typed = match key.as_str() {
+                    "manualQuery" | "dynamicDataRead" | "keyFieldsApplicable" => {
+                        value.is_null() || value.is_boolean()
+                    }
+                    "queryText" | "keyType" => value.is_null() || value.is_string(),
+                    "keyFields" => {
+                        value.is_null()
+                            || value
+                                .as_array()
+                                .is_some_and(|fields| fields.iter().all(Value::is_string))
+                    }
+                    _ => false,
+                };
+                if typed {
+                    place_prop(
+                        &mut props,
+                        &mut limits,
+                        address,
+                        key,
+                        value,
+                        false,
+                        &format!("DynamicList {key}"),
+                    );
+                }
+            }
+            if let Some(issues) = settings.get("limits").and_then(Value::as_array) {
+                limits.extend(issues.iter().filter_map(Value::as_str).map(str::to_string));
+            }
+        }
+    }
     if kind == NodeKind::Item {
         for (source, property) in [("dataPath", "DataPath"), ("commandName", "CommandName")] {
             if let Some(value) = item.get(source).filter(|value| value.is_string()) {
@@ -421,7 +481,8 @@ pub(super) fn node_props(kind: NodeKind, value: &Value) -> Map<String, Value> {
     let keys: &[&str] = match kind {
         NodeKind::Item => &["tag", "title", "visible", "enabled", "readOnly"],
         NodeKind::Event => &["handler", "callType"],
-        NodeKind::Attribute | NodeKind::Column => &["type", "isMain", "mainTable"],
+        NodeKind::Attribute => &["type", "isMain", "mainTable"],
+        NodeKind::Column => &["type", "parentType"],
         NodeKind::Parameter => &["type", "isKey"],
         NodeKind::Command => &[
             "title",
@@ -437,4 +498,38 @@ pub(super) fn node_props(kind: NodeKind, value: &Value) -> Map<String, Value> {
         _ => &[],
     };
     selected_scalar_props(value, keys)
+}
+
+#[cfg(test)]
+mod column_creation_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn missing_column_offers_creation_only_on_a_known_valuetable_parent() {
+        let at = QualifiedAddress::parse("main:Catalog.Items.Form.Main.Attribute.Rows.Column.New")
+            .unwrap();
+        for columns in [Some(json!([])), None] {
+            let mut attribute = json!({"name":"Rows","type":"ValueTable"});
+            if let Some(columns) = columns {
+                attribute["columns"] = columns;
+            }
+            let payload = json!({"attributes":[attribute]});
+            let error = project_form(&at, &payload, &at.segments()[2..], None).unwrap_err();
+            assert_eq!(error.code(), RefusalCode::NotFound);
+            assert_eq!(
+                error.next()[0]["args"]["at"],
+                "main:Catalog.Items.Form.Main.Attribute.Rows.Can.column.add"
+            );
+        }
+        for payload in [
+            json!({"attributes":[]}),
+            json!({"attributes":[{"name":"Rows","type":"ValueTree","columns":[]}]}),
+            json!({"attributes":[{"name":"Rows","type":"String"}]}),
+        ] {
+            let error = project_form(&at, &payload, &at.segments()[2..], None).unwrap_err();
+            assert_eq!(error.code(), RefusalCode::NotFound);
+            assert!(error.next().is_empty());
+        }
+    }
 }

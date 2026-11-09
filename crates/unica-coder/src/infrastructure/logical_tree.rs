@@ -16,10 +16,10 @@ use unica_metadata::subsystem::SUBSYSTEM_ADDRESS_MAX_DEPTH;
 
 /// Читатель маршрута — общий класс маршрута: классификатор один,
 /// маршрутизатор лишь проверяет форму адреса и находит цель читателя.
-pub(crate) use unica_source_contract::route::RouteClass as LogicalReader;
+pub use unica_source_contract::route::RouteClass as LogicalReader;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LogicalTreeRoute {
+pub struct LogicalTreeRoute {
     at: QualifiedAddress,
     reader: LogicalReader,
     reader_metadata_path: Option<MetadataAddress>,
@@ -37,7 +37,7 @@ impl LogicalTreeRoute {
         &self.at
     }
 
-    pub(crate) const fn reader(&self) -> LogicalReader {
+    pub const fn reader(&self) -> LogicalReader {
         self.reader
     }
 
@@ -58,7 +58,7 @@ impl LogicalTreeRoute {
     }
 }
 
-pub(crate) fn route_logical_address(
+pub fn route_logical_address(
     address: &QualifiedAddress,
     profile: PlatformProfile,
 ) -> Result<LogicalTreeRoute, LogicalTreeError> {
@@ -185,7 +185,7 @@ pub(crate) enum LogicalTreeErrorCode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LogicalTreeError {
+pub struct LogicalTreeError {
     code: LogicalTreeErrorCode,
     message: String,
 }
@@ -261,6 +261,7 @@ mod tests {
         }
     }
 
+    /// rule: INV.SOURCE.PLATFORM-CAPABILITY-EXISTENCE
     #[test]
     fn platform_capability_controls_logical_existence_without_filesystem_evidence() {
         let profile = PlatformProfile::v8_3_27();
@@ -380,20 +381,12 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod skill_address_guard {
     use super::route_logical_address;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use unica_address::address::QualifiedAddress;
     use unica_bsl::profile::PlatformProfile;
-
-    fn repo_root() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .expect("корень репозитория")
-            .to_path_buf()
-    }
 
     /// Всякий логический адрес из примера скилла разбирается и маршрутизируется.
     ///
@@ -403,9 +396,10 @@ mod skill_address_guard {
     /// `not_found`. Модель, следующая такому примеру, получает отказ и идёт
     /// угадывать. Грамматика живёт здесь, поэтому и страж здесь: второй список
     /// адресов в другом языке расходился бы с ней молча.
+    /// rule: INV.SURFACE.SKILL-EXAMPLE-ADDRESSES-ROUTE
     #[test]
     fn every_skill_example_address_is_routable() {
-        let skills = repo_root().join("plugins/unica/skills");
+        let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/unica/skills");
         let profile = PlatformProfile::v8_3_27();
         let mut checked = 0usize;
         let mut offenders = Vec::new();

@@ -39,6 +39,7 @@ pub struct PlatformXmlSourceSetOwnerEvidence {
     version: Option<String>,
     artifact_kind: String,
     artifact_name: Option<String>,
+    artifact_uuid: Option<String>,
     registrations: Registrations,
     configuration_extension: bool,
 }
@@ -76,6 +77,12 @@ impl PlatformXmlSourceSetOwnerEvidence {
 
     pub fn artifact_name(&self) -> Option<&str> {
         self.artifact_name.as_deref()
+    }
+
+    /// `uuid` of the artifact element in lower case: the key of its support
+    /// rule in `Ext/ParentConfigurations.bin`.
+    pub fn artifact_uuid(&self) -> Option<&str> {
+        self.artifact_uuid.as_deref()
     }
 
     /// Registrations in the document order of `ChildObjects`.
@@ -162,6 +169,7 @@ pub fn prove_already_read_source_set_owner(
         version: root_version_literal(source, root),
         artifact_kind: artifact.tag_name().name().to_string(),
         artifact_name: metadata_artifact_property(artifact, "Name"),
+        artifact_uuid: artifact.attribute("uuid").map(str::to_ascii_lowercase),
         registrations,
         configuration_extension: is_configuration_extension_artifact(artifact),
     })
@@ -202,6 +210,7 @@ pub fn prove_already_read_metadata_owner(
         version: root_version_literal(source, root),
         artifact_kind: artifact.tag_name().name().to_string(),
         artifact_name: metadata_artifact_property(artifact, "Name"),
+        artifact_uuid: artifact.attribute("uuid").map(str::to_ascii_lowercase),
         registrations,
         configuration_extension: false,
     })
@@ -460,6 +469,7 @@ mod tests {
             ("http://v8.1c.ru/8.3/xcf/predef", "PredefinedData"),
             ("http://v8.1c.ru/8.3/xcf/extrnprops", "ExtPicture"),
             ("http://v8.1c.ru/8.3/xcf/extrnprops", "JobSchedule"),
+            ("http://v8.1c.ru/8.3/xcf/extrnprops", "Style"),
             ("http://v8.1c.ru/8.3/xcf/extrnprops", "AdditionalIndexes"),
             (
                 "http://v8.1c.ru/8.3/xcf/extrnprops",
@@ -524,7 +534,7 @@ mod tests {
 }
 
 use crate::layout::metadata_descriptor_relative;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventOwnerDescriptorProof {
     SourceSet,
@@ -560,11 +570,8 @@ pub fn owner_evidence_plan(
                 "external event target has no typed owner identity",
             ));
         };
-        let root_target = MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &format!("{owner_kind}.{owner_name}"),
-        )
-        .map_err(|error| error.to_string())?;
+        let root_target = MetadataAddress::parse_logical(&format!("{owner_kind}.{owner_name}"))
+            .map_err(|error| error.to_string())?;
         descriptors.push(EventOwnerDescriptorExpectation {
             relative: metadata_descriptor_relative(&root_target, source_set_kind)?,
             proof: EventOwnerDescriptorProof::SourceSet,

@@ -1,14 +1,5 @@
 ---
 id: INV.APP.COMPONENT-DEPENDENCIES
-check:
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_real_workspace_retains_component_direction
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_owner_edges_reject_hidden_concrete_dependencies
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_dcs_family_and_its_codec_keep_their_own_boundary
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_composition_selects_the_dcs_codec_in_one_place
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_target_specific_alias_cannot_hide_a_composition_backedge
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_workspace_inherited_parser_alias_keeps_the_upstream_boundary
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_workspace_owner_depends_only_on_a_closed_list
-  - tests/ci/test_component_boundaries.py::ComponentBoundaryTests.test_cycles_through_the_workspace_owner_are_rejected_for_every_edge_kind
 ---
 
 # Компоненты не зависят от продуктовой сборки и реализаций своих портов
@@ -38,15 +29,26 @@ execution, а не транспортному слою.
 распознаёт переэкспорт типа кодека из модуля выбора или переименование
 зависимости в Cargo.
 
+Метаданные переносятся по частям: запись пока называет кодек напрямую, поэтому
+`metadata` не входит в `PORTED_FAMILIES`. Код чтения метаданных в composition
+(`crates/unica-coder/src/infrastructure/v13_read*`, включая тесты) разбирает
+дескрипторы только через порт `MetadataReadCodec` из `unica-metadata` и не
+называет `unica_metadata_designer`. Типы, которые передаёт порт, принадлежат
+семейству; кодек переэкспортирует их по прежним путям.
+
 ProjectHealth наблюдает исходники и ресурсы через source contracts, общий
 Designer layout, workspace и process. Он не импортирует исполнение,
 предметные семейства или их кодеки и движки; связывание с исполнением
 остаётся в продуктовой composition.
 
-Ни компонент, ни его unit target не зависят от `unica-coder`. Межкомпонентные
-проверки, которым нужна продуктовая композиция, принадлежат её integration
-target. Ограничение действует и на build/dev и платформенные зависимости:
+Продуктовая композиция — три пакета: нижний слой `unica-coder`, демон с его
+дверями `unica-daemon` и `unica-product`. Ни компонент, ни его unit target
+не зависят от `unica-coder` и `unica-daemon`; от первого зависит только
+`unica-daemon`, от второго — только `unica-product`. `unica-product`
+объявляет исполняемый файл продукта и межкомпонентные проверки, которым нужна
+продуктовая композиция. От `unica-product` не зависит никто. Пакеты `unica-application` и `unica-domain` не зависят ни от адаптеров, ни
+от Designer-кодеков, а `unica-application` вызывает их через порты. Ограничение действует и на build/dev и платформенные зависимости:
 псевдоним зависимости не меняет её владельца.
 
-MCP SDK принадлежит `unica-coder`. Внешние Rust-типы parser/syntax скрывает
+MCP SDK принадлежит `unica-daemon`. Внешние Rust-типы parser/syntax скрывает
 `unica-bsl-parser`; потребители используют его нормализованные факты.

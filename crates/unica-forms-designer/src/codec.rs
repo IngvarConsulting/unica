@@ -23,6 +23,7 @@ use unica_xml_format::text::{form_edit_line_indent, form_edit_line_indent_at};
 
 mod command_properties;
 mod conditional_appearance;
+mod dynamic_list;
 
 pub const FORM_V8_NS: &str = "http://v8.1c.ru/8.1/data/core";
 
@@ -1395,9 +1396,23 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
     form_children(attrs, "Attribute")
         .into_iter()
         .map(|attr| {
-            let type_name = form_child(attr, "Type")
-                .map(form_format_type)
-                .and_then(form_info_optional);
+            let type_name = crate::column_add::observed_value_table_type(attr).or_else(|| {
+                form_child(attr, "Type")
+                    .map(form_format_type)
+                    .and_then(form_info_optional)
+                    // The display formatter alone does not prove the table's
+                    // namespace or complete type shape for column creation.
+                    .filter(|type_name| type_name != "ValueTable")
+            });
+            let dynamic_list =
+                dynamic_list::is_dynamic_list(attr).then(|| dynamic_list::read(attr));
+            let type_name = if dynamic_list.is_some() {
+                Some("DynamicList".to_string())
+            } else {
+                type_name
+            };
+            // The attribute's mainTable keeps the form_child_text reading:
+            // trimmed text, empty is null. The settings keep the raw text.
             let main_table = (type_name.as_deref() == Some("DynamicList"))
                 .then(|| form_child(attr, "Settings").and_then(|s| form_child_text(s, "MainTable")))
                 .flatten();
@@ -1408,6 +1423,7 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
                         form_children(columns, "Column")
                             .into_iter()
                             .map(|column| FormInfoColumn {
+                                parent_type: crate::column_type::observed_parent_type(column),
                                 name: column.attribute("name").unwrap_or("").to_string(),
                                 type_name: form_child(column, "Type")
                                     .map(form_format_type)
@@ -1424,6 +1440,7 @@ fn form_info_attributes(attrs: roxmltree::Node<'_, '_>) -> Vec<FormInfoAttribute
                 type_name,
                 is_main: form_child_text(attr, "MainAttribute").as_deref() == Some("true"),
                 main_table,
+                dynamic_list,
                 columns,
             }
         })
@@ -1461,6 +1478,17 @@ fn form_event_evidence_from_root(root: roxmltree::Node<'_, '_>) -> FormEventEvid
             .map(form_info_commands)
             .unwrap_or_default(),
     }
+}
+
+/// Attribute facts used by the reader and operation admission share one projection.
+pub fn parse_form_attributes_xml(text: &str) -> Result<Vec<FormInfoAttribute>, String> {
+    let doc = Document::parse(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| format!("Form XML parse error: {error}"))?;
+    let root = doc.root_element();
+    require_form_root(root)?;
+    Ok(form_child(root, "Attributes")
+        .map(form_info_attributes)
+        .unwrap_or_default())
 }
 
 pub fn parse_form_event_evidence_xml(text: &str) -> Result<FormEventEvidence, String> {
@@ -3699,15 +3727,41 @@ fn form_edit_apply_definition_lf(
                     defn.get("into").and_then(Value::as_str),
                     defn.get("after").and_then(Value::as_str),
                 )?;
-                let in_command_bar = {
+                let (in_command_bar, in_column_group) = {
                     let document = Document::parse(xml_text)
                         .map_err(|err| format!("[ERROR] XML parse error: {err}"))?;
-                    form_edit_placement_is_command_bar(
+                    let container = form_edit_placement_container(
                         document.root_element(),
                         defn.get("into").and_then(Value::as_str),
                         defn.get("after").and_then(Value::as_str),
-                    )?
+                    )?;
+                    (
+                        container.is_some_and(|node| {
+                            matches!(node.tag_name().name(), "AutoCommandBar" | "CommandBar")
+                        }),
+                        container.is_some_and(|node| {
+                            node.has_tag_name((FORM_LOGFORM_NS, "ColumnGroup"))
+                        }),
+                    )
                 };
+                if in_column_group {
+                    for element in elements {
+                        let Some(object) = element.as_object() else {
+                            continue;
+                        };
+                        let kind = FormEditElementDefinitionKind::from_object(object)?;
+                        if !matches!(
+                            kind,
+                            FormEditElementDefinitionKind::InputField
+                                | FormEditElementDefinitionKind::LabelField
+                                | FormEditElementDefinitionKind::CheckBox
+                                | FormEditElementDefinitionKind::HtmlDocumentField
+                                | FormEditElementDefinitionKind::TextDocumentField
+                        ) {
+                            return Err("[ERROR] a column group holds only fields; add this element to the form or another compatible container".into());
+                        }
+                    }
+                }
                 // Командная панель держит кнопки: поле или группа в ней
                 // записались бы в XML, который платформа не загрузит (#1447).
                 if in_command_bar {
@@ -5757,6 +5811,15 @@ fn form_edit_placement_is_command_bar(
     into_name: Option<&str>,
     after_name: Option<&str>,
 ) -> Result<bool, String> {
+    Ok(form_edit_placement_container(root, into_name, after_name)?
+        .is_some_and(|node| matches!(node.tag_name().name(), "AutoCommandBar" | "CommandBar")))
+}
+
+fn form_edit_placement_container<'a, 'input>(
+    root: roxmltree::Node<'a, 'input>,
+    into_name: Option<&str>,
+    after_name: Option<&str>,
+) -> Result<Option<roxmltree::Node<'a, 'input>>, String> {
     let container = if let Some(name) = into_name.filter(|name| !name.is_empty()) {
         form_edit_find_placement_element(root, name)?
     } else if let Some(name) = after_name.filter(|name| !name.is_empty()) {
@@ -5767,8 +5830,7 @@ fn form_edit_placement_is_command_bar(
     } else {
         None
     };
-    Ok(container
-        .is_some_and(|node| matches!(node.tag_name().name(), "AutoCommandBar" | "CommandBar")))
+    Ok(container)
 }
 
 fn form_edit_find_placement_element<'a, 'input>(
@@ -6508,10 +6570,7 @@ pub fn form_compile_xml(
         }
     }
     if contains_text_document_field(defn) {
-        return Err(
-            "TextDocumentField is created only by item.add; the retired form compiler does not support it"
-                .to_string(),
-        );
+        return Err("unknown element key `textDoc`".to_string());
     }
     if let Some(attributes) = defn.get("attributes").and_then(Value::as_array) {
         form_edit_validate_attribute_columns(attributes)?;
@@ -10285,6 +10344,22 @@ pub fn validate_form_purpose(object_type: &str, purpose: &str) -> Result<(), Str
 /// export writes after forms, else after the last entry. An owner without a
 /// known platform order keeps forms before its first template.
 pub fn register_form_in_object_text(text: &str, form_name: &str) -> String {
+    // The registration is written in the default-namespace spelling; a
+    // prefixed owner is edited in that form and gets its prefix back.
+    let Ok((normalized, form)) = unica_xml_format::prefix_form::PrefixForm::normalize(text) else {
+        return text.to_string();
+    };
+    if normalized.contains(&format!("<Form>{form_name}</Form>")) {
+        return text.to_string();
+    }
+    let updated = register_form_in_default_object_text(&normalized, form_name);
+    if updated == normalized {
+        return text.to_string();
+    }
+    form.restore(&updated).unwrap_or_else(|_| text.to_string())
+}
+
+fn register_form_in_default_object_text(text: &str, form_name: &str) -> String {
     let entry = format!("\t\t\t<Form>{form_name}</Form>\n");
     if let Some(offset) =
         unica_source_designer::registration::platform_child_object_insertion_offset(text, "Form")

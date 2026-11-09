@@ -1,0 +1,631 @@
+{
+  "id": "S378",
+  "name": "dcs-selection-folders-address-nested-items",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Folder создаётся отдельно от детей; parentIndexes из чтения точно выбирают вложенную выборку при set/remove и сохраняют соседей, заголовки и placement",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveFolders",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveFolders.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveFolders.Setting.Основной",
+        "ops": [
+          {
+            "op": "selection.clear",
+            "args": {
+              "values": {}
+            }
+          },
+          {
+            "op": "selection.add",
+            "args": {
+              "items": [
+                {
+                  "kind": "Folder",
+                  "title": {
+                    "ru": "Основная группа",
+                    "en": "Main folder"
+                  }
+                },
+                {
+                  "field": "RootKeep"
+                }
+              ]
+            }
+          },
+          {
+            "op": "selection.add",
+            "args": {
+              "items": [
+                {
+                  "kind": "Folder",
+                  "title": "Вложенная группа",
+                  "parentIndexes": [
+                    0
+                  ]
+                },
+                {
+                  "field": "Amount",
+                  "parentIndexes": [
+                    0
+                  ]
+                }
+              ]
+            }
+          },
+          {
+            "op": "selection.add",
+            "args": {
+              "items": [
+                {
+                  "field": "Category",
+                  "parentIndexes": [
+                    0,
+                    0
+                  ]
+                },
+                {
+                  "field": "Discard",
+                  "parentIndexes": [
+                    0,
+                    0
+                  ]
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "RootKeep"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}lwsTitle/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='en']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Main folder"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}lwsTitle/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Основная группа"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}placement",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Category",
+            "Discard"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}placement",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveFolders.Setting.Основной.Property"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/itemType",
+          "eq": "SelectedItemFolder"
+        },
+        {
+          "pointer": "/data/items/1/parentIndexes",
+          "eq": [
+            0
+          ]
+        },
+        {
+          "pointer": "/data/items/1/itemType",
+          "eq": "SelectedItemFolder"
+        },
+        {
+          "pointer": "/data/items/2/parentIndexes",
+          "eq": [
+            0,
+            0
+          ]
+        },
+        {
+          "pointer": "/data/items/2/index",
+          "eq": 0
+        },
+        {
+          "pointer": "/data/items/2/field",
+          "eq": "Category"
+        },
+        {
+          "pointer": "/data/items/3/index",
+          "eq": 1
+        },
+        {
+          "pointer": "/data/items/3/field",
+          "eq": "Discard"
+        },
+        {
+          "pointer": "/data/items/4/parentIndexes",
+          "eq": [
+            0
+          ]
+        },
+        {
+          "pointer": "/data/items/4/field",
+          "eq": "Amount"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveFolders.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveFolders.Setting.Основной",
+        "ops": [
+          {
+            "op": "selection.set",
+            "args": {
+              "values": {
+                "index": 0,
+                "viewMode": "Normal",
+                "userSettingID": "55555555-5555-4555-8555-555555555555"
+              }
+            }
+          },
+          {
+            "op": "selection.set",
+            "args": {
+              "values": {
+                "parentIndexes": [
+                  0,
+                  0
+                ],
+                "field": "Category",
+                "use": false,
+                "viewMode": "Normal"
+              }
+            }
+          },
+          {
+            "op": "selection.remove",
+            "args": {
+              "values": {
+                "parentIndexes": [
+                  0,
+                  0
+                ],
+                "index": 1
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Category"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}use",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}viewMode",
+          "eq": [
+            "Normal"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}lwsTitle/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Вложенная группа"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}placement",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Amount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "RootKeep"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}viewMode",
+          "eq": [
+            "Normal"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}userSettingID",
+          "eq": [
+            "55555555-5555-4555-8555-555555555555"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}placement",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveFolders.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase6Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveFolders.Setting.Основной",
+        "ops": [
+          {
+            "op": "selection.remove",
+            "args": {
+              "values": {
+                "parentIndexes": [
+                  0
+                ],
+                "index": 1
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase6Before"
+        }
+      ],
+      "captures": {
+        "phase6Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase6Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": []
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "Category"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}lwsTitle/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='en']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Main folder"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}lwsTitle/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Основная группа"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}placement",
+          "eq": [
+            "Auto"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}field",
+          "eq": [
+            "RootKeep"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}viewMode",
+          "eq": [
+            "Normal"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}userSettingID",
+          "eq": [
+            "55555555-5555-4555-8555-555555555555"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveFolders/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}settings/{http://v8.1c.ru/8.1/data-composition-system/settings}selection/{http://v8.1c.ru/8.1/data-composition-system/settings}item[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:SelectedItemFolder']/{http://v8.1c.ru/8.1/data-composition-system/settings}placement",
+          "eq": [
+            "Auto"
+          ]
+        }
+      ]
+    }
+  ]
+}

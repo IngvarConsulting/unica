@@ -186,6 +186,35 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 with self.subTest(event=event, position=position), self.assertRaises(ValueError):
                     audit_cli(valid[:position] + [event] + valid[position:], {"unica.view"}, help_path)
 
+    def test_agent_help_allowlist_accepts_only_each_declared_file(self):
+        from tests.agent_evaluation import cli_host
+        for windows in (False, True):
+            paths = ((r"C:\prepared packet\object's events.md", r"C:\prepared packet\posting.md")
+                     if windows else ("/prepared packet/object's events.md", "/prepared packet/posting.md"))
+            call = {"type": "mcp_tool_call", "server": "unica", "tool": "unica.docs", "status": "completed"}
+            def transcript(command):
+                return [{"type": "turn.started"},
+                        {"type": "item.completed", "item": {"type": "command_execution", "command": command,
+                                                            "status": "completed", "exit_code": 0}},
+                        {"type": "item.completed", "item": call}, {"type": "turn.completed"}]
+            with patch.object(cli_host, "IS_WINDOWS", windows):
+                commands = [cli_host.help_command(path) for path in paths]
+                for sequence in (paths, list(paths)):
+                    for command in commands:
+                        with self.subTest(windows=windows, command=command, sequence=type(sequence)):
+                            self.assertEqual(audit_cli(transcript(command), {"unica.docs"}, sequence), [call])
+                    other = cli_host.help_command("C:\\prepared packet\\other.md" if windows else "/prepared packet/other.md")
+                    traversal = cli_host.help_command(paths[1].replace("posting.md", "../other.md"))
+                    forbidden = [other, commands[0] + " " + commands[1], commands[0] + "; " + other,
+                                 commands[0] + " > output.md", traversal, "cat 'unterminated"]
+                    if windows:
+                        forbidden += [commands[0].replace("-LiteralPath", "-Path"), "cat " + paths[0]]
+                    else:
+                        forbidden += [commands[0].replace("cat ", "cat -- ", 1)]
+                    for command in forbidden:
+                        with self.subTest(windows=windows, command=command), self.assertRaises(ValueError):
+                            audit_cli(transcript(command), {"unica.docs"}, sequence)
+
     def test_dcs_physical_outcome_accepts_independent_platform_scaffold(self):
         """Accept native defaults or their removal without losing the requested schema data."""
         from tests.agent_evaluation.dcs_driver import verify_dcs_images
@@ -670,7 +699,8 @@ class AgentEvaluationAuditTests(unittest.TestCase):
         for broken_reply in [3, 5]:
             failed = copy.deepcopy(asynchronous)
             failed[broken_reply]["payload"]["result"]["isError"] = True
-            with self.subTest(failed_async_reply=broken_reply), self.assertRaisesRegex(ValueError, "detailed contract"):
+            # A malformed Task envelope can now fail before the contract check.
+            with self.subTest(failed_async_reply=broken_reply), self.assertRaises(ValueError):
                 audit(failed)
         missing = copy.deepcopy(trace)
         del missing[2:4]
@@ -952,11 +982,16 @@ class AgentEvaluationAuditTests(unittest.TestCase):
             self.assertEqual(digest, hashlib.sha256(current.read_bytes()).hexdigest())
 
     def test_failed_reread_or_check_of_other_node_cannot_prove_agent_verification(self):
-        def records(read_ok=True, check_at=DCS_TEMPLATE, discarded_preview=False, omit_op=None):
+        def records(read_ok=True, check_at=DCS_TEMPLATE, discarded_preview=False, omit_op=None,
+                    cancelled_tool=None):
             trace = []
             digest = "old"
             def exchange(method, params, result):
                 nonlocal digest
+                cancelled = (method == "tools/call" and params["name"] == cancelled_tool
+                             and (cancelled_tool != "unica.apply" or "executionToken" in params["arguments"]))
+                if cancelled:
+                    result = {"ok": True, "data": {"task": {"taskId": "t", "status": "queued"}}}
                 identifier = len(trace)
                 trace.append({"direction": "request", "sourceSha256": digest,
                               "payload": {"id": identifier, "method": method, "params": params}})
@@ -965,7 +1000,18 @@ class AgentEvaluationAuditTests(unittest.TestCase):
                 trace.append({"direction": "response", "sourceSha256": digest,
                               "payload": {"id": identifier, "result": (
                                   result if method == "tools/list" else {"structuredContent": result})}})
-            exchange("tools/list", {}, {"tools": [{"name": name} for name in ["unica.view", "unica.apply", "unica.check"]]})
+                if cancelled:
+                    _, completion = self.task_error_calls()
+                    identifier = len(trace)
+                    trace.extend([
+                        {"direction": "request", "sourceSha256": digest,
+                         "payload": {"id": identifier, "method": "tools/call", "params": completion["params"]}},
+                        {"direction": "response", "sourceSha256": digest,
+                         "payload": {"id": identifier, "result": {
+                             "structuredContent": completion["result"], "isError": True}}},
+                    ])
+            exchange("tools/list", {}, {"tools": [{"name": name} for name in [
+                "unica.view", "unica.apply", "unica.check", "unica.docs", "unica.task.result"]]})
             operations = []
             for op, suffix in [("field.add", ".DataSet.F05Data"), ("query.set", ".DataSet.F05Data.Query"),
                                ("structure.patch", ".Setting.F05Variant.Item.F05Group")]:
@@ -984,8 +1030,14 @@ class AgentEvaluationAuditTests(unittest.TestCase):
             exchange("tools/call", {"name": "unica.view", "arguments": {"at": DCS_TEMPLATE}}, {"ok": read_ok})
             exchange("tools/call", {"name": "unica.check", "arguments": {"at": check_at}},
                      {"ok": True, "data": {"status": "passed"}})
+            if cancelled_tool == "unica.docs":
+                exchange("tools/call", {"name": "unica.docs", "arguments": {"query": "optional"}}, {"ok": True})
             return trace
         audit_mcp(records())
+        audit_mcp(records(cancelled_tool="unica.docs"))
+        for tool in ["unica.apply", "unica.check"]:
+            with self.subTest(cancelled_required=tool), self.assertRaises(ValueError):
+                audit_mcp(records(cancelled_tool=tool))
         audit_mcp(records(discarded_preview=True))
         with self.assertRaisesRegex(ValueError, "requested field, query and grouping effects"):
             audit_mcp(records(discarded_preview=True, omit_op="query.set"))
@@ -1116,3 +1168,94 @@ class AgentEvaluationAuditTests(unittest.TestCase):
             terminal_calls([origin, observation, result])
         with self.assertRaisesRegex(ValueError, "terminal"):
             terminal_calls([origin])
+
+    def test_closed_task_errors_finish_only_the_original_operation(self):
+        for status, reasons in [("cancelled", [None]), ("failed", [
+                "invocation_failed", "result_too_large", "interrupted", "resume_unsupported",
+                "persistence_failed", "outcome_uncertain", "task_capacity", "workspace_capacity",
+                "workspace_registry_failed", "workspace_changed"])]:
+            for reason in reasons:
+                with self.subTest(status=status, reason=reason):
+                    origin, result = self.task_error_calls(status, reason)
+                    finished, = terminal_calls([origin, result])
+                    self.assertEqual(finished["params"], origin["params"])
+                    self.assertEqual(finished["index"], origin["index"])
+                    self.assertEqual(finished["before"], origin["before"])
+                    for key in ("done", "after", "filesAfter", "rootsAfter", "result", "isError"):
+                        self.assertEqual(finished[key], result[key])
+
+    def test_non_task_refusal_without_structured_content_keeps_its_terminal_path(self):
+        origin, _ = self.task_error_calls()
+        refusal = {**origin, "result": None, "isError": True}
+        self.assertEqual(terminal_calls([refusal]), [refusal])
+        for tool in ["unica.task.get", "unica.task.cancel", "unica.task.result"]:
+            observer = {**refusal, "params": {"name": tool, "arguments": {"taskId": "t"}}}
+            with self.subTest(tool=tool), self.assertRaises(ValueError):
+                terminal_calls([origin, observer])
+
+    @staticmethod
+    def task_error_calls(status="cancelled", reason=None):
+        origin = {"index": 0, "done": 1, "params": {"name": "unica.docs", "arguments": {"query": "optional"}},
+                  "result": {"ok": True, "data": {"task": {"taskId": "t", "status": "queued"}}},
+                  "isError": False, "before": "old", "after": "old"}
+        diagnostic = {"code": "task_" + status, "message": "Task stopped"}
+        if reason is not None:
+            diagnostic["failureReason"] = reason
+        result = {"index": 2, "done": 3, "params": {"name": "unica.task.result", "arguments": {"taskId": "t"}},
+                  "result": {"ok": False, "data": {"task": {"taskId": "t", "status": status}},
+                             "diagnostics": [diagnostic]},
+                  "isError": True, "before": "old", "after": "terminal",
+                  "filesAfter": {"file": "terminal"}, "rootsAfter": {"cf": "src/cf"}}
+        return origin, result
+
+    def test_task_errors_do_not_legalize_unknown_or_malformed_results(self):
+        mutations = [
+            lambda c: c["params"]["arguments"].update(taskId="unknown"),
+            lambda c: c["params"]["arguments"].update(taskId=[]),
+            lambda c: c["result"]["data"]["task"].update(taskId="other"),
+            lambda c: c["result"]["data"]["task"].update(status="unknown"),
+            lambda c: c["result"]["data"]["task"].update(status={}),
+            lambda c: c["result"].update(ok=True),
+            lambda c: c.update(isError=False),
+            lambda c: c["result"].update(diagnostics=[]),
+            lambda c: c["result"].update(diagnostics=[None]),
+            lambda c: c["result"]["diagnostics"][0].update(code="task_failed"),
+            lambda c: c["result"]["diagnostics"][0].update(message=None),
+            lambda c: c["result"]["diagnostics"][0].update(failureReason="invocation_failed"),
+            lambda c: c["result"]["data"].update(task=None),
+            lambda c: c["result"].update(data=[]),
+            lambda c: c.update(result=None),
+        ]
+        for index, mutate in enumerate(mutations):
+            origin, result = self.task_error_calls()
+            mutate(result)
+            with self.subTest(mutation=index), self.assertRaises(ValueError):
+                terminal_calls([origin, result])
+        for reason in [None, "unknown", 12, {}]:
+            origin, result = self.task_error_calls("failed", reason)
+            with self.subTest(reason=reason), self.assertRaises(ValueError):
+                terminal_calls([origin, result])
+        for code in ["task_not_found", "task_transport_failed", "task_protocol_failed", "task_cancelled",
+                     "invalid_task_id", "bad_wait_ms", "bad_task_arguments"]:
+            origin, result = self.task_error_calls()
+            result["result"].pop("data")
+            result["result"]["diagnostics"][0]["code"] = code
+            with self.subTest(no_snapshot=code), self.assertRaises(ValueError):
+                terminal_calls([origin, result])
+
+    def test_cancel_and_get_never_replace_terminal_result(self):
+        for tool in ["unica.task.cancel", "unica.task.get"]:
+            origin, observation = self.task_error_calls()
+            observation["params"]["name"] = tool
+            with self.subTest(tool=tool), self.assertRaisesRegex(ValueError, "terminal"):
+                terminal_calls([origin, observation])
+            result = copy.deepcopy(observation)
+            result.update(index=4, done=5, isError=False,
+                          result={"ok": True, "data": {"mode": "published", "effects": 1}})
+            result["params"]["name"] = "unica.task.result"
+            finished, = terminal_calls([origin, observation, result])
+            self.assertEqual(finished["result"], result["result"])
+            self.assertFalse(finished["isError"])
+            observation["result"]["data"]["task"]["status"] = "unknown"
+            with self.subTest(unknown_observer=tool), self.assertRaises(ValueError):
+                terminal_calls([origin, observation, result])

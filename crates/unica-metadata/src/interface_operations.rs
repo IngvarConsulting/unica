@@ -122,9 +122,6 @@ pub(crate) fn home_page_contract() -> OperationContract {
 }
 
 impl unica_operations::FamilyOperation for InterfaceOperation {
-    fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
-        crate::recovery::RETIRED_ARGUMENTS
-    }
     fn contract(self) -> Option<unica_operation_contract::OperationContract> {
         Some(self.contract())
     }

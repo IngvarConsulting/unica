@@ -12,7 +12,7 @@ use std::fs;
 use std::path::PathBuf;
 use unica_address::source_target::ResolvedTarget;
 use unica_bsl::input::*;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_bsl::text::test_support::arguments;
 use unica_bsl::text::*;
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
@@ -493,7 +493,7 @@ fn guard_resolved_support(
 #[path = "../../../tests/platform/code_module_state.rs"]
 mod module_state_tests;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn plan_code_batch_owned_for_test(
     mut staged: unica_workspace::apply::ApplyStagedState,
     authority: unica_workspace::actor::CodeApplyAuthority<'_>,
@@ -515,4 +515,4 @@ pub(crate) fn plan_code_batch_owned_for_test(
 
 #[cfg(test)]
 #[path = "../../../tests/platform/code_patch_composition.rs"]
-pub(super) mod tests;
+pub(super) mod medium_tests;

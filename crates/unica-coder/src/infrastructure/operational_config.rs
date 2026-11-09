@@ -16,13 +16,12 @@ const LOCAL_CONFIG_FILENAME: &str = "unica.local.toml";
 const OPERATIONAL_SECTIONS: &[&str] = &["code_intelligence", "code_diagnostics"];
 const CODE_INTELLIGENCE_FIELDS: &[&str] = &[
     "search_total_timeout_seconds",
-    "search_rlm_timeout_seconds",
-    "search_git_grep_timeout_seconds",
+    "search_semantic_timeout_seconds",
     "provider_read_timeout_seconds",
 ];
 const CODE_DIAGNOSTICS_FIELDS: &[&str] = &["analyze_timeout_seconds"];
 
-pub(crate) fn load_operational_config(
+pub fn load_operational_config(
     workspace_root: &Path,
 ) -> Result<OperationalConfig, OperationalConfigDiagnostic> {
     let shared = read_layer(
@@ -98,15 +97,8 @@ fn parse_layer(
         )?;
         parse_timeout(
             code_intelligence,
-            "search_rlm_timeout_seconds",
-            OperationalConfigField::SearchRlm,
-            source,
-            &mut layer,
-        )?;
-        parse_timeout(
-            code_intelligence,
-            "search_git_grep_timeout_seconds",
-            OperationalConfigField::SearchGitGrep,
+            "search_semantic_timeout_seconds",
+            OperationalConfigField::SearchSemantic,
             source,
             &mut layer,
         )?;
@@ -241,6 +233,7 @@ pub(crate) mod tests {
         assert_eq!(diagnostic.field_path(), expected_path);
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn missing_files_use_exact_compiled_defaults() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -249,7 +242,7 @@ pub(crate) mod tests {
         let code = config.code_intelligence();
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(300));
-        assert_eq!(code.search_rlm_timeout(), Duration::from_secs(300));
+        assert_eq!(code.search_semantic_timeout(), Duration::from_secs(300));
         assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(30));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(45));
         assert_eq!(
@@ -338,8 +331,7 @@ pub(crate) mod tests {
             SHARED_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 100
-search_rlm_timeout_seconds = 40
-search_git_grep_timeout_seconds = 45
+search_semantic_timeout_seconds = 40
 provider_read_timeout_seconds = 35
 
 [operational.code_diagnostics]
@@ -351,8 +343,7 @@ analyze_timeout_seconds = 900
         let code = config.code_intelligence();
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(100));
-        assert_eq!(code.search_rlm_timeout(), Duration::from_secs(40));
-        assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(45));
+        assert_eq!(code.search_semantic_timeout(), Duration::from_secs(40));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(35));
         assert_eq!(
             config.code_diagnostics().analyze_timeout(),
@@ -360,6 +351,7 @@ analyze_timeout_seconds = 900
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-LAYERS
     #[test]
     fn local_config_overrides_fields_and_inherits_the_rest() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -368,7 +360,7 @@ analyze_timeout_seconds = 900
             SHARED_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 100
-search_rlm_timeout_seconds = 40
+search_semantic_timeout_seconds = 40
 provider_read_timeout_seconds = 30
 [operational.code_diagnostics]
 analyze_timeout_seconds = 600
@@ -378,7 +370,7 @@ analyze_timeout_seconds = 600
             &workspace,
             LOCAL_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
-search_rlm_timeout_seconds = 35
+search_semantic_timeout_seconds = 35
 [operational.code_diagnostics]
 analyze_timeout_seconds = 700
 "#,
@@ -388,7 +380,7 @@ analyze_timeout_seconds = 700
         let code = config.code_intelligence();
 
         assert_eq!(code.search_total_timeout(), Duration::from_secs(100));
-        assert_eq!(code.search_rlm_timeout(), Duration::from_secs(35));
+        assert_eq!(code.search_semantic_timeout(), Duration::from_secs(35));
         assert_eq!(code.search_git_grep_timeout(), Duration::from_secs(30));
         assert_eq!(code.provider_read_timeout(), Duration::from_secs(30));
         assert_eq!(
@@ -397,6 +389,7 @@ analyze_timeout_seconds = 700
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-LAYERS
     #[test]
     fn local_config_is_valid_without_shared_config() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -415,11 +408,12 @@ search_total_timeout_seconds = 90
             Duration::from_secs(90)
         );
         assert_eq!(
-            config.code_intelligence().search_rlm_timeout(),
+            config.code_intelligence().search_semantic_timeout(),
             Duration::from_secs(90)
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn positive_timeout_values_are_accepted_without_clamping() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -428,8 +422,7 @@ search_total_timeout_seconds = 90
             SHARED_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 120
-search_rlm_timeout_seconds = 45
-search_git_grep_timeout_seconds = 120
+search_semantic_timeout_seconds = 45
 provider_read_timeout_seconds = 45
 [operational.code_diagnostics]
 analyze_timeout_seconds = 3600
@@ -442,12 +435,8 @@ analyze_timeout_seconds = 3600
             Duration::from_secs(120)
         );
         assert_eq!(
-            maximum.code_intelligence().search_rlm_timeout(),
+            maximum.code_intelligence().search_semantic_timeout(),
             Duration::from_secs(45)
-        );
-        assert_eq!(
-            maximum.code_intelligence().search_git_grep_timeout(),
-            Duration::from_secs(120)
         );
         assert_eq!(
             maximum.code_intelligence().provider_read_timeout(),
@@ -463,8 +452,7 @@ analyze_timeout_seconds = 3600
             SHARED_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 1
-search_rlm_timeout_seconds = 1
-search_git_grep_timeout_seconds = 1
+search_semantic_timeout_seconds = 1
 provider_read_timeout_seconds = 1
 [operational.code_diagnostics]
 analyze_timeout_seconds = 30
@@ -473,6 +461,11 @@ analyze_timeout_seconds = 30
         let minimum = load_operational_config(workspace.path()).expect("load minimum boundaries");
         assert_eq!(
             minimum.code_intelligence().search_total_timeout(),
+            Duration::from_secs(1)
+        );
+        // Срок git grep из файлов не задаётся и не выходит за общий срок поиска.
+        assert_eq!(
+            minimum.code_intelligence().search_git_grep_timeout(),
             Duration::from_secs(1)
         );
         assert_eq!(
@@ -485,8 +478,7 @@ analyze_timeout_seconds = 30
             SHARED_CONFIG_FILENAME,
             r#"[operational.code_intelligence]
 search_total_timeout_seconds = 7200
-search_rlm_timeout_seconds = 3600
-search_git_grep_timeout_seconds = 1800
+search_semantic_timeout_seconds = 3600
 provider_read_timeout_seconds = 7200
 [operational.code_diagnostics]
 analyze_timeout_seconds = 7200
@@ -500,12 +492,8 @@ analyze_timeout_seconds = 7200
             Duration::from_secs(7_200)
         );
         assert_eq!(
-            code_intelligence.search_rlm_timeout(),
+            code_intelligence.search_semantic_timeout(),
             Duration::from_secs(3_600)
-        );
-        assert_eq!(
-            code_intelligence.search_git_grep_timeout(),
-            Duration::from_secs(1_800)
         );
         assert_eq!(
             code_intelligence.provider_read_timeout(),
@@ -517,6 +505,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-LAYERS
     #[test]
     fn separate_workspaces_do_not_share_a_process_global_snapshot() {
         let first = tempdir().expect("first workspace tempdir");
@@ -545,6 +534,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-LAYERS
     #[test]
     fn a_changed_file_is_observed_by_the_next_load_only() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -572,6 +562,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn structure_errors_are_typed_with_exact_paths() {
         let cases = [
@@ -617,6 +608,7 @@ analyze_timeout_seconds = 7200
         }
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn all_timeout_fields_reject_invalid_types_and_ranges() {
         let cases = [
@@ -633,21 +625,9 @@ analyze_timeout_seconds = 7200
                 "code_intelligence",
             ),
             (
-                "search_rlm_timeout_seconds",
+                "search_semantic_timeout_seconds",
                 "0",
-                "operational.code_intelligence.search_rlm_timeout_seconds",
-                "code_intelligence",
-            ),
-            (
-                "search_git_grep_timeout_seconds",
-                "-1",
-                "operational.code_intelligence.search_git_grep_timeout_seconds",
-                "code_intelligence",
-            ),
-            (
-                "search_git_grep_timeout_seconds",
-                "0",
-                "operational.code_intelligence.search_git_grep_timeout_seconds",
+                "operational.code_intelligence.search_semantic_timeout_seconds",
                 "code_intelligence",
             ),
             (
@@ -691,6 +671,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.INVALID-LAYER
     #[test]
     fn invalid_shared_layer_is_not_masked_by_a_local_override() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -718,6 +699,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.INVALID-LAYER
     #[test]
     fn invalid_local_overlay_is_not_ignored() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -760,18 +742,13 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn final_snapshot_enforces_provider_deadlines_not_exceeding_total() {
-        let cases = [
-            (
-                "search_rlm_timeout_seconds = 30",
-                "operational.code_intelligence.search_rlm_timeout_seconds",
-            ),
-            (
-                "search_rlm_timeout_seconds = 20\nsearch_git_grep_timeout_seconds = 30",
-                "operational.code_intelligence.search_git_grep_timeout_seconds",
-            ),
-        ];
+        let cases = [(
+            "search_semantic_timeout_seconds = 30",
+            "operational.code_intelligence.search_semantic_timeout_seconds",
+        )];
 
         for (provider_line, expected_path) in cases {
             let workspace = tempdir().expect("workspace tempdir");
@@ -793,13 +770,14 @@ analyze_timeout_seconds = 7200
         }
     }
 
+    /// rule: INV.CONFIG.OPERATIONAL-TIMEOUT-RANGE
     #[test]
     fn cross_layer_constraint_is_attributed_to_the_later_override() {
         let workspace = tempdir().expect("workspace tempdir");
         write_config(
             &workspace,
             SHARED_CONFIG_FILENAME,
-            "[operational.code_intelligence]\nsearch_rlm_timeout_seconds = 30\n",
+            "[operational.code_intelligence]\nsearch_semantic_timeout_seconds = 30\n",
         );
         write_config(
             &workspace,
@@ -820,6 +798,7 @@ analyze_timeout_seconds = 7200
         );
     }
 
+    /// rule: INV.SAFETY.CONFIG-ERROR-REDACTION
     #[test]
     pub(crate) fn diagnostics_never_expose_absolute_paths_raw_toml_or_values() {
         let workspace = tempdir().expect("workspace tempdir");
@@ -847,6 +826,7 @@ analyze_timeout_seconds = 7200
         assert!(serialized.contains("operational.code_intelligence.provider_read_timeout_seconds"));
     }
 
+    /// rule: INV.SAFETY.CONFIG-ERROR-REDACTION
     #[test]
     pub(crate) fn read_errors_are_redacted_to_the_fixed_basename() {
         let workspace = tempdir().expect("workspace tempdir");

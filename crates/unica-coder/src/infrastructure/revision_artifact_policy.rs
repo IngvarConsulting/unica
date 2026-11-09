@@ -9,24 +9,13 @@ use unica_source_designer::layout::METADATA_KINDS;
 
 use unica_source_contract::read::RevisionArtifactDisposition;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PlatformXmlSerializationFormat {
-    Format2_20,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RevisionArtifactProfile {
-    ActorPlatformXml8_3_27 {
-        source_kind: SourceSetKind,
-        serialization_format: PlatformXmlSerializationFormat,
-    },
-}
-
 /// Closed source-artifact authority. Apply planners receive this value
 /// from their authenticated source binding; it is never caller or wire input.
+/// The layout it classifies is the Designer export's: the policy exists for a
+/// plugged-in format family whose profile names a known format with a line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RevisionArtifactPolicy {
-    profile: RevisionArtifactProfile,
+    source_kind: SourceSetKind,
 }
 
 impl RevisionArtifactPolicy {
@@ -35,32 +24,25 @@ impl RevisionArtifactPolicy {
         source_format: SourceFormat,
         source_profile: SourceProfile,
     ) -> Result<Self, String> {
-        if source_format != SourceFormat::PlatformXml
-            || source_profile != SourceProfile::platform_xml_8_3_27_format_2_20()
+        let designer =
+            source_format.family_id() == Some(unica_source_designer::format_profile::PLATFORM_XML);
+        if !designer
+            || !crate::infrastructure::format_families::is_supported(source_format)
+            || source_profile.semantic_line().is_none()
         {
-            return Err(
-                "source revision artifact policy requires Platform XML 8.3.27 format 2.20"
-                    .to_string(),
-            );
+            return Err(format!(
+                "source revision artifact policy requires a known Designer export format; got {source_format:?} with profile {}",
+                source_profile.canonical_id()
+            ));
         }
-        Ok(Self {
-            profile: RevisionArtifactProfile::ActorPlatformXml8_3_27 {
-                source_kind,
-                serialization_format: PlatformXmlSerializationFormat::Format2_20,
-            },
-        })
+        Ok(Self { source_kind })
     }
 
     pub(crate) fn classify(self, relative: &Path) -> RevisionArtifactDisposition {
         if has_legacy_content_extension(relative) {
             return RevisionArtifactDisposition::Content;
         }
-        let source_kind = match self.profile {
-            RevisionArtifactProfile::ActorPlatformXml8_3_27 {
-                source_kind,
-                serialization_format: PlatformXmlSerializationFormat::Format2_20,
-            } => source_kind,
-        };
+        let source_kind = self.source_kind;
         let components = relative
             .components()
             .filter_map(|component| match component {
@@ -228,6 +210,7 @@ fn has_legacy_content_extension(path: &Path) -> bool {
 pub(crate) mod tests {
     use super::*;
 
+    /// rule: CTR.SOURCE.REVISION-ARTIFACT-PROFILE
     #[test]
     pub(crate) fn platform_xml_revision_artifact_profile_is_closed() {
         let configuration = RevisionArtifactPolicy::from_source_profile(
@@ -478,5 +461,13 @@ pub(crate) mod tests {
             SourceProfile::TestPlatform8_3_28Format2_20,
         )
         .is_err());
+        let error = RevisionArtifactPolicy::from_source_profile(
+            SourceSetKind::Configuration,
+            SourceFormat::PlatformXml,
+            SourceProfile::TestPlatform8_3_27Format2_21,
+        )
+        .unwrap_err();
+        assert!(error.contains("known Designer export format"), "{error}");
+        assert!(error.contains("2.21-test"), "{error}");
     }
 }

@@ -13,9 +13,50 @@ use unica_redaction as redaction;
 use unica_redaction::bounded_tail;
 
 type JobResult<T> = Result<T, String>;
+// resource-limit: process.runtime-job-output-tail-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 16384
+// resource: Хвост stdout и stderr процесса runtime-задания, удерживаемый в памяти.
+// status: unproven
+// origin: коммит 2bd211f0d (feat: добавить durable runtime job core)
+// problem: неизвестно
+// on-reach: тихо: старшая часть вывода отбрасывается, остаются последние 16 КиБ
 const OUTPUT_TAIL_BYTES: usize = 16 * 1024;
+// resource-limit: process.runtime-job-receipt-bytes
+// class: retention
+// unit: bytes
+// scope: process
+// value: 1048576
+// derived: true
+// resource: Объём stdout процесса runtime-задания, удерживаемый для чтения квитанции раннера.
+// status: unproven
+// origin: #483
+// problem: неизвестно
+// on-reach: хвост сохраняется с флагом усечения; усечённая квитанция не разбирается (None, truncated)
 const FALLBACK_RECEIPT_BYTES: usize = STDOUT_CAPTURE_LIMIT;
+// resource-limit: runtime-job.stream-finish-timeout
+// class: deadline
+// unit: ms
+// scope: process
+// value: 10000
+// resource: Ожидание дочитывания потоков вывода завершившегося фонового процесса.
+// status: unproven
+// origin: #483
+// problem: неизвестно
+// on-reach: вывод помечается неполным (output_incomplete)
 const STREAM_FINISH_TIMEOUT: Duration = Duration::from_secs(10);
+// resource-limit: runtime-job.startup-cleanup-timeout
+// class: deadline
+// unit: ms
+// scope: process
+// value: 500
+// resource: Срок уборки дерева процессов при неудачном старте фонового процесса.
+// status: unproven
+// origin: коммит cc33c46c5 (refactor(runtime): unify long work under daemon ownership)
+// problem: неизвестно
+// on-reach: владение процессом сохраняется с ошибкой «startup cleanup uncertain»
 const RUNTIME_STARTUP_CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 #[cfg(any(test, feature = "test-support"))]
 thread_local! { static STREAM_FINISH_ATTEMPTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) }; }
@@ -544,6 +585,19 @@ pub fn cancel_and_reap_with_budget(
 }
 
 pub fn cancel_and_reap(process: &mut dyn RuntimeJobProcess) -> JobResult<()> {
+    // resource-limit: runtime-job.cancel-reap-budget
+    // class: deadline
+    // unit: ms
+    // scope: process
+    // value: 5000
+    // literal: cancel_and_reap_with_budget(process, Duration::from_secs(5))
+    // count: 1
+    // expr: Duration::from_secs(5)
+    // resource: Срок ожидания завершения фонового задания после отмены.
+    // status: unproven
+    // origin: неизвестно
+    // problem: неизвестно
+    // on-reach: по истечении срока процесс задания добивается
     cancel_and_reap_with_budget(process, Duration::from_secs(5))
 }
 
@@ -576,7 +630,7 @@ fn append_byte_tail(
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::*;
     use std::fs;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -592,6 +646,7 @@ mod tests {
             Ok(0)
         }
     }
+    /// rule: INV.APP.PROCESS-CLEANUP-ONCE
     #[test]
     fn system_process_drop_uses_no_second_window_after_cleanup_deadline_is_consumed() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {
@@ -646,6 +701,7 @@ mod tests {
         released.store(true, Ordering::Release);
         reap_raw_test_child(id);
     }
+    /// rule: INV.APP.PROCESS-CLEANUP-ONCE
     #[test]
     fn external_cancel_error_binds_system_drop_to_the_same_cleanup_deadline() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {
@@ -678,6 +734,7 @@ mod tests {
         );
         reap_raw_test_child(id);
     }
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn waitid_authority_loss_makes_cancel_and_drop_send_zero_group_signals() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {
@@ -704,6 +761,7 @@ mod tests {
         );
         reap_raw_test_child(id);
     }
+    /// rule: INV.APP.RUNTIME-RESOURCE-TREE
     #[test]
     fn reap_authority_loss_makes_cancel_and_drop_send_zero_group_signals() {
         if !crate::test_support::unix_runtime_authority_tests_supported() {

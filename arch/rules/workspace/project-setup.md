@@ -1,13 +1,5 @@
 ---
 id: INV.SURFACE.WORKSPACE-BOOTSTRAP
-check:
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_does_not_hide_an_invalid_project_config
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_classifies_wrong_kind_project_config_as_invalid
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_classifies_broken_project_config_link_as_invalid
-  - crates/unica-coder/src/infrastructure/daemon/v13_workspace_bootstrap.rs::project_config_recipe_quotes_yaml_significant_source_identity
-  - crates/unica-coder/tests/v13_workspace_bootstrap.rs::canonical_stdio_hands_the_project_file_recipe_without_an_initialize_operation
-  - crates/unica-coder/tests/v13_workspace_bootstrap.rs::canonical_stdio_names_mixed_source_formats_instead_of_recommending_a_project_file
-  - crates/unica-coder/src/infrastructure/daemon/server.rs::canonical_view_bootstrap_repairs_a_valid_config_without_source_sets
 ---
 
 # Корневой просмотр предлагает настройки и не записывает проектный файл

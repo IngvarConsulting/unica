@@ -141,15 +141,16 @@ def terminate_group(pid):
 
 
 def allowed_help_command(command, help_path):
+    paths = help_path if isinstance(help_path, (tuple, list)) else (help_path,)
     if cli_host.IS_WINDOWS:
-        return cli_host.windows_help_allowed(command, help_path)
+        return any(cli_host.windows_help_allowed(command, path) for path in paths)
     try:
         parts = shlex.split(command)
     except ValueError:
         return False
     if len(parts) == 3 and parts[0] in {"/bin/zsh", "/bin/bash", "/bin/sh"} and parts[1] in {"-lc", "-c"}:
         parts = shlex.split(parts[2])
-    return parts == ["cat", str(help_path)]
+    return any(parts == ["cat", str(path)] for path in paths)
 
 
 def audit_cli(events, allowed_tools, help_path):
@@ -171,7 +172,7 @@ def audit_cli(events, allowed_tools, help_path):
             continue
         if item_kind == "command_execution":
             if not allowed_help_command(item.get("command", ""), help_path):
-                raise ValueError("agent shell command is outside the single prepared help file")
+                raise ValueError("agent shell command is outside the prepared help files")
             if kind == "item.completed":
                 if item.get("exit_code") != 0 or item.get("status") != "completed":
                     raise ValueError("prepared help read failed")
@@ -657,32 +658,92 @@ def verify_dcs_images(workspace):
             "registeredTemplates": registered}
 
 
+def observed_task(call, task_id):
+    """Validate a compatibility snapshot without treating observation as completion."""
+    result = call["result"]
+    data = result.get("data") if isinstance(result, dict) else None
+    task = data.get("task") if isinstance(data, dict) else None
+    if not isinstance(task, dict) or task.get("taskId") != task_id:
+        raise ValueError("Task observer changed or omitted the observed identity")
+    status = task.get("status")
+    if not isinstance(status, str) or status not in {"queued", "working", "completed", "failed", "cancelled"}:
+        raise ValueError("Task identity or state changed")
+    if status in {"failed", "cancelled"}:
+        diagnostics = result.get("diagnostics")
+        if (result.get("ok") is not False or call.get("isError") is not True
+                or not isinstance(diagnostics, list) or len(diagnostics) != 1):
+            raise ValueError("Task terminal refusal is malformed")
+        diagnostic = diagnostics[0]
+        if (not isinstance(diagnostic, dict) or diagnostic.get("code") != "task_" + status
+                or not isinstance(diagnostic.get("message"), str) or not diagnostic["message"]):
+            raise ValueError("Task terminal refusal disagrees with its state")
+        if status == "failed":
+            reason = diagnostic.get("failureReason")
+            if not isinstance(reason, str) or reason not in {
+                    "invocation_failed", "result_too_large", "interrupted", "resume_unsupported",
+                    "persistence_failed", "outcome_uncertain", "task_capacity", "workspace_capacity",
+                    "workspace_registry_failed", "workspace_changed"}:
+                raise ValueError("Task failure has no closed failure reason")
+        elif "failureReason" in diagnostic:
+            raise ValueError("Cancelled Task invented a failure reason")
+    elif call.get("isError", False):
+        raise ValueError("MCP error on non-error Task state")
+    elif result.get("ok") is not True or result.get("diagnostics"):
+        raise ValueError("Task state disagrees with its response envelope")
+    return status
+
+
 def terminal_calls(calls):
     pending = {}
     terminal = []
     for call in calls:
         name = call["params"]["name"]
-        result = call["result"] or {}
-        task = (result.get("data") or {}).get("task")
+        result = call["result"]
+        if result is None and name not in {"unica.task.result", "unica.task.get", "unica.task.cancel"}:
+            # Keep ordinary refusals on their existing terminal-call path.
+            # A Task observer still needs its structured completion evidence.
+            terminal.append(call)
+            continue
+        if not isinstance(result, dict):
+            raise ValueError("Tool result omitted its structured response")
+        data = result.get("data")
+        if data is not None and not isinstance(data, dict):
+            raise ValueError("Tool result data is malformed")
+        has_task = isinstance(data, dict) and "task" in data
+        task = data.get("task") if has_task else None
         if name == "unica.task.result":
             task_id = call["params"]["arguments"].get("taskId")
+            if not isinstance(task_id, str) or not task_id:
+                raise ValueError("Task observer omitted its identity")
             original = pending.get(task_id)
             if original is None:
                 raise ValueError("Task result has no observed originating call")
-            if task:
-                if task.get("taskId") != task_id or task.get("status") not in {"queued", "working", "completed"}:
-                    raise ValueError("Task identity or state changed")
-                continue
+            if has_task:
+                if observed_task(call, task_id) not in {"failed", "cancelled"}:
+                    continue
+            else:
+                diagnostics = result.get("diagnostics", [])
+                if (not isinstance(result.get("ok"), bool) or not isinstance(diagnostics, list)
+                        or (result.get("ok") is False and not diagnostics)
+                        or any(not isinstance(item, dict) or not isinstance(item.get("code"), str)
+                               or item["code"].startswith("task_")
+                               or item["code"] in {"invalid_task_id", "bad_wait_ms", "bad_task_arguments"}
+                               for item in diagnostics)):
+                    raise ValueError("Task observer refusal is not an originating operation result")
+                if bool(call.get("isError", False)) != (result["ok"] is False):
+                    raise ValueError("MCP error envelope disagrees with originating operation result")
             pending.pop(task_id)
             terminal.append({**original, "done": call["done"], "after": call["after"], "filesAfter": call.get("filesAfter"), "rootsAfter": call.get("rootsAfter"), "result": call["result"], "isError": original.get("isError", False) or call.get("isError", False)})
         elif name in {"unica.task.get", "unica.task.cancel"}:
             task_id = call["params"]["arguments"].get("taskId")
-            if task_id not in pending or not task or task.get("taskId") != task_id:
+            if not isinstance(task_id, str) or task_id not in pending:
                 raise ValueError("Task observer changed or omitted the observed identity")
-        elif task:
-            task_id = task.get("taskId")
+            observed_task(call, task_id)
+        elif has_task:
+            task_id = task.get("taskId") if isinstance(task, dict) else None
             if not isinstance(task_id, str) or not task_id or task_id in pending:
                 raise ValueError("missing or duplicate originating Task identity")
+            observed_task(call, task_id)
             pending[task_id] = call
         elif name not in {"unica.task.get", "unica.task.cancel"}:
             terminal.append(call)
@@ -728,7 +789,7 @@ def stop_owned_daemons(state, binary):
 
 
 def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", changed_paths=None, auditor=None,
-             help_ref="references/use-cases/reports-printing.md", source_roots=None):
+             help_ref="references/use-cases/reports-printing.md", source_roots=None, extra_help_refs=()):
     is_dcs_contract = fixture == FIXTURE and auditor is None
     auditor = audit_dcs_contract if is_dcs_contract else (auditor or audit_mcp)
     proof = proof_root / (scenario["id"] + "-" + uuid.uuid4().hex)
@@ -744,8 +805,12 @@ def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", cha
     for name in ("prompt.md", "AGENTS.md", "output.schema.json"):
         shutil.copy2(fixture / name, proof / name)
     help_path = packet / help_ref
+    help_paths = (help_path, *(packet / reference for reference in extra_help_refs))
     agents = (proof / "AGENTS.md").read_text().replace("{{HELP_PATH}}", str(help_path))
+    agents = agents.replace("{{HELP_PATHS}}", json.dumps([str(path) for path in help_paths], ensure_ascii=False))
     agents = agents.replace("{{HELP_COMMAND}}", cli_host.help_command(help_path))
+    agents = agents.replace("{{HELP_COMMANDS}}", json.dumps([cli_host.help_command(path) for path in help_paths],
+                                                          ensure_ascii=False))
     (proof / "AGENTS.md").write_text(agents)
     (server.workspace / "AGENTS.md").write_text(agents)
     environment = isolated_environment(packet, state)
@@ -791,7 +856,7 @@ def evaluate(server, scenario, proof_root, *, fixture=FIXTURE, source="src", cha
         observations = verify_dcs_images(server.workspace)
         (proof / "file-observations.json").write_text(json.dumps(observations, ensure_ascii=False, indent=2))
         manifest["fileObservationsSha256"] = packager().sha256(proof / "file-observations.json")
-    completed = audit_cli(events, allowed, help_path)
+    completed = audit_cli(events, allowed, help_paths if extra_help_refs else help_path)
     if len(completed) != len(calls):
         raise ValueError("CLI and raw MCP transcripts disagree on tool calls")
     manifest["toolInventory"] = sorted(allowed)

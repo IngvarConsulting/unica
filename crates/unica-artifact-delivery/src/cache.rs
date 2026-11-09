@@ -54,6 +54,16 @@ struct ReadyMarker {
 /// Две: текущая и предыдущая. Откат на предыдущую версию плагина — обычное
 /// действие, и заставлять его качать 69 МБ заново значит наказывать за откат.
 /// Третья версия уже не нужна: до неё откатываются реже, чем стоит место.
+// resource-limit: delivery.runtime-cache-retained-versions
+// class: retention
+// unit: count
+// scope: cache
+// value: 2
+// resource: Число версий runtime, которые уборка оставляет в кеше загрузчика.
+// status: unproven
+// origin: #604
+// problem: Откат на предыдущую версию плагина не должен заново качать около 69 МБ; третья версия не окупает место.
+// on-reach: уборка удаляет более старые версии; ошибка уборки пишется в stderr и не мешает старту
 pub const RETAINED_VERSIONS: usize = 2;
 
 impl RuntimeInstaller {

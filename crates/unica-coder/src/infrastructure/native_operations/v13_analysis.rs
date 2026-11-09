@@ -10,7 +10,7 @@ use unica_source_contract::SourceSetKind;
 /// Closed native validator registry for the hidden A0 analysis seam. The
 /// family validators remain the source of validation truth; this adapter only
 /// translates their result into the bounded v0.13 diagnostic model.
-pub(crate) fn validate(
+pub fn validate(
     validator: CheckValidator,
     args: &Map<String, Value>,
     context: &WorkspaceContext,
@@ -57,7 +57,7 @@ pub(crate) fn validate_with_availability(
 
 /// Canonical DCS input keeps the same format diagnostics and validator as the
 /// legacy path entry point, without resolving a second logical target.
-pub(crate) fn validate_dcs_input(
+pub fn validate_dcs_input(
     input: crate::infrastructure::v13_read_port::TemplateValidationInput,
 ) -> NativeCheckOutcome {
     let args = Map::from_iter([("TemplatePath".into(), json!(input.artifact))]);
@@ -66,7 +66,7 @@ pub(crate) fn validate_dcs_input(
     })
 }
 
-pub(crate) fn validate_form_input(
+pub fn validate_form_input(
     input: crate::infrastructure::v13_read_port::FormValidationInput,
 ) -> NativeCheckOutcome {
     with_format_guard(Ok(input.format_guard), || {
@@ -80,7 +80,7 @@ pub(crate) fn validate_form_input(
     })
 }
 
-pub(crate) fn validate_mxl_input(
+pub fn validate_mxl_input(
     input: crate::infrastructure::v13_read_port::TemplateValidationInput,
 ) -> NativeCheckOutcome {
     with_format_guard(Ok(input.format_guard), || {
@@ -142,7 +142,7 @@ fn with_format_guard(
 /// dots, or `None` for the configuration root. A trailing segment without a
 /// name of its own (the `Interface` of a subsystem) selects its owner; a
 /// nameless segment anywhere else names no descriptor.
-pub(crate) fn validator_metadata_path(address: &QualifiedAddress) -> Option<String> {
+pub fn validator_metadata_path(address: &QualifiedAddress) -> Option<String> {
     let segments = address.segments();
     if segments.len() == 1 && segments[0].kind() == unica_address::address::NodeKind::Configuration
     {
@@ -169,7 +169,7 @@ pub(crate) fn validator_metadata_path(address: &QualifiedAddress) -> Option<Stri
 /// caller gave to `check`: `{sourceSet, metadataPath}` for the bridged
 /// validators, plus the file the extension and command-interface validators
 /// still address by path. Nothing here comes from the wire.
-pub(crate) fn validator_selector(
+pub fn validator_selector(
     validator: CheckValidator,
     address: &QualifiedAddress,
     context: &WorkspaceContext,
@@ -229,10 +229,7 @@ pub(crate) fn validator_selector(
 }
 
 /// Whether the source set of an address is declared as an extension.
-pub(crate) fn source_set_is_extension(
-    address: &QualifiedAddress,
-    context: &WorkspaceContext,
-) -> bool {
+pub fn source_set_is_extension(address: &QualifiedAddress, context: &WorkspaceContext) -> bool {
     crate::infrastructure::source_roots::resolve_named_source_set(context, address.source_set())
         .map(|resolved| resolved.source_set.kind == SourceSetKind::Extension)
         .unwrap_or(false)
@@ -241,7 +238,7 @@ pub(crate) fn source_set_is_extension(
 /// Facts `check` derives from the readable node. Template projections publish
 /// their descriptor format, including empty and opaque common templates. The
 /// legacy descriptor fallback remains for child templates without format facts.
-pub(crate) fn node_facts(
+pub fn node_facts(
     address: &QualifiedAddress,
     viewed: Option<&Value>,
     context: &WorkspaceContext,
@@ -375,7 +372,7 @@ pub(crate) fn unavailable_dependency() -> NativeCheckOutcome {
 }
 
 #[cfg(test)]
-mod tests {
+mod medium_tests {
     use super::{
         node_facts, validate, validate_with_availability, validator_selector, ValidatorAvailability,
     };
@@ -471,6 +468,7 @@ mod tests {
     /// `check` over a 2.21 root keeps the validator verdict and leads with
     /// the format warning of the retired guard: the active profile is single
     /// and a newer export never passes silently.
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
     #[test]
     fn newer_configuration_root_leads_with_the_format_warning() {
         let (context, root) = context();
