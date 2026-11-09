@@ -2,10 +2,11 @@ name: Unica RC from Alpha
 
 # Кандидат `vX.Y.Z-rc.N` из проверенной alpha. Берётся срез `main`, на котором ночь
 # выпустила alpha, поверх него — служебный коммит, где меняется только версия, и
-# тег. Тег ставит ключ развёртывания из окружения `marketplace`: оно пускает только
-# `main` и `v*` и ждёт одобрения владельца. Push тега ключом запускает обычный
-# выпуск по тегу (`release.yml`): полные тесты, сборку, проверки установки и канал
-# `next`. Подробности — `scripts/ci/release-rc.py` и раздел rc в runbook.
+# тег. Тег ставит ключ развёртывания из окружения `release-tag`: оно пускает только
+# `main` и ждёт одобрения владельца. Это одобрение — единственное на выпуск: push
+# тега ключом запускает обычный выпуск по тегу (`release.yml`) — полные тесты,
+# сборку, проверки установки и канал `next`, — и его задания публикации ревьюера
+# не ждут. Подробности — `scripts/ci/release-rc.py` и раздел rc в runbook.
 on:
   workflow_dispatch:
     inputs:
@@ -25,7 +26,7 @@ concurrency:
 jobs:
   rc:
     name: Кандидат из alpha
-    environment: marketplace
+    environment: release-tag
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

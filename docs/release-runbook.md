@@ -74,7 +74,10 @@ come from the tag is the channel: every marketplace job checks out only
 `scripts/ci/release-channel.py`, sparsely, from `main`, and nothing in those
 jobs checks out the tag's code. `UNICA_MARKETPLACE_TOKEN` lives in the
 `marketplace` environment, which accepts `v*` tags only, so a branch or a manual
-run cannot read it. The jobs holding the token still come from the tagged
+run cannot read it. The environment has no reviewer: a release needs one
+approval, given when its tag is set — the signed tag of a person, or the
+`release-tag` job of a candidate below — and the publication from that tag
+runs without waiting. The jobs holding the token still come from the tagged
 commit's `release.yml`, so whoever can create a `v*` tag defines those steps. Old
 tags also run against the current `release-channel.py` from `main`, so keep its
 commands compatible with them.
@@ -323,8 +326,10 @@ A candidate is cut from a checked alpha by a workflow:
 gh workflow run rc-from-alpha.yml --repo IngvarConsulting/unica --ref main -f alpha=v0.15.0-alpha.4
 ```
 
-The job runs in the environment `marketplace` and waits for the owner's
-approval. `scripts/ci/release-rc.py` then refuses unless:
+The job runs in the environment `release-tag`, which admits only `main`, and
+waits for the owner's approval. It is the release's only approval: the
+publication jobs of the tag run without a reviewer. `scripts/ci/release-rc.py`
+then refuses unless:
 
 - the alpha is published and its slice — the parent of its version commit — is
   in `main` and equals the `main@<sha>` of its release description;
@@ -482,8 +487,8 @@ commits. The commit's parent is the slice; the release description names it as
   non-fast-forward updates are blocked for everyone, and creation is restricted
   with the role admin and **Deploy keys** in the bypass list. The deploy key from
   `RELEASE_TAG_KEY` creates alpha tags in the environment `alpha` and candidate
-  tags in `marketplace`; the app GitHub Actions gets no bypass, so a workflow run
-  from any branch cannot create a `v*` tag with the run's token.
+  tags in `release-tag`; both admit only `main`. The app GitHub Actions gets no
+  bypass, so a workflow run from any branch cannot create a `v*` tag with the run's token.
 - **Immutable releases.** Assets can be uploaded only before publication, so every
   prerelease goes up as a draft and a separate step publishes it. A failed run
   before that step can be rerun: it continues the draft. After publication a

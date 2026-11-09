@@ -138,13 +138,13 @@ class PublishTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_a_button_on_main_in_the_marketplace_environment_with_the_tag_key(self) -> None:
+    def test_a_button_on_main_in_the_release_tag_environment_with_the_tag_key(self) -> None:
         workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
         self.assertEqual(set(workflow[True]), {"workflow_dispatch"})
         self.assertTrue(workflow[True]["workflow_dispatch"]["inputs"]["alpha"]["required"])
         self.assertEqual(workflow["permissions"], {"contents": "read", "actions": "read"})
         job = workflow["jobs"]["rc"]
-        self.assertEqual(job["environment"], "marketplace")
+        self.assertEqual(job["environment"], "release-tag")
         checkout = job["steps"][0]
         self.assertEqual((checkout["with"]["ref"], checkout["with"]["fetch-depth"]), ("main", 0))
         publish = next(step for step in job["steps"] if step.get("id") == "publish")
