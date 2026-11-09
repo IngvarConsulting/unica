@@ -159,6 +159,18 @@ impl SourceProfile {
         format_identity::platform_xml_profile_for_export_format(raw)
     }
 
+    /// The profile of the Designer export format platform `line` writes.
+    pub fn platform_xml_of_line(line: format_identity::PlatformLine) -> Option<Self> {
+        format_identity::platform_xml_profile_of_line(line)
+    }
+
+    /// Whether this is a Designer export profile with codec dialects; which
+    /// of its files an edit may write is decided by the format gate
+    /// (INV.SOURCE.WRITABLE-PROFILE).
+    pub const fn is_writable_platform_xml(self) -> bool {
+        format_identity::is_writable_platform_xml_profile(self)
+    }
+
     pub const fn legacy_workspace_service_compatibility() -> Self {
         Self::LegacyWorkspaceServiceCompatibility
     }
@@ -301,6 +313,22 @@ mod tests {
         assert_eq!(
             SourceProfile::platform_xml_for_export_format("2.20"),
             Some(active)
+        );
+        for (line, raw) in [
+            ((8, 3, 27), "2.20"),
+            ((8, 5, 1), "2.21"),
+            ((8, 5, 4), "2.22"),
+        ] {
+            let line = format_identity::PlatformLine::new(line.0, line.1, line.2);
+            assert_eq!(
+                SourceProfile::platform_xml_of_line(line),
+                SourceProfile::platform_xml_for_export_format(raw),
+                "{line}"
+            );
+        }
+        assert_eq!(
+            SourceProfile::platform_xml_of_line(format_identity::PlatformLine::new(8, 3, 26)),
+            None
         );
         for raw in ["2.19", "2.23", "2.21.0", "02.21", ""] {
             assert_eq!(

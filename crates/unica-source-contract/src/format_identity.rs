@@ -240,6 +240,29 @@ pub(crate) fn platform_xml_profile_for_export_format(raw: &str) -> Option<crate:
     PlatformXmlRelease::for_export_format(raw).map(crate::SourceProfile::PlatformXmlRelease)
 }
 
+/// Whether `profile` is a Designer export profile with codec dialects.
+pub(crate) const fn is_writable_platform_xml_profile(profile: crate::SourceProfile) -> bool {
+    matches!(
+        profile,
+        crate::SourceProfile::PlatformXml8_3_27Format2_20
+            | crate::SourceProfile::PlatformXmlRelease(_)
+    )
+}
+
+/// The source profile of the Designer export format a platform line writes.
+pub(crate) fn platform_xml_profile_of_line(line: PlatformLine) -> Option<crate::SourceProfile> {
+    if line == PlatformLine::new(8, 3, 27) {
+        return Some(crate::SourceProfile::platform_xml_8_3_27_format_2_20());
+    }
+    [
+        PlatformXmlRelease::Format2_21,
+        PlatformXmlRelease::Format2_22,
+    ]
+    .into_iter()
+    .find(|release| release.platform_line() == line)
+    .map(crate::SourceProfile::PlatformXmlRelease)
+}
+
 /// The platform lines whose capabilities are described, with their text.
 pub const DESCRIBED_PLATFORM_LINES: &[(PlatformLine, &str)] = &[
     (PlatformLine::new(8, 3, 27), "8.3.27"),
