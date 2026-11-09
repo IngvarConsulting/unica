@@ -33,6 +33,9 @@ TOOL_HELP_CHECKS = [
     # На Windows справка называет программу `v8-runner.exe`: строка использования
     # сверяется по частям, а не целиком.
     ("v8-runner push", "v8-runner", ["push", "--help"], ["Usage: v8-runner", " push"]),
+    # Полная выгрузка продукта — `dump --force` (FULL_DUMP_FLAG адаптера):
+    # раннер 0.15 убрал `--mode full`.
+    ("v8-runner full dump", "v8-runner", ["pull", "--help"], ["Usage: v8-runner", " pull", "--force"]),
 ]
 
 V8_RUNNER_BOUNDED_OUTPUT_MARKER = "bounded-platform-out"
