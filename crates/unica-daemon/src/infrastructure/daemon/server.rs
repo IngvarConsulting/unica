@@ -32,7 +32,7 @@ use unica_execution::receipt_runtime::ports::{ExecutionClass, KnownLongReason};
 use unica_work_control::clock::Clock;
 #[cfg(test)]
 type RuntimeJobService = unica_execution::runtime_jobs::RuntimeJobService<
-    unica_adapter_v8_runner::request::RuntimeJobRequest,
+    unica_coder::infrastructure::daemon_adapters::runtime::RuntimeJobRequest,
 >;
 use crate::infrastructure::source_workspace::WorkspaceActorRegistry;
 use std::sync::Arc;

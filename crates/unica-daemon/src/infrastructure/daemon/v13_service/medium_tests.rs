@@ -3615,13 +3615,13 @@ fn literal_search_reads_submodules_and_embedded_repositories() {
             );
             git(workspace.path(), &["add", "src/Aaa"]);
         }
-        let corpus = unica_adapter_lexical::lines::CandidateCorpus {
+        let corpus = unica_coder::infrastructure::daemon_adapters::lexical::CandidateCorpus {
             subtree: None,
             excluded: Vec::new(),
             excluded_name_prefixes: Vec::new(),
         };
         let foreign = |root: &std::path::Path| {
-            unica_adapter_lexical::lines::holds_foreign_work_tree(
+            unica_coder::infrastructure::daemon_adapters::lexical::holds_foreign_work_tree(
                 unica_process::runner::system_process_runner(),
                 root,
                 &corpus,
