@@ -568,6 +568,17 @@ pub(crate) fn classify_staged_platform_xml_root(
     relative: &Path,
     bytes: &[u8],
 ) -> Option<StagedRootFormatFinding> {
+    classify_staged_platform_xml_root_in_set(relative, bytes, None)
+}
+
+/// [`classify_staged_platform_xml_root`] for a document of a source set
+/// recording `set_format`: a versioned root in another writable format makes
+/// the set mixed, and an edit keeps one export format of its set.
+pub(crate) fn classify_staged_platform_xml_root_in_set(
+    relative: &Path,
+    bytes: &[u8],
+    set_format: Option<&str>,
+) -> Option<StagedRootFormatFinding> {
     let text = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes)).ok()?;
     let document = Document::parse(text).ok()?;
     let root = document.root_element();
@@ -604,10 +615,21 @@ pub(crate) fn classify_staged_platform_xml_root(
     if !versioned {
         return None;
     }
-    writable_profile_refusal(relative, version.as_deref()).map(|refusal| StagedRootFormatFinding {
-        code: refusal.code,
-        actual: Some(refusal.actual),
-        message: refusal.message,
+    if let Some(refusal) = writable_profile_refusal(&relative, version.as_deref()) {
+        return Some(StagedRootFormatFinding {
+            code: refusal.code,
+            actual: Some(refusal.actual),
+            message: refusal.message,
+        });
+    }
+    let set_format = set_format?;
+    let version = version.filter(|version| version != set_format)?;
+    Some(StagedRootFormatFinding {
+        code: "formatVersionMixed",
+        message: format!(
+            "{relative}: export format {version} differs from the export format {set_format} of its source set; an edit keeps one export format of the set, re-export the sources with the platform before editing them"
+        ),
+        actual: Some(version),
     })
 }
 

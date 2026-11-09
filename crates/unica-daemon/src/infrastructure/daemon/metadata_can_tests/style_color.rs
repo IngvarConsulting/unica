@@ -688,3 +688,82 @@ fn canonical_comment_retains_a_locally_declared_default_namespace() {
         "<Comment xmlns=\"http://v8.1c.ru/8.3/MDClasses\">keep</Comment>",
     );
 }
+
+/// Rewrites the version of every root in the fixture's source set.
+fn set_source_version(fixture: &Fixture, version: &str) {
+    fn visit(dir: &std::path::Path, version: &str) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                visit(&path, version);
+            } else if path.extension().is_some_and(|ext| ext == "xml") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                std::fs::write(
+                    &path,
+                    text.replace("version=\"2.20\"", &format!("version=\"{version}\"")),
+                )
+                .unwrap();
+            }
+        }
+    }
+    visit(&fixture.source, version);
+}
+
+/// rule: INV.SOURCE.WRITABLE-PROFILE
+/// A set in 2.21 or 2.22 is edited and keeps its export format; a set whose
+/// roots record different writable formats is refused without byte changes.
+#[test]
+fn canonical_style_color_edits_keep_the_export_format_of_the_set() {
+    for version in ["2.21", "2.22"] {
+        let fixture = color_fixture("#123456");
+        set_source_version(&fixture, version);
+        let runtime = runtime();
+        let applied = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"at":"main:StyleItem.Accent","ops":[{"op":"props.set","args":{"values":{"Comment":"changed"}}}]}),
+        );
+        assert!(applied.ok, "{version}: {applied:?}");
+        let token = applied.data.unwrap()["executionToken"].clone();
+        let executed = call(
+            &runtime,
+            &fixture,
+            ToolIdentity::Apply,
+            json!({"executionToken": token}),
+        );
+        assert!(executed.ok, "{version}: {executed:?}");
+        let written = std::fs::read_to_string(fixture.source.join("StyleItems/Accent.xml")).unwrap();
+        assert!(written.contains("changed"), "{version}: {written}");
+        assert!(
+            written.contains(&format!("version=\"{version}\"")) && !written.contains("2.20"),
+            "{version}: {written}"
+        );
+    }
+
+    let fixture = color_fixture("#123456");
+    let configuration = fixture.source.join("Configuration.xml");
+    let in_2_21 = std::fs::read_to_string(&configuration)
+        .unwrap()
+        .replace("version=\"2.20\"", "version=\"2.21\"");
+    std::fs::write(&configuration, in_2_21).unwrap();
+    let runtime = runtime();
+    let before = unica_workspace::test_support::tree_snapshot(&fixture.workspace);
+    let refused = call(
+        &runtime,
+        &fixture,
+        ToolIdentity::Apply,
+        json!({"at":"main:StyleItem.Accent","ops":[{"op":"props.set","args":{"values":{"Comment":"changed"}}}]}),
+    );
+    assert!(!refused.ok, "{refused:?}");
+    assert_eq!(refused.diagnostics[0]["code"], "invalid_source");
+    let message = refused.diagnostics[0]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("2.20") && message.contains("2.21"),
+        "{message}"
+    );
+    assert_eq!(
+        unica_workspace::test_support::tree_snapshot(&fixture.workspace),
+        before
+    );
+}
