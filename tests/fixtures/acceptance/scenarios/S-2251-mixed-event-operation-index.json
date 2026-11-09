@@ -1,0 +1,77 @@
+{
+  "id": "S-2251-mixed-event-operation-index",
+  "issue": 2251,
+  "area": "События",
+  "task": "Ошибка позднего планирования event.implement в смешанном запросе называет исходный индекс операции; предыдущая правка не публикуется.",
+  "workspace": "tests/fixtures/acceptance/workspace",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "descriptor": {
+          "file": "src/Catalogs/Валюты.xml",
+          "kind": "sha256"
+        },
+        "module": {
+          "file": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "staged only"
+              }
+            }
+          },
+          {
+            "op": "event.implement",
+            "args": {
+              "at": "main:Catalog.Валюты.Module.Object.Event.BeforeDelete",
+              "callType": "After"
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: Platform events do not accept callType",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[1].args"
+        },
+        {
+          "pointer": "/diagnostics/0/code",
+          "eq": "bad_value"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Валюты.xml",
+          "kind": "sha256",
+          "eq": "$capture.descriptor"
+        },
+        {
+          "path": "src/Catalogs/Валюты/Ext/ObjectModule.bsl",
+          "kind": "sha256",
+          "eq": "$capture.module"
+        }
+      ]
+    }
+  ]
+}

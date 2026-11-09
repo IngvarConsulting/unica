@@ -30,6 +30,7 @@ fn plan_events(
         unica_source_contract::SourceSetKind::Configuration,
         PlatformProfile::v8_3_27(),
         &operations,
+        0,
     )?;
     Ok((state, effects))
 }
