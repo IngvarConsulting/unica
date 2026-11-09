@@ -178,9 +178,9 @@ def edge_errors(owner: str, dependency: str, kind: str) -> list[str]:
         # and the service's work watches; nothing else is shared.
         reasons.append("the LSP contract is a leaf shared by the transport and the service")
     if name == "lsp" and dependency.startswith("unica-"):
-        # `code-model` is the answers the service turns into the editor's
-        # terms; the analysis that builds them stays with the product.
-        allowed = ABSTRACTIONS | frozenset({"lsp-contract", "workspace", "bsl", "source-designer", "code-model"})
+        # The analysis that builds the answers (`code-model`, a shared
+        # abstraction) stays with the product.
+        allowed = ABSTRACTIONS | frozenset({"lsp-contract", "workspace", "bsl", "source-designer"})
         if target not in allowed:
             reasons.append("the LSP service reaches its transport only through the LSP contract")
     if name == "code-model" and dependency.startswith("unica-") and target != "work-control":
