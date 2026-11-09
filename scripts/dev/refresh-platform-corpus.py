@@ -49,6 +49,9 @@ CORPUS_ROOT = REPO_ROOT / "tests" / "fixtures" / "formats" / "platform_xml"
 SEED_FORMAT = "2.20"
 SEED_LINE = "8.3.27"
 EXCLUDED_FILES = ("ConfigDumpInfo.xml",)
+# Loading or exporting an empty configuration takes seconds; a command still
+# running after this waits on a dialog.
+COMMAND_TIMEOUT_SECONDS = 600
 COMPATIBILITY_PROPERTIES = (
     "CompatibilityMode",
     "ConfigurationExtensionCompatibilityMode",
@@ -102,27 +105,41 @@ def newest_build(line: str) -> str:
     return max(builds, key=build_key)
 
 
+def run(command: Sequence[str], cwd: Optional[Path] = None) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            list(command),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=COMMAND_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise CorpusError(f"{' '.join(command)}: {error}") from error
+
+
+def find_ibcmd(build: str) -> Path:
+    # The first platform root holding the build wins, in the order newest_build
+    # reads them; on Linux ibcmd lies in the build directory itself.
+    for root in platform_roots():
+        for place in (root / build / "bin", root / build):
+            for name in ("ibcmd.exe", "ibcmd"):
+                if (place / name).is_file():
+                    return place / name
+    raise CorpusError(f"no ibcmd in platform build {build}")
+
+
 def create_infobase(build: str, path: Path) -> None:
     """Create an empty file infobase with ibcmd of the build itself.
 
     `v8-runner infobase create` builds the infobase from the project's
     sources; here they are not exported yet, so the platform creates it.
     """
-    for root in platform_roots():
-        for name in ("ibcmd.exe", "ibcmd"):
-            ibcmd = root / build / "bin" / name
-            if ibcmd.is_file():
-                done = subprocess.run(
-                    [str(ibcmd), "infobase", "create", f"--db-path={path}"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                if done.returncode != 0:
-                    raise CorpusError(f"ibcmd infobase create failed: {done.stderr[-400:]}")
-                return
-    raise CorpusError(f"no ibcmd in platform build {build}")
+    done = run([str(find_ibcmd(build)), "infobase", "create", f"--db-path={path}"])
+    if done.returncode != 0:
+        raise CorpusError(f"ibcmd infobase create failed: {done.stderr[-400:]}")
 
 
 class Runner:
@@ -130,26 +147,23 @@ class Runner:
         self.executable = executable
 
     def version(self) -> str:
-        done = subprocess.run(
-            [self.executable, "--version"], capture_output=True, text=True, check=True
-        )
+        done = run([self.executable, "--version"])
+        if done.returncode != 0 or not done.stdout.strip():
+            raise CorpusError(f"v8-runner --version failed: {done.stderr[-400:]}")
         return done.stdout.strip()
 
     def __call__(self, project: Path, *args: str) -> dict:
-        done = subprocess.run(
-            [self.executable, "--json-message", "--no-color", *args],
-            cwd=project,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
+        done = run([self.executable, "--json-message", "--no-color", *args], cwd=project)
+        start = done.stdout.find("{")
         try:
-            answer = json.loads(done.stdout)
-        except json.JSONDecodeError as error:
+            answer = json.loads(done.stdout[start:]) if start >= 0 else None
+        except json.JSONDecodeError:
+            answer = None
+        if not isinstance(answer, dict):
             raise CorpusError(
                 f"v8-runner {' '.join(args)} gave no JSON answer: "
                 f"{done.stdout[-400:]}{done.stderr[-400:]}"
-            ) from error
+            )
         if not answer.get("ok"):
             message = (answer.get("error") or {}).get("message") or answer
             raise CorpusError(f"v8-runner {' '.join(args)} failed: {message}")
@@ -178,13 +192,13 @@ def lower_compatibility(root: Path, mode: str) -> List[str]:
         data, count = pattern.subn(rb"\g<1>" + mode.encode() + rb"\g<2>", data)
         if count:
             changed.append(name)
+    if "ConfigurationExtensionCompatibilityMode" not in changed:
+        raise CorpusError(f"{path}: no compatibility mode to lower")
     path.write_bytes(data)
     return changed
 
 
 def copy_export(source: Path, destination: Path) -> None:
-    if destination.exists():
-        shutil.rmtree(destination)
     for path in sorted(source.rglob("*")):
         relative = path.relative_to(source)
         if path.is_dir() or relative.as_posix() in EXCLUDED_FILES:
@@ -245,7 +259,8 @@ def refresh(fmt: str, build: str, packager: str, runner: Runner, work: Path) -> 
     dumps = []
     for name in ("main", extension):
         answer = runner(dump_project, "pull", name, "--force")
-        dumps.append(answer["data"]["provider"]["selected"])
+        provider = ((answer.get("data") or {}).get("provider") or {}).get("selected")
+        dumps.append(provider)
     if set(dumps) != {"designer"}:
         raise CorpusError(f"export was not made by Designer: {dumps}")
 
@@ -255,15 +270,17 @@ def refresh(fmt: str, build: str, packager: str, runner: Runner, work: Path) -> 
         for name in EXCLUDED_FILES
         if (dump_project / "out" / sub / name).exists()
     )
-    destination = CORPUS_ROOT / fmt
-    copy_export(dump_project / "out" / "main", destination / "empty_configuration" / "src")
+    # The corpus is assembled aside and replaces the old one only when
+    # complete, so a failure leaves the previous corpus as it was.
+    staged = work / fmt / "corpus"
+    copy_export(dump_project / "out" / "main", staged / "empty_configuration" / "src")
     shutil.copyfile(
         seed / "empty_configuration" / "v8project.yaml",
-        destination / "empty_configuration" / "v8project.yaml",
+        staged / "empty_configuration" / "v8project.yaml",
     )
-    copy_export(dump_project / "out" / "ext", destination / "empty_extension" / "ext")
+    copy_export(dump_project / "out" / "ext", staged / "empty_extension" / "ext")
     for part in ("empty_configuration/src", "empty_extension/ext"):
-        found = root_version(destination / part / "Configuration.xml")
+        found = root_version(staged / part / "Configuration.xml")
         if found != fmt:
             raise CorpusError(f"{fmt}/{part} was exported as format {found}")
 
@@ -283,9 +300,13 @@ def refresh(fmt: str, build: str, packager: str, runner: Runner, work: Path) -> 
         ),
         "excludedFiles": excluded,
     }
-    (destination / "manifest.json").write_text(
+    (staged / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    destination = CORPUS_ROOT / fmt
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(staged, destination)
     return manifest
 
 
@@ -308,19 +329,26 @@ def main(argv: Sequence[str]) -> int:
     unknown = [fmt for fmt in args.formats if fmt not in TARGETS]
     if unknown:
         parser.error(f"unknown format {unknown}; known: {sorted(TARGETS)}")
-    builds = dict(item.split("=", 1) for item in args.build)
+    builds = {}
+    for item in args.build:
+        fmt, _, build = item.partition("=")
+        if fmt not in TARGETS or not re.fullmatch(r"\d+(\.\d+){3}", build):
+            parser.error(f"--build expects FORMAT=BUILD with a known format: {item}")
+        builds[fmt] = build
     if shutil.which(args.runner) is None and not Path(args.runner).is_file():
         parser.error(f"v8-runner not found: {args.runner}")
     runner = Runner(args.runner)
 
     if args.work:
-        args.work.mkdir(parents=True, exist_ok=False)
+        args.work = args.work.resolve()
+        if args.work.exists():
+            parser.error(f"--work must name a new directory: {args.work}")
+        args.work.mkdir(parents=True)
     try:
-        packager_default = newest_build(SEED_LINE)
         for fmt in args.formats:
             target = TARGETS[fmt]
             build = builds.get(fmt) or newest_build(target.line)
-            packager = packager_default if target.lowered_to else build
+            packager = newest_build(SEED_LINE) if target.lowered_to else build
             work = args.work or Path(tempfile.mkdtemp(prefix=f"platform-corpus-{fmt}-"))
             try:
                 refresh(fmt, build, packager, runner, work)

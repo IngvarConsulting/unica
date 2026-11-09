@@ -39,9 +39,10 @@ def root_version(data: bytes) -> Optional[str]:
 
 
 def masked_lines(data: bytes) -> List[str]:
-    masked = ROOT_VERSION.sub(
-        lambda m: m.group(0).replace(m.group(1), b"*"), data, count=1
-    )
+    match = ROOT_VERSION.search(data)
+    masked = data
+    if match:
+        masked = data[: match.start(1)] + b"*" + data[match.end(1) :]
     text = masked.decode("utf-8-sig", errors="replace")
     return text.replace("\r\n", "\n").splitlines(keepends=True)
 
@@ -95,7 +96,11 @@ def main(argv: Sequence[str]) -> int:
         if not side.is_dir():
             print(f"not a directory: {side}", file=sys.stderr)
             return 2
-    return compare(args.left, args.right, args.show, sys.stdout)
+    try:
+        return compare(args.left, args.right, args.show, sys.stdout)
+    except OSError as error:
+        print(f"read error: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

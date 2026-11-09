@@ -2,8 +2,8 @@
 
 Версии формата выгрузки, которые профиль формата считает измеренными
 (`MEASURED_EXPORT_FORMATS`), должны иметь в корпусе выгрузку пустой
-конфигурации и пустого расширения, снятую сборкой своей линии. Корень каждой
-выгрузки называет ту же версию. Скрипт сравнения корпусов отличает файлы
+конфигурации и пустого расширения. Корень каждого объекта метаданных в этих
+выгрузках называет ту же версию. Скрипт сравнения корпусов отличает файлы
 с разными байтами от файлов только на одной стороне.
 """
 
@@ -22,20 +22,19 @@ FORMAT_PROFILE = (
     REPO_ROOT / "crates" / "unica-source-designer" / "src" / "format_profile.rs"
 )
 EXPORTS = (
-    Path("empty_configuration") / "src" / "Configuration.xml",
-    Path("empty_extension") / "ext" / "Configuration.xml",
+    Path("empty_configuration") / "src",
+    Path("empty_extension") / "ext",
 )
 ROOT_VERSION = re.compile(rb"<MetaDataObject\b[^>]*?\sversion=\"([^\"]*)\"", re.S)
+MEASURED = re.compile(r"const\s+MEASURED_EXPORT_FORMATS\s*:[^=]*=\s*&?\[(.*?)\];", re.S)
 
 
 def measured_formats() -> list:
-    text = FORMAT_PROFILE.read_text(encoding="utf-8")
-    match = re.search(
-        r"const\s+MEASURED_EXPORT_FORMATS\s*:\s*&\[&str\]\s*=\s*&\[(.*?)\];", text, re.S
-    )
+    match = MEASURED.search(FORMAT_PROFILE.read_text(encoding="utf-8"))
     if not match:
         raise AssertionError(f"{FORMAT_PROFILE}: нет MEASURED_EXPORT_FORMATS")
-    return re.findall(r'"([^"]+)"', match.group(1))
+    body = re.sub(r"//[^\n]*", "", match.group(1))
+    return re.findall(r'"([^"]+)"', body)
 
 
 def load_diff_script():
@@ -52,12 +51,17 @@ class PlatformCorpusTests(unittest.TestCase):
         self.assertTrue(formats)
         for fmt in formats:
             for export in EXPORTS:
-                path = CORPUS_ROOT / fmt / export
+                root = CORPUS_ROOT / fmt / export
                 with self.subTest(format=fmt, export=export.as_posix()):
-                    self.assertTrue(path.is_file(), f"нет выгрузки {path}")
-                    match = ROOT_VERSION.search(path.read_bytes())
-                    self.assertIsNotNone(match, f"{path}: нет версии корня")
-                    self.assertEqual(match.group(1).decode(), fmt)
+                    self.assertTrue(
+                        (root / "Configuration.xml").is_file(), f"нет выгрузки {root}"
+                    )
+                    for path in sorted(root.rglob("*.xml")):
+                        match = ROOT_VERSION.search(path.read_bytes())
+                        if match is None:
+                            # Не объект метаданных, например интерфейс клиента.
+                            continue
+                        self.assertEqual(match.group(1).decode(), fmt, path)
 
 
 class PlatformCorpusDiffTests(unittest.TestCase):
