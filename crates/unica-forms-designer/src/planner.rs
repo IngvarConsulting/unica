@@ -1844,7 +1844,9 @@ const FORM_ADDRESS_SHAPE: &str =
 
 const FORM_OWNER_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
-pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> String {
+/// The initial `Form.xml` of a new form in the export format `version` of
+/// its owner's set.
+pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str, version: &str) -> String {
     format!(
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
@@ -1852,7 +1854,7 @@ pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> Str
             "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
             "</Form>"
         ),
-        crate::dialect::root_version::writable()
+        version
     )
 }
 

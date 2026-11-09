@@ -2093,9 +2093,9 @@ fn stage_exchange_content(
         .read(&relative)
         .map_err(|e| ApplyPlanError::staging(e, path.clone()))?;
     let template = if borrowed {
-        crate::exchange_content::empty_extension_content()
+        crate::exchange_content::empty_extension_content(authority.expected_format())
     } else {
-        crate::exchange_content::empty_content()
+        crate::exchange_content::empty_content(authority.expected_format())
     };
     let text =
         std::str::from_utf8(before.as_deref().unwrap_or(template.as_bytes())).map_err(|_| {
@@ -2145,19 +2145,22 @@ pub fn final_exchange_content(
             ApplyPlanError::new(ApplyPlanErrorKind::InvalidSource, message).at_path("ops")
         };
         let relative = metadata_descriptor_relative(&owner, source_kind).map_err(fail)?;
-        if staged
+        let Some(descriptor) = staged
             .read(&relative)
             .map_err(|e| ApplyPlanError::staging(e, "ops"))?
-            .is_none()
-        {
+        else {
             continue;
-        }
+        };
         let content = relative.with_extension("").join("Ext/Content.xml");
         let bytes = staged
             .read(&content)
             .map_err(|e| ApplyPlanError::staging(e, "ops"))?;
         // An absent file is the platform's empty composition.
-        let bytes = bytes.unwrap_or_else(|| crate::exchange_content::empty_content().into_bytes());
+        let bytes = bytes.unwrap_or_else(|| {
+            let version =
+                crate::dialect::root_version::of_set(&String::from_utf8_lossy(&descriptor));
+            crate::exchange_content::empty_content(&version).into_bytes()
+        });
         let text = std::str::from_utf8(&bytes).map_err(|e| fail(e.to_string()))?;
         let observed = crate::exchange_content::read_content(text).map_err(fail)?;
         if !observed.errors.is_empty() {

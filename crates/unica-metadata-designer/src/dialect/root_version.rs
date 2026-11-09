@@ -19,6 +19,20 @@ pub(crate) fn writable_platform_line() -> &'static str {
     ACTIVE_FORMAT_PROFILE.platform_line
 }
 
+/// The export format version of the source set a new file joins, as the
+/// owner it joins records it: a write never changes the format of a set
+/// (INV.SOURCE.WRITABLE-PROFILE). A write is admitted only into the writable
+/// format, so an owner without a readable version is that format.
+pub(crate) fn of_set(owner_xml: &str) -> String {
+    let source = owner_xml.trim_start_matches('\u{feff}');
+    roxmltree::Document::parse(source)
+        .ok()
+        .and_then(|document| {
+            unica_source_designer::roots::root_version_literal(source, document.root_element())
+        })
+        .unwrap_or_else(|| writable().to_string())
+}
+
 /// Whether a root recording `version` is in the format the codec writes.
 pub(crate) fn is_writable(version: Option<&str>) -> bool {
     is_writable_root_version(version)
@@ -44,6 +58,30 @@ mod tests {
         assert!(!is_writable(None));
         assert!(!is_writable(Some("2.19")));
         assert!(!is_writable(Some("2.21")));
+    }
+
+    /// rule: INV.SOURCE.WRITABLE-PROFILE
+    #[test]
+    fn a_new_file_takes_the_version_of_the_set_it_joins() {
+        use super::of_set;
+        let owner = |version: &str| {
+            format!(
+                "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject xmlns=\"http://v8.1c.ru/8.3/MDClasses\" version=\"{version}\"><Catalog/></MetaDataObject>"
+            )
+        };
+        assert_eq!(of_set(&owner("2.21")), "2.21");
+        assert_eq!(of_set(&owner(writable())), writable());
+        // The written text, not a decoded or numeric equivalent.
+        assert_eq!(of_set(&owner("2.&#50;1")), "2.&#50;1");
+        // Without a readable version the owner is in the writable format.
+        assert_eq!(of_set("<MetaDataObject/>"), writable());
+        assert_eq!(of_set("not xml"), writable());
+
+        let child = crate::edit::wrap_standalone_descriptor("<Form/>", &of_set(&owner("2.21")));
+        let child = String::from_utf8(child).unwrap();
+        assert!(child.contains("version=\"2.21\""), "{child}");
+        let content = crate::exchange_content::empty_content("2.21");
+        assert!(content.contains("version=\"2.21\""), "{content}");
     }
 
     #[test]

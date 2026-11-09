@@ -13,20 +13,20 @@ const NS: &str = "http://v8.1c.ru/8.3/xcf/extrnprops";
 /// The document the platform would write for a composition with no items.
 /// It never writes it — an empty composition has no Content.xml — but the
 /// first added item turns it into the platform's file, header included.
-pub fn empty_content() -> String {
+pub fn empty_content(version: &str) -> String {
     format!(
         "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{}\">\r\n</ExchangePlanContent>",
-        crate::dialect::root_version::writable()
+        version
     )
 }
 
 /// The same document in an extension: 8.3.27 writes the content of a borrowed
 /// exchange plan — only the items the extension adds — with an empty
 /// `ExtensionProperty` after them (#1924).
-pub fn empty_extension_content() -> String {
+pub fn empty_extension_content(version: &str) -> String {
     format!(
         "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<ExchangePlanContent xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" version=\"{}\">\r\n\t<ExtensionProperty/>\r\n</ExchangePlanContent>",
-        crate::dialect::root_version::writable()
+        version
     )
 }
 
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(observed.items, [sample()]);
         // Первая запись в расширении даёт форму платформы.
         assert_eq!(
-            update_content(&empty_extension_content(), &[sample()], true).unwrap(),
+            update_content(&empty_extension_content("2.20"), &[sample()], true).unwrap(),
             PLATFORM_EXTENSION
         );
         // Повтор ничего не меняет, новый элемент встаёт перед `ExtensionProperty`.
@@ -319,7 +319,7 @@ mod tests {
     /// Unica) получает его при правке; собственный план его не получает.
     #[test]
     fn only_a_borrowed_plan_gets_the_extension_property() {
-        let without = empty_extension_content().replace("\t<ExtensionProperty/>\r\n", "");
+        let without = empty_extension_content("2.20").replace("\t<ExtensionProperty/>\r\n", "");
         let other = ContentItem {
             target: MetadataAddress::parse_logical("Catalog.Прежний").unwrap(),
             auto_record: AutoRecord::Deny,

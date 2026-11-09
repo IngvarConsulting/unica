@@ -1251,7 +1251,8 @@ pub fn cfe_borrow_form_shell(
             source_form_content
         }
     };
-    let borrowed_form_xml = cfe_borrow_form_xml(
+    let borrowed_form_xml = cfe_borrow_form_xml_in(
+        format_version,
         reader,
         &source_form_content,
         cfg_dir,
@@ -1307,20 +1308,49 @@ pub fn cfe_borrow_form_xml(
     borrow_main_attr: bool,
     log: &mut CfeBorrowLog,
 ) -> String {
+    cfe_borrow_form_xml_in(
+        root_version::writable(),
+        reader,
+        source_form_content,
+        cfg_dir,
+        type_name,
+        object_name,
+        borrow_main_attr,
+        log,
+    )
+}
+
+/// The borrowed form in the export format `version` of the extension.
+#[allow(clippy::too_many_arguments)]
+pub fn cfe_borrow_form_xml_in(
+    version: &str,
+    reader: &dyn ProjectDiscoveryRead,
+    source_form_content: &str,
+    cfg_dir: &Path,
+    type_name: &str,
+    object_name: &str,
+    borrow_main_attr: bool,
+    log: &mut CfeBorrowLog,
+) -> String {
     let source = source_form_content.trim_start_matches('\u{feff}');
-    let version = root_version::writable().to_string();
     let blocks = cfe_borrow_form_top_level_blocks(source);
     if blocks.is_empty() {
-        return cfe_borrow_form_xml_fallback(source, type_name, object_name, borrow_main_attr);
+        return cfe_borrow_form_xml_fallback(
+            source,
+            type_name,
+            object_name,
+            borrow_main_attr,
+            version,
+        );
     }
 
     let xml_decl = cfe_borrow_xml_declaration(source)
         .unwrap_or("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
         .to_string();
-    let form_tag = cfe_borrow_form_open_tag(source).unwrap_or_else(|| {
+    let form_tag = cfe_borrow_form_open_tag(source, version).unwrap_or_else(|| {
         format!(
             "<Form version=\"{}\">",
-            unica_xml_format::text::escape_xml(&version)
+            unica_xml_format::text::escape_xml(version)
         )
     });
 
@@ -1478,7 +1508,7 @@ pub fn cfe_borrow_form_xml(
     parts.push("\r\n".to_string());
     parts.push(format!(
         "\t<BaseForm version=\"{}\">\r\n",
-        unica_xml_format::text::escape_xml(&version)
+        unica_xml_format::text::escape_xml(version)
     ));
     for prop_xml in &form_props {
         parts.push(format!("\t\t{prop_xml}\r\n"));
@@ -1700,9 +1730,9 @@ pub fn cfe_borrow_form_xml_fallback(
     type_name: &str,
     object_name: &str,
     borrow_main_attr: bool,
+    version: &str,
 ) -> String {
-    let version = root_version::writable().to_string();
-    let mut content = cfe_borrow_normalize_form_root_version(source);
+    let mut content = cfe_borrow_normalize_form_root_version(source, version);
     if !borrow_main_attr {
         content = cfe_borrow_strip_simple_data_paths(&content);
     }
@@ -1728,7 +1758,7 @@ pub fn cfe_borrow_form_xml_fallback(
             "</Form>",
             &format!(
                 "\t<BaseForm version=\"{}\">\n\t\t{}\n\t</BaseForm>\n</Form>",
-                unica_xml_format::text::escape_xml(&version),
+                unica_xml_format::text::escape_xml(version),
                 main_attr
             ),
             1,
@@ -1755,25 +1785,27 @@ pub fn cfe_borrow_xml_declaration(source: &str) -> Option<&str> {
     }
 }
 
-pub fn cfe_borrow_form_open_tag(source: &str) -> Option<String> {
+pub fn cfe_borrow_form_open_tag(source: &str, version: &str) -> Option<String> {
     let start = cfe_borrow_find_start_tag(source, "Form", 0)?;
     let end = source[start..].find('>')? + start + 1;
-    Some(cfe_borrow_normalize_form_open_tag(&source[start..end]))
+    Some(cfe_borrow_normalize_form_open_tag(
+        &source[start..end],
+        version,
+    ))
 }
 
-pub fn cfe_borrow_normalize_form_root_version(source: &str) -> String {
+pub fn cfe_borrow_normalize_form_root_version(source: &str, version: &str) -> String {
     let Some(start) = cfe_borrow_find_start_tag(source, "Form", 0) else {
         return source.to_string();
     };
     let Some(end) = source[start..].find('>').map(|offset| start + offset + 1) else {
         return source.to_string();
     };
-    let normalized = cfe_borrow_normalize_form_open_tag(&source[start..end]);
+    let normalized = cfe_borrow_normalize_form_open_tag(&source[start..end], version);
     format!("{}{}{}", &source[..start], normalized, &source[end..])
 }
 
-pub fn cfe_borrow_normalize_form_open_tag(open_tag: &str) -> String {
-    let active = root_version::writable();
+pub fn cfe_borrow_normalize_form_open_tag(open_tag: &str, active: &str) -> String {
     let normalized = match cfe_borrow_version_value_range(open_tag) {
         Ok(Some((value_start, value_end))) => format!(
             "{}{}{}",
