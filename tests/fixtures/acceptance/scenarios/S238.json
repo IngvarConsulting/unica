@@ -1,0 +1,19 @@
+{
+  "area": "Документация и стандарты",
+  "task": "Правила использования привилегированного режима",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "привилегированный режим",
+        "source": "development-standard"
+      },
+      "expect": [
+        "ok",
+        "provider",
+        "task"
+      ]
+    }
+  ],
+  "id": "S238"
+}

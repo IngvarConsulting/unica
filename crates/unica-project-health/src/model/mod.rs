@@ -2,7 +2,27 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use unica_source_contract::ProjectSourceSet;
 
+// resource-limit: project-health.diagnostic-paths
+// class: step
+// unit: count
+// scope: record
+// value: 20
+// resource: Число образцов путей в одной диагностике проверки здоровья проекта.
+// status: unproven
+// origin: коммит 8fc39c953 (typed health report model)
+// problem: неизвестно
+// on-reach: образцы усекаются, полное число сохраняется в count; команды исправления не предлагаются
 pub const MAX_PROJECT_DIAGNOSTIC_PATHS: usize = 20;
+// resource-limit: project-health.diagnostic-evidence
+// class: step
+// unit: count
+// scope: record
+// value: 20
+// resource: Число записей свидетельств в одной диагностике проверки здоровья проекта.
+// status: unproven
+// origin: коммит 8fc39c953 (typed health report model)
+// problem: неизвестно
+// on-reach: тихо: свидетельства сверх 20 отбрасываются
 pub const MAX_PROJECT_DIAGNOSTIC_EVIDENCE: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]

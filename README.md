@@ -284,7 +284,8 @@ WSL сохраняет Linux-семантику и собирает `linux-x64`.
 ## Репозиторий
 
 - `plugins/unica/skills/` — прикладные навыки 1С;
-- `crates/unica-coder/` — единый MCP runtime `unica`;
+- `crates/unica-daemon/` — демон и двери MCP и LSP единого runtime `unica`;
+- `crates/unica-coder/` — его нижний слой: чтение, правка и платформа;
 - `crates/unica-bootstrap/` — проверяемая доставка, кеш и запуск ядра;
 - `plugins/unica/third-party/tools.lock.json` — версии внутренних инструментов.
 

@@ -1,0 +1,30 @@
+{
+  "area": "XDTO и обмены",
+  "task": "Добавить свойство в объектный тип",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.EnterpriseData",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "КодСклада",
+                  "type": "xs:string",
+                  "lowerBound": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S216"
+}

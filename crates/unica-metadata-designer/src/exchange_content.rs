@@ -2,7 +2,7 @@
 //! a known empty composition; independent valid entries remain available.
 use roxmltree::{Document, Node};
 use std::collections::HashSet;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_metadata::{
     metadata_name_eq, MetaExchangeAutoRecord as AutoRecord, MetaExchangeContentItem as ContentItem,
 };
@@ -67,7 +67,7 @@ fn read_item(node: Node<'_, '_>) -> Result<ContentItem, String> {
         }
     }
     let target = metadata.ok_or("ExchangePlanContent Item has no Metadata")?;
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &target)
+    let target = MetadataAddress::parse_logical(&target)
         .map_err(|_| "ExchangePlanContent Metadata is not a metadata address")?;
     if target.segments().count() != 2 {
         return Err("ExchangePlanContent Metadata must name a top-level object".into());
@@ -267,8 +267,7 @@ mod tests {
 
     fn sample() -> ContentItem {
         ContentItem {
-            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Пример")
-                .unwrap(),
+            target: MetadataAddress::parse_logical("Catalog.Пример").unwrap(),
             auto_record: AutoRecord::Allow,
         }
     }
@@ -289,8 +288,7 @@ mod tests {
             PLATFORM_EXTENSION
         );
         let other = ContentItem {
-            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Прежний")
-                .unwrap(),
+            target: MetadataAddress::parse_logical("Catalog.Прежний").unwrap(),
             auto_record: AutoRecord::Deny,
         };
         let updated =
@@ -308,8 +306,7 @@ mod tests {
     fn only_a_borrowed_plan_gets_the_extension_property() {
         let without = EMPTY_EXTENSION_CONTENT.replace("\t<ExtensionProperty/>\r\n", "");
         let other = ContentItem {
-            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Прежний")
-                .unwrap(),
+            target: MetadataAddress::parse_logical("Catalog.Прежний").unwrap(),
             auto_record: AutoRecord::Deny,
         };
         let first = update_content(&without, &[sample()], false).unwrap();
@@ -403,7 +400,7 @@ mod tests {
     }
     fn update(target: &str, mode: AutoRecord) -> ContentItem {
         ContentItem {
-            target: MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, target).unwrap(),
+            target: MetadataAddress::parse_logical(target).unwrap(),
             auto_record: mode,
         }
     }

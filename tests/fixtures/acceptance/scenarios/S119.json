@@ -1,0 +1,27 @@
+{
+  "area": "Создание и удаление объектов",
+  "task": "Создать вид характеристик",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Configuration",
+        "ops": [
+          {
+            "op": "object.create",
+            "args": {
+              "values": {
+                "kind": "ChartOfCharacteristicTypes",
+                "name": "СвойстваОбъектов"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S119"
+}

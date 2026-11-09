@@ -12,6 +12,10 @@ from tests.ci.test_acceptance_scenarios import AcceptanceServer, REPO_ROOT
 from tests.ci.test_unica_mcp_smoke import snapshot_workspace_files
 
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+# Собирает продукт и проверяет конфликт через MCP.
+MEDIUM = ("AutodetectedMainConflictWireTests",)
+
 CONFLICT = "source_set.autodetected_main_conflict"
 
 

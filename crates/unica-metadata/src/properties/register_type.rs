@@ -35,7 +35,7 @@ mod tests {
                 )]
             );
         }
-        // `Balances` is the documentation typo from #852, not a platform value.
+        // `Balances` is a documentation typo, not a platform value.
         let diagnostic = MetaPropertyChanges::convert(
             MetadataKind::AccumulationRegister,
             vec![MetaPropertyInput::new(

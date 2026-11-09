@@ -881,9 +881,6 @@ impl<'a> ArgumentReader<'a> {
 }
 
 impl unica_operations::FamilyOperation for XdtoOperation {
-    fn retired_arguments(self) -> &'static [unica_operations::recovery::RetiredArgument] {
-        crate::recovery::RETIRED_ARGUMENTS
-    }
     type Observation = ();
     fn family(self) -> unica_operations::OperationFamily {
         unica_operations::OperationFamily::Xdto

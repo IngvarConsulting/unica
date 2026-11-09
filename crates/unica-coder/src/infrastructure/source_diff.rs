@@ -18,7 +18,7 @@ impl SavedSourceDiffRenderer for NavigationSourceDiff {
     }
 }
 
-pub(crate) fn layout(
+pub fn layout(
     images: &[SourceImage<'_>],
     checkpoint: &dyn Fn() -> Result<(), String>,
 ) -> Result<Box<dyn SavedSourceDiffRenderer>, String> {
