@@ -236,6 +236,39 @@ pub fn classify_root_version(raw: Option<&str>) -> Result<FormatCompatibility, F
     })
 }
 
+/// Whether a root recording `raw` is in the export format codecs write.
+pub fn is_writable_root_version(raw: Option<&str>) -> bool {
+    raw == Some(ACTIVE_FORMAT_PROFILE.export_format)
+}
+
+/// How a validation report names the version of a root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RootVersionReport {
+    Ok(String),
+    Warn(String),
+    Error(String),
+}
+
+/// The validation report line for a root recording `raw` as written.
+pub fn root_version_report(raw: Option<&str>) -> RootVersionReport {
+    match classify_root_version(raw) {
+        Ok(FormatCompatibility::Supported { .. }) => RootVersionReport::Ok(format!(
+            "Export format: {}",
+            ACTIVE_FORMAT_PROFILE.export_format
+        )),
+        Ok(compatibility) => RootVersionReport::Warn(format_compatibility_warning(&compatibility)),
+        Err(error) => RootVersionReport::Error(error.to_string()),
+    }
+}
+
+/// `Ok` for a root in the export format codecs read, else why it is not.
+pub fn require_supported_root_version(raw: Option<&str>) -> Result<(), String> {
+    match classify_root_version(raw).map_err(|error| error.to_string())? {
+        FormatCompatibility::Supported { .. } => Ok(()),
+        compatibility => Err(format_compatibility_warning(&compatibility)),
+    }
+}
+
 /// Why a write refuses a versioned platform XML root outside the writable
 /// profile: the file, the version as written, the profile and what to do.
 pub struct WritableProfileRefusal {
@@ -319,6 +352,33 @@ mod tests {
     };
 
     /// rule: INV.SOURCE.FORMAT-IDENTITY
+    #[test]
+    fn a_root_is_writable_and_reported_by_its_version() {
+        use super::{
+            is_writable_root_version, require_supported_root_version, root_version_report,
+            RootVersionReport,
+        };
+        let writable = ACTIVE_FORMAT_PROFILE.export_format;
+        assert!(is_writable_root_version(Some(writable)));
+        assert!(!is_writable_root_version(None));
+        assert!(!is_writable_root_version(Some("2.19")));
+        assert!(!is_writable_root_version(Some("2.21")));
+        assert_eq!(
+            root_version_report(Some(writable)),
+            RootVersionReport::Ok(format!("Export format: {writable}"))
+        );
+        assert!(matches!(
+            root_version_report(Some("2.19")),
+            RootVersionReport::Warn(_)
+        ));
+        assert!(matches!(
+            root_version_report(Some("latest")),
+            RootVersionReport::Error(_)
+        ));
+        assert!(require_supported_root_version(Some(writable)).is_ok());
+        assert!(require_supported_root_version(Some("2.21")).is_err());
+    }
+
     #[test]
     fn a_designer_export_format_is_its_version_and_the_line_follows_from_it() {
         // The family's name is the wire name of `sourceFormat`.

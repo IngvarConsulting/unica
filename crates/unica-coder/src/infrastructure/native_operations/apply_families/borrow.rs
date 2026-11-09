@@ -128,7 +128,9 @@ fn registered(owner: &[u8], kind: &str, name: &str) -> Result<bool, ApplyPlanErr
         .filter(|node| node.is_element())
         .collect::<Vec<_>>();
     if !root.has_tag_name((NS, "MetaDataObject"))
-        || root.attribute("version") != Some("2.20")
+        || !unica_source_designer::format_profile::is_writable_root_version(
+            root.attribute("version"),
+        )
         || objects.len() != 1
         || !objects[0].has_tag_name((NS, "Configuration"))
     {

@@ -1,4 +1,5 @@
 //! Embedded-help facet images and planned reads; publication remains outside the codec.
+use crate::dialect::root_version;
 use roxmltree::Document;
 
 pub fn help_metadata_xml(lang: &str, format_version: &str) -> String {
@@ -41,11 +42,11 @@ pub fn validate_help_form_owner_8_3_27(path: &Path, text: &str) -> Result<(), St
             path.display()
         ));
     }
-    if root.attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format) {
+    if !root_version::is_writable(root.attribute("version")) {
         return Err(format!(
             "help.add form owner {} must use export format {}",
             path.display(),
-            ACTIVE_FORMAT_PROFILE.export_format
+            root_version::writable()
         ));
     }
 

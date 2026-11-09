@@ -1,4 +1,7 @@
-use crate::model::ProviderRole;
+//! Сроки анализа кода, разрешённые из настроек рабочего пространства.
+//!
+//! Значения без логики: координаторы анализа читают их отсюда.
+
 use std::time::Duration;
 
 // resource-limit: search.total-timeout-default
@@ -100,14 +103,6 @@ impl CodeIntelligenceDeadlines {
         self.provider_read_timeout
     }
 
-    pub const fn search_timeout_for(self, role: ProviderRole) -> Duration {
-        match role {
-            ProviderRole::Semantic => self.search_semantic_timeout,
-            ProviderRole::Symbol => self.search_total_timeout,
-            ProviderRole::Lexical => self.search_git_grep_timeout,
-        }
-    }
-
     pub fn within_search_budget(mut self, remaining: Duration) -> Self {
         self.search_total_timeout = self.search_total_timeout.min(remaining);
         self.search_git_grep_timeout = self.search_git_grep_timeout.min(remaining);
@@ -137,5 +132,28 @@ impl CodeIntelligenceDeadlines {
             search_git_grep_timeout,
             provider_read_timeout,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodeDiagnosticsDeadlines {
+    analyze_timeout: Option<Duration>,
+}
+
+impl CodeDiagnosticsDeadlines {
+    /// A value already resolved and validated by the configuration owner.
+    pub const fn from_timeout(analyze_timeout: Option<Duration>) -> Self {
+        Self { analyze_timeout }
+    }
+
+    pub const fn compiled_defaults() -> Self {
+        Self {
+            analyze_timeout: None,
+        }
+    }
+
+    /// `None` — пользователь срок анализа не задавал, и анализ идёт до конца.
+    pub const fn analyze_timeout(self) -> Option<Duration> {
+        self.analyze_timeout
     }
 }
