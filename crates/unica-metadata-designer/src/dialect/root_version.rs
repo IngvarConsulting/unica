@@ -33,3 +33,31 @@ pub(crate) fn report(version: Option<&str>) -> RootVersionReport {
 pub(crate) fn require_supported(version: Option<&str>) -> Result<(), String> {
     require_supported_root_version(version)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{is_writable, report, require_supported, writable, RootVersionReport};
+
+    #[test]
+    fn only_the_written_version_is_writable() {
+        assert!(is_writable(Some(writable())));
+        assert!(!is_writable(None));
+        assert!(!is_writable(Some("2.19")));
+        assert!(!is_writable(Some("2.21")));
+    }
+
+    #[test]
+    fn the_report_names_the_written_version() {
+        let RootVersionReport::Ok(line) = report(Some(writable())) else {
+            panic!("the written version is supported");
+        };
+        assert_eq!(line, format!("Export format: {}", writable()));
+        assert!(matches!(report(Some("2.19")), RootVersionReport::Warn(_)));
+        assert!(matches!(
+            report(Some("latest")),
+            RootVersionReport::Error(_)
+        ));
+        assert!(require_supported(Some(writable())).is_ok());
+        assert!(require_supported(Some("2.21")).is_err());
+    }
+}
