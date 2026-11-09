@@ -17,7 +17,7 @@ receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "u
 unica-coder = { path = "../unica-coder" }
 unica-daemon-protocol = { path = "../unica-daemon-protocol" }
 unica-lsp-contract = { path = "../unica-lsp-contract" }
-unica-lsp = { path = "../unica-lsp" }
+unica-editor-analysis = { path = "../unica-editor-analysis" }
 unica-analysis-services = { path = "../unica-analysis-services" }
 unica-workspace = { path = "../unica-workspace" }
 unica-redaction = { path = "../unica-redaction" }

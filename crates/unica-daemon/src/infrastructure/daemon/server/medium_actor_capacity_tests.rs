@@ -2550,7 +2550,7 @@ impl LiveV5Daemon {
             Arc::new(TokioClock),
             Arc::clone(&actors),
         ));
-        let host = Arc::new(unica_lsp::UnicaLspHost::new(Arc::new(
+        let host = Arc::new(unica_editor_analysis::UnicaLspHost::new(Arc::new(
             super::super::lsp_workspaces::ProductLspWorkspaces::new(
                 actors,
                 Arc::new(

@@ -5,9 +5,9 @@ use crate::infrastructure::daemon::lsp_workspaces::ProductLspWorkspaces;
 use crate::infrastructure::daemon::protocol::InvocationRequest;
 use std::fs;
 use std::time::Duration;
+use unica_editor_analysis::UnicaLspHost;
 use unica_execution::clock::TokioClock;
 use unica_execution::invocation_store::ToolIdentity;
-use unica_lsp::UnicaLspHost;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
     V5LspCall, V5LspFailure, V5LspOutcome, V5LspSessionId, V5LspWorkspaceFolder,

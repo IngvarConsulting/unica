@@ -16,7 +16,7 @@ use unica_diagnostics::model::{
     DiagnosticProviderRegistry, DiagnosticProviderStatus, DiagnosticReadinessState,
     DiagnosticRequest, DiagnosticResult, DiagnosticSeverity,
 };
-use unica_lsp::{LspAnalysis, LspDiagnosticGap, LspFinding, LspSeverity};
+use unica_editor_analysis::{LspAnalysis, LspDiagnosticGap, LspFinding, LspSeverity};
 use unica_work_control::cancellation::CancellationToken;
 use unica_work_control::provider_deadline::ProviderDeadline;
 

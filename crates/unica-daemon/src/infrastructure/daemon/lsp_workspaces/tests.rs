@@ -1,13 +1,13 @@
 //! Служба LSP демона над рабочей областью на диске: те же актор и наборы,
 //! что у MCP, буфер виден только своей сессии и не пишется на диск.
 //! Что служба делает с сессиями, буферами и акторами сама, проверяет
-//! `crates/unica-lsp/src/service_tests.rs`; здесь — допуск и чтение продукта.
+//! `crates/unica-editor-analysis/src/service_tests.rs`; здесь — допуск и чтение продукта.
 use super::*;
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 use unica_address::source_target::MetadataAddress;
-use unica_lsp::UnicaLspHost;
+use unica_editor_analysis::UnicaLspHost;
 use unica_lsp_contract::host::{LspCallContext, LspClientChannel, LspHost};
 use unica_lsp_contract::protocol::{
     V5LspCall, V5LspContentChange, V5LspNotification, V5LspOutcome, V5LspSessionId,

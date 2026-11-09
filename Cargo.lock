@@ -2618,11 +2618,11 @@ dependencies = [
  "unica-documentation",
  "unica-documentation-sources",
  "unica-domain",
+ "unica-editor-analysis",
  "unica-execution",
  "unica-execution-contract",
  "unica-forms",
  "unica-forms-designer",
- "unica-lsp",
  "unica-metadata",
  "unica-metadata-designer",
  "unica-navigation",
@@ -2695,10 +2695,10 @@ dependencies = [
  "unica-diagnostics",
  "unica-documentation",
  "unica-documentation-sources",
+ "unica-editor-analysis",
  "unica-execution",
  "unica-execution-contract",
  "unica-forms",
- "unica-lsp",
  "unica-lsp-contract",
  "unica-metadata",
  "unica-metadata-designer",
@@ -2849,6 +2849,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "unica-editor-analysis"
+version = "0.15.0-rc.1"
+dependencies = [
+ "percent-encoding",
+ "sha2",
+ "tempfile",
+ "unica-address",
+ "unica-bsl",
+ "unica-code-model",
+ "unica-execution-contract",
+ "unica-lsp-contract",
+ "unica-source-contract",
+ "unica-source-designer",
+ "unica-work-control",
+ "unica-workspace",
+ "url",
+]
+
+[[package]]
 name = "unica-execution"
 version = "0.15.0-rc.1"
 dependencies = [
@@ -2927,25 +2946,6 @@ dependencies = [
  "unica-metadata",
  "unica-source-contract",
  "unica-workspace",
-]
-
-[[package]]
-name = "unica-lsp"
-version = "0.15.0-rc.1"
-dependencies = [
- "percent-encoding",
- "sha2",
- "tempfile",
- "unica-address",
- "unica-bsl",
- "unica-code-model",
- "unica-execution-contract",
- "unica-lsp-contract",
- "unica-source-contract",
- "unica-source-designer",
- "unica-work-control",
- "unica-workspace",
- "url",
 ]
 
 [[package]]

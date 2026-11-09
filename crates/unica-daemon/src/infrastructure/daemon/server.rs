@@ -1413,7 +1413,7 @@ impl DaemonServerConfig {
         let workspace_actors = Arc::new(crate::infrastructure::source_workspace::actor_registry());
         // The editor's door reaches the same actors and the same services as
         // the agent's calls.
-        let lsp_host = Arc::new(unica_lsp::UnicaLspHost::new(Arc::new(
+        let lsp_host = Arc::new(unica_editor_analysis::UnicaLspHost::new(Arc::new(
             super::lsp_workspaces::ProductLspWorkspaces::new(
                 Arc::clone(&workspace_actors),
                 read_service,
