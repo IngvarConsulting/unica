@@ -9595,10 +9595,9 @@ fn canonical_object_borrow_previews_publishes_and_rejects_changed_parent_revisio
     std::fs::create_dir_all(&forms).unwrap();
     std::fs::write(
         forms.join("ItemForm.xml"),
-        std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/fixtures/platform_8_3_27/cfe_borrow/parent-catalog-form.xml"),
-        )
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow/parent-catalog-form.xml",
+        ))
         .unwrap()
         .replace("<Name>CorpusForm</Name>", "<Name>ItemForm</Name>"),
     )

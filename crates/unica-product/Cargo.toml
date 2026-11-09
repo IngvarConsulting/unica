@@ -64,5 +64,5 @@ windows-sys.workspace = true
 [package.metadata.unica]
 component = "product"
 file-io = "owned"
-inputs = ["crates/unica-daemon/src/receipt_ledger_test_support.rs", "crates/unica-daemon/tests/support", "tests/fixtures/acceptance", "tests/fixtures/platform_8_3_27", "tests/fixtures/mcp", "tests/fixtures/xdto"]
+inputs = ["crates/unica-daemon/src/receipt_ledger_test_support.rs", "crates/unica-daemon/tests/support", "tests/fixtures/acceptance", "tests/fixtures/formats/platform_xml/2.20", "tests/fixtures/mcp", "tests/fixtures/xdto"]
 read-outside-baseline = 1

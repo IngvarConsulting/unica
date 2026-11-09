@@ -8,7 +8,7 @@ included. They back the byte tests of the `mxl.set` and `area.add` writer
 parameter, template and merged cells, an outside row with a row format,
 compressed empty rows, a row of a second column set and Columns and
 Rectangle areas. `Empty.xml` is the empty template the platform writes
-(`tests/fixtures/platform_8_3_27/mxl/Template.xml` with BOM and CRLF); its
+(`tests/fixtures/formats/platform_xml/2.20/mxl/Template.xml` with BOM and CRLF); its
 import and export give the same bytes.
 
 Each `expected-*.xml` is the writer's output for one edit of these inputs.

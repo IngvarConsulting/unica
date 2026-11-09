@@ -131,11 +131,11 @@ S324 из PR #1307 исполняется delivery-драйвером на от�
 XDTO `EnterpriseData_1_17_3`, HTTP-сервис `ПроверкаСвязи` с модулем
 обработчиков (два шаблона URL в той форме, в какой их пишет Конфигуратор
 8.3.27: с `Synonym` и `<Comment/>` у шаблона и метода; то же, что
-`platform_8_3_27/meta_info/edge/http-service-configurator.xml`, но с BOM, как в выгрузке),
+`formats/platform_xml/2.20/meta_info/edge/http-service-configurator.xml`, но с BOM, как в выгрузке),
 веб-сервис `ОбменДанными` с модулем (две операции и три параметра в форме
 Конфигуратора 8.3.27: `Synonym` и `<Comment/>` у операции и параметра,
 `DataLockControlMode` у операции; то же, что
-`platform_8_3_27/meta_info/edge/web-service-configurator.xml`, но с BOM) и состояние поддержки
+`formats/platform_xml/2.20/meta_info/edge/web-service-configurator.xml`, но с BOM) и состояние поддержки
 `Ext/ParentConfigurations.bin`, чтобы у каждого валидатора `check` и каждой
 семьи операций был настоящий адресат. Маркер поддержки держит три объекта
 поставщика: `Catalog.Валюты` и `Enum.LanguageAware` с правилом «редактируется
@@ -285,7 +285,7 @@ source_set.path_missing проверяет недоступный объявле
 расширения на входе написаны вручную: опыт доказывает, что платформа
 принимает и сохраняет такую форму, а не то, что пишет Конфигуратор при
 команде «Добавить в расширение». Порядок опыта описан
-в `tests/fixtures/platform_8_3_27/cfe_borrow/README.md`.
+в `tests/fixtures/formats/platform_xml/2.20/cfe_borrow/README.md`.
 
 Для S409 (#1381) та же пара дополнена выгрузкой третьего опыта. Основа
 содержит роль `SalesReader`, общую форму `ОбщаяФорма`, пакет XDTO

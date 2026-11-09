@@ -169,5 +169,5 @@ version-literal-baseline = 50
 component = "product"
 file-io = "owned"
 # `crates`: tests compare the operation tables and codecs of other crates with their sources.
-inputs = ["crates", "plugins/unica/skills", "plugins/unica/third-party/tools.lock.json", "tests/fixtures/acceptance", "tests/fixtures/analyzer", "tests/fixtures/bsl_analyzer", "tests/fixtures/platform_8_3_27", "tests/fixtures/styleitem_values", "tests/fixtures/unica_mcp_script_parity", "tests/fixtures/v013", "tests/fixtures/xdto"]
+inputs = ["crates", "plugins/unica/skills", "plugins/unica/third-party/tools.lock.json", "tests/fixtures/acceptance", "tests/fixtures/analyzer", "tests/fixtures/bsl_analyzer", "tests/fixtures/formats/platform_xml/2.20", "tests/fixtures/styleitem_values", "tests/fixtures/unica_mcp_script_parity", "tests/fixtures/v013", "tests/fixtures/xdto"]
 read-outside-baseline = 1

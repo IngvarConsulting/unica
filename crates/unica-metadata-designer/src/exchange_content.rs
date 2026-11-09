@@ -276,8 +276,9 @@ mod tests {
     /// `Content.xml` заимствованного плана обмена, который 8.3.27 выгрузил из
     /// расширения после изменения состава: только добавленный расширением
     /// элемент и пустой `ExtensionProperty` за ним (#1924).
-    const PLATFORM_EXTENSION: &str =
-        include_str!("../../../tests/fixtures/platform_8_3_27/exchange_plan/extension-Content.xml");
+    const PLATFORM_EXTENSION: &str = include_str!(
+        "../../../tests/fixtures/formats/platform_xml/2.20/exchange_plan/extension-Content.xml"
+    );
 
     fn sample() -> ContentItem {
         ContentItem {

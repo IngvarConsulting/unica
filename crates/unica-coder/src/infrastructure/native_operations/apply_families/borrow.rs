@@ -1316,7 +1316,7 @@ mod tests {
     fn platform(name: &str) -> Vec<u8> {
         std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tests/fixtures/platform_8_3_27/cfe_borrow")
+                .join("../../tests/fixtures/formats/platform_xml/2.20/cfe_borrow")
                 .join(name),
         )
         .unwrap()

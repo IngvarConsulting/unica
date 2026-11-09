@@ -1873,12 +1873,12 @@ mod form_slot_kind_tests {
             ("ChartOfAccounts", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfAccounts.before.xml")),
             ("ChartOfCalculationTypes", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfCalculationTypes.before.xml")),
             ("ChartOfCharacteristicTypes", include_str!("../../unica-metadata-designer/tests/platform/dump_parity/ChartsOfCharacteristicTypes.before.xml")),
-            ("Constant", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/constant/Constants/MainCurrency.xml")),
-            ("Enum", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/enum/Enums/PresentationEnum.xml")),
-            ("InformationRegister", include_str!("../../../tests/fixtures/platform_8_3_27/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
-            ("Report", include_str!("../../../tests/fixtures/platform_8_3_27/template-new-xml/seed/Reports/CorpusReport.xml")),
-            ("ExternalDataProcessor", include_str!("../../../tests/fixtures/platform_8_3_27/external_artifacts/epf/SyntheticProcessor.xml")),
-            ("ExternalReport", include_str!("../../../tests/fixtures/platform_8_3_27/external_artifacts/erf/SyntheticReport.xml")),
+            ("Constant", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/constant/Constants/MainCurrency.xml")),
+            ("Enum", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/enum/Enums/PresentationEnum.xml")),
+            ("InformationRegister", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/meta_info_surface/register/InformationRegisters/CommandInterfaceRegister.xml")),
+            ("Report", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/template-new-xml/seed/Reports/CorpusReport.xml")),
+            ("ExternalDataProcessor", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/external_artifacts/epf/SyntheticProcessor.xml")),
+            ("ExternalReport", include_str!("../../../tests/fixtures/formats/platform_xml/2.20/external_artifacts/erf/SyntheticReport.xml")),
         ] {
             let document = roxmltree::Document::parse(text.trim_start_matches('\u{feff}')).unwrap();
             let owner = document.root_element().first_element_child().unwrap();
