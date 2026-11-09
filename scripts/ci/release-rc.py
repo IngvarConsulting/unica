@@ -17,7 +17,7 @@ Alpha — срез `main`, который ночь проверила полны
 Кнопку нажимает администратор репозитория: `admit` сверяет роль запустившего
 до задания с ключом, а не его имя.
 
-    python scripts/ci/release-rc.py admit --actor "$GITHUB_TRIGGERING_ACTOR"
+    python scripts/ci/release-rc.py admit --actor "$ACTOR" --ref "$GITHUB_REF"
     python scripts/ci/release-rc.py publish --alpha v0.15.0-alpha.4
 """
 
@@ -42,6 +42,7 @@ _SPEC.loader.exec_module(alpha)
 RC = re.compile(r"\Av(?P<core>\d+\.\d+\.\d+)-rc\.(?P<number>0|[1-9]\d*)\Z")
 NIGHTLY = "nightly.yml"
 ALPHA_JOB = "Alpha — служебный коммит и тег"
+MAIN_REF = "refs/heads/main"
 
 
 class RcError(RuntimeError):
@@ -95,8 +96,10 @@ def prove(repo: str, alpha_tag: str, gh, git) -> Proof:
     raise RcError(f"нет зелёной ночи, выпустившей {alpha_tag} на срезе {slice_sha[:7]}")
 
 
-def admit(repo: str, actor: str, gh=alpha.gh_api) -> None:
-    """Кандидата ставит только администратор репозитория; роль, а не имя."""
+def admit(repo: str, actor: str, ref: str, gh=alpha.gh_api) -> None:
+    """Кандидата ставит только администратор репозитория и только с `main`; роль, а не имя."""
+    if ref != MAIN_REF:
+        raise RcError(f"кнопку кандидата запускают с main, а не с {ref or 'неизвестной ссылки'}")
     if not actor:
         raise RcError("не назван запустивший: кандидата ставит только администратор репозитория")
     try:
@@ -151,6 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     admit_command = commands.add_parser("admit", help="пустить к кнопке только администратора репозитория")
     admit_command.add_argument("--actor", required=True, help="запустивший прогон")
+    admit_command.add_argument("--ref", default=os.environ.get("GITHUB_REF", ""), help="ссылка, с которой запущен прогон")
     publish_command = commands.add_parser("publish", help="поставить кандидата из проверенной alpha")
     publish_command.add_argument("--alpha", required=True, help="тег alpha, например v0.15.0-alpha.4")
     publish_command.add_argument("--root", type=Path, default=Path("."))
@@ -158,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "admit":
-            admit(args.repo, args.actor)
+            admit(args.repo, args.actor, args.ref)
         else:
             publish(args.root, args.repo, args.alpha, dry_run=args.dry_run)
     except (RcError, alpha.AlphaError) as error:

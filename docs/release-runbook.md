@@ -73,9 +73,11 @@ tagged after it; a rerun of an old release repeats the old order. What does not
 come from the tag is the channel: every marketplace job checks out only
 `scripts/ci/release-channel.py`, sparsely, from `main`, and nothing in those
 jobs checks out the tag's code. `UNICA_MARKETPLACE_TOKEN` lives in the
-`marketplace` environment, which accepts `v*` tags only, so a branch or a manual
-run cannot read it. The environment has no reviewer: the publication from a tag
-runs to the end without waiting for a person. The jobs holding the token still come from the tagged
+`marketplace` environment, which admits only `main` and `v*` tags, so another
+branch cannot read it. On `main` only the candidate button runs in it, and that
+job lets nobody but an administrator through (below). The environment has no
+reviewer: the publication from a tag runs to the end without waiting for a
+person. The jobs holding the token still come from the tagged
 commit's `release.yml`, so whoever can create a `v*` tag defines those steps. Old
 tags also run against the current `release-channel.py` from `main`, so keep its
 commands compatible with them.
@@ -335,11 +337,12 @@ person:
 gh workflow run rc-from-alpha.yml --repo IngvarConsulting/unica --ref main -f alpha=v0.15.0-alpha.4
 ```
 
-Only an administrator gets past the first job, `admit`: it reads the role of
-the person who started or re-ran the run (`collaborators/<actor>/permission`)
-and refuses anything but `admin`. No name is written in the workflow. A writer
-can press the button, but the run stops there, before the job that holds the
-tag key starts. That job runs in the environment `marketplace`, which admits
+Only an administrator gets past the first job, `admit`: it refuses a run not
+started from `main`, reads the role of the person who started or re-ran the run
+(`collaborators/<actor>/permission`) and refuses anything but `admin`. No name
+is written in the workflow. A writer can press the button, but the run stops
+there, before the job that holds the tag key starts; a re-run of the failed
+job checks the role again before its key step. That job runs in the environment `marketplace`, which admits
 only `main` and `v*` and has no reviewer. `scripts/ci/release-rc.py` then
 refuses unless:
 
