@@ -159,7 +159,7 @@ pub fn meta_edit_property_child_indent(properties: &str) -> String {
 /// The start of a scalar property element as the source spells it: `<`, the
 /// qualified name and the element's own namespace declarations, without `>`.
 /// Other attributes are not part of a scalar value and are not carried over.
-fn scalar_element_shell(raw: &str) -> (String, &str) {
+pub(crate) fn scalar_element_shell(raw: &str) -> (String, &str) {
     let name_end = raw[1..]
         .find(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>')
         .map_or(raw.len(), |end| end + 1);
@@ -2442,8 +2442,9 @@ pub fn update_typed_element(
         ensure_typed_name_free(xml_text, tag, scope, new_name)?;
     }
     let node_xml = xml_text[range.clone()].to_string();
-    let mut flag_properties_range = None;
-    let mut flag_edits = Vec::new();
+    let choice_edits = crate::member_choice::edits(xml_text, range.clone(), &update.choice)?;
+    let mut flag_properties_range = choice_edits.properties_range;
+    let mut flag_edits = choice_edits.replacements;
     for (tag, field, value) in [
         ("Master", "master", update.master),
         ("MainFilter", "mainFilter", update.main_filter),

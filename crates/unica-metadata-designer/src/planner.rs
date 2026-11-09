@@ -45,6 +45,21 @@ pub trait MetadataPlanningRead {
         crate::remove::RemoveObservationHooks::NONE
     }
 }
+pub use crate::member_choice::{MemberChoicePlan, StandardChoiceFormCheck};
+
+pub fn validate_final_metadata<'a>(
+    staged: &mut ApplyProposal<'_>,
+    source_set_name: &str,
+    source_kind: SourceSetKind,
+    operations: impl IntoIterator<Item = (usize, &'a MetadataPlanOperation)>,
+    member_choices: &MemberChoicePlan,
+    check_form: StandardChoiceFormCheck,
+) -> Result<(), ApplyPlanError> {
+    validate_final_numerators(staged, operations)?;
+    member_choices.validate_final(staged, source_kind, check_form)?;
+    validate_final_object_integrity(staged, source_set_name, source_kind)
+}
+
 /// Local composition belongs to the final descriptor, after every operation
 /// family has contributed its image. A borrowed descriptor contains only the
 /// extension's contribution and cannot establish the parent's composition.
@@ -111,7 +126,7 @@ pub fn validate_final_object_integrity(
 
 /// All addressed numerator edits are checked after every family has staged
 /// its contribution, including equivalent edits that stage no changed file.
-pub fn validate_final_numerators<'a>(
+fn validate_final_numerators<'a>(
     staged: &mut ApplyProposal<'_>,
     operations: impl IntoIterator<Item = (usize, &'a MetadataPlanOperation)>,
 ) -> Result<(), ApplyPlanError> {
@@ -278,6 +293,7 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
     authority: &dyn ApplySourceAuthority,
     operations: &[IndexedPlanOperation<MetadataPlanOperation>],
     code_type_plan: &PredefinedCodeTypePlan,
+    member_choices: &mut MemberChoicePlan,
 ) -> Result<Vec<ProvisionalApplyEffect>, ApplyPlanError> {
     if operations.is_empty() {
         return Err(empty_apply_family_batch());
@@ -470,6 +486,22 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
                 )?;
             }
         }
+        if let MetaEditOperation::Update { elements, .. } = edit {
+            if let Some((property, _)) =
+                elements.iter().find_map(|element| element.choice.0.first())
+            {
+                if authority.source_kind() != SourceSetKind::Configuration {
+                    return Err(ApplyPlanError::new(
+                        ApplyPlanErrorKind::BadValue,
+                        "member choice settings require a Configuration source set",
+                    )
+                    .at_path(format!(
+                        "ops[{op_index}].args.values.{}",
+                        property.argument()
+                    )));
+                }
+            }
+        }
         crate::edit_type::guard(
             staged,
             authority.source_kind(),
@@ -562,6 +594,10 @@ pub fn plan_metadata_batch<R: MetadataPlanningRead>(
             };
             ApplyPlanError::new(kind, diagnostic.message).at_path(path)
         })?;
+        if authority.source_kind() == SourceSetKind::Configuration {
+            let owner = MetadataKind::parse(&actual_kind).expect("typed metadata owner kind");
+            member_choices.retain(source, &relative, owner, edit, op_index)?;
+        }
         stage_command_module_lifecycle(
             staged,
             authority,

@@ -173,3 +173,14 @@ pub(crate) fn boolean_properties(object_type: &str) -> &'static [&'static str] {
         _ => &[],
     }
 }
+
+pub(crate) fn member_choice_name(property: unica_metadata::MemberChoiceProperty) -> &'static str {
+    use unica_metadata::MemberChoiceProperty::*;
+    match property {
+        FoldersAndItems => "ChoiceFoldersAndItems",
+        Form => "ChoiceForm",
+        HistoryOnInput => "ChoiceHistoryOnInput",
+        QuickChoice => "QuickChoice",
+        CreateOnInput => "CreateOnInput",
+    }
+}

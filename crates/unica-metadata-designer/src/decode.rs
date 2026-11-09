@@ -1023,8 +1023,7 @@ pub fn parse_legacy_edit(
         "operations": [legacy_operation],
         "dryRun": true
     });
-    let request = unica_metadata::request::parse_metadata_request(
-        unica_metadata::request::MetadataOperation::Edit,
+    let request = unica_metadata::request::parse_apply_metadata_edit(
         input
             .as_object()
             .expect("metadata edit wrapper is an object"),
