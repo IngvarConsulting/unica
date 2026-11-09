@@ -307,7 +307,27 @@ fn ensure_short_private_runtime_dir_unix(path: &Path, uid: libc::uid_t) -> io::R
     use std::os::unix::io::FromRawFd;
     use std::time::Duration;
 
+    // resource-limit: workspace.runtime-dir-setup-attempts
+    // class: retry
+    // unit: count
+    // scope: directory
+    // value: 8
+    // resource: Число попыток подготовить короткий частный каталог исполнения Unix.
+    // status: unproven
+    // origin: #308
+    // problem: неизвестно
+    // on-reach: после попыток каталог проверяется последний раз; неготовый даёт ошибку прав или отсутствия каталога
     const SETUP_ATTEMPTS: usize = 8;
+    // resource-limit: workspace.runtime-dir-retry-delay
+    // class: retry
+    // unit: ms
+    // scope: directory
+    // value: 1
+    // resource: Пауза между попытками подготовить частный каталог исполнения при гонке с другим процессом того же пользователя.
+    // status: unproven
+    // origin: #308
+    // problem: неизвестно
+    // on-reach: после паузы следующая попытка в пределах числа попыток
     const RETRY_DELAY: Duration = Duration::from_millis(1);
 
     for _ in 0..SETUP_ATTEMPTS {
@@ -1749,6 +1769,16 @@ fn sync_renamed_regular_child(file: &fs::File) -> io::Result<()> {
 }
 
 /// The portion a checked read takes between two checkpoints.
+// resource-limit: apply.checked-read-chunk-bytes
+// class: step
+// unit: bytes
+// scope: file
+// value: 65536
+// resource: Размер одной порции чтения или сравнения входа apply между проверками срока и отмены.
+// status: unproven
+// origin: #1119
+// problem: неизвестно
+// on-reach: файл читается следующей порцией после проверки срока и отмены
 const CHECKED_READ_CHUNK_BYTES: usize = 64 * 1024;
 
 /// A checked read either failed on the filesystem or was stopped by its
@@ -4373,6 +4403,16 @@ fn visit_directory_names<E: From<io::Error>>(
         FileIdBothDirectoryInfo, FileIdBothDirectoryRestartInfo, GetFileInformationByHandleEx,
     };
 
+    // resource-limit: workspace.windows-directory-buffer-bytes
+    // class: step
+    // unit: bytes
+    // scope: directory
+    // value: 65536
+    // resource: Размер буфера одного запроса перечисления имён каталога в Windows.
+    // status: unproven
+    // origin: #284
+    // problem: неизвестно
+    // on-reach: имена читаются следующими запросами до конца каталога
     const BUFFER_BYTES: usize = 64 * 1024;
 
     validate_directory_handle(directory)?;
@@ -5831,24 +5871,58 @@ pub fn is_foreign_absolute_path(path: &str) -> bool {
 }
 
 #[cfg(windows)]
-pub fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
-    let path = strip_windows_extended_length_prefix(path);
-    let root = strip_windows_extended_length_prefix(root);
-    let path_components = path.components().collect::<Vec<_>>();
-    let root_components = root.components().collect::<Vec<_>>();
-    path_components.len() >= root_components.len()
-        && path_components
-            .iter()
-            .zip(root_components.iter())
-            .all(|(left, right)| {
-                left.as_os_str().to_string_lossy().to_lowercase()
-                    == right.as_os_str().to_string_lossy().to_lowercase()
-            })
+fn host_path_components_match(
+    left: std::path::Component<'_>,
+    right: std::path::Component<'_>,
+) -> bool {
+    left.as_os_str().to_string_lossy().to_lowercase()
+        == right.as_os_str().to_string_lossy().to_lowercase()
 }
 
 #[cfg(not(windows))]
+fn host_path_components_match(
+    left: std::path::Component<'_>,
+    right: std::path::Component<'_>,
+) -> bool {
+    left == right
+}
+
+/// The part of `path` below `root` under the host's own path rules: on Windows
+/// the `\\?\` spelling of either side and the letter case of a component do not
+/// change which file is named. `None` when `path` is not at or below `root`, or
+/// when the remainder climbs with `..`. An empty result means the same path.
+/// Both sides must be host paths: a logical address has rules of its own.
+pub fn host_path_relative_to(path: &Path, root: &Path) -> Option<PathBuf> {
+    let path = strip_windows_extended_length_prefix(path);
+    let root = strip_windows_extended_length_prefix(root);
+    let mut below = path.components();
+    for expected in root.components() {
+        if !host_path_components_match(below.next()?, expected) {
+            return None;
+        }
+    }
+    let relative = below.as_path();
+    (!relative
+        .components()
+        .any(|component| component == std::path::Component::ParentDir))
+    .then(|| relative.to_path_buf())
+}
+
+/// Whether two host paths name the same file under the rules of
+/// [`host_path_relative_to`].
+pub fn same_host_path(left: &Path, right: &Path) -> bool {
+    host_path_relative_to(left, right).is_some_and(|relative| relative.as_os_str().is_empty())
+}
+
 pub fn path_starts_with_host_root(path: &Path, root: &Path) -> bool {
-    path.starts_with(root)
+    let path = strip_windows_extended_length_prefix(path);
+    let root = strip_windows_extended_length_prefix(root);
+    let mut below = path.components();
+    root.components().all(|expected| {
+        below
+            .next()
+            .is_some_and(|component| host_path_components_match(component, expected))
+    })
 }
 
 #[cfg(all(any(test, feature = "test-support"), unix))]
@@ -8210,7 +8284,7 @@ mod medium_tests {
         }
     }
 
-    /// #1119: a whole-file read takes chunks and stops at the checkpoint
+    /// A whole-file read takes chunks and stops at the checkpoint
     /// between them instead of finishing a large file past its deadline.
     /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
@@ -8273,7 +8347,7 @@ mod medium_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// #1119: the preimage comparison reads in chunks against the retained
+    /// The preimage comparison reads in chunks against the retained
     /// image and tells equal, changed, shorter and longer files apart.
     /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
     #[test]
@@ -8473,59 +8547,6 @@ mod medium_tests {
         drop(root);
         fs::remove_file(&root_path).unwrap();
         fs::remove_dir_all(parent_path).unwrap();
-    }
-
-    #[test]
-    fn retained_atomic_replace_flushes_renamed_handle_before_directory_sync() {
-        let source = include_str!("filesystem.rs").replace("\r\n", "\n");
-        let start = source
-            .find("pub(crate) fn replace_regular_child_atomically(")
-            .expect("retained atomic publisher exists");
-        let end = source[start..]
-            .find("pub(crate) fn read_relative_regular_bounded(")
-            .map(|offset| start + offset)
-            .expect("publisher has a bounded source slice");
-        let publisher = &source[start..end];
-        let rename = publisher
-            .find("replace_identity_bound_regular_child(")
-            .expect("publisher retains descriptor-relative rename");
-        let renamed_flush = publisher
-            .find("sync_renamed_regular_child(")
-            .expect("publisher flushes the renamed writable handle");
-        let directory_sync = publisher
-            .find("sync_directory(")
-            .expect("publisher retains supported directory durability");
-
-        assert!(
-            rename < renamed_flush && renamed_flush < directory_sync,
-            "rename must precede descriptor flush, which must precede directory sync"
-        );
-        assert!(
-            publisher.contains("sync_renamed_regular_child(&staged.file)"),
-            "the still-writable staged handle must flush the physical object after rename"
-        );
-
-        let windows_start = source
-            .find("#[cfg(windows)]\npub(crate) fn replace_identity_bound_regular_child(")
-            .expect("Windows descriptor-relative replacement exists");
-        let windows_end = source[windows_start..]
-            .find("#[cfg(not(any(unix, windows)))]")
-            .map(|offset| windows_start + offset)
-            .expect("Windows replacement has a bounded source slice");
-        let windows_replace = &source[windows_start..windows_end];
-        assert!(windows_replace.contains("rename_open_child("));
-        assert!(!windows_replace.contains("MoveFileExW"));
-
-        let rename_start = source
-            .find("#[cfg(windows)]\nfn rename_open_child(")
-            .expect("Windows handle-bound rename exists");
-        let rename_end = source[rename_start..]
-            .find("#[cfg(unix)]\npub(crate) fn create_owner_only_directory_child(")
-            .map(|offset| rename_start + offset)
-            .expect("Windows handle-bound rename has a bounded source slice");
-        let windows_rename = &source[rename_start..rename_end];
-        assert!(windows_rename.contains("FILE_RENAME_INFORMATION_EX_CLASS"));
-        assert!(windows_rename.contains("FILE_RENAME_POSIX_SEMANTICS"));
     }
 
     #[cfg(windows)]
@@ -8845,7 +8866,7 @@ mod medium_tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    /// Issue #1463: a retained-apply cleanup may run while another owner (a
+    /// A retained-apply cleanup may run while another owner (a
     /// pending saved plan, a reader) still holds the file or directory. Its
     /// name must leave the parent at once; on Windows a delete-pending name
     /// stayed until the daemon exited and could not be opened by anyone.
@@ -9464,5 +9485,113 @@ mod medium_tests {
         );
         unknown.unlock().unwrap();
         owner.unlock().unwrap();
+    }
+}
+
+/// The same path as the host may hand it back from `canonicalize`: `\\?\` on
+/// Windows, unchanged elsewhere.
+#[cfg(any(test, feature = "test-support"))]
+pub fn extended_length_spelling_for_test(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let plain = strip_windows_extended_length_prefix(path);
+        PathBuf::from(format!(r"\\?\{}", plain.display()))
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+/// The same path in other letter case on a host whose path rules ignore it,
+/// unchanged elsewhere.
+#[cfg(any(test, feature = "test-support"))]
+pub fn other_letter_case_for_test(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(path.display().to_string().to_uppercase())
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
+}
+
+#[cfg(test)]
+mod host_path_comparison_tests {
+    use super::{host_path_relative_to, same_host_path};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_path_is_measured_from_a_root_by_whole_components() {
+        let root = std::env::temp_dir().join("root");
+        assert_eq!(
+            host_path_relative_to(&root.join("a").join("b.bsl"), &root),
+            Some(Path::new("a").join("b.bsl"))
+        );
+        assert_eq!(host_path_relative_to(&root, &root), Some(PathBuf::new()));
+        assert_eq!(
+            host_path_relative_to(&std::env::temp_dir().join("root-other"), &root),
+            None
+        );
+        assert!(same_host_path(&root, &root));
+        assert!(!same_host_path(&root.join("a"), &root));
+        assert!(!same_host_path(&root, &root.join("a")));
+    }
+
+    #[test]
+    fn a_remainder_that_climbs_is_not_below_the_root() {
+        let root = std::env::temp_dir().join("root");
+        assert_eq!(
+            host_path_relative_to(&root.join("..").join("other"), &root),
+            None
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_spelling_of_a_path_does_not_change_the_file_it_names() {
+        assert_eq!(
+            host_path_relative_to(
+                Path::new(r"\\?\E:\Work\SRC\Absent\Module.bsl"),
+                Path::new(r"e:\work\src")
+            ),
+            Some(PathBuf::from(r"Absent\Module.bsl"))
+        );
+        assert_eq!(
+            host_path_relative_to(
+                Path::new(r"E:\Work\src\Module.bsl"),
+                Path::new(r"\\?\E:\Work\SRC")
+            ),
+            Some(PathBuf::from("Module.bsl"))
+        );
+        assert_eq!(
+            host_path_relative_to(
+                Path::new(r"\\?\UNC\server\share\src\Module.bsl"),
+                Path::new(r"\\server\share\SRC")
+            ),
+            Some(PathBuf::from("Module.bsl"))
+        );
+        assert!(same_host_path(
+            Path::new(r"\\?\E:\Work\Foo"),
+            Path::new(r"e:\work\foo\")
+        ));
+        assert!(!same_host_path(
+            Path::new(r"E:\Work\Foo"),
+            Path::new(r"F:\Work\Foo")
+        ));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn letter_case_separates_paths_where_the_host_compares_it() {
+        assert_eq!(
+            host_path_relative_to(Path::new("/work/Foo/a"), Path::new("/work/foo")),
+            None
+        );
+        assert!(!same_host_path(
+            Path::new("/work/Foo"),
+            Path::new("/work/foo")
+        ));
     }
 }

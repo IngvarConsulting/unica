@@ -1,0 +1,143 @@
+name: PR metadata
+
+# Обязательная проверка: пропущенный условием `Unica CI` ruleset считает пройденным,
+# поэтому вливание без отметки владельца блокирует она. Правило допуска то же, что
+# у ворот `admission` в `ci.yml`: тест держит шаги равными.
+# `pull_request_target` берёт этот файл из main: PR не может поправить его и получить
+# зелёную проверку. Поэтому здесь нет checkout, права только на чтение, а данные PR идут
+# через `env`. Запись очереди читает файл из своего дерева, это видно по CODEOWNERS.
+# Веха на issue значит «вычитано»: чужую снимает `issue-milestone-guard.yml`, поэтому
+# её автора не проверяем. Веху на PR без issue сторож не видит, её автор читается здесь.
+on:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] кода PR нет: ни checkout, ни запуска его файлов, права только на чтение
+    types: [opened, reopened, ready_for_review, edited, milestoned, demilestoned, assigned, unassigned, synchronize]
+  # Одобрение владельца перезапускает проверку сразу. Такой прогон берёт этот файл
+  # из ветки PR, а не из main: PR, который правит `.github/**`, мог бы ослабить
+  # проверку в своей ветке. Прогон по `pull_request_target` остаётся из main.
+  pull_request_review: # zizmor: ignore[dangerous-triggers] кода PR нет: ни checkout, ни запуска его файлов, права только на чтение
+    types: [submitted, dismissed]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  metadata:
+    # Стабильное имя обязательной проверки. Условия нет: пропущенную проверку ruleset
+    # засчитал бы как пройденную. Очередь проверяет заново: веху могли снять.
+    name: PR metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Веха и ответственный
+        id: admission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MILESTONE_OWNER: zeegin
+          STRICT: "true"
+        run: |
+          set -euo pipefail
+          # Запись очереди называется gh-readonly-queue/<база>/pr-<номер>-<sha>.
+          number="${PR_NUMBER:-$(sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p' <<<"$GITHUB_REF")}"
+          if [ -z "$number" ]; then
+            echo "::error::Номер PR не определён по $GITHUB_REF"
+            exit 1
+          fi
+          json="$(gh api graphql -F owner="${GITHUB_REPOSITORY%/*}" -F name="${GITHUB_REPOSITORY#*/}" -F number="$number" -f query='
+            query($owner: String!, $name: String!, $number: Int!) {
+              repository(owner: $owner, name: $name) {
+                pullRequest(number: $number) {
+                  milestone { number }
+                  assignees { totalCount }
+                  timelineItems(itemTypes: [MILESTONED_EVENT], last: 1) { nodes { ... on MilestonedEvent { actor { login } } } }
+                  closingIssuesReferences(first: 100) { nodes { number milestone { number } } }
+                }
+              }
+            }')"
+          problems="$(jq -r --arg owner "$MILESTONE_OWNER" '
+            .data.repository.pullRequest as $pr | $pr.closingIssuesReferences.nodes as $issues
+            | ($pr.timelineItems.nodes[-1].actor.login // "неизвестно") as $actor
+            | (if $pr.milestone == null then
+                 (if ($issues | length) > 0 then "Поставьте веху: скопируйте её с issue" else "Поставьте веху: на PR без issue её ставит \($owner)" end)
+               elif ($issues | length) == 0 and $actor != $owner then "Веху на PR поставил \($actor), нужна от \($owner)"
+               else empty end),
+              ($issues[] | select(.milestone == null) | "Issue #\(.number) без вехи, PR не рассматривается")' <<<"$json")"
+          assignees="$(jq -r '.data.repository.pullRequest.assignees.totalCount' <<<"$json")"
+          if [ -n "$problems" ]; then echo "admitted=false"; else echo "admitted=true"; fi >> "$GITHUB_OUTPUT"
+          level="$( [ "$STRICT" = true ] && echo error || echo notice )"
+          if [ -n "$problems" ]; then
+            while read -r problem; do echo "::$level::$problem"; done <<<"$problems"
+          fi
+          # Ответственный на запуск тестов не влияет: его требует только `PR metadata`.
+          if [ "$STRICT" = true ]; then
+            if [ "$assignees" = 0 ]; then echo "::error::Укажите ответственного"; fi
+            if [ -n "$problems" ] || [ "$assignees" = 0 ]; then exit 1; fi
+          fi
+          echo "PR #$number: проверка окончена"
+
+      # Путь из CODEOWNERS в PR не от владельца требует его одобрения на текущем
+      # head. Встроенное `require_code_owner_review` не включено: свой PR автор
+      # одобрить не может, и PR агентов под учёткой владельца встали бы. Шаг идёт и
+      # после отказа вехи: оба отказа видны сразу.
+      - name: Одобрение владельца
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          CODE_OWNER: zeegin
+        run: |
+          set -euo pipefail
+          number="${PR_NUMBER:-$(sed -nE 's#^refs/heads/gh-readonly-queue/[^/]+/pr-([0-9]+)-[0-9a-f]+$#\1#p' <<<"$GITHUB_REF")}"
+          if [ -z "$number" ]; then
+            echo "::error::Номер PR не определён по $GITHUB_REF"
+            exit 1
+          fi
+          read -r author head < <(gh api "repos/$GITHUB_REPOSITORY/pulls/$number" --jq '"\(.user.login) \(.head.sha)"')
+          head="${head%$'\r'}"
+          if [ "$author" = "$CODE_OWNER" ]; then
+            echo "PR #$number от $CODE_OWNER: одобрение не требуется"
+            exit 0
+          fi
+          work="$(mktemp -d)"
+          # Владельцы путей — из main: PR не назначает их себе сам.
+          gh api "repos/$GITHUB_REPOSITORY/contents/.github/CODEOWNERS?ref=main" -H "Accept: application/vnd.github.raw" > "$work/codeowners"
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$number/files?per_page=100" --paginate \
+            --jq '.[] | .filename, (.previous_filename // empty)' > "$work/files"
+          owned="$(python3 - "$work/codeowners" "$work/files" <<'PY'
+          import sys
+          patterns = []
+          for line in open(sys.argv[1], encoding="utf-8"):
+              parts = line.split("#", 1)[0].split()
+              if len(parts) >= 2:
+                  patterns.append(parts[0])
+          def owned(path, pattern):
+              anchored = pattern.startswith("/")
+              pattern = pattern.lstrip("/")
+              if pattern.endswith("/**") or pattern.endswith("/"):
+                  prefix = pattern.rstrip("*").rstrip("/") + "/"
+                  return path.startswith(prefix) if anchored else f"/{prefix}" in f"/{path}"
+              return path == pattern if anchored else path == pattern or path.endswith(f"/{pattern}")
+          for path in sorted({line.strip() for line in open(sys.argv[2], encoding="utf-8") if line.strip()}):
+              if any(owned(path, pattern) for pattern in patterns):
+                  print(path)
+          PY
+          )"
+          if [ -z "$owned" ]; then
+            echo "PR #$number не меняет путей из CODEOWNERS"
+            exit 0
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$number/reviews?per_page=100" --paginate \
+            --jq '.[] | [.user.login, .state, .commit_id] | @tsv' > "$work/reviews"
+          # Последнее решение владельца по текущему head; комментарий решения не меняет.
+          state="$(awk -F '\t' -v owner="$CODE_OWNER" -v head="$head" \
+            '{ sub(/\r$/, "") } $1 == owner && $3 == head && $2 != "COMMENTED" { state = $2 } END { print state }' "$work/reviews")"
+          if [ "$state" != APPROVED ]; then
+            echo "::error::PR #$number от $author меняет пути из CODEOWNERS; нужен одобряющий отзыв $CODE_OWNER на ${head:0:7}:"
+            while read -r path; do echo "::error::  $path"; done <<<"$owned"
+            exit 1
+          fi
+          echo "PR #$number: $CODE_OWNER одобрил ${head:0:7}"

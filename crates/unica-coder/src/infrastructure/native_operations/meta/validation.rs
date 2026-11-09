@@ -1,13 +1,13 @@
 use unica_metadata_designer::validation::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::collections::BTreeMap;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::fs;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_metadata::{MetaDiagnostic, MetaDiagnosticSeverity, MetadataKind};
 use unica_source_contract::workspace::WorkspaceContext;
 
@@ -15,7 +15,7 @@ use super::super::cf::validate_cf_owner_path;
 use super::super::common::read_utf8_sig;
 use crate::infrastructure::subsystem_composition::validate_subsystem_owner_path;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
 pub(crate) fn validate_metadata_owner_shape_8_3_27(
@@ -90,7 +90,7 @@ mod tests {
     const MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
     /// `AutomaticAndManaged` допустим только у корня конфигурации: корень
-    /// уходит в проверку `cf` раньше общих перечислений объектов (#1271).
+    /// уходит в проверку `cf` раньше общих перечислений объектов.
     #[test]
     fn configuration_accepts_automatic_and_managed_lock_mode_unlike_objects() {
         let temp = tempfile::tempdir().unwrap();
@@ -1374,7 +1374,7 @@ mod tests {
         }
     }
 
-    /// Issue #360 asked for this: the three ways a child can lose its
+    /// The three ways a child can lose its
     /// descriptor used to share one message, so the diagnostic never said which
     /// of them happened.
     #[test]
@@ -2631,7 +2631,7 @@ mod tests {
 
     /// Платформа 8.3.27 выгружает ссылку расширения на тип расширяемой
     /// конфигурации как `v8:TypeId`: один и после `v8:Type` в составном
-    /// типе, в том числе у реквизита табличной части (#1361). Фикстура —
+    /// типе, в том числе у реквизита табличной части. Фикстура —
     /// выгрузка `ibcmd config export --extension`.
     #[test]
     fn extension_type_id_reference_is_a_valid_type_block() {
@@ -2708,7 +2708,7 @@ mod tests {
 
     /// Source подписки расширения из штатной выгрузки 8.3.27 содержит
     /// `v8:TypeId` источника из основной конфигурации после собственного
-    /// `v8:Type` (#1361) — это допустимо. Source из одних `v8:TypeId`
+    /// `v8:Type` — это допустимо. Source из одних `v8:TypeId`
     /// платформа не загружает («Имя события должно быть задано»).
     #[test]
     fn extension_event_subscription_type_id_source_needs_an_own_source() {
@@ -2745,19 +2745,19 @@ mod tests {
     fn internal_reverse_registrar_inconsistency_is_not_lost() {
         let descriptor = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
         ));
         let registration = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Configuration.xml"
         ));
         let language = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Languages/Русский.xml"
         ));
         let registrar = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Documents/Регистратор.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Documents/Регистратор.xml"
         ))
         .replace(
             "InformationRegister.SubordinateRegister",
@@ -2803,15 +2803,15 @@ mod tests {
     fn registrar_evidence_availability_is_strict_read_only() {
         let descriptor = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
         ));
         let registration = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Configuration.xml"
         ));
         let language = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Languages/Русский.xml"
         ));
         let mut unavailable = subject(
             "InformationRegister.SubordinateRegister",
@@ -2861,19 +2861,19 @@ mod tests {
     fn complete_read_proof_accepts_consistent_forward_and_reverse_dependencies() {
         let document = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Documents/Регистратор.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Documents/Регистратор.xml"
         ));
         let register = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/InformationRegisters/SubordinateRegister.xml"
         ));
         let registration = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Configuration.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Configuration.xml"
         ));
         let language = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/unica_mcp_script_parity/meta-validate-subordinate-register/Languages/Русский.xml"
+            "/tests/fixtures/meta-validate-subordinate-register/Languages/Русский.xml"
         ));
         let document_subject = subject(
             "Document.Регистратор",
