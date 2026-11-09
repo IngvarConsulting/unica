@@ -235,7 +235,7 @@ impl HeldLane {
             }),
             workers: Vec::new(),
         });
-        let (session, _) = lane.open(&[], soon()).unwrap();
+        let (session, _) = lane.open(&[], false, soon()).unwrap();
         Self {
             host,
             lane,
