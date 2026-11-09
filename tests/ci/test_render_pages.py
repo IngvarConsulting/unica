@@ -36,15 +36,29 @@ def load(name: str, path: Path):
 
 
 class AlphaPageTests(unittest.TestCase):
-    """На страницу alpha ведут прямой ссылкой, поэтому сайт о ней молчит."""
+    """Страница alpha закрыта от поисковиков, а с сайта на неё ведут только карточки alpha."""
 
-    def test_the_page_is_closed_to_robots_and_nothing_links_to_it(self) -> None:
+    def test_the_page_is_closed_to_robots_and_only_alpha_cards_link_to_it(self) -> None:
         pages = REPO_ROOT / "docs" / "pages"
         self.assertIn('<meta name="robots" content="noindex, nofollow">', (pages / "alpha.html").read_text(encoding="utf-8"))
+        # No template names the page itself: the link comes from the card data.
         for page in pages.glob("*.html"):
             if page.name != "alpha.html":
                 with self.subTest(page=page.name):
                     self.assertNotIn("alpha.html", page.read_text(encoding="utf-8"))
+        render = load("render_pages", REPO_ROOT / "scripts" / "ci" / "render-pages.py")
+        site_status = load("site_status", REPO_ROOT / "scripts" / "ci" / "site-status.py")
+        template = HOME.read_text(encoding="utf-8")
+        status: dict[str, object] = {name: f"<{name}>" for name in render.placeholders(render.REPEAT.sub("", template))}
+        state = {"next_tag": "v0.13.0-rc.3", "next_url": f"{RELEASES_URL}/tag/v0.13.0-rc.3",
+                 "stable_tag": "v0.12.3", "version": "v0.12.3"}
+        status["versions"] = [site_status.version_card(kind, release, None, "IngvarConsulting/unica")
+                              for kind, release in site_status.site_versions(state, RELEASES)]
+        page = render.render(template, status)
+        cards = page.split('<div class="card card-line">')[1:]
+        linking = [card.split("</h3>", 1)[0].rsplit(">", 1)[-1] for card in cards if "alpha.html" in card]
+        self.assertEqual(linking, ["Alpha", "Alpha"])
+        self.assertEqual(page.count("alpha.html"), 2)
 
 
 class AlphaListTests(unittest.TestCase):
