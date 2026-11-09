@@ -526,8 +526,12 @@ commits. The commit's parent is the slice; the release description names it as
   before that step can be rerun: it continues the draft. After publication a
   failure means a new number.
 
-The page `alpha.html` on the site shows the latest alpha. It is given out as a
-direct link: nothing on the site links to it and it is closed to search robots.
+The page `alpha.html` on the site lists every alpha in GitHub Releases, newest
+first, and its download commands take the newest. The page refreshes the list
+from the releases API, since the site is built before the night's alpha. It is
+linked from the alpha cards on the home page, «Как поставить», and from
+nowhere else on the site; it stays closed to search robots (`noindex,
+nofollow`).
 
 ## Rolling back a live release
 

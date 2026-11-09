@@ -4,9 +4,9 @@ pub use crate::platform::full_dump::{
     current_host_platform, observe_executable_permissions, CapturedDumpTree, ConfigInputSnapshot,
     DumpCleanupObservation, DumpTargetCapture, ExecutablePermissionObservation,
     FullDumpCleanupReason, FullDumpFailure, FullDumpFinish, FullDumpPhase, HostPlatform,
-    PlatformAttestation, PreparationFailure, PreparedPublication, PublishedFullDump,
-    RunnerProjectLockFailure, RunnerProjectStore, SerializedDumpProjection, UnconfiguredDump,
-    VerifiedFullDumpPublication,
+    IntegrityReason, PlatformAttestation, PreparationFailure, PreparedPublication,
+    PublishedFullDump, RunnerProjectLockFailure, RunnerProjectStore, SerializedDumpProjection,
+    UnconfiguredDump, VerifiedFullDumpPublication,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {

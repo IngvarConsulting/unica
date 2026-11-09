@@ -275,6 +275,8 @@ fn observe_fresh_view_capability_for_test(at: &str, revision: impl FnOnce() -> S
 
 mod apply_tool;
 #[cfg(test)]
+pub(super) use apply_tool::with_argument_dictionary;
+#[cfg(test)]
 pub(super) use apply_tool::with_unknown_argument_contract;
 mod check_tool;
 mod resolve_tool;

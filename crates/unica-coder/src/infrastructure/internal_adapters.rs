@@ -2218,6 +2218,10 @@ mod tests {
         let cases = vec![
             (json!({"operation": "init"}), vec!["init"]),
             (
+                json!({"operation": "dump", "mode": "full", "sourceSet": "main"}),
+                vec!["dump", "--force", "--source-set", "main"],
+            ),
+            (
                 json!({
                     "operation": "dump",
                     "mode": "partial",

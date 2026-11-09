@@ -80,19 +80,17 @@
       ставится вручную, без маркетплейса. Гарантий нет: сборка может сломать
       проект, а следующая alpha заменит предыдущую без предупреждения.
     </p>
-    <div class="cards channel-cards">
+    <!-- Все alpha, что сейчас лежат в Releases, новейшая первой. Скрипт ниже
+         освежает список оттуда же: сайт собирается раньше ночной alpha. -->
+    <div class="cards channel-cards" data-alpha-list>
+      <!-- repeat: alphas -->
       <div class="card card-version">
-        <h3>Последняя alpha</h3>
-        <span class="metric" data-alpha="tag">{{alpha_tag}}</span>
-        <div class="sub">вышла <span data-alpha="date">{{alpha_date}}</span></div>
-        <div class="card-foot"><a href="{{alpha_url}}" target="_blank" rel="noopener noreferrer" data-alpha="url">Релиз на GitHub</a></div>
+        <h3>Alpha</h3>
+        <span class="metric">{{item_tag}}</span>
+        <div class="sub">вышла {{item_date}}, срез main <a href="{{item_commit_url}}" target="_blank" rel="noopener noreferrer">{{item_commit}}</a></div>
+        <div class="card-foot"><a href="{{item_url}}" target="_blank" rel="noopener noreferrer">Релиз на GitHub <span class="vh">{{item_tag}}</span> <span aria-hidden="true">→</span></a></div>
       </div>
-      <div class="card card-version">
-        <h3>Срез main</h3>
-        <span class="metric" data-alpha="commit">{{alpha_commit}}</span>
-        <div class="sub">коммит, с которого собрана alpha</div>
-        <div class="card-foot"><a href="{{alpha_commit_url}}" target="_blank" rel="noopener noreferrer" data-alpha="commit-url">Коммит на GitHub</a></div>
-      </div>
+      <!-- /repeat -->
     </div>
     <p class="note">Хранятся две последние alpha. Старые удаляются вместе с тегом, поэтому не закрепляйте номер надолго.</p>
   </div>
@@ -141,7 +139,8 @@ tar.exe -xzf unica-full-win-x64.tar.gz
 </main>
 
 <script>
-  /* Сайт собирается раньше, чем выходит ночная alpha: номер освежается из релизов. */
+  /* Сайт собирается раньше, чем выходит ночная alpha: список и номер для
+     скачивания освежаются из релизов. */
   (function () {
     var root = document.querySelector("main[data-releases]");
     if (!root || !window.fetch) return;
@@ -161,16 +160,44 @@ tar.exe -xzf unica-full-win-x64.tar.gz
         return b.published_at.localeCompare(a.published_at);
       });
       if (!alphas.length) return;
-      var latest = alphas[0];
-      var slice = /main@([0-9a-f]{40})/.exec(latest.body || "");
-      put("tag", latest.tag_name);
-      put("date", new Date(latest.published_at).toLocaleDateString("ru-RU"));
-      put("url", null, latest.html_url);
-      put("download", latest.html_url.replace("/releases/tag/", "/releases/download/"));
-      if (slice) {
-        put("commit", slice[1].slice(0, 7));
-        put("commit-url", null, "https://github.com/IngvarConsulting/unica/commit/" + slice[1]);
+      var list = document.querySelector("[data-alpha-list]");
+      if (list) {
+        list.textContent = "";
+        alphas.forEach(function (release) {
+          var slice = /main@([0-9a-f]{40})/.exec(release.body || "");
+          var card = document.createElement("div");
+          card.className = "card card-version";
+          var head = document.createElement("h3");
+          head.textContent = "Alpha";
+          var tag = document.createElement("span");
+          tag.className = "metric";
+          tag.textContent = release.tag_name;
+          var sub = document.createElement("div");
+          sub.className = "sub";
+          sub.append("вышла " + new Date(release.published_at).toLocaleDateString("ru-RU") + ", срез main ");
+          var commit = document.createElement("a");
+          commit.target = "_blank";
+          commit.rel = "noopener noreferrer";
+          commit.href = slice ? "https://github.com/IngvarConsulting/unica/commit/" + slice[1] : release.html_url;
+          commit.textContent = slice ? slice[1].slice(0, 7) : "—";
+          sub.append(commit);
+          var foot = document.createElement("div");
+          foot.className = "card-foot";
+          var link = document.createElement("a");
+          link.target = "_blank";
+          link.rel = "noopener noreferrer";
+          link.href = release.html_url;
+          link.textContent = "Релиз на GitHub ";
+          var arrow = document.createElement("span");
+          arrow.setAttribute("aria-hidden", "true");
+          arrow.textContent = "→";
+          link.append(arrow);
+          foot.append(link);
+          card.append(head, tag, sub, foot);
+          list.append(card);
+        });
       }
+      put("download", alphas[0].html_url.replace("/releases/tag/", "/releases/download/"));
     }).catch(function () {});
   })();
 </script>

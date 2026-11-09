@@ -585,6 +585,7 @@ fn qname_is_valid(value: &str) -> bool {
 
 fn invalid(path: &str, message: impl Into<String>) -> ContractError {
     ContractError {
+        enum_value: false,
         path: path.into(),
         message: message.into(),
     }
