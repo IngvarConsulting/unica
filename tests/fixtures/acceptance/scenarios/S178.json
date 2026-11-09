@@ -1,0 +1,17 @@
+{
+  "area": "Роли и права",
+  "task": "Сравнить права двух ролей (диффом одинаковых видов)",
+  "wire": [
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "main:Role.SalesReader",
+        "right": "main:Role.SalesReader"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S178"
+}
