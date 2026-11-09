@@ -1,0 +1,379 @@
+{
+  "id": "S-2295-owner-filling",
+  "issue": 2295,
+  "area": "Метаданные",
+  "task": "Настроить заполнение стандартного Owner, сохранить соседние свойства и проверить конфликт плана",
+  "workspace": "tests/fixtures/acceptance/workspace-owner-filling",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.StandardAttribute"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "owner": {
+          "pointer": "/data/items/0/at"
+        },
+        "initial": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      },
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:Catalog.Items.StandardAttribute.Owner"
+        },
+        {
+          "pointer": "/data/items/0/props/FillFromFillingValue",
+          "eq": false
+        },
+        {
+          "pointer": "/data/items/1/props/FillFromFillingValue",
+          "absent": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.StandardAttribute.Owner.Can.props.set"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/contract/argsSchema/properties/values/properties",
+          "eq": {
+            "FillFromFillingValue": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FillFromFillingValue": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FillFromFillingValue",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/FillChecking",
+          "eq": "ShowError"
+        }
+      ],
+      "captures": {
+        "after": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FillFromFillingValue": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.after"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FillFromFillingValue",
+          "eq": true
+        },
+        {
+          "pointer": "/data/props/FillChecking",
+          "eq": "ShowError"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "$capture.owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FillFromFillingValue": false
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "$capture.owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FillFromFillingValue",
+          "eq": false
+        },
+        {
+          "pointer": "/data/props/FillChecking",
+          "eq": "ShowError"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.StandardAttribute.Owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FillFromFillingValue": "true"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"boolean\"",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.StandardAttribute.Owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FillFromFillingValue": null
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"boolean\"",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items.StandardAttribute.Owner",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "FillFromFillingValue": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "stale": {
+          "pointer": "/data/executionToken"
+        }
+      },
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.initial"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Items",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Concurrent edit"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "concurrent": {
+          "file": "src/Catalogs/Items.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.stale"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "stale_revision: retained apply preimage changed: Catalogs/Items.xml; input `Catalogs/Items.xml`: source write target; the plan retains its original state to prevent overwriting",
+      "fileAssertions": [
+        {
+          "path": "src/Catalogs/Items.xml",
+          "kind": "sha256",
+          "eq": "$capture.concurrent"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Catalog.Items.StandardAttribute.Owner"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/props/FillFromFillingValue",
+          "eq": false
+        }
+      ]
+    }
+  ]
+}

@@ -50,6 +50,7 @@ pub enum PropertiesSite {
         source_kind: SourceSetKind,
     },
     CommentOnly(NodeKind),
+    CatalogOwner,
     DocumentNumerator,
     FunctionalOption,
     Role,
@@ -101,7 +102,7 @@ macro_rules! descriptor_properties {
                     PropertiesSite::Configuration { extension: true } => {
                         match self { $(Self::$field => $extension),+ }
                     }
-                    PropertiesSite::Metadata { .. } => false,
+                    PropertiesSite::Metadata { .. } | PropertiesSite::CatalogOwner => false,
                     PropertiesSite::DocumentNumerator => self == Self::Comment,
                     PropertiesSite::CommentOnly(_) | PropertiesSite::Language => self == Self::Comment,
                     PropertiesSite::FunctionalOption => matches!(self, Self::Location | Self::PrivilegedGetMode | Self::Comment),
@@ -231,6 +232,13 @@ impl PropertiesSite {
         {
             return Some(Self::Subsystem);
         }
+        // The standard Owner attribute of a configuration's catalog.
+        if matches!(at.segments(), [owner, member]
+            if owner.kind() == NodeKind::Catalog && owner.name().is_some()
+            && member.kind() == NodeKind::StandardAttribute && member.name() == Some("Owner"))
+        {
+            return (source_kind == SourceSetKind::Configuration).then_some(Self::CatalogOwner);
+        }
         let [owner] = at.segments() else {
             return None;
         };
@@ -294,6 +302,9 @@ impl PropertiesSite {
                 values["not"] = json!({"anyOf":[{"required":names}]});
                 values["x-unica-alias-groups"] = json!([names]);
                 return values;
+            }
+            Self::CatalogOwner => {
+                properties.insert("FillFromFillingValue".into(), json!({"type":"boolean"}));
             }
             Self::Metadata { kind, source_kind } => {
                 properties = metadata_property_schemas(Some(kind));
@@ -369,6 +380,7 @@ impl PropertiesOperation {
                     PropertiesSite::StyleItem => "The existing named StyleItem with observed Type=Color and a supported explicit Value: `<set>:StyleItem.<name>`.",
                     PropertiesSite::Configuration { extension: false } => "The configuration root `<set>:Configuration`. The address selects the root property profile.",
                     PropertiesSite::Configuration { extension: true } => "The extension root `<set>:Configuration`. An extension changes only its own identity properties.",
+                    PropertiesSite::CatalogOwner => "The standard Owner attribute at `<set>:Catalog.Name.StandardAttribute.Owner` in a configuration source.",
                     PropertiesSite::CommentOnly(NodeKind::CommonForm) => "The existing common form descriptor at `<set>:CommonForm.Name.Metadata`.",
                     PropertiesSite::CommentOnly(_) => "The existing named root metadata descriptor at `<set>:Kind.Name`. This profile changes only Comment.",
                     _ => "The existing named top-level metadata object, role or subsystem, or a nested subsystem, at its full address. The address selects the property profile.",
@@ -381,6 +393,7 @@ impl PropertiesOperation {
                     _ => "values is a nonempty object. Use JSON booleans for flags. An empty string clears text where the property allows it; Location requires a nonempty storage reference. null is not omission. Use one spelling of each property, never both aliases. Argument errors are checked before descriptor state; valid arguments still require an existing readable descriptor. Preview writes nothing; execute only the saved execution token.",
                 },
                 example_args: match site {
+                    PropertiesSite::CatalogOwner => json!({"values":{"FillFromFillingValue":true}}),
                     PropertiesSite::DocumentNumerator => json!({"values":{"NumberLength":12,"CheckUnique":true}}),
                     PropertiesSite::WSReference => json!({"values":{"LocationURL":"https://example.invalid/service?wsdl"}}),
                     PropertiesSite::FunctionalOption => json!({"values":{"Location":"Constant.UseGoods","PrivilegedGetMode":true}}),
@@ -390,7 +403,7 @@ impl PropertiesOperation {
                     _ => json!({"values":{"Comment":"Updated comment"}}),
                 },
                 help: match site {
-                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::Language => "skills/meta-edit/SKILL.md",
+                    PropertiesSite::WSReference | PropertiesSite::Metadata { .. } | PropertiesSite::DocumentNumerator | PropertiesSite::CommentOnly(_) | PropertiesSite::FunctionalOption | PropertiesSite::StyleItem | PropertiesSite::Language | PropertiesSite::CatalogOwner => "skills/meta-edit/SKILL.md",
                     PropertiesSite::Role => "skills/role-edit/SKILL.md",
                     PropertiesSite::Subsystem => "skills/subsystem-edit/SKILL.md",
                     PropertiesSite::Configuration { .. } => "skills/cf-edit/SKILL.md",
@@ -499,6 +512,43 @@ mod tests {
             assert_eq!(
                 oracle.is_valid(&json!({"values":{"EditType":"InList"}})),
                 source_kind == SourceSetKind::Configuration
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_owner_exposes_only_the_filling_flag() {
+        use super::*;
+        let at = QualifiedAddress::parse("main:Catalog.Items.StandardAttribute.Owner").unwrap();
+        let site = PropertiesSite::from_address(&at, SourceSetKind::Configuration)
+            .expect("Owner is writable");
+        let contract = PropertiesOperation::Set.contract(site);
+        let oracle = jsonschema::validator_for(&contract.schema).unwrap();
+        for enabled in [false, true] {
+            assert!(oracle.is_valid(&json!({"values":{"FillFromFillingValue":enabled}})));
+        }
+        for values in [
+            json!({}),
+            json!({"FillFromFillingValue":"true"}),
+            json!({"FillFromFillingValue":true,"FillChecking":"ShowError"}),
+        ] {
+            assert!(!oracle.is_valid(&json!({"values":values})));
+        }
+        assert!(PropertiesSite::from_address(&at, SourceSetKind::Extension).is_none());
+        for other in [
+            "main:Catalog.Items.StandardAttribute.Code",
+            "main:Catalog.Items.StandardAttribute",
+            "main:Document.Order.StandardAttribute.Owner",
+            "main:Catalog.Items.Attribute.Owner",
+            "main:Catalog.Items.TabularSection.Lines.StandardAttribute.Owner",
+        ] {
+            assert!(
+                PropertiesSite::from_address(
+                    &QualifiedAddress::parse(other).unwrap(),
+                    SourceSetKind::Configuration
+                )
+                .is_none(),
+                "{other}"
             );
         }
     }

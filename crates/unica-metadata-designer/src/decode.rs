@@ -1119,6 +1119,22 @@ pub fn parse_properties(
         ApplyPlanError::new(ApplyPlanErrorKind::BadValue, error.message).at_path(error.path)
     })?;
     let (directory, changes) = match intent {
+        unica_metadata::property_input::PropertiesIntent::CatalogOwner {
+            fill_from_filling_value,
+        } => {
+            let name = target.segments()[0]
+                .name()
+                .expect("CatalogOwner proves a named catalog");
+            let owner = MetadataAddress::parse_logical(&format!("Catalog.{name}"))
+                .expect("qualified address already validated the owner");
+            return Ok(MetadataPlanKind::Edit {
+                target: owner,
+                operation: MetaEditOperation::SetOwnerFillingValue {
+                    enabled: fill_from_filling_value,
+                },
+                addressed: None,
+            });
+        }
         unica_metadata::property_input::PropertiesIntent::CommentOnly { kind, comment } => {
             let directory = unica_source_designer::layout::metadata_kind(kind.as_str())
                 .expect("comment owner has a Designer layout")
@@ -1896,3 +1912,48 @@ pub fn parse_relation(
 }
 
 const PREDEFINED_PLACEHOLDER_ID: &str = "00000000-0000-4000-8000-000000000000";
+
+#[cfg(test)]
+mod owner_filling_tests {
+    use super::*;
+    use unica_source_contract::{context::RegistryContext, SourceSetKind};
+
+    #[test]
+    fn owner_filling_decoder_keeps_source_and_address_boundaries() {
+        let registry = OperationRegistry::new(&[], RegistryContext::new(|_, _| None));
+        for kind in [
+            SourceSetKind::Configuration,
+            SourceSetKind::Extension,
+            SourceSetKind::ExternalReport,
+            SourceSetKind::ExternalProcessor,
+        ] {
+            let context = MetadataDecodeContext {
+                source_set_name: "main",
+                source_kind: kind,
+                registry,
+            };
+            let args = json!({"at":"main:Catalog.Items.StandardAttribute.Owner", "values":{"FillFromFillingValue":true}});
+            let result = parse_properties(
+                PropertiesOperation::Set,
+                args.as_object().unwrap(),
+                0,
+                &context,
+            );
+            assert_eq!(
+                result.is_ok(),
+                kind == SourceSetKind::Configuration,
+                "{kind:?}"
+            );
+            if let Ok(MetadataPlanKind::Edit {
+                target, operation, ..
+            }) = result
+            {
+                assert_eq!(target.as_str(), "Catalog.Items");
+                assert_eq!(
+                    operation,
+                    MetaEditOperation::SetOwnerFillingValue { enabled: true }
+                );
+            }
+        }
+    }
+}
