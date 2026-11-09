@@ -1,5 +1,5 @@
 [package]
-name = "unica-lsp"
+name = "unica-editor-analysis"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
