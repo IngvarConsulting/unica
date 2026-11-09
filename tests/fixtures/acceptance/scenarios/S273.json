@@ -1,7 +1,7 @@
 {
   "id": "S273",
   "area": "Формы",
-  "task": "Добавить форму справочнику в выгрузке 2.21 — запись вне записываемого профиля отказывает до первого байта",
+  "task": "Добавить форму справочнику в выгрузке 2.23 — запись вне записываемого профиля отказывает до первого байта",
   "wire": [
     {
       "tool": "unica.apply",
@@ -24,7 +24,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+      "refusal": "invalid_source: Configuration.xml: export format 2.23 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
     }
   ],
   "workspace": "tests/fixtures/acceptance/workspace-format"
