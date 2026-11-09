@@ -5,7 +5,7 @@ use std::time::Duration;
 use unica_process::runner::ProcessStreamFailure;
 use unica_process::{ProcessLineReply, STREAM_LINE_TOO_LONG_ERROR};
 use unica_workspace::full_dump::{
-    FullDumpCleanupReason, FullDumpFailure, FullDumpPhase, PublishedFullDump,
+    FullDumpCleanupReason, FullDumpFailure, FullDumpPhase, IntegrityReason, PublishedFullDump,
     RunnerProjectLockFailure,
 };
 
@@ -146,9 +146,8 @@ pub(super) fn execute(
         match capture_inputs(prepared) {
             Ok(current) if current == inputs => {}
             _ => {
-                return reject(
-                    RefusalCode::ConcurrentChange,
-                    "pull inputs changed during its internal preview",
+                return project_changed(
+                    "pull did not publish: the project file, its local supplement or the declared source sets changed during its internal preview",
                 )
             }
         }
@@ -310,7 +309,9 @@ pub(super) fn execute(
                 match capture_inputs(prepared) {
                     Ok(current) if current == inputs => {},
                     _ => {
-                        problem = Some(reject(RefusalCode::ConcurrentChange, "pull inputs changed before publication"));
+                        problem = Some(project_changed(
+                            "pull did not publish: the project file, its local supplement or the declared source sets changed before publication",
+                        ));
                         phase = Phase::Terminal;
                         return reply(nonce.as_deref().unwrap(), "ready", "rejected");
                     }
@@ -569,6 +570,33 @@ fn warn(result: &mut DomainResult, code: &str, message: impl AsRef<str>) {
         .warnings
         .push(json!({"code":code,"message":redactor(message.as_ref())}));
 }
+/// A `concurrent_change` refusal for the project inputs the call compares.
+fn project_changed(message: &str) -> DomainResult {
+    let mut result = reject(RefusalCode::ConcurrentChange, message);
+    result.data = Some(json!({
+        "op": OPERATION,
+        "state": "notPublished",
+        "changed": IntegrityReason::Project.code(),
+    }));
+    result
+}
+
+/// Own words for what a recheck found changed. The workspace detail may name
+/// private paths, so it does not leave the daemon.
+fn integrity_message(reason: IntegrityReason) -> &'static str {
+    match reason {
+        IntegrityReason::Project => "pull did not publish: the project file, its local supplement or the declared source sets changed before publication",
+        IntegrityReason::PrivateConfig => {
+            "pull did not publish: the private export configuration changed before publication"
+        }
+        IntegrityReason::Stage => {
+            "pull did not publish: the private staged export changed before publication"
+        }
+        IntegrityReason::Target => "pull did not publish: the target source directory or its parents changed before publication",
+        IntegrityReason::Platform => "pull did not publish: the attested 1C platform executable or its installation changed or could not be trusted before publication",
+    }
+}
+
 fn failure(root: &Path, error: FullDumpFailure) -> DomainResult {
     let code = match error.phase {
         FullDumpPhase::Cancelled => RefusalCode::Cancelled,
@@ -579,7 +607,17 @@ fn failure(root: &Path, error: FullDumpFailure) -> DomainResult {
             RefusalCode::InvalidState
         }
     };
-    let mut result = reject(code, error.to_string());
+    let integrity_reason = matches!(error.phase, FullDumpPhase::Integrity)
+        .then_some(error.integrity_reason)
+        .flatten();
+    let message = match integrity_reason {
+        Some(reason) => integrity_message(reason).to_string(),
+        None => error.to_string(),
+    };
+    let mut result = reject(code, message);
+    if let Some(reason) = integrity_reason {
+        result.data = Some(json!({"op":OPERATION,"state":"notPublished","changed":reason.code()}));
+    }
     if let Some(validation) = &error.report.validation {
         result.data = Some(json!({"op":OPERATION,"state":"notPublished"}));
         attach_validation(&mut result, validation_report(validation));
@@ -874,5 +912,53 @@ mod tests {
                 assert!(!encoded.contains(marker), "{path}: leaked {marker}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod integrity_reason_tests {
+    use super::*;
+
+    /// rule: INV.WIRE.SOURCE-EXPORT-TARGET-STAYS-INSIDE-THE-WORKSPACE
+    #[test]
+    fn a_concurrent_change_refusal_names_what_changed_without_private_paths() {
+        let root = std::env::temp_dir();
+        for (reason, code, words) in [
+            (IntegrityReason::Project, "project", "project file"),
+            (
+                IntegrityReason::PrivateConfig,
+                "private_config",
+                "private export configuration",
+            ),
+            (IntegrityReason::Stage, "stage", "private staged export"),
+            (IntegrityReason::Target, "target", "target source directory"),
+            (
+                IntegrityReason::Platform,
+                "platform",
+                "1C platform executable",
+            ),
+        ] {
+            let detail = format!("{code} changed at C:/private/secret-{code}/v8project.yaml");
+            let result = failure(&root, FullDumpFailure::integrity(reason, detail));
+            let text = serde_json::to_string(&result).unwrap();
+            assert!(!result.ok, "{code}");
+            assert_eq!(result.diagnostics[0]["code"], "concurrent_change", "{code}");
+            let data = result.data.as_ref().expect("refusal data");
+            assert_eq!(data["changed"], code, "{code}");
+            assert_eq!(data["state"], "notPublished", "{code}");
+            assert!(result.summary.contains(words), "{code}: {}", result.summary);
+            assert!(!text.contains("secret-"), "{code}: detail leaked: {text}");
+        }
+        // An integrity failure without a named check keeps the general text.
+        let general = failure(
+            &root,
+            FullDumpFailure::new(FullDumpPhase::Integrity, "C:/private/secret".into()),
+        );
+        assert_eq!(general.diagnostics[0]["code"], "concurrent_change");
+        assert!(general
+            .data
+            .as_ref()
+            .is_none_or(|data| data.get("changed").is_none()));
+        assert!(!serde_json::to_string(&general).unwrap().contains("secret"));
     }
 }

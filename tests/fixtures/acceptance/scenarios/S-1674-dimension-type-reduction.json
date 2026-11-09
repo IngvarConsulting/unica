@@ -1052,7 +1052,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "bad_value: value is not one of the supported alternatives",
+      "refusal": "bad_value: value is not one of the supported alternatives; allowed: [\"Deny\", \"TransformValues\"]",
       "fileAssertions": [
         {
           "path": "src/InformationRegisters/Facts.xml",

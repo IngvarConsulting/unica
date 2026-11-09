@@ -23,6 +23,8 @@ use unica_workspace::actor::{
 };
 use unica_workspace::selection_evidence::ResolvedProjectSourceAdmission;
 
+use unica_workspace::source_profile::platform_xml_source_profile;
+
 /// Набор, допущенный к актору: что объявлено и какой корень удержан при обходе.
 #[derive(Clone)]
 pub(super) struct DiscoveredActorSource {
@@ -120,7 +122,7 @@ pub(super) fn admit_workspace_actor(
                 name: source.name.clone(),
                 kind: source.kind,
                 source_format: source.source_format,
-                source_profile: SourceProfile::platform_xml_8_3_27_format_2_20(),
+                source_profile: platform_xml_source_profile(source.kind, &root),
                 root,
                 retained_identity,
             })

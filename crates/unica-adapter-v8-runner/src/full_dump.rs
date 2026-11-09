@@ -29,8 +29,8 @@ use unica_work_control::cancellation::CancellationToken;
 use unica_workspace::full_dump::{
     current_host_platform, observe_executable_permissions, ConfigInputSnapshot,
     DumpCleanupObservation, DumpTargetCapture, ExecutablePermissionObservation, FullDumpFailure,
-    FullDumpPhase, HostPlatform, PlatformAttestation, PreparationFailure, PreparedPublication,
-    RunnerProjectStore, SerializedDumpProjection, VerifiedFullDumpPublication,
+    FullDumpPhase, HostPlatform, IntegrityReason, PlatformAttestation, PreparationFailure,
+    PreparedPublication, RunnerProjectStore, SerializedDumpProjection, VerifiedFullDumpPublication,
 };
 use unica_workspace::paths::{
     metadata_is_link_or_reparse_point, normalize_leaf_path, normalize_path_identity,
@@ -848,14 +848,11 @@ pub fn attest_selected_local(
         &mut probe_cancelled,
     )
     .map_err(|error| {
-        FullDumpFailure::new(
-            if probe_cancelled {
-                FullDumpPhase::Cancelled
-            } else {
-                FullDumpPhase::Integrity
-            },
-            error,
-        )
+        if probe_cancelled {
+            FullDumpFailure::new(FullDumpPhase::Cancelled, error)
+        } else {
+            FullDumpFailure::integrity(IntegrityReason::Platform, error)
+        }
     })?;
     publication.bind_selected_attestation(executable, verified.attestation, cancellation)
 }
@@ -1658,6 +1655,10 @@ fn parse_exact_platform_version(value: &str) -> Option<[u32; 4]> {
     (parts.len() == 4).then(|| [parts[0], parts[1], parts[2], parts[3]])
 }
 
+/// The v8-runner flag that makes `dump` (`pull`) a full dump replacing the
+/// source tree; the pinned runner refuses the former `--mode full`.
+pub const FULL_DUMP_FLAG: &str = "--force";
+
 fn dump_process_args(
     invocation: FullDumpInvocation,
     config: &Path,
@@ -1672,7 +1673,8 @@ fn dump_process_args(
     if invocation == FullDumpInvocation::RuntimeExecute {
         args.push("dump".to_string());
     }
-    args.extend(["--mode".to_string(), "full".to_string()]);
+    // v8-runner 0.15 dropped `--mode full`: a full dump is `--force`.
+    args.push(FULL_DUMP_FLAG.to_string());
     if let Some(source_set) = source_set {
         args.extend(["--source-set".to_string(), source_set.to_string()]);
     }
@@ -1855,6 +1857,47 @@ pub fn write_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_dump_command_uses_the_pinned_runner_force_flag() {
+        for invocation in [
+            FullDumpInvocation::BuildDump,
+            FullDumpInvocation::RuntimeExecute,
+        ] {
+            for args in [
+                dump_process_args(invocation, Path::new("cfg.yaml"), Some("main"), Some("Ext")),
+                reported_dump_process_args(invocation, None, None),
+            ] {
+                assert_eq!(
+                    args.iter().filter(|arg| *arg == FULL_DUMP_FLAG).count(),
+                    1,
+                    "{args:?}"
+                );
+                assert!(!args.iter().any(|arg| arg == "--mode"), "{args:?}");
+                let dump = args.iter().position(|arg| arg == "dump").unwrap();
+                let force = args.iter().position(|arg| arg == FULL_DUMP_FLAG).unwrap();
+                assert!(dump < force, "the flag belongs to `dump`: {args:?}");
+            }
+        }
+        assert_eq!(
+            dump_process_args(
+                FullDumpInvocation::RuntimeExecute,
+                Path::new("cfg.yaml"),
+                Some("main"),
+                Some("Ext"),
+            ),
+            [
+                "--config",
+                "cfg.yaml",
+                "dump",
+                "--force",
+                "--source-set",
+                "main",
+                "--extension",
+                "Ext"
+            ]
+        );
+    }
 
     /// rule: INV.RUNTIME.PLATFORM-LINE
     #[test]

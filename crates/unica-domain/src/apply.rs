@@ -353,7 +353,9 @@ pub fn source_set_traits_for_read(
     kind: SourceSetKind,
     platform: PlatformProfile,
 ) -> SourceSetTraits {
-    let profile = SourceProfile::platform_xml_8_3_27_format_2_20();
+    // The profile of the line the reader admitted: 8.3.27, 8.5.1 or 8.5.4.
+    let profile = SourceProfile::platform_xml_of_line(platform.line())
+        .unwrap_or_else(SourceProfile::platform_xml_8_3_27_format_2_20);
     debug_assert_eq!(
         crate::source_capabilities::bsl_profile_for_source(profile),
         Some(platform)

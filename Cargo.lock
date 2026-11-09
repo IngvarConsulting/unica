@@ -362,6 +362,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "const-oid"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -560,6 +566,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer 0.12.1",
+ "const-oid",
  "crypto-common 0.2.2",
  "ctutils",
 ]
@@ -1038,6 +1045,8 @@ checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
  "hashbrown 0.17.1",
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
@@ -1291,6 +1300,17 @@ checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "mio"
+version = "1.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
+dependencies = [
+ "libc",
+ "wasi",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1650,17 +1670,20 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.1.2"
+version = "3.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8dddc5b1924b9a59fba420166160ca2c4663a4e01803e52eda33070f56d63c8"
+checksum = "d24a7e92f4bcaa36b97fa93c4fa7ca8f3e669eced949345b3462dba333c7f909"
 dependencies = [
  "chrono",
  "futures",
+ "indexmap",
+ "libc",
  "pastey",
  "pin-project-lite",
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.11.1",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -1997,6 +2020,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha2"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "47d7069beb7d6ac7b9acd1039986e73443f24234f41074da099d6f994ac9ad19"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "shlex"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2044,6 +2078,16 @@ checksum = "4aaa7368fcf4852a4c2dd92df0cace6a71f2091ca0a23391ce7f3a31833f1523"
 dependencies = [
  "borsh",
  "serde_core",
+]
+
+[[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2212,8 +2256,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
 dependencies = [
  "bytes",
+ "libc",
+ "mio",
  "pin-project-lite",
+ "socket2",
  "tokio-macros",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2326,7 +2374,7 @@ dependencies = [
  "fs2",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "tempfile",
  "toml",
  "unica-address",
@@ -2369,7 +2417,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2",
+ "sha2 0.10.9",
  "unica-artifact-delivery",
  "unica-execution",
  "unica-execution-contract",
@@ -2397,7 +2445,7 @@ dependencies = [
  "fs2",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "tempfile",
  "unica-process",
  "unica-redaction",
@@ -2414,7 +2462,7 @@ dependencies = [
  "jsonschema",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "unica-address",
  "unica-artifact-delivery",
  "unica-bootstrap",
@@ -2449,7 +2497,7 @@ dependencies = [
  "fs2",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "tar",
  "unica-network",
  "unica-work-control",
@@ -2494,7 +2542,7 @@ dependencies = [
  "flate2",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "tar",
  "unica-artifact-delivery",
  "url",
@@ -2509,7 +2557,7 @@ dependencies = [
  "diffy",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "unica-address",
  "unica-bsl-parser",
  "unica-metadata",
@@ -2594,7 +2642,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2",
+ "sha2 0.10.9",
  "syn 2.0.118",
  "tar",
  "tempfile",
@@ -2677,7 +2725,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2",
+ "sha2 0.10.9",
  "syn 2.0.118",
  "tempfile",
  "tokio",
@@ -2726,7 +2774,7 @@ version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "tempfile",
  "unica-artifact-delivery",
  "unica-bootstrap",
@@ -2814,7 +2862,7 @@ dependencies = [
  "rust-stemmers",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "tempfile",
  "toml",
  "unica-bsl-types",
@@ -2854,7 +2902,7 @@ name = "unica-editor-analysis"
 version = "0.15.0-rc.1"
 dependencies = [
  "percent-encoding",
- "sha2",
+ "sha2 0.10.9",
  "tempfile",
  "unica-address",
  "unica-bsl",
@@ -2876,7 +2924,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "unica-execution-contract",
@@ -2895,7 +2943,7 @@ version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "unica-address",
  "unica-refusal",
  "unica-work-control",
@@ -2938,7 +2986,7 @@ version = "0.15.0-rc.1"
 dependencies = [
  "roxmltree",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "unica-address",
  "unica-bsl",
  "unica-execution-contract",
@@ -3015,7 +3063,7 @@ dependencies = [
  "memchr",
  "roxmltree",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "unica-address",
  "unica-bsl-parser",
  "unica-execution-contract",
@@ -3052,7 +3100,7 @@ dependencies = [
  "getrandom 0.4.3",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "unica-address",
  "unica-execution-contract",
  "unica-refusal",
@@ -3118,7 +3166,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "syn 2.0.118",
  "tempfile",
  "unica-analysis-services",
@@ -3145,7 +3193,7 @@ version = "0.15.0-rc.1"
 dependencies = [
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "tempfile",
  "unica-process",
  "unica-source-contract",
@@ -3208,7 +3256,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sha2",
+ "sha2 0.10.9",
  "unica-address",
  "unica-source-contract",
  "unica-xml-format",
@@ -3278,7 +3326,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "syn 2.0.118",
  "tempfile",
  "unica-execution-contract",
@@ -3311,7 +3359,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "unica-address",
  "unica-metadata-designer",
  "unica-source-contract",
