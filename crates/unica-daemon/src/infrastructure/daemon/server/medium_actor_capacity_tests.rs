@@ -11894,74 +11894,79 @@ fn module_check_names_why_the_analyzer_gave_no_result() {
     let service = crate::infrastructure::daemon::v13_service::CanonicalV13ReadService::default();
     let cancellation = CancellationToken::new();
     for (kind, detail, cause) in [
-            (
-                AnalyzerRunFailureKind::EngineMissing,
-                Some("provider_absent"),
-                "bsl-analyzer is not available for darwin-arm64: its file is not on this machine; build it from third-party/tools.lock.json",
-            ),
-            (
-                AnalyzerRunFailureKind::StartFailed,
-                Some("provider_absent"),
-                "analysis engine could not be started",
-            ),
-            (
-                AnalyzerRunFailureKind::TimedOut,
-                None,
-                "analysis exceeded its time limit",
-            ),
-            (
-                AnalyzerRunFailureKind::Exited,
-                None,
-                "analysis engine exited with an error before producing a result. Repeat the call",
-            ),
-        ] {
-            let request = InvocationRequest::new(
-                ToolIdentity::Check,
-                serde_json::json!({"at": "main:CommonModule.Handlers.Body"}),
-                std::fs::canonicalize(workspace.path())
-                    .unwrap()
-                    .to_string_lossy(),
-                7_000,
-            )
-            .unwrap();
-            let check = bind_workspace_invocation(
-                &request,
-                &runtime.workspace_actors,
-                Arc::clone(&runtime.deliveries),
-                Arc::clone(&runtime.provider_hosts),
-                Arc::clone(&runtime.runtime_resources),
-                None,
-                runtime.capture_response_deadline_for_test(),
-            )
-            .unwrap()
-            .begin_execution(&cancellation)
-            .unwrap();
-            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| {
-                *slot.borrow_mut() =
-                    Some(unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::failing_provider(kind))
-            });
-            let checked = service.execute(&check, cancellation.clone()).unwrap();
-            crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
-                .with(|slot| *slot.borrow_mut() = None);
-            assert!(!checked.ok, "{kind:?}");
-            assert_eq!(checked.diagnostics.len(), 1, "{kind:?}");
-            let diagnostic = &checked.diagnostics[0];
-            assert_eq!(diagnostic["code"], "provider_unavailable", "{kind:?}");
-            assert_eq!(
-                diagnostic.get("detailCode").and_then(serde_json::Value::as_str),
-                detail,
-                "{kind:?}"
-            );
-            let message = diagnostic["message"].as_str().unwrap();
-            assert!(
-                message.starts_with(
-                    "BSL analysis did not complete, so the module is unproven: bsl-analyzer"
+        (
+            AnalyzerRunFailureKind::EngineMissing,
+            Some("provider_absent"),
+            "scripts/ci/build-unica-tools.py --dev --target darwin-arm64",
+        ),
+        (
+            AnalyzerRunFailureKind::StartFailed,
+            Some("provider_absent"),
+            "analysis engine could not be started",
+        ),
+        (
+            AnalyzerRunFailureKind::TimedOut,
+            None,
+            "analysis exceeded its time limit",
+        ),
+        (
+            AnalyzerRunFailureKind::Exited,
+            None,
+            "analysis engine exited with an error before producing a result. Repeat the call",
+        ),
+    ] {
+        let request = InvocationRequest::new(
+            ToolIdentity::Check,
+            serde_json::json!({"at": "main:CommonModule.Handlers.Body"}),
+            std::fs::canonicalize(workspace.path())
+                .unwrap()
+                .to_string_lossy(),
+            7_000,
+        )
+        .unwrap();
+        let check = bind_workspace_invocation(
+            &request,
+            &runtime.workspace_actors,
+            Arc::clone(&runtime.deliveries),
+            Arc::clone(&runtime.provider_hosts),
+            Arc::clone(&runtime.runtime_resources),
+            None,
+            runtime.capture_response_deadline_for_test(),
+        )
+        .unwrap()
+        .begin_execution(&cancellation)
+        .unwrap();
+        crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| {
+            *slot.borrow_mut() = Some(
+                unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::failing_provider(
+                    kind,
                 ),
-                "{kind:?}"
-            );
-            assert!(message.contains(cause), "{kind:?}");
-            assert!(!checked_text_leaks(&checked), "{kind:?}");
-        }
+            )
+        });
+        let checked = service.execute(&check, cancellation.clone()).unwrap();
+        crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
+            .with(|slot| *slot.borrow_mut() = None);
+        assert!(!checked.ok, "{kind:?}");
+        assert_eq!(checked.diagnostics.len(), 1, "{kind:?}");
+        let diagnostic = &checked.diagnostics[0];
+        assert_eq!(diagnostic["code"], "provider_unavailable", "{kind:?}");
+        assert_eq!(
+            diagnostic
+                .get("detailCode")
+                .and_then(serde_json::Value::as_str),
+            detail,
+            "{kind:?}"
+        );
+        let message = diagnostic["message"].as_str().unwrap();
+        assert!(
+            message.starts_with(
+                "BSL analysis did not complete, so the module is unproven: bsl-analyzer"
+            ),
+            "{kind:?}"
+        );
+        assert!(message.contains(cause), "{kind:?}: {message}");
+        assert!(!checked_text_leaks(&checked), "{kind:?}");
+    }
 }
 
 /// INV.APP.DIAGNOSTIC-FOCUS, INV.SAFETY.DIAGNOSTIC-LOCATION-BOUNDARY:
