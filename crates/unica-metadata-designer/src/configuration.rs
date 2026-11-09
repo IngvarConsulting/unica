@@ -1,4 +1,5 @@
 //! Existing configuration Designer algorithms; publication stays with trusted composition.
+use crate::dialect::root_version::{self, RootVersionReport};
 use roxmltree::Document;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
@@ -8,9 +9,7 @@ use unica_metadata::support_state::ConfigurationSupportData;
 use unica_metadata::MetadataKind;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_designer::configuration_layout::*;
-use unica_source_designer::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
+use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 use unica_source_designer::layout::metadata_kind;
 use unica_source_designer::read::{path_exists, path_is_dir, read_string, read_utf8_sig};
 use unica_source_designer::roots::root_version_literal;
@@ -1919,12 +1918,10 @@ pub fn validate_cf_source(
         check1_ok = false;
     }
     let version_literal = root_version_literal(source, root);
-    match classify_root_version(version_literal.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-        Ok(compatibility) => report.warn(
-            unica_source_designer::format_profile::format_compatibility_warning(&compatibility),
-        ),
-        Err(error) => report.error(error.to_string()),
+    match root_version::report(version_literal.as_deref()) {
+        RootVersionReport::Ok(line) => report.ok(line),
+        RootVersionReport::Warn(line) => report.warn(line),
+        RootVersionReport::Error(line) => report.error(line),
     }
     let version = version_literal.as_deref().unwrap_or("");
 

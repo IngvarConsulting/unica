@@ -1,4 +1,5 @@
 //! The existing EditType declaration; form assignments and contents stay outside it.
+use crate::dialect::root_version;
 use roxmltree::{Document, Node};
 use unica_address::source_target::MetadataAddress;
 use unica_metadata::{MetaEditOperation, MetaInfoPropertyValue, MetaPropertyKey, MetadataKind};
@@ -119,16 +120,17 @@ pub(crate) fn guard(
         source_kind,
     )
     .map_err(|e| invalid(e.message))?;
-    if root.version() != Some("2.20") || !root.registers(kind.as_str(), name) {
-        return Err(invalid(
-            "EditType owner is not registered in a format 2.20 configuration".into(),
-        ));
+    if !root_version::is_writable(root.version()) || !root.registers(kind.as_str(), name) {
+        return Err(invalid(format!(
+            "EditType owner is not registered in a format {} configuration",
+            root_version::writable()
+        )));
     }
     let relative = unica_source_designer::layout::metadata_descriptor_relative(target, source_kind)
         .map_err(invalid)?;
     let owner = unica_source_designer::owner::prove_already_read_metadata_owner(&relative, bytes)
         .map_err(|e| invalid(e.message))?;
-    if owner.version() != Some("2.20")
+    if !root_version::is_writable(owner.version())
         || owner.artifact_kind() != kind.as_str()
         || owner.artifact_name() != Some(*name)
     {

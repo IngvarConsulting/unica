@@ -1,5 +1,6 @@
 //! Existing extension Designer algorithms; publication stays with trusted composition.
 use crate::configuration::*;
+use crate::dialect::root_version::{self, RootVersionReport};
 use crate::property_states::{
     cfe_patch_direct_md_child, cfe_patch_exact_md_child, cfe_patch_precondition_error,
 };
@@ -14,9 +15,7 @@ use unica_metadata::extension::*;
 use unica_source_contract::discovery::ProjectDiscoveryRead;
 use unica_source_contract::proposal::TrackedSourceProposal;
 use unica_source_designer::configuration_layout::*;
-use unica_source_designer::format_profile::{
-    classify_root_version, FormatCompatibility, ACTIVE_FORMAT_PROFILE,
-};
+use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 use unica_source_designer::read::{
     path_exists, path_is_dir, read_bytes, read_string, read_utf8_sig,
 };
@@ -3798,12 +3797,8 @@ pub fn cfe_patch_supported_document<'a>(
     let document = Document::parse(source)
         .map_err(|error| format!("failed to parse platform XML {}: {error}", path.display()))?;
     let version_literal = root_version_literal(source, document.root_element());
-    match classify_root_version(version_literal.as_deref()).map_err(|error| error.to_string())? {
-        FormatCompatibility::Supported { .. } => Ok(document),
-        compatibility => {
-            Err(unica_source_designer::format_profile::format_compatibility_warning(&compatibility))
-        }
-    }
+    root_version::require_supported(version_literal.as_deref())?;
+    Ok(document)
 }
 
 pub fn cfe_patch_exact_md_text(
@@ -4109,14 +4104,14 @@ pub fn cfe_patch_validate_form_xml(
         .collect::<Vec<_>>();
     if base_forms.len() != 1
         || base_forms[0].tag_name().namespace() != Some(CFE_PATCH_FORM_NAMESPACE)
-        || base_forms[0].attribute("version") != Some(ACTIVE_FORMAT_PROFILE.export_format)
+        || !root_version::is_writable(base_forms[0].attribute("version"))
     {
         return Err(cfe_patch_precondition_error(
             module_path,
             format!(
                 "borrowed Form.xml {} must contain exactly one direct BaseForm version=\"{}\"",
                 path.display(),
-                ACTIVE_FORMAT_PROFILE.export_format
+                root_version::writable()
             ),
         ));
     }
@@ -4497,12 +4492,10 @@ pub fn validate_cfe_source(
         check1_ok = false;
     }
     let version_literal = root_version_literal(source, root);
-    match classify_root_version(version_literal.as_deref()) {
-        Ok(FormatCompatibility::Supported { .. }) => report.ok("Export format: 2.20"),
-        Ok(compatibility) => report.warn(
-            unica_source_designer::format_profile::format_compatibility_warning(&compatibility),
-        ),
-        Err(error) => report.error(error.to_string()),
+    match root_version::report(version_literal.as_deref()) {
+        RootVersionReport::Ok(line) => report.ok(line),
+        RootVersionReport::Warn(line) => report.warn(line),
+        RootVersionReport::Error(line) => report.error(line),
     }
     let version = version_literal.as_deref().unwrap_or("");
 

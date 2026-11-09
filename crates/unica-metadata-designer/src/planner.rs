@@ -3,6 +3,7 @@ mod predefined_code_type_plan;
 pub use predefined_code_type_plan::PredefinedCodeTypePlan;
 
 use crate::decode::*;
+use crate::dialect::root_version;
 use crate::edit::apply_typed_operations_to_image_with_seed;
 use crate::layout::metadata_layout;
 use crate::template_catalog::MetadataTemplateSource;
@@ -1595,8 +1596,8 @@ fn stage_descriptor_properties(
             )
             .map_err(|error| invalid(error.message))?;
             if source_kind != SourceSetKind::Configuration
-                || root.version() != Some("2.20")
-                || owner.version() != Some("2.20")
+                || !root_version::is_writable(root.version())
+                || !root_version::is_writable(owner.version())
                 || !root.registers("WSReference", name)
                 || owner.artifact_kind() != "WSReference"
                 || owner.artifact_name() != Some(name)
