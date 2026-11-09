@@ -287,7 +287,7 @@ def derive_source_sets(source: Path, workspace: Path) -> None:
     `v8project.yaml` of that fixture declares three sets and no `main`:
     `newer` is the same tree with every 2.20 root rewritten to 2.21 (and the
     Reports and XDTO packages dropped, because the strict read port cannot
-    open a 2.21 template wrapper), `older` is the same tree at 2.19 — the
+    open a 2.21 template wrapper), `older` is the same tree at 2.17 — the
     dump a platform before 8.3.27 wrote, which reads but cannot be edited —
     `nosupport` is `src` without
     `Ext/ParentConfigurations.bin`, and `unversioned` is `src` whose
@@ -320,7 +320,7 @@ def derive_source_sets(source: Path, workspace: Path) -> None:
         return text
 
     def older(path: Path, text: str) -> str:
-        text = text.replace('version="2.20"', 'version="2.19"')
+        text = text.replace('version="2.20"', 'version="2.17"')
         if path.name == "Configuration.xml":
             text = re.sub(r"<(Report|XDTOPackage)>[^<]+</\1>", "", text)
         return text

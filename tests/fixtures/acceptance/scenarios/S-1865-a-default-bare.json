@@ -46,7 +46,7 @@
         {
           "path": "README.md",
           "kind": "sha256",
-          "eq": "ecf66443882d6ffd2d2e3d46053d472f2a3b6e709b8fd520dc11a55e22e01868"
+          "eq": "3e5c7c8f0577a94de7a3f0aa6c004ea324d4f458c5761a6d75c6d8d2b07c094f"
         },
         {
           "path": "src/CommonForms/RuntimeAttributes/Ext/Form/Module.bsl",
