@@ -1,7 +1,7 @@
 {
   "id": "S279",
   "area": "Роли и права",
-  "task": "Выдать право в роли выгрузки 2.23 — отказ по формату до правки Rights.xml",
+  "task": "Выдать право в роли выгрузки 2.21 — отказ по формату до правки Rights.xml",
   "wire": [
     {
       "tool": "unica.apply",
@@ -26,7 +26,7 @@
       "expect": [
         "refused"
       ],
-      "refusal": "invalid_source: Configuration.xml: export format 2.23 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
+      "refusal": "invalid_source: Configuration.xml: export format 2.21 is newer than the writable profile 2.20 for 1C 8.3.27; Unica does not edit this export yet"
     }
   ],
   "workspace": "tests/fixtures/acceptance/workspace-format"
