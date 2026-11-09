@@ -8,12 +8,35 @@ use serde::Serialize;
 use std::convert::Infallible;
 use std::io::{self, Write};
 
+// resource-limit: mcp.error-diagnostic-text-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 4096
+// resource: Размер текстового блока summary и diagnostics в content ответа с isError.
+// status: unproven
+// origin: #1857
+// problem: неизвестно
+// on-reach: текст обрезается по границе символа с маркером «[truncated; full diagnostics are in structuredContent]»; полные данные остаются в structuredContent
+// decision: закреплено правилом
+// decision-date: 2026-10-03
+// decision-source: arch/rules/mcp/native-task-projection.md
 pub const MAX_ERROR_DIAGNOSTIC_TEXT_BYTES: usize = 4_096;
 pub const ERROR_TEXT_TRUNCATED: &str = "\n[truncated; full diagnostics are in structuredContent]";
 
 // Keys, content-block wrappers and the largest Task metadata, excluding the
 // canonical result and quoted text strings. The transport tests check this
 // reserve against real SDK serialization, including cancellation and maxima.
+// resource-limit: mcp.error-delivery-envelope-bytes
+// class: format
+// unit: bytes
+// scope: request
+// value: 1024
+// resource: Запас на ключи, обёртки блоков содержимого и метаданные Task в ответе об ошибке сверх канонического результата.
+// status: unproven
+// origin: #1857
+// problem: неизвестно
+// on-reach: запас входит в счёт размера; превышение предела записи задания даёт DeliveryError::TooLarge
 pub const ERROR_DELIVERY_ENVELOPE_BYTES: usize = 1_024;
 
 pub struct ErrorDeliveryText {

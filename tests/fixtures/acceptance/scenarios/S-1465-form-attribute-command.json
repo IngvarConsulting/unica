@@ -3,7 +3,7 @@
  "name": "form-attribute-and-command-share-the-node-names",
  "issue": 1465,
  "area": "Формы",
- "task": "Реквизит и команда формы добавляются attribute.add и command.add на адресе формы, как у объекта метаданных: can формы выдаёт их, контракт по адресу Can выбирается адресом (у формы — писатель формы, у справочника — член метаданных), снятые formAttribute.add и formCommand.add отказывают bad_value без записи с next к контракту на форме, а новые имена пишут реквизит и команду в Form.xml, не меняя описание справочника",
+ "task": "Реквизит и команда формы добавляются attribute.add и command.add на адресе формы, как у объекта метаданных: can формы выдаёт их, контракт по адресу Can выбирается адресом (у формы — писатель формы, у справочника — член метаданных), formAttribute.add и formCommand.add вне реестра отвечают unsupported_operation без записи с next к словарю формы, а новые имена пишут реквизит и команду в Form.xml, не меняя описание справочника",
  "wire": [
   {
    "tool": "unica.view",
@@ -101,9 +101,8 @@
     ]
    },
    "expect": [
-    "refused"
+    "unsupported"
    ],
-   "refusal": "bad_value: apply operation `formAttribute.add` is retired: call `attribute.add` at `main:Catalog.Валюты.Form.ФормаЭлемента`; the arguments are unchanged",
    "assertions": [
     {
      "pointer": "/at",
@@ -111,7 +110,7 @@
     },
     {
      "pointer": "/next/0/args/at",
-     "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.attribute.add"
+     "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
     }
    ],
    "fileAssertions": [
@@ -140,9 +139,8 @@
     ]
    },
    "expect": [
-    "refused"
+    "unsupported"
    ],
-   "refusal": "bad_value: apply operation `formCommand.add` is retired: call `command.add` at `main:Catalog.Валюты.Form.ФормаЭлемента`; the arguments are unchanged",
    "assertions": [
     {
      "pointer": "/at",
@@ -150,7 +148,7 @@
     },
     {
      "pointer": "/next/0/args/at",
-     "eq": "main:Catalog.Валюты.Form.ФормаЭлемента.Can.command.add"
+     "eq": "main:Catalog.Валюты.Form.ФормаЭлемента"
     }
    ],
    "fileAssertions": [

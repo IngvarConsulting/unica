@@ -7,9 +7,9 @@
 
 use crate::domain::engine::MissingEngineRefusal;
 use std::path::{Path, PathBuf};
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_artifact_delivery::desk::DELIVERY_PROGRESS_META_KEY;
 use unica_artifact_delivery::desk::{CanonicalDeliveryProgress, DeliveryDesk, EngineOrder};
 
@@ -20,7 +20,7 @@ use unica_artifact_delivery::shared::{DeliveryFailureClass, EngineDeliveryState}
 use unica_execution_contract::invocation::DomainResult;
 use unica_refusal::{RefusalCode, RefusalDetail};
 use unica_work_control::cancellation::CancellationToken;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use unica_work_control::progress::ProgressEvent;
 use unica_work_control::progress::ProgressSink;
 
@@ -45,7 +45,7 @@ pub(crate) fn order_for(plugin_root: &Path, tool_name: &str) -> Option<EngineOrd
 /// Both inspect the same installed location and join an exact delivery in
 /// their coordinator, so a request never starts a second download under
 /// another key in one process.
-pub(crate) fn deliver_if_missing(
+pub fn deliver_if_missing(
     desk: &DeliveryDesk,
     plugin_root: &Path,
     tool_name: &str,
@@ -71,7 +71,7 @@ pub(crate) fn deliver_if_missing(
 /// delivery is a retryable refusal, never a successful result for an operation
 /// that has not run. The bootstrap error text can contain a remote URL or
 /// filesystem path, so only its closed class is projected onto the response.
-pub(crate) fn canonical_delivery_result(
+pub fn canonical_delivery_result(
     state: EngineDeliveryState,
     progress: &CanonicalDeliveryProgress,
 ) -> Option<DomainResult> {
@@ -157,7 +157,7 @@ pub(crate) fn canonical_delivery_result(
 /// поставляемого движка»: рядом с классом сбоя доставки `data` несёт поля
 /// движка на шаге `delivery` (#549). Срок и внутренний сбой остаются своими
 /// кодами и полей движка не получают.
-pub(crate) fn canonical_engine_delivery_result(
+pub fn canonical_engine_delivery_result(
     state: EngineDeliveryState,
     progress: &CanonicalDeliveryProgress,
     plugin_root: &Path,
@@ -222,14 +222,14 @@ mod tests {
         let progress = CanonicalDeliveryProgress::default();
         progress.publish(ProgressEvent {
             meta_key: DELIVERY_PROGRESS_META_KEY,
-            payload: json!({"artifact": "rlm-tools-bsl", "receivedBytes": 4096, "totalBytes": 8192}),
+            payload: json!({"artifact": "archive-tools", "receivedBytes": 4096, "totalBytes": 8192}),
             progress: 4096.0,
             total: 8192.0,
             message: "receiving".to_string(),
         });
         let result = canonical_delivery_result(
             EngineDeliveryState::Working {
-                artifact: "rlm-tools-bsl".to_string(),
+                artifact: "archive-tools".to_string(),
                 received: 0,
                 total: None,
                 poll_interval_ms: Some(1500),
@@ -283,14 +283,14 @@ mod tests {
         assert!(!encoded.contains("private cache path"));
     }
 
-    /// #549: неудачная доставка, после которой движка нет, — тот же отказ «нет
+    /// Неудачная доставка, после которой движка нет, — тот же отказ «нет
     /// движка» с полями на шаге `delivery`; срок доставки остаётся своим кодом.
     /// rule: INV.WIRE.MISSING-ENGINE-REFUSAL
     #[test]
     fn a_failed_engine_delivery_carries_the_missing_engine_fields() {
         let plugin_root = plugin_root_with_tool("delivery-fields");
         let failed = |class| EngineDeliveryState::Failed {
-            artifact: "rlm-tools-bsl".to_string(),
+            artifact: "archive-tools".to_string(),
             failure: Arc::new(DeliveryFailure::new(class, "private cache path")),
         };
 
@@ -298,13 +298,13 @@ mod tests {
             failed(DeliveryFailureClass::Network),
             &CanonicalDeliveryProgress::default(),
             &plugin_root,
-            "rlm-bsl-index",
+            "archive-tool-index",
         )
         .expect("failed delivery has a public refusal");
         assert_eq!(result.diagnostics[0]["detailCode"], "provider_absent");
         let data = result.data.as_ref().unwrap();
         assert_eq!(data["delivery"]["failureClass"], "network");
-        assert_eq!(data["tool"], "rlm-bsl-index");
+        assert_eq!(data["tool"], "archive-tool-index");
         assert_eq!(data["stage"], "delivery");
         assert_eq!(data["pinnedVersion"], "1.33.0");
         assert_eq!(data["retryable"], false);
@@ -317,7 +317,7 @@ mod tests {
             failed(DeliveryFailureClass::Timeout),
             &CanonicalDeliveryProgress::default(),
             &plugin_root,
-            "rlm-bsl-index",
+            "archive-tool-index",
         )
         .unwrap();
         assert_eq!(timeout.diagnostics[0]["code"], "deadline_exceeded");
@@ -386,7 +386,7 @@ mod tests {
         std::fs::create_dir_all(root.join("third-party")).expect("plugin root");
         std::fs::write(
             root.join("third-party/manifest.json"),
-            r#"{"schemaVersion":2,"tools":[{"name":"rlm-bsl-index","version":"1.33.0","artifact":"rlm-tools-bsl"}]}"#,
+            r#"{"schemaVersion":2,"tools":[{"name":"archive-tool-index","version":"1.33.0","artifact":"archive-tools"}]}"#,
         )
         .expect("tool manifest");
         root
@@ -401,7 +401,7 @@ mod tests {
 
         let order = order_for_in(
             &plugin_root,
-            "rlm-bsl-index",
+            "archive-tool-index",
             &environment(&[
                 ("UNICA_ARTIFACT_CACHE", "/cache"),
                 (
@@ -416,7 +416,7 @@ mod tests {
             order.manifest_path,
             PathBuf::from("/plugins/unica/runtime-manifest.json")
         );
-        assert_eq!(order.artifact(), "rlm-tools-bsl");
+        assert_eq!(order.artifact(), "archive-tools");
         std::fs::remove_dir_all(&plugin_root).ok();
     }
 
@@ -426,7 +426,7 @@ mod tests {
 
         let order = order_for_in(
             &plugin_root,
-            "rlm-bsl-index",
+            "archive-tool-index",
             &environment(&[("UNICA_ARTIFACT_CACHE", "/cache")]),
         )
         .expect("заказ собран");
@@ -442,7 +442,7 @@ mod tests {
     fn without_an_artifact_cache_there_is_nowhere_to_deliver() {
         let plugin_root = plugin_root_with_tool("no-cache");
 
-        assert!(order_for_in(&plugin_root, "rlm-bsl-index", &environment(&[])).is_none());
+        assert!(order_for_in(&plugin_root, "archive-tool-index", &environment(&[])).is_none());
         std::fs::remove_dir_all(&plugin_root).ok();
     }
 

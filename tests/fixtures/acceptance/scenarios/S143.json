@@ -1,0 +1,26 @@
+{
+  "area": "Формы",
+  "task": "Привязать обработчик изменения к полю формы",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты.Form.ФормаЭлемента.Item.ПолеНаименование.Event.OnChange",
+        "ops": [
+          {
+            "op": "event.bind",
+            "args": {
+              "values": {
+                "handler": "ПолеНаименованиеПриИзменении"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S143"
+}

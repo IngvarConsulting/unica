@@ -60,18 +60,13 @@ pub fn dcs_target(target: &QualifiedAddress, op_index: usize) -> Result<DcsTarge
             return Err(bad("a DCS terminal has no addressed children"));
         }
         if segment.kind() == NodeKind::Query {
-            // Запрос — узел набора без имени: `DataSet.D.Query`. Прежний
-            // псевдоним набора `Template.T.Query.D` не принимается (#1353).
+            // Запрос — узел набора без имени: `DataSet.D.Query`.
             match segment.name() {
                 None if !datasets.is_empty() && variant.is_empty() => {
                     query = true;
                     continue;
                 }
-                Some(name) => {
-                    return Err(bad(&format!(
-                    "a query is addressed through its dataset: `Template.T.DataSet.{name}.Query`"
-                )))
-                }
+                Some(_) => return Err(bad("a DCS query node has no name: `DataSet.D.Query`")),
                 None => {
                     return Err(bad(
                         "a query is addressed through its dataset: `DataSet.D.Query`",
@@ -305,7 +300,7 @@ mod tests {
     }
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
-    fn a_query_is_addressed_through_its_dataset_and_retired_spellings_refuse() {
+    fn a_query_is_addressed_through_its_dataset_and_other_shapes_refuse() {
         let schema = "main:Report.Versions.Template.Schema";
         for (op, at, values) in [
             (
@@ -331,7 +326,7 @@ mod tests {
                 "Query.НаборДанных1",
                 json!({"query": "ВЫБРАТЬ 1"}),
                 "at",
-                "DataSet.НаборДанных1.Query",
+                "has no name",
             ),
             (
                 "dataSet.set",
@@ -363,7 +358,7 @@ mod tests {
             ),
         ] {
             let args = json!({"at": format!("{schema}.{at}"), "values": values});
-            let error = plan(op, &args).expect_err("a retired spelling is refused");
+            let error = plan(op, &args).expect_err("an address of another shape is refused");
             assert_eq!(error.kind(), ApplyPlanErrorKind::BadValue, "{op} at {at}");
             assert_eq!(
                 error.path(),

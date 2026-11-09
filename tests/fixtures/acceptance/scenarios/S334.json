@@ -1,0 +1,237 @@
+{
+  "id": "S334",
+  "name": "mxl-contract-refusals-preserve-source",
+  "issue": 1311,
+  "area": "Макеты",
+  "task": "Массив/пустые cells, координаты/типы, оформление, дробная ширина и область в аргументах вместо адреса Area отказывают без записи",
+  "workspace": "tests/fixtures/acceptance/workspace-mxl",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "kind": "sha256",
+          "file": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": []
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"object\"",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {}
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: object must not be empty",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R0C1": "x"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected area-local R<row>C<column>, up to R10000C1000",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": {}
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: one of the supported argument alternatives must match",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "x"
+                },
+                "font": "Arial"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown argument",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template.Area.A",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "cells": {
+                  "R1C1": "x"
+                },
+                "columns": 1.0
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: expected \"integer\"",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F06Report.Template.F06Template",
+        "ops": [
+          {
+            "op": "mxl.set",
+            "args": {
+              "values": {
+                "area": "A",
+                "cells": {
+                  "R1C1": "x"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `mxl.set` does not apply to Template `cf:Report.F06Report.Template.F06Template`; it addresses `Kind.Name.Template.T.Area.A` of a spreadsheet",
+      "fileAssertions": [
+        {
+          "kind": "sha256",
+          "path": "src/cf/Reports/F06Report/Templates/F06Template/Ext/Template.xml",
+          "eq": "$capture.before"
+        }
+      ],
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "cf:Report.F06Report.Template.F06Template"
+        }
+      ]
+    }
+  ]
+}

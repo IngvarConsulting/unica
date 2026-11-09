@@ -459,7 +459,7 @@ mod tests {
     }
 
     #[test]
-    fn retired_dsl_scalar_capabilities_have_exact_typed_kind_matrices() {
+    fn scalar_property_capabilities_have_exact_typed_kind_matrices() {
         use MetadataKind::*;
 
         let cases: &[(&str, MetaPropertyValue, &[MetadataKind])] = &[

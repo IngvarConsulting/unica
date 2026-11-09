@@ -1,0 +1,25 @@
+{
+  "area": "Подсистемы и интерфейс",
+  "task": "Словарь операций подсистемы",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:Subsystem.Администрирование"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/can",
+          "contains": {
+            "op": "content.add",
+            "args": "items"
+          }
+        }
+      ]
+    }
+  ],
+  "id": "S211"
+}

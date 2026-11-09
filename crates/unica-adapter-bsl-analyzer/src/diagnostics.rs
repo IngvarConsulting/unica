@@ -27,6 +27,18 @@ static BSL_ANALYZER_DIAGNOSTIC_DESCRIPTOR: DiagnosticProviderDescriptor =
         emits_focus_kinds: &[DiagnosticFocusKind::SourceRange],
     };
 
+// resource-limit: bsl-analyzer.resident-findings
+// class: corpus
+// unit: count
+// scope: request
+// value: 5000
+// resource: Число находок, запрашиваемых у резидентного анализатора BSL за один вызов (max_findings).
+// status: unproven
+// origin: коммит c3a946e95 (connect bsl-analyzer provider)
+// problem: неизвестно
+// on-reach: анализатор усекает список (truncated), ответ поставщика помечен complete: false, хвост находок теряется
+// issue: #1119
+// review: #1119, вне PR1–PR9: нужен курсор
 const BSL_RESIDENT_FINDINGS_CAP: usize = 5_000;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -407,6 +419,14 @@ impl<'a> BslAnalyzerDiagnosticProvider<'a> {
 impl DiagnosticProvider for BslAnalyzerDiagnosticProvider<'_> {
     fn descriptor(&self) -> &'static DiagnosticProviderDescriptor {
         &BSL_ANALYZER_DIAGNOSTIC_DESCRIPTOR
+    }
+
+    fn editor_finding(
+        &self,
+        code: &str,
+        severity: unica_diagnostics::model::DiagnosticSeverity,
+    ) -> unica_diagnostics::model::EditorFinding {
+        crate::editor_codes::editor_finding(code, severity)
     }
 
     fn execute(

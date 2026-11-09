@@ -1,0 +1,21 @@
+{
+  "area": "Реквизиты и состав",
+  "task": "Удалить измерение регистра по его адресу",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:InformationRegister.АдминистративнаяИерархия.Dimension.РодительскийИдентификатор",
+        "ops": [
+          {
+            "op": "dimension.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S078"
+}
