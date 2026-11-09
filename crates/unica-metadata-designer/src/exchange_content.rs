@@ -1,5 +1,6 @@
 //! ExchangePlan Content.xml observations. Unknown or damaged items never become
 //! a known empty composition; independent valid entries remain available.
+use crate::dialect::root_version;
 use roxmltree::{Document, Node};
 use std::collections::HashSet;
 use unica_address::source_target::MetadataAddress;
@@ -95,8 +96,11 @@ pub fn read_content(xml: &str) -> Result<ContentObservation, String> {
     {
         return Err("unknown ExchangePlanContent root attribute".into());
     }
-    if root.attribute("version") != Some("2.20") {
-        return Err("ExchangePlanContent requires format version 2.20".into());
+    if !root_version::is_writable(root.attribute("version")) {
+        return Err(format!(
+            "ExchangePlanContent requires format version {}",
+            root_version::writable()
+        ));
     }
     let mut result = ContentObservation {
         items: Vec::new(),

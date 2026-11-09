@@ -1,3 +1,4 @@
+use crate::dialect::root_version;
 use roxmltree::{Document, Node};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -520,13 +521,14 @@ pub fn validate_predefined_text_with_checkpoint(
         || platform_xml_publication_policy(namespace, local_name)
             != Some(PlatformXmlPublicationPolicy::ExactRootVersion)
         || root.attribute((XSI_NS, "type")) != Some(root_type(kind)?)
-        || unica_source_designer::roots::root_version_literal(text, root).as_deref()
-            != Some(ACTIVE_FORMAT_PROFILE.export_format)
+        || !root_version::is_writable(
+            unica_source_designer::roots::root_version_literal(text, root).as_deref(),
+        )
     {
         return Err(format!(
             "Predefined.xml does not match the exact {}/{} profile for {}",
-            ACTIVE_FORMAT_PROFILE.platform_line,
-            ACTIVE_FORMAT_PROFILE.export_format,
+            root_version::writable_platform_line(),
+            root_version::writable(),
             kind.as_str()
         ));
     }

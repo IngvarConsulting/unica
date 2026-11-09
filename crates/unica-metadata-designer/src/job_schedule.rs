@@ -2,6 +2,7 @@
 //! already retained bytes. Only the observed `JobSchedule` 2.20 profile with a
 //! complete `Schedule` is accepted; every other present form is refused, never
 //! reported as an absent or default schedule.
+use crate::dialect::root_version;
 use roxmltree::{Document, Node};
 use serde_json::{json, Map, Value};
 
@@ -41,7 +42,7 @@ pub fn parse_job_schedule(text: &str) -> Result<Value, String> {
     let document = Document::parse(text).map_err(|error| error.to_string())?;
     let root = document.root_element();
     if !root.has_tag_name((EXTERNAL, "JobSchedule"))
-        || root.attribute("version") != Some("2.20")
+        || !root_version::is_writable(root.attribute("version"))
         || root
             .attributes()
             .any(|attr| attr.namespace().is_some() || attr.name() != "version")
