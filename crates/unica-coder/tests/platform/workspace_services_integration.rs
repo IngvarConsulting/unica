@@ -3013,7 +3013,7 @@ fn main() {
             let target = target.clone();
             let gate = gate.clone();
             move |_, kind| {
-                if matches!(kind, ServiceRequestKind::RlmReady { operation_id, .. } if operation_id == &target) {
+                if matches!(kind, ServiceRequestKind::BslMcp { operation_id, .. } if operation_id == &target) {
                     let _ = entered.send(());
                     wait_admission_test_gate(&gate);
                 }
