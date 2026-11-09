@@ -47,6 +47,29 @@ class AlphaPageTests(unittest.TestCase):
                     self.assertNotIn("alpha.html", page.read_text(encoding="utf-8"))
 
 
+class AlphaListTests(unittest.TestCase):
+    """Страница alpha показывает все alpha из Releases, новейшую первой."""
+
+    def test_two_alphas_are_both_shown_newest_first_and_downloads_take_the_newest(self) -> None:
+        render = load("render_pages", REPO_ROOT / "scripts" / "ci" / "render-pages.py")
+        site_status = load("site_status", REPO_ROOT / "scripts" / "ci" / "site-status.py")
+        template = (REPO_ROOT / "docs" / "pages" / "alpha.html").read_text(encoding="utf-8")
+        releases = [release for release in RELEASES if release["tag_name"] in ("v0.13.0-alpha.7", "v0.13.0-alpha.8")]
+        outside = render.REPEAT.sub("", template)
+        status: dict[str, object] = {name: f"<{name}>" for name in render.placeholders(outside)}
+        status.update(site_status.latest_alpha(releases, "IngvarConsulting/unica"))
+        status["alphas"] = site_status.alpha_list(releases, "IngvarConsulting/unica")
+        page = render.render(template, status)
+        newest, older = page.find(">v0.13.0-alpha.8<"), page.find(">v0.13.0-alpha.7<")
+        self.assertGreater(newest, 0)
+        self.assertGreater(older, newest)
+        self.assertIn(f'commit/{"d" * 40}"', page)
+        self.assertIn(f'commit/{"c" * 40}"', page)
+        self.assertIn(f'href="{RELEASES_URL}/tag/v0.13.0-alpha.7"', page)
+        self.assertIn(f"{RELEASES_URL}/download/v0.13.0-alpha.8</span>/unica-full-linux-x64.tar.gz", page)
+        self.assertNotIn("{{", page)
+
+
 class HomeStateCardsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.render = load("render_pages", REPO_ROOT / "scripts" / "ci" / "render-pages.py")
