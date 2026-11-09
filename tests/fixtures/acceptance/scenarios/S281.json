@@ -1,0 +1,27 @@
+{
+  "id": "S281",
+  "area": "Поддержка поставщика",
+  "task": "Изменить свойство объекта поставщика на замке — отказ стража поддержки до первого байта",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.НастройкиПоставщика",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "Правка объекта поставщика"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: `main:Enum.НастройкиПоставщика` is a vendor object with the support rule `locked`; allow editing with `supportRule.set` in a separate apply before ordinary edit"
+    }
+  ]
+}

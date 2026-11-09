@@ -1,3 +1,4 @@
+// module: private
 //! Strict observation for the leaf changed by ScheduledJob.Key edits.
 
 use roxmltree::Node;

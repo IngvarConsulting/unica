@@ -12,11 +12,32 @@ mod form_appearance;
 mod member_properties;
 mod metadata;
 mod role;
-pub(crate) mod structured_properties;
-pub(crate) use metadata::borrowing_props;
+pub mod structured_properties;
+pub use metadata::borrowing_props;
 use role::project_role;
 
+// resource-limit: view.projected-branches
+// class: format
+// unit: count
+// scope: record
+// value: 256
+// resource: Число ветвей видов в проекции узла view.
+// status: unproven
+// origin: cec3ddf7c
+// problem: неизвестно
+// on-reach: тихо: ветви сверх 256 отбрасываются (.take).
 const MAX_PROJECTED_BRANCHES: usize = 256;
+// resource-limit: view.compact-property-bytes
+// class: format
+// unit: bytes
+// scope: record
+// value: 2048
+// resource: Размер сериализованного составного свойства в компактной проекции метаданных и XDTO.
+// status: unproven
+// origin: cec3ddf7c
+// problem: неизвестно
+// on-reach: Свойство не включается в props; limits называет предел и адрес <узел>.Props.<имя>, по которому view отдаёт свойство целиком.
+// issue: #2088
 const MAX_COMPACT_PROP_BYTES: usize = 2_048;
 // Заголовок узла ограничен тем же пределом, что и компактное свойство.
 const _: () = assert!(MAX_COMPACT_PROP_BYTES == crate::domain::node_view::MAX_TITLE_BYTES);
@@ -1433,7 +1454,7 @@ struct InterfaceCommandLimits {
 }
 
 fn named_interface_command(reference: &str) -> bool {
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_xml_format::names::xml_ncname_is_valid;
     let parts = reference.split('.').collect::<Vec<_>>();
     let owner = match parts.as_slice() {
@@ -1445,7 +1466,7 @@ fn named_interface_command(reference: &str) -> bool {
         }
         _ => return false,
     };
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner).is_ok()
+    MetadataAddress::parse_logical(&owner).is_ok()
 }
 
 fn split_interface_commands(
@@ -2033,7 +2054,7 @@ thread_local! {
 }
 
 /// Проецирует узел на время `read`, снимая предел размера со свойства `key`.
-pub(crate) fn with_whole_prop<T>(key: &str, read: impl FnOnce() -> T) -> T {
+pub fn with_whole_prop<T>(key: &str, read: impl FnOnce() -> T) -> T {
     struct Restore(Option<String>);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -2432,7 +2453,7 @@ fn data_row(value: &Value) -> Value {
 mod dcs_structure_tests {
     use super::*;
     /// Итоги одного поля по разным группировкам адреса не получают: строка
-    /// ветви без `at`, а адрес `Total.<путь>` их не выбирает (#1357).
+    /// ветви без `at`, а адрес `Total.<путь>` их не выбирает.
     /// rule: INV.WIRE.OPERATION-TARGET-ADDRESS
     #[test]
     fn repeated_total_paths_stay_rows_and_are_not_chosen() {
@@ -2463,7 +2484,7 @@ mod dcs_structure_tests {
 
     /// Именованный элемент, единственный по имени на своём уровне, — узел
     /// с адресом; безымянный прозрачен и остаётся строкой, а одноимённые
-    /// элементы одного уровня адреса не получают и не выбираются (#1357).
+    /// элементы одного уровня адреса не получают и не выбираются.
     /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn setting_structure_rows_never_fabricate_or_choose_named_addresses() {
@@ -2700,7 +2721,7 @@ mod composite_prop_tests {
         assert_eq!(whole["props"]["Comment"], payload["Comment"]);
     }
 
-    /// #2159: a form declaration whose properties fit one by one but not
+    /// A form declaration whose properties fit one by one but not
     /// together is named by its whole address and read there in full.
     #[test]
     fn a_large_form_declaration_is_read_whole_at_its_property_address() {

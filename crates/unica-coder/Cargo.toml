@@ -5,37 +5,52 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
-[[bin]]
-name = "unica"
-path = "src/main.rs"
-
 [lib]
 name = "unica_coder"
 path = "src/lib.rs"
 
 [features]
 default = []
-receipt-ledger-test-support = ["unica-execution/receipt-ledger-test-support", "unica-daemon/receipt-ledger-test-support"]
-# Исследования — не тесты: их цели собираются только с этой фичей, и в плане
-# конвейера их нет. Запуск — scripts/research/.
-research = []
-
-[[test]]
-name = "daemon_receipt_ledger"
-path = "tests/daemon_receipt_ledger.rs"
-required-features = ["receipt-ledger-test-support"]
-
-[[test]]
-name = "research_xml_corpus"
-path = "tests/research/xml_corpus.rs"
-required-features = ["research"]
+test-support = [
+    "unica-application/test-support",
+    "unica-daemon-protocol/test-support",
+    "unica-roles-designer/test-support",
+    "unica-templates-designer/test-support",
+    "unica-xdto-designer/test-support",
+    "unica-bsl/test-support",
+    "unica-forms-designer/test-support",
+    "unica-metadata-designer/test-support",
+    "unica-adapter-lexical/test-support",
+    "unica-adapter-bsl-analyzer/test-support",
+    "unica-analysis-services/test-support",
+    "unica-artifact-delivery/test-support",
+    "unica-adapter-v8-runner/test-support",
+    "unica-workspace/test-support",
+    "unica-redaction/test-support",
+    "unica-forms/test-support",
+    "unica-xdto/test-support",
+    "unica-dcs/test-support",
+    "unica-templates/test-support",
+    "unica-diagnostics/test-support",
+    "unica-navigation/test-support",
+    "unica-code-intelligence/test-support",
+    "unica-execution/test-support",
+    "unica-metadata/test-support",
+    "unica-source-contract/test-support",
+    "unica-execution-contract/test-support",
+    "unica-process/test-support",
+    "unica-work-control/test-support",
+    "unica-network/test-support",
+]
 
 [dependencies]
-unica-daemon = { path = "../unica-daemon" }
+unica-application = { path = "../unica-application" }
+unica-domain = { path = "../unica-domain" }
+unica-daemon-protocol = { path = "../unica-daemon-protocol" }
+unica-lsp = { path = "../unica-lsp" }
 unica-bindings = { path = "../unica-bindings" }
 unica-adapter-lexical = { path = "../unica-adapter-lexical" }
 unica-adapter-bsl-analyzer = { path = "../unica-adapter-bsl-analyzer" }
-unica-adapter-rlm = { path = "../unica-adapter-rlm" }
 unica-analysis-services = { path = "../unica-analysis-services" }
 unica-dcs-designer = { path = "../unica-dcs-designer" }
 unica-roles-designer = { path = "../unica-roles-designer" }
@@ -43,7 +58,6 @@ unica-templates-designer = { path = "../unica-templates-designer" }
 unica-forms-designer = { path = "../unica-forms-designer" }
 unica-metadata-designer = { path = "../unica-metadata-designer" }
 unica-xdto-designer = { path = "../unica-xdto-designer" }
-unica-runner = { path = "../unica-runner" }
 unica-adapter-v8-runner = { path = "../unica-adapter-v8-runner" }
 unica-workspace = { path = "../unica-workspace" }
 unica-redaction = { path = "../unica-redaction" }
@@ -58,7 +72,6 @@ unica-code-intelligence = { path = "../unica-code-intelligence" }
 unica-execution = { path = "../unica-execution" }
 unica-forms = { path = "../unica-forms" }
 unica-documentation-sources = { path = "../unica-documentation-sources" }
-unica-project-health = { path = "../unica-project-health" }
 unica-configuration = { path = "../unica-configuration" }
 unica-metadata = { path = "../unica-metadata" }
 unica-source-contract = { path = "../unica-source-contract" }
@@ -90,18 +103,12 @@ sha2.workspace = true
 aes-siv.workspace = true
 getrandom.workspace = true
 zeroize.workspace = true
-rmcp.workspace = true
-chrono.workspace = true
-tokio.workspace = true
 toml.workspace = true
 roxmltree.workspace = true
 xml.workspace = true
 rust-stemmers.workspace = true
-regex.workspace = true
-regex-syntax.workspace = true
 tempfile.workspace = true
 url.workspace = true
-percent-encoding.workspace = true
 uuid.workspace = true
 # `flate2` кодом крейта не вызывается: она объявлена, чтобы `zip` получил
 # чистый Rust-backend для deflate вместо системного zlib и без `zopfli`
@@ -122,8 +129,8 @@ cap-primitives.workspace = true
 cap-fs-ext.workspace = true
 
 [dev-dependencies]
-unica-daemon = { path = "../unica-daemon", features = ["test-support"] }
-unica-project-health = { path = "../unica-project-health", features = ["test-support"] }
+unica-application = { path = "../unica-application", features = ["test-support"] }
+unica-daemon-protocol = { path = "../unica-daemon-protocol", features = ["test-support"] }
 unica-roles-designer = { path = "../unica-roles-designer", features = ["test-support"] }
 unica-templates-designer = { path = "../unica-templates-designer", features = ["test-support"] }
 unica-xdto-designer = { path = "../unica-xdto-designer", features = ["test-support"] }
@@ -132,7 +139,6 @@ unica-forms-designer = { path = "../unica-forms-designer", features = ["test-sup
 unica-metadata-designer = { path = "../unica-metadata-designer", features = ["test-support"] }
 unica-adapter-lexical = { path = "../unica-adapter-lexical", features = ["test-support"] }
 unica-adapter-bsl-analyzer = { path = "../unica-adapter-bsl-analyzer", features = ["test-support"] }
-unica-adapter-rlm = { path = "../unica-adapter-rlm", features = ["test-support"] }
 unica-analysis-services = { path = "../unica-analysis-services", features = ["test-support"] }
 unica-artifact-delivery = { path = "../unica-artifact-delivery", features = ["test-support"] }
 unica-adapter-v8-runner = { path = "../unica-adapter-v8-runner", features = ["test-support"] }
@@ -153,7 +159,15 @@ unica-process = { path = "../unica-process", features = ["test-support"] }
 unica-work-control = { path = "../unica-work-control", features = ["test-support"] }
 unica-network = { path = "../unica-network", features = ["test-support"] }
 jsonschema.workspace = true
-proc-macro2.workspace = true
+regex.workspace = true
 quote.workspace = true
 syn.workspace = true
 tar.workspace = true
+
+[package.metadata.unica]
+version-literal-baseline = 53
+component = "product"
+file-io = "owned"
+# `crates`: tests compare the operation tables and codecs of other crates with their sources.
+inputs = ["crates", "plugins/unica/skills", "plugins/unica/third-party/tools.lock.json", "tests/fixtures/acceptance", "tests/fixtures/analyzer", "tests/fixtures/bsl_analyzer", "tests/fixtures/platform_8_3_27", "tests/fixtures/styleitem_values", "tests/fixtures/unica_mcp_script_parity", "tests/fixtures/v013", "tests/fixtures/xdto"]
+read-outside-baseline = 1

@@ -11,4 +11,4 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 : "${UNICA_XML_CORPUS_DIR:?задайте каталог для корпуса вне дерева репозитория}"
-cargo test -p unica-coder --features research --test research_xml_corpus -- --exact generate_platform_xml_corpus --nocapture
+cargo test -p unica-product --features research --test research_xml_corpus -- --exact generate_platform_xml_corpus --nocapture

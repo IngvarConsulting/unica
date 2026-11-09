@@ -194,7 +194,7 @@ class EvaluateCiGateTests(unittest.TestCase):
                     self.assertEqual((outcome, "success"), result.unexpected["lint-rust-platforms"])
 
     def test_windows_clippy_is_required_in_the_code_queue_and_the_manual_main_run(self) -> None:
-        """Clippy под Windows — отдельная запись очереди и кнопки `main` (#2152)."""
+        """Clippy под Windows — отдельная запись очереди и кнопки `main`."""
         module = load_gate_module()
         outputs = classification(**{name: True for name in OUTPUT_NAMES})
         code = {**source_results(), "test-rust-platforms": "success", "lint-rust-platforms": "success"}
@@ -698,8 +698,7 @@ def queue_steps() -> dict[str, str]:
     """Шаги `Unica CI` кодовой очереди: всё обязательное прошло, medium PR и прогрев пропущены."""
     load = load_gate_module()
     outcomes = {step: "success" for ids in load.STEP_GROUPS.values() for step in ids}
-    outcomes.update({"rust-medium": "skipped", "removed-tests": "skipped", "warm": "skipped", "lint-job": "skipped",
-                     "pr-python": "skipped"})
+    outcomes.update({"rust-medium": "skipped", "warm": "skipped", "lint-job": "skipped", "pr-python": "skipped"})
     return outcomes
 
 
@@ -784,6 +783,39 @@ class RunnerTopologyGateTests(unittest.TestCase):
                          {**validation_only, "build-tools": "skipped"}, scope="validation")
         self.assertIn("build-tools", stray.unexpected)
 
+    def test_only_an_alpha_tag_expects_publication_from_a_night_or_a_button(self) -> None:
+        # Alpha выпускает сам прогон: проба ждёт отказа скачивания, поэтому у него
+        # вместо неё публикация и дым. Без тега прогон не публикует ничего.
+        gate = load_gate_module()
+        outputs = classification(**ALL_ENABLED)
+        for event in ("schedule", "workflow_dispatch"):
+            for tag, published, probe in (("v0.15.0-alpha.3", "success", "skipped"), ("", "skipped", "success")):
+                with self.subTest(event=event, tag=tag):
+                    result = evaluate(gate, event, "refs/heads/main", outputs, code_results(),
+                                      gate_profile="large", alpha_requested=True, alpha_tag=tag)
+                    for job in gate.PUBLISH_JOBS:
+                        self.assertEqual(result.expected[job], published)
+                    self.assertEqual(result.expected["probe-thin-bootstrap"], probe)
+                    self.assertEqual(result.expected["alpha-tag"], "success")
+
+    def test_a_foreign_alpha_tag_is_refused_and_an_unrequested_alpha_job_is_stray(self) -> None:
+        gate = load_gate_module()
+        outputs = classification(**ALL_ENABLED)
+        odd = evaluate(gate, "schedule", "refs/heads/main", outputs, code_results(), gate_profile="large",
+                       alpha_requested=True, alpha_tag="v0.15.0-rc.1")
+        self.assertIn("alpha_tag", odd.unexpected)
+        stray = evaluate(gate, "schedule", "refs/heads/main", outputs, {**code_results(), "alpha-tag": "success"}, gate_profile="large")
+        self.assertIn("alpha-tag", stray.unexpected)
+
+    def test_the_schedule_is_judged_as_the_button(self) -> None:
+        gate = load_gate_module()
+        outputs = classification(**ALL_ENABLED)
+        night = evaluate(gate, "schedule", "refs/heads/main", outputs, code_results(), gate_profile="large")
+        button = evaluate(gate, "workflow_dispatch", "refs/heads/main", outputs, code_results(), gate_profile="large")
+        self.assertEqual(night.expected, button.expected)
+        self.assertNotIn("event", night.unexpected)
+        self.assertNotIn("gate_profile", night.unexpected)
+
     def test_profile_runners_match_the_lane_verifier(self) -> None:
         gate = load_gate_module()
         lanes = load_lanes_module()
@@ -832,7 +864,11 @@ class StepResultTests(unittest.TestCase):
         self.assertEqual("success", lint(clippy="skipped", **{"lint-job": "success"}))
         self.assertEqual("skipped", lint(clippy="skipped", **{"lint-job": "skipped"}))
         self.assertEqual("partial", lint(clippy="success", **{"lint-job": "success"}))
-        self.assertEqual("missing", gate.validation_results(steps({k: v for k, v in queue_steps().items() if k != "lint-job"}),
+        # `release.yml` не несёт шагов pull request: их отсутствие — пропуск, а
+        # отсутствие настоящего шага Clippy — потеря.
+        self.assertEqual("success", gate.validation_results(steps({k: v for k, v in queue_steps().items() if k != "lint-job"}),
+                                                            {"Rust (macos-15)": "success"})["lint-rust-platforms"])
+        self.assertEqual("missing", gate.validation_results(steps({k: v for k, v in queue_steps().items() if k != "clippy"}),
                                                             {"Rust (macos-15)": "success"})["lint-rust-platforms"])
 
     def test_windows_clippy_entry_is_the_outcome_of_its_awaiting_step(self) -> None:
@@ -865,7 +901,10 @@ class StepResultTests(unittest.TestCase):
         results = gate.validation_results(steps(outcomes), {"Rust (macos-15)": "success"})
         self.assertEqual("missing", results["test-rust-platforms"])
         absent = gate.validation_results({}, None)
-        self.assertTrue(all(value == "missing" for key, value in absent.items() if key != "os-jobs"))
+        # Шаги pull request и прогрева ушли из `release.yml`: их группы — пропуск, остальные — потеря.
+        self.assertEqual("skipped", absent["rust-medium"])
+        self.assertEqual("skipped", absent["warm-rust-cache"])
+        self.assertTrue(all(value == "missing" for key, value in absent.items() if key not in ("os-jobs", "rust-medium", "warm-rust-cache")))
         self.assertEqual("skipped", absent["os-jobs"])
 
     def test_failure_and_cancellation_win_over_success(self) -> None:
@@ -876,7 +915,7 @@ class StepResultTests(unittest.TestCase):
         self.assertEqual("missing", gate.combined(["failure", "missing"]))
 
     def test_a_red_windows_job_fails_the_nightly_like_any_other_runner(self) -> None:
-        """Windows в `large` блокирует, как macOS: по зелёному прогону ставят тег (#2152)."""
+        """Windows в `large` блокирует, как macOS: по зелёному прогону ставят тег."""
         gate = load_gate_module()
         for outcome in ("failure", "timed_out", "cancelled", "not_acquired", "missing"):
             with self.subTest(outcome=outcome):

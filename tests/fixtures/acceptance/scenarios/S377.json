@@ -1,0 +1,419 @@
+{
+  "id": "S377",
+  "name": "dcs-conditional-appearance-typed-values",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Условное оформление имеет отдельный typed filter, use=false, Color и многоязычный формат; заголовок и enum параметра вывода сохраняют платформенные типы",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report",
+        "ops": [
+          {
+            "op": "template.add",
+            "args": {
+              "items": [
+                {
+                  "name": "PrimitiveTypedAppearance",
+                  "templateType": "DataCompositionSchema"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "exists",
+          "eq": false
+        }
+      ],
+      "captures": {
+        "createToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.createToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "exists",
+          "eq": true
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTypedAppearance.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase2Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTypedAppearance.Setting.Основной",
+        "ops": [
+          {
+            "op": "conditionalAppearance.add",
+            "args": {
+              "items": [
+                {
+                  "fields": [
+                    "Amount"
+                  ],
+                  "use": false,
+                  "filter": [
+                    {
+                      "field": "Amount",
+                      "comparison": "Less",
+                      "value": 0
+                    }
+                  ],
+                  "appearance": {
+                    "ЦветТекста": "web:Red",
+                    "Формат": {
+                      "valueType": "v8:LocalStringType",
+                      "value": {
+                        "ru": "ЧДЦ=2",
+                        "en": "ND=2"
+                      }
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "op": "outputParameter.set",
+            "args": {
+              "values": {
+                "name": "Заголовок",
+                "value": "Отчёт",
+                "use": false
+              }
+            }
+          },
+          {
+            "op": "outputParameter.set",
+            "args": {
+              "values": {
+                "name": "ВыводитьЗаголовок",
+                "value": "DontOutput"
+              }
+            }
+          },
+          {
+            "op": "outputParameter.set",
+            "args": {
+              "values": {
+                "name": "МакетОформления",
+                "value": "ОформлениеОтчетовЧерноБелый"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase2Before"
+        }
+      ],
+      "captures": {
+        "phase2Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase2Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}use",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}left",
+          "eq": [
+            "Amount"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}comparisonType",
+          "eq": [
+            "Less"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}right",
+          "eq": [
+            "0"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}appearance/{http://v8.1c.ru/8.1/data-composition-system/core}item[{http://v8.1c.ru/8.1/data-composition-system/core}parameter='ЦветТекста']/{http://v8.1c.ru/8.1/data-composition-system/core}value[@{http://www.w3.org/2001/XMLSchema-instance}type='v8ui:Color']",
+          "eq": [
+            "web:Red"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}appearance/{http://v8.1c.ru/8.1/data-composition-system/core}item[{http://v8.1c.ru/8.1/data-composition-system/core}parameter='Формат']/{http://v8.1c.ru/8.1/data-composition-system/core}value/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='en']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "ND=2"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}appearance/{http://v8.1c.ru/8.1/data-composition-system/core}item[{http://v8.1c.ru/8.1/data-composition-system/core}parameter='Формат']/{http://v8.1c.ru/8.1/data-composition-system/core}value/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "ЧДЦ=2"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item[{http://v8.1c.ru/8.1/data-composition-system/core}parameter='Заголовок']/{http://v8.1c.ru/8.1/data-composition-system/core}value/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Отчёт"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item[{http://v8.1c.ru/8.1/data-composition-system/core}parameter='ВыводитьЗаголовок']/{http://v8.1c.ru/8.1/data-composition-system/core}value[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:DataCompositionTextOutputType']",
+          "eq": [
+            "DontOutput"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item[{http://v8.1c.ru/8.1/data-composition-system/core}parameter='Заголовок']/{http://v8.1c.ru/8.1/data-composition-system/core}use",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTypedAppearance.Setting.Основной"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "phase4Before": {
+          "file": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTypedAppearance.Setting.Основной",
+        "ops": [
+          {
+            "op": "outputParameter.set",
+            "args": {
+              "values": {
+                "name": "Заголовок",
+                "valueType": "v8:LocalStringType",
+                "value": {
+                  "ru": "Новый отчёт",
+                  "en": "New report"
+                }
+              }
+            }
+          },
+          {
+            "op": "outputParameter.set",
+            "args": {
+              "values": {
+                "name": "ВыводитьЗаголовок",
+                "value": "Output"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.phase4Before"
+        }
+      ],
+      "captures": {
+        "phase4Token": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.phase4Token"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "published"
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item[{http://v8.1c.ru/8.1/data-composition-system/core}parameter='Заголовок']/{http://v8.1c.ru/8.1/data-composition-system/core}value/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='en']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "New report"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item[{http://v8.1c.ru/8.1/data-composition-system/core}parameter='Заголовок']/{http://v8.1c.ru/8.1/data-composition-system/core}value/{http://v8.1c.ru/8.1/data/core}item[{http://v8.1c.ru/8.1/data/core}lang='ru']/{http://v8.1c.ru/8.1/data/core}content",
+          "eq": [
+            "Новый отчёт"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item[{http://v8.1c.ru/8.1/data-composition-system/core}parameter='ВыводитьЗаголовок']/{http://v8.1c.ru/8.1/data-composition-system/core}value[@{http://www.w3.org/2001/XMLSchema-instance}type='dcsset:DataCompositionTextOutputType']",
+          "eq": [
+            "Output"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item[{http://v8.1c.ru/8.1/data-composition-system/core}parameter='МакетОформления']/{http://v8.1c.ru/8.1/data-composition-system/core}value",
+          "eq": [
+            "ОформлениеОтчетовЧерноБелый"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}filter/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}right",
+          "eq": [
+            "0"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}conditionalAppearance/{http://v8.1c.ru/8.1/data-composition-system/settings}item/{http://v8.1c.ru/8.1/data-composition-system/settings}use",
+          "eq": [
+            "false"
+          ]
+        },
+        {
+          "path": "src/cf/Reports/F05Report/Templates/PrimitiveTypedAppearance/Ext/Template.xml",
+          "kind": "xml",
+          "select": ".//{http://v8.1c.ru/8.1/data-composition-system/settings}outputParameters/{http://v8.1c.ru/8.1/data-composition-system/core}item[{http://v8.1c.ru/8.1/data-composition-system/core}parameter='Заголовок']/{http://v8.1c.ru/8.1/data-composition-system/core}use",
+          "eq": [
+            "false"
+          ]
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.PrimitiveTypedAppearance.Setting.Основной.Property"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ]
+}
