@@ -1,22 +1,22 @@
-pub mod application;
-mod composition;
-pub mod domain;
-pub(crate) mod infrastructure;
-pub mod interfaces;
+pub use unica_application::application;
+pub use unica_domain as domain;
 
-#[cfg(feature = "receipt-ledger-test-support")]
+// Признак `test-support` собирает тестовые помощники нижнего слоя для
+// крейтов над ним. Часть помощников нужна только собственным тестам, и в
+// такой сборке они не используются; неиспользуемое ловит сборка пакета без
+// признаков и сборка его тестов.
 #[doc(hidden)]
-pub mod receipt_ledger_test_support;
-
-#[cfg(feature = "receipt-ledger-test-support")]
+#[cfg_attr(
+    all(feature = "test-support", not(test)),
+    allow(dead_code, unused_imports)
+)]
+pub mod composition;
 #[doc(hidden)]
-pub mod frontend_restart_test_support;
-
-// Входы проверок обвязки сценариев. Не фасад: вход без аргументов только
-// запускает проверку, `#[test]` к ним приставляет бинарь контракта.
-#[cfg(feature = "receipt-ledger-test-support")]
-#[doc(hidden)]
-pub use infrastructure::receipt_scenario::harness_checks::entry as receipt_scenario_harness_checks;
+#[cfg_attr(
+    all(feature = "test-support", not(test)),
+    allow(dead_code, unused_imports)
+)]
+pub mod infrastructure;
 
 pub use infrastructure::platform::run_platform_main;
 

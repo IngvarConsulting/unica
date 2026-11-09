@@ -1044,7 +1044,7 @@ mod tests {
     }
 
     /// `<узел>.Props.<имя>` называет одно свойство узла: сегмент последний и
-    /// с одним именем, владелец — адрес до него (#2088).
+    /// с одним именем, владелец — адрес до него.
     /// rule: CTR.SOURCE.QUALIFIED-LOGICAL-ADDRESS
     #[test]
     fn a_property_address_names_its_owner_and_one_property() {

@@ -1,0 +1,49 @@
+{
+  "id": "S310",
+  "area": "Рабочее пространство",
+  "workspace": "tests/fixtures/acceptance/workspace-bare",
+  "task": "Прочитать, сравнить и изменить узел в незаведённой области — три актор-связанных маршрута называют одну причину, а не безымянный сбой",
+  "wire": [
+    {
+      "tool": "unica.resolve",
+      "args": {
+        "at": "main:Catalog.Валюты"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: no PlatformXml source set is admitted: workspace is uninitialized; no v8project.yaml or 1C source roots were found"
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "main:Catalog.Валюты",
+        "right": "main:Catalog.Услуги"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: no PlatformXml source set is admitted: workspace is uninitialized; no v8project.yaml or 1C source roots were found"
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Catalog.Валюты",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "комментарий"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "invalid_state: no PlatformXml source set is admitted: workspace is uninitialized; no v8project.yaml or 1C source roots were found"
+    }
+  ]
+}

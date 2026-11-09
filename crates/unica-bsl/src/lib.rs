@@ -2,8 +2,6 @@ pub mod applicability;
 
 pub mod operations;
 
-pub mod recovery;
-
 pub mod outline;
 pub mod profile;
 pub mod projection;

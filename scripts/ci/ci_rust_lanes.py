@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import allure_results
+from cargo_target import cargo_target_dir
 import prepared_binary
 import ci_shadow_selector
 from workflow_routing import ADMITTED
@@ -31,6 +32,10 @@ HOSTS = (LINUX, "macos-15", "windows-latest")
 # macOS runs the complete suite nightly, in `main` and release runs and in
 # pull requests labelled `ci:full`.
 # macos-14 is comparison-only history; it is not a current HOSTS entry.
+# Removal: runners moved to macos-15 on 2026-10-31 and inventories live
+# 90 days. The macos-14 comparison here and in `rust_inventory_baseline.py`
+# goes, with its tests, once every release line has a run after 2026-10-31
+# or after 2027-01-29, whichever comes first.
 # Earlier queue inventories ran only the platform facades on macOS (profile
 # `queue-platform`); a baseline of that shape stays a narrowed selection.
 HISTORICAL_PLATFORM_ONLY = {("queue", "macos-15"), ("queue", "macos-14")}
@@ -94,7 +99,7 @@ def archive_command(lane: str, archive: Path, root: Path = ROOT, target: str | N
     # list/run, never silently discarded from the execution plan.
     return ["cargo", "nextest", "archive", *selected, *([] if "--locked" in selected else ["--locked"]),
             *(["--target", target] if target is not None else []),
-            "--target-dir", str(root / "target"), "--archive-file", str(archive)]
+            "--target-dir", str(cargo_target_dir(root)), "--archive-file", str(archive)]
 
 
 def doctest_command(root: Path = ROOT, target: str | None = None) -> list[str]:
@@ -103,7 +108,7 @@ def doctest_command(root: Path = ROOT, target: str | None = None) -> list[str]:
     # the ordinary build, against the target directory the archive just filled.
     return ["cargo", "test", "--doc", "--workspace", "--locked",
             *(["--target", target] if target is not None else []),
-            "--target-dir", str(root / "target")]
+            "--target-dir", str(cargo_target_dir(root))]
 
 
 DOCTEST_OUTPUT_LIMIT = 16_000
@@ -150,6 +155,15 @@ def doctest_record(manifest: dict, profile: str, host: str) -> dict:
                 "size": "small", "rust_lane": "ordinary"},
         message=problem, trace=outcome.get("output") if problem else None, start=start, stop=stop,
     )
+
+
+def extracted_target(root: Path) -> Path:
+    """Where reuse puts the archive's binaries and nextest its store: `<extract-to>/target`.
+
+    An archive carries its own build directory; `--archive-file` takes no
+    `--target-dir-remap`, so `CARGO_TARGET_DIR` does not move it.
+    """
+    return root.resolve() / "target"  # cargo-target: extracted archive
 
 
 def reuse_command(action: str, root: Path, archive: Path, lane: str, profile: str, partition: str | None = None, *, candidate: str | None = None, host: str | None = None) -> list[str]:
@@ -265,16 +279,16 @@ def fixture_binary_descriptor(root: Path, listed: dict, identity: dict) -> dict:
     metadata = listed.get("rust-build-meta", {})
     platforms = metadata.get("platforms", {})
     target = identity["target"]
-    if (metadata.get("target-directory") != str(root / "target")
+    if (metadata.get("target-directory") != str(cargo_target_dir(root))
         or platforms.get("host", {}).get("platform", {}).get("triple") != target
         or [item.get("platform", {}).get("triple") for item in platforms.get("targets", [])] != [target]):
         raise ValueError("fixture binary metadata does not describe the native archive target")
-    suite = listed.get("rust-suites", {}).get("unica-coder", {})
-    if (suite.get("package-name"), suite.get("binary-id"), suite.get("kind"), suite.get("build-platform")) != ("unica-coder", "unica-coder", "lib", "target"):
-        raise ValueError("fixture binary metadata is missing the unica-coder package")
+    suite = listed.get("rust-suites", {}).get("unica-product::bin/unica", {})
+    if (suite.get("package-name"), suite.get("binary-id"), suite.get("kind"), suite.get("build-platform")) != ("unica-product", "unica-product::bin/unica", "bin", "target"):
+        raise ValueError("fixture binary metadata is missing the unica-product package")
     package = suite.get("package-id")
     if not isinstance(package, str) or not package:
-        raise ValueError("fixture binary metadata is missing the unica-coder package identity")
+        raise ValueError("fixture binary metadata is missing the unica-product package identity")
     candidates = [entry for entry in metadata.get("non-test-binaries", {}).get(package, []) if entry.get("name") == "unica"]
     relative = fixture_binary_path(identity)
     described_path = candidates[0].get("path") if len(candidates) == 1 else None
@@ -284,7 +298,8 @@ def fixture_binary_descriptor(root: Path, listed: dict, identity: dict) -> dict:
         ("kind", "bin-exe"), ("build-platform", "target"),
     )) or described_path != relative:
         raise ValueError("archive must contain exactly one target unica non-test fixture binary")
-    binary = root.resolve() / "target" / relative
+    # Reuse extracts the archive into `<root>/target`, whatever built it.
+    binary = root.resolve() / "target" / relative  # cargo-target: extracted archive
     if not binary.is_file() or binary.resolve() != binary or binary.stat().st_size <= 0:
         raise ValueError("archive fixture binary is missing, empty or linked")
     return {"path": relative, "sha256": prepared_binary.digest(binary), "bytes": binary.stat().st_size}
@@ -300,7 +315,7 @@ def fixture_binary_environment(root: Path, document: dict) -> dict[str, str]:
     # Nextest extracts the checked archive before starting tests. The parent and
     # isolated child verify these exact extracted bytes before using the fixture.
     return {**os.environ,
-            "UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY": str(root.resolve() / "target" / descriptor["path"]),
+            "UNICA_CANONICAL_DELIVERY_SUCCESS_BINARY": str(extracted_target(root) / descriptor["path"]),
             "UNICA_CANONICAL_DELIVERY_SUCCESS_SHA256": descriptor["sha256"]}
 
 
@@ -508,16 +523,21 @@ def result_directory(report: Path, host: str, lane: str) -> Path:
     return report / f"results-rust-{host}-{lane}-1"
 
 
-def build_host(root: Path, work: Path, report: Path, profile: str, host: str, line: str | None) -> int:
+def build_host(root: Path, work: Path, report: Path, profile: str, host: str, line: str | None,
+               only: str | None = None) -> int:
     """Build every lane archive of this runner in the job that will run it.
 
     The archive is not handed to another job: it pins the bytes the plan lists
     to the bytes the run executes, and a later lane's build (Receipt rebuilds
     `unica` with its feature) cannot replace them, because the run extracts
     its own archive. A failed lane still leaves its signed configuration.
+    `only` builds one lane of the plan: the queue's probe of the nightly path.
     """
+    planned = lanes(profile, host)
+    if only is not None and only not in planned:
+        raise ValueError(f"lane {only} is not in the {profile} plan of {host}: {', '.join(planned)}")
     failed = []
-    for lane in lanes(profile, host):
+    for lane in planned if only is None else (only,):
         try:
             build(root, work / lane, lane, profile, host, line)
         except Exception as error:  # one red lane never stops the next one
@@ -594,7 +614,8 @@ def run_archive(root: Path, prepared: Path, destination: Path, lane: str, profil
         # not take the doctest outcome out of the report.
         allure_results.write(destination, doctest_record(document, profile, host))
     nextest_profile = document["nextestProfile"]
-    candidates = {root / "target/nextest" / nextest_profile / "junit.xml", root / "vendor/ureq/target/nextest" / nextest_profile / "junit.xml"}
+    candidates = {extracted_target(root) / "nextest" / nextest_profile / "junit.xml",
+                  root / "vendor" / "ureq" / "target" / "nextest" / nextest_profile / "junit.xml"}  # cargo-target: extracted archive
     for path in candidates:
         path.unlink(missing_ok=True)
     command = reuse_command("run", root, archive, lane, profile, f"hash:{index}/{len(document['shards'])}", host=host)
@@ -718,7 +739,7 @@ def run_medium(root: Path, prepared: Path, destination: Path, host: str, shadow:
         "runId": os.environ.get("GITHUB_RUN_ID"), "attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
     }
     if any(not case["ignored"] for case in plan):
-        junit = root / "target/nextest" / MEDIUM_PROFILE / "junit.xml"
+        junit = extracted_target(root) / "nextest" / MEDIUM_PROFILE / "junit.xml"
         junit.unlink(missing_ok=True)
         command = reuse_command("run", root, archive, "ordinary", MEDIUM_PROFILE, candidate=expression)
         completed, seconds = timed(command, root, env=capability_environment(destination, fixture_binary_environment(root, document)))
@@ -812,9 +833,87 @@ def same_selection(first: str, second: str, host: str | None = None) -> bool:
 
 
 def binary_of(case: str, binaries: list[str]) -> str | None:
-    # Binary ids nest (`unica-coder`, `unica-coder::daemon_receipt_ledger`):
+    # Binary ids nest (`unica-coder`, `unica-coder::role_registration`):
     # a case belongs to the longest id it starts with.
     return max((binary for binary in binaries if case.startswith(binary + "::")), key=len, default=None)
+
+
+def moved_cases(lost: list[str], arrived: list[str]) -> dict[str, str]:
+    """Lost cases that reappeared elsewhere: the same test function, one to one.
+
+    A test moved to another crate or module changes its case ID but keeps its
+    function name. A lost case counts as moved when exactly one lost case and
+    exactly one newly arrived case carry that name; any ambiguity is not a move
+    and still needs a declaration.
+    """
+    def name(case: str) -> str:
+        return case.rsplit("::", 1)[-1]
+    lost_names = Counter(name(case) for case in lost)
+    arrivals: dict[str, list[str]] = {}
+    for case in arrived:
+        arrivals.setdefault(name(case), []).append(case)
+    return {case: arrivals[name(case)][0] for case in lost
+            if lost_names[name(case)] == 1 and len(arrivals.get(name(case), ())) == 1}
+
+
+def declared_after_move(lost: list[str], old_cases: set[str], new_cases: set[str],
+                        tests: list[str]) -> dict[str, str]:
+    """Lost cases a declaration names by the ID they had after a later move.
+
+    A test can move to another crate or module after the previous inventory
+    and then be removed before the next one. The pull request that removed it
+    declares the ID it had then, which the previous inventory never saw. Such
+    an exact declaration explains the lost case with the same function name
+    when that name is lost once and the declared ID is in neither inventory.
+    """
+    def name(case: str) -> str:
+        return case.rsplit("::", 1)[-1]
+    lost_names = Counter(name(case) for case in lost)
+    declared: dict[str, list[str]] = {}
+    for pattern in tests:
+        if not pattern.endswith("*") and pattern not in old_cases and pattern not in new_cases:
+            declared.setdefault(name(pattern), []).append(pattern)
+    return {case: declared[name(case)][0] for case in lost
+            if lost_names[name(case)] == 1 and len(declared.get(name(case), ())) == 1}
+
+
+def twin_declaration(case_path: str, pattern: str, binaries: list[str] = ()) -> bool:
+    """Whether an exact declaration names this case as compiled into another target.
+
+    A crate that includes another crate's modules runs their tests under its
+    own module path: `unica-domain::apply::tests::x` was also
+    `unica-coder::domain::apply::tests::x`. The declaration's binary is a known
+    target ID, else its package alone; what follows it — at least a module and
+    the function — must end the case's path in its target.
+    """
+    if pattern.endswith("*"):
+        return False
+    binary = binary_of(pattern, list(binaries)) or pattern.split("::", 1)[0]
+    tail = pattern[len(binary) + 2:].split("::")
+    return len(tail) >= 2 and case_path.split("::")[-len(tail):] == tail
+
+
+def declared_in_another_target(lost: list[str], binaries: list[str], tests: list[str]) -> dict[str, str]:
+    """Lost cases an exact declaration names in another test target.
+
+    One source file can compile into several targets: a crate that includes
+    another crate's modules runs their tests as its own cases. When the
+    previous inventory had such a twin and the source later left one of the
+    targets, the pull request that removed the test sees only the target that
+    still had it and declares that one. The declaration explains the lost case
+    whose path in its target ends with the declared module path and function.
+    """
+    explained = {}
+    for case in lost:
+        binary = binary_of(case, binaries)
+        if binary is None:
+            continue
+        path = case[len(binary) + 2:]
+        found = [pattern for pattern in tests
+                 if pattern != case and twin_declaration(path, pattern, binaries)]
+        if found:
+            explained[case] = found[0]
+    return explained
 
 
 def explained_case(case: str, binaries: list[str], gone: set[str], tests: list[str]) -> bool:
@@ -875,7 +974,7 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
     tests = list(explanations["removedTests"])
     drift = {"source": baseline.get("source"), "reset": explanations["reset"],
              "declaredBy": explanations.get("declaredBy", {}), "removedTargets": sorted(removed),
-             "removedTests": sorted(tests), "removedCases": {}}
+             "removedTests": sorted(tests), "removedCases": {}, "movedCases": {}}
     if previous is None:
         if explanations["reset"]:
             return [], drift
@@ -930,9 +1029,18 @@ def compare_inventory(baseline: dict, current: dict) -> tuple[list[str], dict]:
         if not same_profile:
             continue
         lost = sorted(set(old["cases"]) - set(new["cases"]))
-        unexplained = [case for case in lost if not explained_case(case, old["binaries"], gone, tests)]
+        moved = moved_cases(lost, sorted(set(new["cases"]) - set(old["cases"])))
+        late = declared_after_move([case for case in lost if case not in moved],
+                                   set(old["cases"]), set(new["cases"]), tests)
+        late |= declared_in_another_target([case for case in lost if case not in moved and case not in late],
+                                           sorted(set(old["binaries"]) | set(new["binaries"])), tests)
+        unexplained = [case for case in lost
+                       if case not in moved and case not in late
+                       and not explained_case(case, old["binaries"], gone, tests)]
         if lost:
             drift["removedCases"][label] = lost
+        if moved:
+            drift["movedCases"][label] = moved
         for binary, count in sorted(old["selected"].items()):
             if (count and binary in new["binaries"] and not new["selected"].get(binary)
                 and any(binary_of(case, old["binaries"]) == binary for case in unexplained)):

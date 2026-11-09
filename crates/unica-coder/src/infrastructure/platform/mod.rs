@@ -8,10 +8,10 @@ mod target;
 mod view_snapshot_spill;
 
 pub use entrypoint::run_platform_main;
-pub(crate) use target::current_target_id;
-pub(crate) use view_snapshot_spill::{TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_BYTES};
+pub use target::current_target_id;
+pub use view_snapshot_spill::{TempFileSpill, VIEW_SNAPSHOT_MAX_RETAINED_BYTES};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn create_runtime_directory_link_for_test(
     target: &std::path::Path,
     link: &std::path::Path,
@@ -30,12 +30,12 @@ pub(crate) fn create_runtime_directory_link_for_test(
     }
 }
 
-#[cfg(test)]
-pub(crate) use unica_process::test_support::{
+#[cfg(any(test, feature = "test-support"))]
+pub use unica_process::test_support::{
     inject_unix_waitid_error_for_test, reap_runtime_authority_test_child,
 };
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn assert_runtime_generation_authority_for_test() {
     #[cfg(unix)]
     {

@@ -1,0 +1,17 @@
+{
+  "id": "S318",
+  "area": "Код BSL",
+  "task": "Найти определение функции по символу",
+  "wire": [
+    {
+      "tool": "unica.search",
+      "args": {
+        "query": "ПеревестиТекст",
+        "role": "symbol"
+      },
+      "expect": [
+        "provider"
+      ]
+    }
+  ]
+}

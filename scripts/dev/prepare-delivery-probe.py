@@ -13,7 +13,7 @@
 
 Usage:
     prepare-delivery-probe.py                     # последний релиз, движок bsl-analyzer
-    prepare-delivery-probe.py --tag v0.13.0 --engine rlm-tools-bsl
+    prepare-delivery-probe.py --tag v0.13.0 --engine bsl-analyzer
 """
 
 from __future__ import annotations

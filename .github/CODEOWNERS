@@ -1,9 +1,12 @@
 # Paths whose changes need the code owner's review. Other paths have no
-# owner: any maintainer approves them. This file only requests the review.
-# GitHub requires it only when the main ruleset turns on required approval
-# and code-owner review; otherwise approval rests on the documented process.
+# owner: the maintainer approves them. GitHub's own code-owner review stays
+# off: an author cannot approve their own pull request, and agents work under
+# the owner's account. Instead the required `PR metadata` check
+# (.github/workflows/pr-metadata.yml) fails a pull request by anyone else that
+# changes one of these paths until the owner approves its current head.
 /arch/rules/** @zeegin
 /.github/** @zeegin
 /scripts/ci/** @zeegin
 /.config/** @zeegin
 /.agents/skills/** @zeegin
+/docs/release-runbook.md @zeegin

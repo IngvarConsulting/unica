@@ -389,10 +389,8 @@ mod tests {
     /// workspace: the manager module of `Справочник.Валюты` with a function
     /// `Ф` and a procedure `Вызов` that calls it.
     fn recorded(key: &str) -> Value {
-        let all: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/bsl_analyzer/symbols-0.2.86.json"
-        ))
-        .unwrap();
+        let all: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/symbols-0.2.86.json")).unwrap();
         all[key]["answer"].clone()
     }
 

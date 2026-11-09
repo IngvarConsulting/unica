@@ -1,0 +1,153 @@
+{
+  "id": "S422",
+  "name": "xdto-nested-property-is-addressed",
+  "issue": 1356,
+  "area": "XDTO и обмены",
+  "task": "Свойство вложенного анонимного типа XDTO читается и правится по адресу Type.T.Property.A.Property.B: неизвестный propertyPath отказывает без записи с next к контракту property.add, property.remove на типе — с next к словарю типа, исправленные вызовы строят предпросмотр",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/branches/0/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property"
+        }
+      ]
+    },
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/items/0/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property.Документ_ЗаказКлиента"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "propertyPath": "СсылкаНаОбъект",
+                "property": {
+                  "name": "Документ_Новый",
+                  "type": "xs:string",
+                  "lowerBound": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: unknown XDTO operation argument",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].args.values.propertyPath"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Can.property.add"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект",
+        "ops": [
+          {
+            "op": "property.add",
+            "args": {
+              "values": {
+                "property": {
+                  "name": "Документ_Новый",
+                  "type": "xs:string",
+                  "lowerBound": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка",
+        "ops": [
+          {
+            "op": "property.remove",
+            "args": {
+              "values": {
+                "name": "СсылкаНаОбъект"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: apply operation `property.remove` does not apply to Type `main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка`; it addresses `XDTOPackage.Name.Type.T.Proper",
+      "assertions": [
+        {
+          "pointer": "/at",
+          "eq": "ops[0].at"
+        },
+        {
+          "pointer": "/next/0/args/at",
+          "eq": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка"
+        }
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:XDTOPackage.EnterpriseData_1_17_3.Type.ЛюбаяСсылка.Property.СсылкаНаОбъект.Property.Документ_ЗаказКлиента",
+        "ops": [
+          {
+            "op": "property.remove"
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/mode",
+          "eq": "preview"
+        }
+      ]
+    }
+  ]
+}
