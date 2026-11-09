@@ -76,6 +76,8 @@ CI_CONTRACT_PATHS = {
     "tests/ci/test_crate_declarations.py",
     "scripts/ci/check-crate-read-boundary.py",
     "tests/ci/test_crate_read_boundary.py",
+    "scripts/ci/check-version-literals.py",
+    "tests/ci/test_version_literals.py",
     "scripts/ci/check-discovered-modules-format.py",
     "tests/ci/test_discovered_modules_format.py",
     "scripts/ci/workflow_routing.py",

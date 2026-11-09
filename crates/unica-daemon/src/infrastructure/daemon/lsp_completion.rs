@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use unica_address::address::QualifiedAddress;
-use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+use unica_address::source_target::MetadataAddress;
 use unica_code_intelligence::completion::{
     CompletionSources, ModuleOwner, ObjectMembers, PlatformMember,
 };
@@ -178,9 +178,7 @@ impl CompletionSources for SessionSources<'_> {
     }
 
     fn object_members(&self, kind: &str, name: &str) -> Option<ObjectMembers> {
-        let target =
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &format!("{kind}.{name}"))
-                .ok()?;
+        let target = MetadataAddress::parse_logical(&format!("{kind}.{name}")).ok()?;
         let members = self
             .descriptors
             .metadata_descriptor(&target)

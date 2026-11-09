@@ -27,8 +27,8 @@ use std::sync::{mpsc, Barrier, Condvar, Mutex};
 use std::thread;
 use std::time::Instant;
 use unica_adapter_v8_runner::request::RuntimeJobRequest;
+use unica_execution::runner::operation::RuntimeJobOperation;
 use unica_execution_contract::invocation::InvocationStatus;
-use unica_runner::operation::RuntimeJobOperation;
 use unica_work_control::provider_deadline::ProviderDeadline;
 use unica_workspace::actor::{IndexWorkIdentity, WorkspaceSourceSetInput};
 use unica_workspace::test_support::retained_read_probe::{RetainedRead, RetainedReadProbe};
@@ -12022,11 +12022,7 @@ fn object_check_shows_the_metadata_focus_chain_of_a_provider_finding() {
     };
     let object = || DiagnosticObservationLocation::Logical {
         metadata_path: Some(
-            unica_address::source_target::MetadataAddress::parse(
-                unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-                "Catalog.Items",
-            )
-            .unwrap(),
+            unica_address::source_target::MetadataAddress::parse_logical("Catalog.Items").unwrap(),
         ),
     };
     let attribute = |name: &str| MetadataFocus {

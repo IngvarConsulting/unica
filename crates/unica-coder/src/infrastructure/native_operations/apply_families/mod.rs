@@ -387,7 +387,7 @@ fn support_owner_relative(
     source_kind: SourceSetKind,
 ) -> Option<(String, std::path::PathBuf)> {
     use unica_address::address::NodeKind;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_source_designer::layout::metadata_descriptor_relative;
 
     let segments = request.at().segments();
@@ -405,8 +405,7 @@ fn support_owner_relative(
         });
     }
     let owner_path = format!("{}.{}", owner.kind().as_str(), owner.name()?);
-    let owner_address =
-        MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner_path).ok()?;
+    let owner_address = MetadataAddress::parse_logical(&owner_path).ok()?;
     let relative = metadata_descriptor_relative(&owner_address, source_kind).ok()?;
     Some((owner_path, relative))
 }
@@ -420,7 +419,7 @@ fn writable_profile_owner_chain(
     source_kind: SourceSetKind,
 ) -> Vec<std::path::PathBuf> {
     use unica_address::address::NodeKind;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     use unica_source_designer::layout::{attached_resource_relative, metadata_descriptor_relative};
 
     let mut chain = Vec::new();
@@ -441,8 +440,7 @@ fn writable_profile_owner_chain(
         return chain;
     }
     let owner_path = format!("{}.{}", owner.kind().as_str(), owner_name);
-    let Ok(owner_address) = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner_path)
-    else {
+    let Ok(owner_address) = MetadataAddress::parse_logical(&owner_path) else {
         return chain;
     };
     if let Ok(descriptor) = metadata_descriptor_relative(&owner_address, source_kind) {
@@ -467,9 +465,7 @@ fn writable_profile_owner_chain(
         };
         if let (Some(resource), Some(nested_name)) = (nested_resource, nested.name()) {
             let nested_path = format!("{owner_path}.{}.{nested_name}", nested.kind().as_str());
-            if let Ok(nested_address) =
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &nested_path)
-            {
+            if let Ok(nested_address) = MetadataAddress::parse_logical(&nested_path) {
                 if let Ok(wrapper) = metadata_descriptor_relative(&nested_address, source_kind) {
                     chain.push(wrapper);
                 }
@@ -803,7 +799,7 @@ fn descriptor_node(
     at: &unica_address::address::QualifiedAddress,
 ) -> Option<(unica_address::source_target::MetadataAddress, usize)> {
     use unica_address::address::NodeKind;
-    use unica_address::source_target::{MetadataAddress, PLATFORM_XML_8_3_27_FORMAT_2_20};
+    use unica_address::source_target::MetadataAddress;
     let segments = at.segments();
     let owner = segments.first()?;
     let owner_path = format!("{}.{}", owner.kind().as_str(), owner.name()?);
@@ -813,15 +809,9 @@ fn descriptor_node(
                 && nested.name().is_some() =>
         {
             let path = format!("{owner_path}.{}.{}", nested.kind().as_str(), nested.name()?);
-            Some((
-                MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &path).ok()?,
-                2,
-            ))
+            Some((MetadataAddress::parse_logical(&path).ok()?, 2))
         }
-        _ => Some((
-            MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &owner_path).ok()?,
-            1,
-        )),
+        _ => Some((MetadataAddress::parse_logical(&owner_path).ok()?, 1)),
     }
 }
 

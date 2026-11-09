@@ -299,11 +299,8 @@ pub fn parse_owner_child_artifact(
     if name.is_empty() {
         return Err(format!("{child_kind} owner entry name is empty"));
     }
-    let child = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner}.{child_kind}.{name}"),
-    )
-    .map_err(|_| "owner child identity is not representable".to_string())?;
+    let child = MetadataAddress::parse_logical(&format!("{owner}.{child_kind}.{name}"))
+        .map_err(|_| "owner child identity is not representable".to_string())?;
     Ok(ClosedOwnerChild {
         child,
         kind,
@@ -804,7 +801,7 @@ impl ClosedChildKind {
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20;
+
 use unica_bsl_parser::{
     exact_bsl_method_facts, exported_bsl_procedure_matches, BslProcedureRequirement,
 };
@@ -2077,11 +2074,8 @@ pub fn parse_child_artifact(
         ),
         _ => unreachable!(),
     };
-    let child = MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("{owner}.{child_kind}.{name}"),
-    )
-    .map_err(|_| "child descriptor identity is not representable".to_string())?;
+    let child = MetadataAddress::parse_logical(&format!("{owner}.{child_kind}.{name}"))
+        .map_err(|_| "child descriptor identity is not representable".to_string())?;
     Ok(ClosedChildDescriptor { child, profile })
 }
 
@@ -2478,10 +2472,8 @@ pub fn validate_event_subscription_binding_subject(
         }
     }
 
-    let module_target = match MetadataAddress::parse(
-        PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &format!("CommonModule.{module_name}"),
-    ) {
+    let module_target = match MetadataAddress::parse_logical(&format!("CommonModule.{module_name}"))
+    {
         Ok(target) => target,
         Err(_) => {
             return fail(
@@ -2846,8 +2838,7 @@ impl MetaValidationReporter {
 }
 
 pub fn metadata_address(raw: impl AsRef<str>) -> Result<MetadataAddress, String> {
-    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, raw.as_ref())
-        .map_err(|error| error.to_string())
+    MetadataAddress::parse_logical(raw.as_ref()).map_err(|error| error.to_string())
 }
 
 pub fn metadata_collection(object_type: &str) -> Option<&'static str> {
@@ -4397,10 +4388,7 @@ pub fn meta_validate_check_method_reference(
     }
     if let Some(subject) = proof_subject {
         let module_reference = format!("CommonModule.{module_name}");
-        let module_target = match MetadataAddress::parse(
-            PLATFORM_XML_8_3_27_FORMAT_2_20,
-            &module_reference,
-        ) {
+        let module_target = match MetadataAddress::parse_logical(&module_reference) {
             Ok(target) => target,
             Err(_) => {
                 report.error(format!(

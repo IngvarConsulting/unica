@@ -58,7 +58,6 @@ unica-templates-designer = { path = "../unica-templates-designer" }
 unica-forms-designer = { path = "../unica-forms-designer" }
 unica-metadata-designer = { path = "../unica-metadata-designer" }
 unica-xdto-designer = { path = "../unica-xdto-designer" }
-unica-runner = { path = "../unica-runner" }
 unica-adapter-v8-runner = { path = "../unica-adapter-v8-runner" }
 unica-workspace = { path = "../unica-workspace" }
 unica-redaction = { path = "../unica-redaction" }
@@ -166,6 +165,7 @@ syn.workspace = true
 tar.workspace = true
 
 [package.metadata.unica]
+version-literal-baseline = 53
 component = "product"
 file-io = "owned"
 # `crates`: tests compare the operation tables and codecs of other crates with their sources.

@@ -28,7 +28,6 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use unica_address::source_target::{
     MetadataAddress, SourceTarget, SourceTargetErrorCode, TargetKind,
-    PLATFORM_XML_8_3_27_FORMAT_2_20,
 };
 use unica_execution_contract::adapter_outcome::AdapterOutcome;
 use unica_forms::facts::*;
@@ -486,10 +485,6 @@ fn role_resolution_failure(code: SourceTargetErrorCode) -> RoleResolutionFailure
             RoleResolutionCode::ContainmentDenied,
             "the logical role target failed containment checks",
         ),
-        SourceTargetErrorCode::AddressProfileUnsupported => RoleResolutionFailure::new(
-            RoleResolutionCode::ProfileUnsupported,
-            "the logical address profile is unsupported",
-        ),
         SourceTargetErrorCode::SourceRootNotAddressable => RoleResolutionFailure::new(
             RoleResolutionCode::ProviderUnavailable,
             "the logical source provider is unavailable",
@@ -769,7 +764,7 @@ fn publish_role_edit(
     postimage: &[u8],
     context: &WorkspaceContext,
 ) -> Result<RoleEditPublication, (&'static str, Option<String>)> {
-    let address = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, &target.metadata_path)
+    let address = MetadataAddress::parse_logical(&target.metadata_path)
         .map_err(|_| ("concurrent_modification", None))?;
     let (current_handle, current_evidence) =
         resolve_role_descriptor(&target.source_set, &address, context).map_err(|failure| {
@@ -1425,9 +1420,7 @@ pub(crate) mod medium_role_edit_contract_tests {
         let support = WorkspaceSupportStateReader::new(&context)
             .object_support(&unica_address::source_target::ResolvedTarget {
                 source_set: "main".to_string(),
-                metadata_path: Some(
-                    MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Role.Demo").unwrap(),
-                ),
+                metadata_path: Some(MetadataAddress::parse_logical("Role.Demo").unwrap()),
                 target_kind: TargetKind::MetadataObject,
             })
             .unwrap();

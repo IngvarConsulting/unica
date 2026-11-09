@@ -409,11 +409,7 @@ fn metadata_layout_path(address: &QualifiedAddress, source_kind: SourceSetKind) 
     }
     let target = address.to_string();
     let target = target.split_once(':')?.1;
-    let target = unica_address::source_target::MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        target,
-    )
-    .ok()?;
+    let target = unica_address::source_target::MetadataAddress::parse_logical(target).ok()?;
     let relative =
         unica_source_designer::layout::metadata_descriptor_relative(&target, source_kind).ok()?;
     let relative = relative.to_str()?.replace('\\', "/");
@@ -2275,17 +2271,14 @@ fn run_meta_validator(
             "the metadata validator needs one object descriptor; this address names none",
         )));
     };
-    let target = unica_address::source_target::MetadataAddress::parse(
-        unica_address::source_target::PLATFORM_XML_8_3_27_FORMAT_2_20,
-        &path,
-    )
-    .map_err(|error| {
-        Box::new(error_result(
-            Some(at.to_string()),
-            RefusalCode::BadValue,
-            error.to_string(),
-        ))
-    })?;
+    let target =
+        unica_address::source_target::MetadataAddress::parse_logical(&path).map_err(|error| {
+            Box::new(error_result(
+                Some(at.to_string()),
+                RefusalCode::BadValue,
+                error.to_string(),
+            ))
+        })?;
     let request = unica_metadata::request::MetaInfoRequest {
         source_set: address.source_set().to_string(),
         metadata_path: target,

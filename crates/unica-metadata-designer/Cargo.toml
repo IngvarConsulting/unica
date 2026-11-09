@@ -28,6 +28,7 @@ memchr.workspace = true
 chrono.workspace = true
 
 [package.metadata.unica]
+version-literal-baseline = 74
 component = "codec"
 file-io = "none"
 inputs = [

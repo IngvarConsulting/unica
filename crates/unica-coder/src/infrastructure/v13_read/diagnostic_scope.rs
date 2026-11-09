@@ -54,9 +54,7 @@ impl<'a> LogicalViewReadAuthority<'a> {
             // читатель модулей: целью остаётся сам объект.
             (_, [owner]) if owner.name().is_some() => (
                 Some(
-                    MetadataAddress::parse(
-                        PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        &format!(
+                    MetadataAddress::parse_logical(&format!(
                             "{}.{}",
                             owner.kind().as_str(),
                             owner.name().unwrap_or_default()

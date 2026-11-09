@@ -1881,9 +1881,7 @@ fn body_line_read_validates_the_tail_and_continuation_reopens_exact_bytes() {
 /// rule: INV.APP.CODE-SEARCH-HIT-ADDRESS
 #[test]
 fn body_line_provider_search_uses_current_spans_and_preserves_evidence() {
-    use unica_address::source_target::{
-        MetadataAddress, TargetKind, PLATFORM_XML_8_3_27_FORMAT_2_20,
-    };
+    use unica_address::source_target::{MetadataAddress, TargetKind};
     use unica_code_intelligence::model::ProviderSearchHit;
     use unica_execution::invocation_store::ToolIdentity;
     use unica_source_contract::location::SourceLocation;
@@ -1904,11 +1902,7 @@ fn body_line_provider_search_uses_current_spans_and_preserves_evidence() {
             location: SourceLocation::Addressed {
                 source_set: "main".into(),
                 metadata_path: Some(
-                    MetadataAddress::parse(
-                        PLATFORM_XML_8_3_27_FORMAT_2_20,
-                        "CommonModule.Probe.Module",
-                    )
-                    .unwrap(),
+                    MetadataAddress::parse_logical("CommonModule.Probe.Module").unwrap(),
                 ),
                 target_kind: TargetKind::Module,
             },

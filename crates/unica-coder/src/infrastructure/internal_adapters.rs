@@ -15,6 +15,7 @@ use unica_adapter_v8_runner::adapter::{validate_runtime_mapper_payload, RuntimeA
 use unica_adapter_v8_runner::preflight::RuntimeBuildPreflight;
 use unica_adapter_v8_runner::request::RuntimeJobRequest;
 use unica_artifact_delivery::engine::BundledTool;
+use unica_execution::runner::operation::RuntimeJobOperation;
 use unica_execution::runtime_jobs;
 use unica_execution_contract::adapter_outcome::cancelled_process_outcome;
 use unica_execution_contract::adapter_outcome::merge_warnings;
@@ -25,7 +26,6 @@ use unica_process::runner::{system_process_runner, ProcessCommand, ProcessRunner
 #[cfg(any(test, feature = "test-support"))]
 use unica_process::runner::{ProcessOutput, ProcessStreamFailure, ProcessStreamOutput};
 use unica_redaction::redactor;
-use unica_runner::operation::RuntimeJobOperation;
 use unica_source_contract::workspace::WorkspaceContext;
 #[cfg(any(test, feature = "test-support"))]
 use unica_workspace::paths::path_lock_identity;

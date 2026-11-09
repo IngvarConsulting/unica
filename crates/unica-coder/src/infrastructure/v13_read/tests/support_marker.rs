@@ -84,7 +84,7 @@ fn replaced_support_marker_never_reaches_a_retained_root_with_the_old_state() {
         std::time::Duration::ZERO,
     ));
     let operation = reader(Arc::clone(&retained));
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    let target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
     operation.object_support(&target, &mut || Ok(())).unwrap();
     fs::remove_file(&marker).unwrap();
 
@@ -132,7 +132,7 @@ fn large_support_marker_reads_late_rules_once_for_multiple_owners() {
         ),
         ("Catalog.Items", ObjectSupportState::Locked),
     ] {
-        let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, path).unwrap();
+        let target = MetadataAddress::parse_logical(path).unwrap();
         assert_eq!(
             authority
                 .read
@@ -159,7 +159,7 @@ fn support_marker_stream_preserves_terminal_errors_and_never_memoizes_interrupti
     let mut marker = b"{6,0,1,".to_vec();
     marker.resize(64 * 1024 + 1, b' ');
     fs::write(&marker_path, marker).unwrap();
-    let target = MetadataAddress::parse(PLATFORM_XML_8_3_27_FORMAT_2_20, "Catalog.Items").unwrap();
+    let target = MetadataAddress::parse_logical("Catalog.Items").unwrap();
     for code in [RefusalCode::Cancelled, RefusalCode::DeadlineExceeded] {
         // Before opening, between chunks, after EOF, and immediately before memo publication.
         for stop_at in [1, 3, 5, 6] {
