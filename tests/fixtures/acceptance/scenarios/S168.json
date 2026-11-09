@@ -1,0 +1,27 @@
+{
+  "area": "Роли и права",
+  "task": "Дать роли право чтения справочника Валюты",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Role.SalesReader.Right.Catalog_Валюты",
+        "ops": [
+          {
+            "op": "right.set",
+            "args": {
+              "values": {
+                "right": "Read",
+                "value": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S168"
+}

@@ -104,7 +104,7 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
             / "crates/unica-metadata/src/subsystem.rs"
         ).read_text(encoding="utf-8")
         application = (
-            REPO_ROOT / "crates/unica-coder/src/application/mod.rs"
+            REPO_ROOT / "crates/unica-application/src/application/mod.rs"
         ).read_text(encoding="utf-8")
 
         answer_item = re.search(
@@ -127,7 +127,7 @@ Prose resembling JSON: `"SubsystemPath": "Subsystems/Ложная/Subsystems"`.
         self.assertNotIn("full or focused registered tree", application)
 
         tool_contracts = (
-            REPO_ROOT / "crates/unica-coder/src/application/tool_contracts.rs"
+            REPO_ROOT / "crates/unica-application/src/application/tool_contracts.rs"
         ).read_text(encoding="utf-8")
         self.assertNotIn("whole `Subsystems/` folder for `Mode=tree`", tool_contracts)
 

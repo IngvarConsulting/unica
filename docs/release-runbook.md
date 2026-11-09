@@ -317,7 +317,31 @@ so nothing but a published tag will do — and a candidate needs testers before
 the release it becomes. A release candidate is published to the `next`
 channel of the marketplace and never to the stable catalog.
 
-Give the version an `-rc.N` suffix and tag it as usual:
+A candidate is cut from a checked alpha by a workflow:
+
+```bash
+gh workflow run rc-from-alpha.yml --repo IngvarConsulting/unica --ref main -f alpha=v0.15.0-alpha.4
+```
+
+The job runs in the environment `marketplace` and waits for the owner's
+approval. `scripts/ci/release-rc.py` then refuses unless:
+
+- the alpha is published and its slice — the parent of its version commit — is
+  in `main` and equals the `main@<sha>` of its release description;
+- the night that set this alpha is green and checked that very commit, so the
+  slice's tree is the tree it tested;
+- `vX.Y.Z` is not released yet.
+
+It commits `bump-version.py X.Y.Z-rc.N` on the slice, with `N` the next free
+number, tags the commit and pushes the tag with the deploy key from the secret
+`RELEASE_TAG_KEY`. The key's push starts the ordinary release by tag below:
+the full tests, the build, the install checks and the `next` channel. That tag
+is set by the workflow, not signed by a person: the owner's approval of the job
+and the checks above stand in for the signature. A stable `vX.Y.Z` is still a
+signed tag as in step 1.
+
+A candidate can still be tagged by hand when it must not come from an alpha:
+give the version an `-rc.N` suffix and tag it as usual:
 
 ```bash
 python3.12 scripts/dev/bump-version.py 0.13.0-rc.1
@@ -427,6 +451,11 @@ commits. The commit's parent is the slice; the release description names it as
   tests pass on every OS, the job `alpha-tag` makes the commit and the tag, and
   the rest of that run builds and publishes them. The tests do not run again: the
   commit changes only the version. A `main` that did not move starts nothing.
+- **The tag key.** The job pushes the tag over SSH with the deploy key from the
+  secret `RELEASE_TAG_KEY` of the environment `alpha`, not with the run's token:
+  `v*` tags are protected, and the environment admits only `main`. A push by the
+  key wakes `on: push`, so `release.yml` does not listen to `v*-alpha.*` tags:
+  the night that set the tag builds it.
 - **By hand.** The same path, with no commits in `main`:
 
   ```bash
@@ -444,13 +473,17 @@ commits. The commit's parent is the slice; the release description names it as
   be older than the release, so the night stays green and releases no alpha until
   `main` raises the version.
 - **Retention.** After a publication the run calls
-  `release-alpha.py prune`: the two newest published alphas stay, older ones go
-  with their tags, and so do older tags whose build never published. The
-  `released version tags` ruleset must exclude `refs/tags/v*-alpha.*`. On a
-  mutable release the tag goes first, so a refusal leaves the release intact and
-  the step fails with that message; the new alpha stays published. An immutable
-  release is deleted first, and if GitHub keeps its tag, the tag stays with a
-  warning: a kept tag holds no assets and `N` only grows.
+  `release-alpha.py prune`: the two newest published alphas stay, and the GitHub
+  releases of older ones are deleted. Their tags stay. The next number and the
+  released slice are read from the tags, so `N` only grows, and a kept tag holds
+  no assets. Nothing deletes or rewrites a `v*` tag, so the tag ruleset needs no
+  exclusion for alphas.
+- **Tag ruleset.** One rule covers every `v*` tag, alphas included: deletion and
+  non-fast-forward updates are blocked for everyone, and creation is restricted
+  with the role admin and **Deploy keys** in the bypass list. The deploy key from
+  `RELEASE_TAG_KEY` creates alpha tags in the environment `alpha` and candidate
+  tags in `marketplace`; the app GitHub Actions gets no bypass, so a workflow run
+  from any branch cannot create a `v*` tag with the run's token.
 - **Immutable releases.** Assets can be uploaded only before publication, so every
   prerelease goes up as a draft and a separate step publishes it. A failed run
   before that step can be rerun: it continues the draft. After publication a

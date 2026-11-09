@@ -1,0 +1,45 @@
+{
+  "area": "Проверки качества",
+  "task": "Сравнить перечисления после правки одного из них",
+  "wire": [
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "main:Enum.ВажностьПроблемыУчета",
+        "ops": [
+          {
+            "op": "props.set",
+            "args": {
+              "values": {
+                "Comment": "для сравнения"
+              }
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$executionToken"
+      },
+      "expect": [
+        "ok"
+      ]
+    },
+    {
+      "tool": "unica.diff",
+      "args": {
+        "left": "main:Enum.LanguageAware",
+        "right": "main:Enum.ВажностьПроблемыУчета"
+      },
+      "expect": [
+        "ok"
+      ]
+    }
+  ],
+  "id": "S227"
+}

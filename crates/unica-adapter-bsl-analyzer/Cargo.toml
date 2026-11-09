@@ -39,4 +39,5 @@ unica-analysis-services = { path = "../unica-analysis-services", features = ["te
 unica-diagnostics = { path = "../unica-diagnostics", features = ["test-support"] }
 
 [package.metadata.unica]
-read-outside-baseline = 1
+component = "adapter"
+file-io = "owned"

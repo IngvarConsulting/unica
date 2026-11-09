@@ -13,6 +13,10 @@ on:
   push:
     tags:
       - "v*"
+      # Тег alpha ставит ключ развёртывания, и такой push будит `on: push`. Alpha
+      # собирает и выпускает ночь, которая его поставила: второй прогон по тегу
+      # задвоил бы публикацию.
+      - "!v*-alpha.*"
   workflow_dispatch:
     inputs:
       profile:
@@ -34,6 +38,10 @@ on:
         description: "Выпустить alpha, даже если у этого среза он уже есть"
         type: boolean
         default: false
+    secrets:
+      RELEASE_TAG_KEY:
+        description: "Ключ тегов окружения `alpha`: вызов передаёт его по имени, значение даёт окружение задания `alpha-tag`"
+        required: true
 
 permissions:
   contents: read
@@ -165,6 +173,7 @@ jobs:
       # уязвимости действий.
       - if: ${{ !cancelled() }}
         uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        timeout-minutes: 5
         with:
           tool: zizmor@1.30.0
       # Отчёты лежат в игнорируемом `.build/`: неотслеживаемый файл в дереве
@@ -182,12 +191,13 @@ jobs:
           sarif_file: .build/zizmor.sarif
           category: zizmor
 
+      # Версия — из `.config/nextest.toml`; готовый nextest не ставится заново.
+      - if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
+        uses: ./.github/actions/install-nextest
+        timeout-minutes: 5
       - if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
         uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
-        with:
-          tool: cargo-nextest@0.9.148
-      - if: ${{ !cancelled() && steps.classify.outputs.rust_required == 'true' }}
-        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
+        timeout-minutes: 5
         with:
           tool: clippy-sarif@0.8.0,sarif-fmt@0.8.0
       # Один ключ зависимостей на ОС для всего, что собирает джоба: архивы полос,
@@ -446,10 +456,10 @@ jobs:
         with:
           toolchain: stable
           components: clippy
+      # Версия — из `.config/nextest.toml`; готовый nextest не ставится заново.
       - if: steps.classify.outputs.rust_required == 'true'
-        uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
-        with:
-          tool: cargo-nextest@0.9.148
+        uses: ./.github/actions/install-nextest
+        timeout-minutes: 5
       - name: Кэш зависимостей Rust # zizmor: ignore[cache-poisoning] только зависимости; пишут ночь и кнопка, PR, очередь и тег читают область main; поставку собирает build-tools
         if: steps.classify.outputs.rust_required == 'true'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -530,7 +540,8 @@ jobs:
           RUN_LINE: ${{ steps.line.outputs.line }}
         run: python scripts/ci/classify-workflow-changes.py --github-event --runner-matrix '["windows-latest"]' --line "$RUN_LINE" --results .build/ci-routing-windows >> "$GITHUB_OUTPUT"
       # Гейт ждёт исход всей джобы: без Rust она была бы зелёной, не линтуя.
-      - name: Rust required
+      - id: rust-required
+        name: Rust required
         if: steps.classify.outputs.rust_required != 'true'
         run: |
           echo "::error::классификатор Windows не требует Rust"
@@ -562,6 +573,8 @@ jobs:
     name: Alpha — служебный коммит и тег
     needs: [unica-ci, rust-os]
     if: ${{ !cancelled() && inputs.alpha && needs.unica-ci.result == 'success' && needs.rust-os.result == 'success' }}
+    # Секрет ключа тегов живёт в окружении: оно пускает только `main`.
+    environment: alpha
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -579,6 +592,9 @@ jobs:
       - id: publish
         env:
           GH_TOKEN: ${{ github.token }}
+          # Тег ставит ключ развёртывания из секрета окружения `alpha` (только `main`):
+          # теги `v*` защищены ruleset, токен прогона их не создаёт.
+          RELEASE_TAG_KEY: ${{ secrets.RELEASE_TAG_KEY }}
           FORCE: ${{ inputs.force_alpha && '--force' || '' }}
         run: |
           # shellcheck disable=SC2086 # пустой флаг не должен становиться аргументом
@@ -618,7 +634,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - name: Check bootstrap smoke process cleanup on Windows
+      - id: bootstrap-cleanup-windows
+        name: Check bootstrap smoke process cleanup on Windows
         if: matrix.target == 'win-x64'
         run: python -m unittest tests.ci.test_smoke_unica_bootstrap
       - if: matrix.target == 'win-x64'
@@ -660,7 +677,8 @@ jobs:
         with:
           path: ~/.cache/unica-tools
           key: tool-assets-build-${{ matrix.target }}-${{ hashFiles('plugins/unica/third-party/tools.lock.json') }}
-      - name: Build target bundle and bootstrap
+      - id: build
+        name: Build target bundle and bootstrap
         if: matrix.target != 'win-x64'
         run: >
           python scripts/ci/build-unica-tools.py
@@ -691,7 +709,8 @@ jobs:
           mkdir -p "$PWD/.build/tool-bundles"
           rm -rf "$PWD/.build/tool-bundles/win-x64"
           cp -R "$bundle_root" "$PWD/.build/tool-bundles/win-x64"
-      - name: Report Cargo cache and build metrics
+      - id: build-metrics
+        name: Report Cargo cache and build metrics
         if: always()
         shell: bash
         env:
@@ -723,7 +742,8 @@ jobs:
           --tools-dir ".build/tool-bundles/${{ matrix.target }}/bin/${{ matrix.target }}"
       # Alpha ставят без маркетплейса, поэтому его выпуск несёт полный набор:
       # ядро и движки рядом, как в пакете плагина под одну цель.
-      - name: Package the full alpha set
+      - id: alpha-full-set
+        name: Package the full alpha set
         if: ${{ contains(env.RELEASE_TAG, '-alpha.') }}
         shell: bash
         env:
@@ -746,19 +766,22 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
-      - name: Package deterministic runtime
+      - id: package-runtime
+        name: Package deterministic runtime
         run: >
           python scripts/ci/package-unica-runtime.py
           --bundle-root ".build/tool-bundles/${{ matrix.target }}"
           --out-dir ".build/runtime-assets/${{ matrix.target }}"
-      - name: Verify local runtime asset pair
+      - id: verify-runtime
+        name: Verify local runtime asset pair
         run: >
           python scripts/ci/verify-release-assets.py
           --asset-dir ".build/runtime-assets/${{ matrix.target }}"
           --target "${{ matrix.target }}"
           --source local-build
           --report ".build/runtime-assets/${{ matrix.target }}/asset-verification-${{ matrix.target }}.json"
-      - name: Extract deterministic runtime for MCP smoke
+      - id: extract-runtime
+        name: Extract deterministic runtime for MCP smoke
         shell: bash
         run: |
           set -euo pipefail
@@ -778,7 +801,8 @@ jobs:
         run: >-
           python tests/ci/test_smoke_unica_mcp.py
           SmokeUnicaMcpTests.test_windows_job_object_reaps_root_and_child
-      - name: Smoke packaged Unica MCP
+      - id: mcp-smoke
+        name: Smoke packaged Unica MCP
         shell: bash
         timeout-minutes: 3
         run: |
@@ -789,7 +813,8 @@ jobs:
             --binary "$executable" \
             --plugin-root "$runtime_root" \
             --total-timeout-seconds 120
-      - name: Probe native package wire profile
+      - id: wire-native
+        name: Probe native package wire profile
         shell: bash
         env:
           UNICA_PROVIDER_STATE_DIR: ${{ runner.temp }}/unica-p0-${{ matrix.target }}
@@ -805,7 +830,8 @@ jobs:
             --profile native \
             --target "$TARGET" \
             --output ".build/p0-wire/native-$TARGET.json"
-      - name: Probe compatibility package wire profile
+      - id: wire-compat
+        name: Probe compatibility package wire profile
         shell: bash
         env:
           UNICA_PROVIDER_STATE_DIR: ${{ runner.temp }}/unica-p0-${{ matrix.target }}
@@ -910,7 +936,8 @@ jobs:
       # has to name the version in the tree. Deriving it keeps the version out of
       # this file: a literal here is one more place to bump, and the only one no
       # contract check covers.
-      - name: Resolve the release tag for non-tag builds
+      - id: release-tag
+        name: Resolve the release tag for non-tag builds
         if: ${{ env.RELEASE_TAG == '' }}
         run: |
           set -euo pipefail
@@ -934,7 +961,8 @@ jobs:
           --release-tag "$RELEASE_TAG"
           --source-commit "${{ needs.alpha-tag.outputs.sha || github.sha }}"
           --out-dir dist/thin
-      - name: Require all three host contracts in the shared plugin directory
+      - id: host-contracts
+        name: Require all three host contracts in the shared plugin directory
         run: |
           test -f dist/thin/marketplace/plugins/unica/.codex-plugin/plugin.json
           test -f dist/thin/marketplace/plugins/unica/.claude-plugin/plugin.json
@@ -1080,7 +1108,8 @@ jobs:
         with:
           name: unica-thin-marketplace
           path: .build/thin
-      - name: Probe packaged bootstrap through the downloader
+      - id: probe
+        name: Probe packaged bootstrap through the downloader
         run: >
           python scripts/ci/smoke-unica-bootstrap.py
           --plugin-root .build/thin/plugins/unica
@@ -1109,7 +1138,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - name: Resolve the release tag for non-tag builds
+      - id: release-tag
+        name: Resolve the release tag for non-tag builds
         if: ${{ env.RELEASE_TAG == '' }}
         run: |
           set -euo pipefail
@@ -1186,7 +1216,8 @@ jobs:
           set -euo pipefail
           slice="$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq '.parents[0].sha')"
           echo "body=Срез main@$slice. Гарантий нет: сборка для проверки, в маркетплейс не идёт." >> "$GITHUB_OUTPUT"
-      - name: Pair core archives with their metadata
+      - id: pair
+        name: Pair core archives with their metadata
         shell: bash
         run: |
           set -euo pipefail
@@ -1221,13 +1252,15 @@ jobs:
             dist/runtime/unica-runtime-*.tar.gz
             dist/runtime/unica-runtime-*.json
             dist/full/unica-full-*.tar.gz
-      - name: Publish the prerelease draft
+      - id: publish-draft
+        name: Publish the prerelease draft
         if: ${{ contains(env.RELEASE_TAG, '-') }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease
       # Новый выпуск уже опубликован: отказ удаления виден в прогоне и ему не мешает.
-      - name: Remove old alpha releases
+      - id: prune
+        name: Remove old alpha releases
         if: ${{ contains(env.RELEASE_TAG, '-alpha.') }}
         continue-on-error: true
         env:
@@ -1267,7 +1300,8 @@ jobs:
         with:
           name: unica-thin-marketplace
           path: .build/thin
-      - name: Smoke packaged bootstrap against published runtime
+      - id: smoke
+        name: Smoke packaged bootstrap against published runtime
         run: >
           python scripts/ci/smoke-unica-bootstrap.py
           --plugin-root .build/thin/plugins/unica
@@ -1276,7 +1310,8 @@ jobs:
       # Поставки приезжают из тулчейна, и до этого шага их путь целиком —
       # адрес, сумма, раскладка — в выпуске не проходил никто. Одной цели
       # довольно: адреса остальных проверены отдельно и стоят одного HEAD.
-      - name: Prefetch the whole delivery once, end to end
+      - id: prefetch
+        name: Prefetch the whole delivery once, end to end
         if: ${{ matrix.target == 'linux-x64' }}
         shell: bash
         env:
@@ -1313,7 +1348,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - name: Download release assets from GitHub
+      - id: download-release
+        name: Download release assets from GitHub
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release download "$RELEASE_TAG" --pattern 'unica-runtime-*' --dir published
@@ -1458,7 +1494,8 @@ jobs:
         run: gh auth setup-git
       - name: Download verified thin payload
         run: gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
-      - name: Require package contract files
+      - id: contracts
+        name: Require package contract files
         run: |
           test -f payload/plugins/unica/.codex-plugin/plugin.json
           test -f payload/plugins/unica/.claude-plugin/plugin.json
@@ -1476,7 +1513,8 @@ jobs:
           echo "source_run_id=$SOURCE_RUN_ID" >> "$GITHUB_OUTPUT"
       # Подписанный тег исходников — согласие человека; это связывает с ним пакет:
       # манифест обязан назвать тег, чью зелёную сборку несёт этот прогон.
-      - name: Require the payload to come from its own tag's successful build
+      - id: own-tag
+        name: Require the payload to come from its own tag's successful build
         env:
           RELEASE_TAG: ${{ steps.identity.outputs.release_tag }}
         run: |
@@ -1606,7 +1644,8 @@ jobs:
         run: test -n "$GH_TOKEN"
       - name: Configure Git credentials
         run: gh auth setup-git
-      - name: Create the candidate anchor at the staged payload
+      - id: anchor
+        name: Create the candidate anchor at the staged payload
         run: |
           set -euo pipefail
           rules=rules/scripts/ci/release-channel.py
@@ -1674,7 +1713,8 @@ jobs:
           git clone https://github.com/IngvarConsulting/unica-marketplace.git candidate
           git -C candidate fetch --tags origin
           git -C candidate checkout --detach "$STAGING_SHA"
-      - name: Download the candidate catalog
+      - id: catalog
+        name: Download the candidate catalog
         shell: bash
         env:
           DOWNLOAD_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
@@ -1795,7 +1835,8 @@ jobs:
           $candidate = Join-Path $env:GITHUB_WORKSPACE 'candidate'
           & $env:CODEX_BIN plugin marketplace add $candidate --json
           & $env:CODEX_BIN plugin add $plugin --json
-      - name: Download the candidate catalog
+      - id: catalog
+        name: Download the candidate catalog
         shell: bash
         env:
           DOWNLOAD_TOKEN: ${{ secrets.UNICA_MARKETPLACE_TOKEN }}
@@ -1873,7 +1914,8 @@ jobs:
         run: test -n "$GH_TOKEN"
       - name: Configure Git credentials
         run: gh auth setup-git
-      - name: Download the candidate catalog
+      - id: catalog
+        name: Download the candidate catalog
         run: |
           gh run download "$SOURCE_RUN_ID" --repo IngvarConsulting/unica --name unica-thin-marketplace --dir payload
           test -f payload/plugins/unica/.codex-plugin/plugin.json
@@ -1881,7 +1923,8 @@ jobs:
           test -f payload/plugins/unica/.zcode-plugin/plugin.json
           test -f payload/.agents/plugins/marketplace.json
           test -f payload/.claude-plugin/marketplace.json
-      - name: Publish the channel catalogs and the release tag in one push
+      - id: promote
+        name: Publish the channel catalogs and the release tag in one push
         run: |
           set -euo pipefail
           rules=rules/scripts/ci/release-channel.py
@@ -2028,7 +2071,9 @@ jobs:
   # Источник — main, релизная линия или тег; прогон другой ветки сайта не трогает.
   pages-build:
     name: Собрать сайт
-    needs: [delivery-ci, promote]
+    # `alpha-tag` называет версию, чьи тесты дал этот прогон: alpha ставится
+    # служебным коммитом поверх проверенного среза и своего прогона не имеет.
+    needs: [delivery-ci, promote, alpha-tag]
     if: >-
       ${{
         !cancelled() &&
@@ -2064,9 +2109,11 @@ jobs:
 
       # Бинарь зовётся по своему пути: PATH прогона не расширяется.
       - name: Поставить Allure CLI
+        timeout-minutes: 5
         run: |
           set -eu
-          curl -fsSL -o allure.tgz \
+          # Выпуски GitHub отвечают 5xx на отдельные запросы: повтор, а не красный сайт.
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 -o allure.tgz \
             "https://github.com/allure-framework/allure2/releases/download/$ALLURE_VERSION/allure-$ALLURE_VERSION.tgz"
           echo "$ALLURE_SHA256  allure.tgz" | sha256sum -c -
           tar -xzf allure.tgz
@@ -2102,6 +2149,9 @@ jobs:
           SITE: https://ingvarconsulting.github.io/unica
           RUN_SHA: ${{ github.sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          ALPHA_TAG: ${{ needs.alpha-tag.outputs.tag }}
         run: |
           set -eu
           RUN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -2121,11 +2171,27 @@ jobs:
               args+=(--line "$line")
             fi
           done < .build/lines.txt
+          # Карточки версий: свежие результаты получает только версия, которую
+          # дал этот прогон, — тег прогона по тегу или alpha, выпущенная ночью.
+          # Остальные версии пересобираются из хранимого под их тегом.
+          FRESH_LINE="$(head -n 1 .build/fresh-line.txt 2>/dev/null || true)"
+          python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" \
+            --print-versions --out /dev/null > .build/versions.txt
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            fresh=""
+            if [ -n "$FRESH_LINE" ] && [ -d ".build/fresh/$FRESH_LINE" ]; then
+              if { [ "$REF_TYPE" = tag ] && [ "$tag" = "$REF_NAME" ]; } || [ "$tag" = "$ALPHA_TAG" ]; then
+                fresh=".build/fresh/$FRESH_LINE"
+              fi
+            fi
+            args+=(--version "$tag${fresh:+=$fresh}")
+          done < .build/versions.txt
           python scripts/ci/site-status.py --repo "$GITHUB_REPOSITORY" --out .build/bootstrap.json
           python scripts/ci/build-site.py --status .build/bootstrap.json --out .build/site \
             --allure-command "$GITHUB_WORKSPACE/allure-$ALLURE_VERSION/bin/allure" \
             --site "$SITE" --run-sha "$RUN_SHA" --run-url "$RUN_URL" --run-at "$RUN_AT" \
-            "${args[@]}"
+            --repo "$GITHUB_REPOSITORY" "${args[@]}"
 
       # Счётчики на странице берутся из сводок собранных отчётов, поэтому
       # документ статуса считается после них, а страницы перерисовываются.

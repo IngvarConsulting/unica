@@ -1,0 +1,71 @@
+{
+  "family": "Form",
+  "operations": [
+    {
+      "variant": "Add",
+      "operation": "form.add",
+      "applicability": "MetadataForms",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "Set",
+      "operation": "form.set",
+      "applicability": "MetadataForms",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "Remove",
+      "operation": "form.remove",
+      "applicability": "Form",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "ItemAdd",
+      "operation": "item.add",
+      "applicability": "FormItemContainer",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ItemRemove",
+      "operation": "item.remove",
+      "applicability": "FormItem",
+      "skeleton": "Target"
+    },
+    {
+      "variant": "ItemMove",
+      "operation": "item.move",
+      "applicability": "FormItem",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "AttributeAdd",
+      "operation": "attribute.add",
+      "applicability": "Form",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "ColumnAdd",
+      "operation": "column.add",
+      "applicability": "FormAttribute",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "CommandAdd",
+      "operation": "command.add",
+      "applicability": "Form",
+      "skeleton": "Items"
+    },
+    {
+      "variant": "EventBind",
+      "operation": "event.bind",
+      "applicability": "FormEvent",
+      "skeleton": "Values"
+    },
+    {
+      "variant": "PropsSet",
+      "operation": "props.set",
+      "applicability": "FormProperties",
+      "skeleton": "Values"
+    }
+  ]
+}

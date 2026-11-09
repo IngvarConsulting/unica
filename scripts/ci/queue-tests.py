@@ -7,10 +7,17 @@
 в исходниках крейта. Запись только из сайта, правил, навыков и прозы Rust не запускает:
 её проверяют Python-наборы очереди. Прямые зависимые изменённого кода
 исполняют интеграционные цели: логическая поломка доходит до них и без смены интерфейса.
-`daemon_receipt_ledger` и транзитивные зависимые остаются ночи. Полный набор идёт при правке
-`Cargo.lock`, корневого `Cargo.toml`, тулчейна, при сбое чтения diff и при
-`QUEUE_FULL_TESTS=true`. Остальное исполняет ночь; правило для красной ночи и откат —
+`daemon_receipt_ledger` и транзитивные зависимые остаются ночи. Полный набор идёт при смене
+внешних зависимостей в `Cargo.lock`, правке корневого `Cargo.toml`, тулчейна, при сбое чтения diff
+и при `QUEUE_FULL_TESTS=true`. Правка `Cargo.lock` только в записях крейтов рабочей области полного
+набора не требует: сами крейты выбраны по своим файлам. Остальное исполняет ночь; правило для красной ночи и откат —
 в `.agents/skills/unica-testing/references/ci-pipeline.md`.
+
+На Linux временные каталоги тестов очередь держит в памяти (`TMPDIR` в `/dev/shm`): журнал
+квитанций и рабочие области публикуют каждую запись через `fsync`, и на диске раннера каждый
+вызов продукта ждёт его. Те же системные вызовы выполняются, ждать им нечего. Ночь и выпуск идут
+на диске, поведение файловой системы проверяется там. Нет `/dev/shm`, мало места или из него нельзя
+исполнять файлы — тесты идут во временном каталоге системы, как раньше.
 """
 
 from __future__ import annotations
@@ -22,8 +29,11 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import tomllib
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -37,6 +47,13 @@ MENTIONED = re.compile(r"^(tests/fixtures/(?!acceptance/scenario-manifest/)|scri
 NO_RUST = re.compile(r"^(docs/pages/|docs/visual-kit/|arch/rules/|\.agents/|scripts/research/|[^/]+\.md$)")
 # Крейт, который собирает путь к данным из частей, читает любой их каталог.
 ASSEMBLED_FIXTURES = '"tests/fixtures"'
+MEMORY_TEMP_ROOT = Path("/dev/shm")
+# Свободного места в памяти не меньше: пик временных каталогов пяти самых
+# тяжёлых крейтов (unica-product, unica-coder, unica-workspace,
+# unica-project-health, unica-metadata-integration-tests) в четыре потока —
+# 288 МиБ по замеру раз в секунду, остаток после прогона 6 МиБ. Запас около
+# трёх с половиной раз покрывает пики между замерами и остальные крейты.
+MEMORY_TEMP_MIN_FREE_BYTES = 1 << 30
 
 
 @dataclass(frozen=True)
@@ -48,11 +65,18 @@ class Choice:
     no_rust: bool = False
 
 
+def patched_crates(root: Path = ROOT) -> dict[str, str]:
+    """Каталоги путевых патчей: у них свой `[workspace]`, поэтому в `cargo metadata --no-deps` их нет."""
+    patches = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8")).get("patch", {})
+    return {entry["path"]: name for source in patches.values() for name, entry in source.items() if "path" in entry}
+
+
 def workspace(root: Path = ROOT) -> tuple[dict[str, str], dict[str, set[str]]]:
     """Каталоги крейтов и их прямые зависимые, включая dev-зависимости."""
     meta = json.loads(subprocess.check_output(["cargo", "metadata", "--format-version", "1", "--no-deps", "--locked"], cwd=root, text=True, encoding="utf-8"))
     base = meta["workspace_root"].replace("\\", "/").rstrip("/")
     directories = {os.path.dirname(package["manifest_path"]).replace("\\", "/").removeprefix(base + "/"): package["name"] for package in meta["packages"]}
+    directories.update(patched_crates(root))
     names = set(directories.values())
     dependents: dict[str, set[str]] = {}
     for package in meta["packages"]:
@@ -82,8 +106,20 @@ def mentions(text: str, root: Path = ROOT) -> list[str]:
     return completed.stdout.split()
 
 
+def external_packages(lock: str, members: set[str]) -> list[dict]:
+    """Записи `Cargo.lock` обо всём, кроме членов рабочей области: путевой патч тоже внешний."""
+    packages = tomllib.loads(lock).get("package", [])
+    return sorted((package for package in packages if package["name"] not in members), key=lambda package: (package["name"], package["version"], package.get("source", "")))
+
+
+def lock_keeps_external(base: str, head: str, members: set[str], root: Path = ROOT) -> bool:
+    """Остались ли внешние зависимости прежними между двумя ревизиями."""
+    locks = [subprocess.check_output(["git", "show", f"{revision}:Cargo.lock"], cwd=root, text=True, encoding="utf-8") for revision in (base, head)]
+    return external_packages(locks[0], members) == external_packages(locks[1], members)
+
+
 def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, set[str]] | None = None, *,
-           force_full: bool = False, find: Callable[[str], list[str]] = mentions) -> Choice:
+           force_full: bool = False, find: Callable[[str], list[str]] = mentions, lock_is_internal: bool = False) -> Choice:
     if force_full:
         return Choice(True, (), "QUEUE_FULL_TESTS")
     if not paths:
@@ -92,6 +128,8 @@ def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, 
         return Choice(False, (), "Rust не нужен: сайт, правила, навыки, проза", no_rust=True)
     selected, edited = set(), set()
     for path in paths:
+        if path == "Cargo.lock" and lock_is_internal:
+            continue
         if WHOLE_BUILD.match(path):
             return Choice(True, (), f"общая сборка: {path}")
         crate = crate_of(path, directories)
@@ -101,8 +139,45 @@ def choose(paths: list[str], directories: dict[str, str], dependents: dict[str, 
         elif MENTIONED.match(path):
             texts = [needle(path), *([ASSEMBLED_FIXTURES] if path.startswith("tests/") else [])]
             selected.update(crate for text in texts for crate in (crate_of(item, directories) for item in find(text)) if crate)
+    # Cargo отказывает в `--workspace`, из которого исключены все члены, а `small`
+    # остальных крейтов тогда запускать не для кого: это и есть полный набор.
+    if set(directories.values()) - {"ureq"} <= selected:
+        return Choice(True, (), "выбраны все крейты")
     reached = sorted({name for crate in edited for name in (dependents or {}).get(crate, set())} - selected)
     return Choice(False, tuple(sorted(selected)), f"medium: {sorted(selected) or 'нет'}, цели зависимых: {reached or 'нет'}", tuple(reached))
+
+
+def memory_temp(root: Path = MEMORY_TEMP_ROOT, min_free: int = MEMORY_TEMP_MIN_FREE_BYTES,
+                platform: str = sys.platform) -> tuple[Path | None, str]:
+    """Каталог для `TMPDIR` тестов очереди в памяти и почему он выбран или нет."""
+    if not platform.startswith("linux"):
+        return None, "не Linux"
+    if not root.is_dir():
+        return None, f"нет {root}"
+    try:
+        status = os.statvfs(root)
+    except OSError as error:
+        return None, f"{root} не читается: {error}"
+    free = status.f_bavail * status.f_frsize
+    if free < min_free:
+        return None, f"в {root} свободно {free >> 20} МиБ, нужно {min_free >> 20}"
+    try:
+        directory = Path(tempfile.mkdtemp(prefix="unica-queue-", dir=root))
+    except OSError as error:
+        return None, f"в {root} нельзя создать каталог: {error}"
+    # Тесты исполняют заглушки из временного каталога: том с `noexec` не годится.
+    probe = directory / "exec-probe"
+    try:
+        probe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        probe.chmod(0o700)
+        runs = subprocess.run([str(probe)], check=False).returncode == 0
+        probe.unlink()
+    except OSError:
+        runs = False
+    if not runs:
+        shutil.rmtree(directory, ignore_errors=True)
+        return None, f"в {root} нельзя записать и исполнить файл"
+    return directory, f"{free >> 20} МиБ свободно"
 
 
 def load_runner():
@@ -114,16 +189,25 @@ def load_runner():
 
 
 def commands(packages: tuple[str, ...], runner, dependents: tuple[str, ...] = ()) -> list[list[str]]:
-    """`small` остальных крейтов и `small` с `medium` выбранных: без повтора одних и тех же тестов."""
-    others = ("--workspace", *(item for package in packages for item in ("--exclude", package)))
+    """`small` остальных крейтов и `small` с `medium` выбранных: без повтора одних и тех же тестов.
+
+    Каждый вызов собирает `--workspace` и отбирает пакеты фильтром nextest. С `-p`
+    и `--exclude` Cargo объединял бы признаки по другому набору пакетов, и следующий
+    вызов пересобирал бы общие зависимости заново; с одним набором сборка одна.
+    """
+    # `ureq` не член рабочей области: его набор идёт из своего манифеста ниже.
+    members = tuple(package for package in packages if package != "ureq")
+    chosen = " | ".join(f"package({package})" for package in members)
+    others = ("--workspace", "-E", f"not ({chosen})") if members else ("--workspace",)
     planned = [[*runner.rust_command("pr", others), "--no-tests=pass"]]
-    if packages:
-        selection = tuple(item for package in packages for item in ("-p", package))
+    if members:
+        selection = ("--workspace", "-E", chosen)
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
     if dependents:
-        selection = (*(item for package in dependents for item in ("-p", package)), "-E", DEPENDENT_FILTER)
+        reached = " | ".join(f"package({package})" for package in dependents)
+        selection = ("--workspace", "-E", f"({reached}) & ({DEPENDENT_FILTER})")
         planned.append([*runner.rust_command("queue", selection), "--no-tests=pass"])
-    if {"unica-coder", "unica-product"} & set(packages):
+    if {"unica-daemon", "unica-product"} & set(packages):
         planned.append(runner.rust_command("queue", runner.LEDGER_FEATURE_SELECTION))
     if "ureq" in packages:
         planned.append(runner.rust_command("queue", runner.UREQ_RECYCLING_SELECTION))
@@ -139,7 +223,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         paths = subprocess.check_output(["git", "diff", "--name-only", "--no-renames", args.base, args.head, "--"], cwd=ROOT, text=True, encoding="utf-8", errors="replace").split("\n")
         directories, dependents = workspace()
-        choice = choose([path for path in paths if path], directories, dependents, force_full=os.environ.get("QUEUE_FULL_TESTS") == "true")
+        paths = [path for path in paths if path]
+        lock_is_internal = "Cargo.lock" in paths and lock_keeps_external(args.base, args.head, set(directories.values()))
+        choice = choose(paths, directories, dependents, force_full=os.environ.get("QUEUE_FULL_TESTS") == "true", lock_is_internal=lock_is_internal)
     except (subprocess.CalledProcessError, OSError, ValueError) as error:
         choice = Choice(True, (), f"выбор не определён: {error}")
     print(f"{'полный набор' if choice.full else 'выбор'}: {choice.reason}", flush=True)
@@ -153,10 +239,21 @@ def main(argv: list[str] | None = None) -> int:
     if choice.no_rust:
         return 0
     planned = runner.rust_commands("queue") if choice.full else commands(choice.packages, runner, choice.dependents)
+    temp, why = memory_temp()
+    environment = dict(os.environ)
+    if temp is not None:
+        environment["TMPDIR"] = str(temp)
+        print(f"временные каталоги тестов: {temp} ({why})", flush=True)
+    else:
+        print(f"временные каталоги тестов: системные ({why})", flush=True)
     code = 0
-    for command in planned:
-        print("+ " + " ".join(command), flush=True)
-        code = subprocess.run(command, cwd=ROOT, check=False).returncode or code
+    try:
+        for command in planned:
+            print("+ " + " ".join(command), flush=True)
+            code = subprocess.run(command, cwd=ROOT, env=environment, check=False).returncode or code
+    finally:
+        if temp is not None:
+            shutil.rmtree(temp, ignore_errors=True)
     return code
 
 

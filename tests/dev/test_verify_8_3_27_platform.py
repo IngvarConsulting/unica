@@ -15,6 +15,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+# Размер тестов модуля (scripts/ci/python_sizes.py).
+PR_SKIP = "дольше бюджета модуля уровня PR"
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts/dev/verify-8-3-27-platform.py"
