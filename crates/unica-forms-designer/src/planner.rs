@@ -1845,13 +1845,15 @@ const FORM_ADDRESS_SHAPE: &str =
 const FORM_OWNER_MD_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 
 pub fn minimal_typed_form_content(_object_kind: &str, _object_name: &str) -> String {
-    concat!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
-        "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"2.20\">\n",
-        "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
-        "</Form>"
+    format!(
+        concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n",
+            "<Form xmlns=\"http://v8.1c.ru/8.3/xcf/logform\" version=\"{}\">\n",
+            "\t<AutoCommandBar name=\"ФормаКоманднаяПанель\" id=\"-1\"/>\n",
+            "</Form>"
+        ),
+        crate::dialect::root_version::writable()
     )
-    .to_string()
 }
 
 #[cfg(test)]

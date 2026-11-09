@@ -9,7 +9,6 @@ use unica_metadata::subsystem::*;
 use unica_metadata::subsystem_topology::*;
 use unica_metadata::support_state::ObjectSupportData as DomainObjectSupportData;
 use unica_source_contract::discovery::{FollowMode, ProjectDiscoveryRead};
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 use unica_source_designer::layout::full_md_namespace_declarations;
 use unica_source_designer::read::{path_exists, path_is_dir, read_bytes, read_string};
 use unica_source_designer::roots::root_version_literal;
@@ -1687,7 +1686,7 @@ pub fn parse_subsystem_edit_model(text: &str, label: &str) -> Result<SubsystemEd
     Ok(SubsystemEditModel {
         version: root
             .attribute("version")
-            .unwrap_or(ACTIVE_FORMAT_PROFILE.export_format)
+            .unwrap_or(root_version::writable())
             .to_string(),
         uuid: sub
             .attribute("uuid")

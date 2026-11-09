@@ -3,7 +3,14 @@
 //! Readers and writers of the form codec ask here whether a root is in the
 //! format the codec writes, and how a validation report names it.
 pub(crate) use unica_source_designer::format_profile::RootVersionReport;
-use unica_source_designer::format_profile::{is_writable_root_version, root_version_report};
+use unica_source_designer::format_profile::{
+    is_writable_root_version, root_version_report, ACTIVE_FORMAT_PROFILE,
+};
+
+/// The export format version the codec writes.
+pub(crate) const fn writable() -> &'static str {
+    ACTIVE_FORMAT_PROFILE.export_format
+}
 
 /// Whether a root recording `version` is in the format the codec writes.
 pub(crate) fn is_writable(version: Option<&str>) -> bool {

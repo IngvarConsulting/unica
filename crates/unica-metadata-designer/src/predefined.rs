@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, HashSet};
 use std::ops::Range;
 use unica_address::source_target::MetadataAddress;
 use unica_metadata::*;
-use unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE;
 use unica_source_designer::roots::{platform_xml_publication_policy, PlatformXmlPublicationPolicy};
 use unica_xml_format::text::{
     resolve_line_ending, EolPolicy, LineEndingProfile, SourceTextSnapshot,
@@ -2573,7 +2572,7 @@ pub fn empty_document(kind: MetadataKind, eol: &str) -> String {
     // платформенный экспорт, не несёт хвостового перевода строки.
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>{eol}<PredefinedData xmlns=\"{PREDEFINED_NS}\" xmlns:v8=\"{V8_NS}\" xmlns:xr=\"http://v8.1c.ru/8.3/xcf/readable\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"{XSI_NS}\" xsi:type=\"{root_type}\" version=\"{}\">{eol}</PredefinedData>",
-        ACTIVE_FORMAT_PROFILE.export_format
+        root_version::writable()
     )
 }
 pub fn source_eol(text: &str) -> Result<&'static str, String> {

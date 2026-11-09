@@ -3803,8 +3803,9 @@ pub fn typed_child_descriptor_image(
 
 pub fn wrap_standalone_descriptor(child_xml: &str) -> Vec<u8> {
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"2.20\">\n{}\n</MetaDataObject>",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<MetaDataObject {} version=\"{}\">\n{}\n</MetaDataObject>",
         crate::template_catalog::meta_xmlns_decl(),
+        crate::dialect::root_version::writable(),
         child_xml
     )
     .into_bytes()

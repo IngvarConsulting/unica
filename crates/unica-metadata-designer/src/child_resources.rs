@@ -812,7 +812,7 @@ pub fn typed_template_initial_content(
         // Снимаемый template.add писал сюда сырой HTML — typed-канал пишет
         // форму, которую закрепил валидатор по реальным дампам 8.3.27.
         unica_metadata::validation_subject::MetadataTemplateType::HtmlDocument => (templates.html_descriptor)(
-            unica_source_designer::format_profile::ACTIVE_FORMAT_PROFILE.export_format,
+            crate::dialect::root_version::writable(),
         ),
         unica_metadata::validation_subject::MetadataTemplateType::DataCompositionSchema => {
             (templates.content_xml)("DataCompositionSchema", "")
@@ -1216,8 +1216,9 @@ fn new_template_descriptor_image(
         .find(|node| node.has_tag_name(("http://v8.1c.ru/8.3/MDClasses", "Template")))
         .ok_or_else(invalid)?;
     let mut output = format!(
-        "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<MetaDataObject {} version=\"2.20\">\r\n",
-        crate::template_catalog::meta_xmlns_decl()
+        "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n<MetaDataObject {} version=\"{}\">\r\n",
+        crate::template_catalog::meta_xmlns_decl(),
+        crate::dialect::root_version::writable()
     );
     append(source, template, 1, &mut output).ok_or_else(invalid)?;
     output.push_str("\r\n</MetaDataObject>");
