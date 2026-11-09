@@ -30,6 +30,29 @@ pub fn extension_compatibility_mode(configuration: &[u8]) -> Option<Compatibilit
     CompatibilityMode::parse(raw.trim())
 }
 
+/// The compatibility mode of a source set from its root `Configuration.xml`:
+/// `CompatibilityMode` of a configuration, the extension's own
+/// `ConfigurationExtensionCompatibilityMode` of an extension. External
+/// processors and reports have no mode of their own (`None`).
+pub fn source_set_compatibility_mode(
+    configuration: &[u8],
+    source_kind: SourceSetKind,
+) -> Option<CompatibilityMode> {
+    let property = match source_kind {
+        SourceSetKind::Configuration => "CompatibilityMode",
+        SourceSetKind::Extension => PROPERTY,
+        SourceSetKind::ExternalProcessor | SourceSetKind::ExternalReport => return None,
+    };
+    let (_, document) = unica_xml_format::read::parse_metadata_image(configuration).ok()?;
+    let object = document
+        .root_element()
+        .children()
+        .find(|node| node.is_element())?;
+    let properties = unica_xml_format::read::child_element(object, "Properties")?;
+    let raw = unica_xml_format::read::child_direct_text(properties, property)?;
+    CompatibilityMode::parse(raw.trim())
+}
+
 /// Whether a metadata descriptor is a borrowed object: its properties name
 /// the object of the main configuration it extends.
 pub fn descriptor_is_borrowed(descriptor: &[u8]) -> bool {

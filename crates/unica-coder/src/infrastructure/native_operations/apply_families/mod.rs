@@ -1372,6 +1372,12 @@ pub fn plan_hidden_v13_apply(
             _ => None,
         }),
     )?;
+    // Values the compatibility mode of the set forbids are refused before the
+    // apply publishes; the platform would refuse them on import.
+    unica_metadata_designer::mode_checks::check_changed_descriptors(
+        &mut staged.proposal(),
+        binding.source_kind(),
+    )?;
     let legacy_inline = collapse_legacy_inline_registrations(&mut staged, binding)?;
     let mut effects = reconcile_effects(staged.planned_changes(), provisional);
     for warning in code_support_warnings {
@@ -1399,6 +1405,9 @@ pub fn plan_hidden_v13_apply(
 
 #[cfg(test)]
 mod calculation_code_type_tests;
+
+#[cfg(test)]
+mod mode_rule_tests;
 
 #[cfg(test)]
 mod inherited_content_tests;
