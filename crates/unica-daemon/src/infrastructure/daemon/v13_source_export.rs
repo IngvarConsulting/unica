@@ -1750,6 +1750,12 @@ mod medium_tests {
             let platform = root.path().join("platform/8.3.27.2074/ibcmd");
             fs::create_dir_all(platform.parent().unwrap()).unwrap();
             fs::write(&platform, b"controlled ibcmd identity").unwrap();
+            // Windows resolves the executable with its suffix.
+            fs::write(
+                platform.with_file_name("ibcmd.exe"),
+                b"controlled ibcmd identity",
+            )
+            .unwrap();
             assert!(!platform.with_file_name("1cv8").exists());
             let mut runner = SequenceRunner::exporting(
                 vec![
