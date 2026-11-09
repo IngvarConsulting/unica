@@ -11810,7 +11810,7 @@ fn default_operation_paths_reach_providers_without_a_deadline() {
     assert!(viewed.ok, "{viewed:?}");
 
     let (provider, analyzer) =
-        unica_coder::infrastructure::daemon_adapters::diagnostics_probe::recording_provider();
+        unica_coder::infrastructure::analysis_composition::diagnostics_probe::recording_provider();
     crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
         .with(|slot| *slot.borrow_mut() = Some(provider));
     let check = admit(
@@ -11887,7 +11887,7 @@ fn execution_boundary_names_a_changed_workspace_only_for_a_lost_binding() {
 /// rule: INV.APP.DIAGNOSTIC-PROVIDERS
 #[test]
 fn module_check_names_why_the_analyzer_gave_no_result() {
-    use unica_coder::infrastructure::daemon_adapters::diagnostics_probe::AnalyzerRunFailureKind;
+    use unica_coder::infrastructure::analysis_composition::diagnostics_probe::AnalyzerRunFailureKind;
     let workspace =
         scheduled_handler_workspace("CONFIGURATION", "Procedure Run() Export\nEndProcedure\n");
     let runtime = bootstrap_runtime();
@@ -11938,7 +11938,7 @@ fn module_check_names_why_the_analyzer_gave_no_result() {
             .unwrap();
             crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE.with(|slot| {
                 *slot.borrow_mut() =
-                    Some(unica_coder::infrastructure::daemon_adapters::diagnostics_probe::failing_provider(kind))
+                    Some(unica_coder::infrastructure::analysis_composition::diagnostics_probe::failing_provider(kind))
             });
             let checked = service.execute(&check, cancellation.clone()).unwrap();
             crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
@@ -12429,7 +12429,7 @@ fn module_check_fails_a_variable_declared_after_methods() {
         .begin_execution(&cancellation)
         .unwrap();
         let (provider, _analyzer) =
-            unica_coder::infrastructure::daemon_adapters::diagnostics_probe::recording_provider();
+            unica_coder::infrastructure::analysis_composition::diagnostics_probe::recording_provider();
         crate::infrastructure::application_ports::DIAGNOSTIC_PROVIDER_OVERRIDE
             .with(|slot| *slot.borrow_mut() = Some(provider));
         let checked = service.execute(&check, cancellation.clone());

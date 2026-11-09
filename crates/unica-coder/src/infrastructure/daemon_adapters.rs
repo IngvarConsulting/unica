@@ -1,18 +1,11 @@
-//! The implementations the daemon reaches, chosen by the composition.
+//! The platform runtime the daemon reaches, chosen by the composition.
 //!
-//! The daemon routes requests; which engine does the work is decided here,
-//! so the daemon names no adapter crate. The items are the adapters' own,
-//! re-exported: replacing an engine changes this module and the composition
+//! The daemon routes requests; which runtime does the work is decided here,
+//! so the daemon names no adapter crate. The items are the adapter's own,
+//! re-exported: replacing the runtime changes this module and the composition
 //! beside it, not the daemon's manifest, though a changed item still reaches
-//! the daemon's code.
-
-/// Candidate lines of the literal text search.
-pub mod lexical {
-    pub use unica_adapter_lexical::lines::{
-        holds_foreign_work_tree, inside_work_tree, stream_candidate_lines, CandidateCorpus,
-        CandidateEnd, CandidatePattern,
-    };
-}
+//! the daemon's code. Analysis providers reach the daemon through the ports
+//! of `code-intelligence` and `diagnostics`, chosen in `analysis_composition`.
 
 /// The platform runtime: its job request and the full dump publication.
 pub mod runtime {
@@ -25,13 +18,4 @@ pub mod runtime {
     pub use unica_adapter_v8_runner::backend::CoordinationOnlyRunner;
     #[cfg(any(test, feature = "test-support"))]
     pub use unica_adapter_v8_runner::full_dump::with_test_platform;
-}
-
-/// Diagnostics providers that record or fail the analysis deadline.
-#[cfg(any(test, feature = "test-support"))]
-pub mod diagnostics_probe {
-    pub use unica_adapter_bsl_analyzer::adapter::AnalyzerRunFailureKind;
-    pub use unica_adapter_bsl_analyzer::diagnostics::analyze_timeout_probe::{
-        failing_provider, recording_provider,
-    };
 }
