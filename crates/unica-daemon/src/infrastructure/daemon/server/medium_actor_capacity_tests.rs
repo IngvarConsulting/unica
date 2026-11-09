@@ -7,7 +7,7 @@ include!(concat!(
 
 use super::super::runner_015::VERSION as RUNNER_VERSION;
 use super::*;
-use unica_analysis_services::provider_host::ProviderHostKey;
+use crate::infrastructure::analysis_composition::provider_host::ProviderHostKey;
 use unica_artifact_delivery::shared::{ArtifactReady, DeliveryFormIdentity, DeliveryWorkKey};
 use unica_daemon_protocol::client_v5::V5DaemonProcessOwner;
 use unica_daemon_protocol::identity::DaemonStateDirectory;

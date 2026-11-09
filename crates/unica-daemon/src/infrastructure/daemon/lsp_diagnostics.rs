@@ -35,7 +35,7 @@ pub(super) fn own_findings(text: &str) -> Vec<LspFinding> {
             start_column: range.start_column,
             end_line: range.end_line,
             end_column: range.end_column,
-            message: unica_bsl_parser::MISPLACED_VARIABLE_MESSAGE.to_owned(),
+            message: unica_diagnostics::source_ranges::MISPLACED_VARIABLE_MESSAGE.to_owned(),
         })
         .collect()
 }
