@@ -36,7 +36,7 @@ const MAX_MCP_TASK_PROJECTION_BYTES: usize =
     MAX_CANONICAL_RESULT_BYTES + MAX_TASK_RECORD_ENVELOPE_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum TaskProjectionError {
+pub enum TaskProjectionError {
     TimestampOutOfRange,
     ReverseTimestampOrder,
     ResultTooLarge,
@@ -95,7 +95,7 @@ fn task_status(status: InvocationStatus) -> TaskStatus {
     }
 }
 
-pub(super) fn call_tool_result(
+pub fn call_tool_result(
     result: &DomainResult,
     budget: ResponseBudget,
 ) -> Result<CallToolResult, TaskProjectionError> {
@@ -173,7 +173,7 @@ fn call_result_object(
 
 /// Native Task seed from a protocol-v5 snapshot: the durable identity, status
 /// and timing exactly as the daemon stored them.
-pub(super) fn create_task_result_v5(
+pub fn create_task_result_v5(
     snapshot: &V5DaemonTaskSnapshot,
 ) -> Result<CreateTaskResult, TaskProjectionError> {
     let projected = CreateTaskResult::new(task_v5(snapshot)?);
@@ -184,7 +184,7 @@ pub(super) fn create_task_result_v5(
 /// `tasks/get` projection of a protocol-v5 snapshot. The v5 snapshot is a
 /// closed union, so the status/result/failure matrix cannot be violated on
 /// the wire; the only projection failures left are size, time and encoding.
-pub(super) fn detailed_task_v5(
+pub fn detailed_task_v5(
     snapshot: &V5DaemonTaskSnapshot,
     budget: ResponseBudget,
 ) -> Result<DetailedTask, TaskProjectionError> {
@@ -226,7 +226,7 @@ fn task_v5(snapshot: &V5DaemonTaskSnapshot) -> Result<Task, TaskProjectionError>
     Ok(projected)
 }
 
-pub(super) use crate::application::v13::task_tools::closed_task_failure as closed_failure;
+pub use crate::application::v13::task_tools::closed_task_failure as closed_failure;
 
 fn closed_failure_error(reason: V5SafeFailureReason) -> ErrorData {
     let (code, message) = closed_failure(reason);
@@ -249,12 +249,12 @@ fn closed_failure_object(reason: V5SafeFailureReason) -> Result<JsonObject, Task
 /// completed Task later embeds, or the closed error a failed or cancelled
 /// terminal answers with. Built before the acknowledgement is sent, so a
 /// receipt is acknowledged only once its host-facing value exists.
-pub(super) enum DirectProjection {
+pub enum DirectProjection {
     Result(CallToolResult),
     Error(ErrorData),
 }
 
-pub(super) fn project_direct_terminal(
+pub fn project_direct_terminal(
     terminal: &ReceiptTerminalOutcome,
     budget: ResponseBudget,
 ) -> Result<DirectProjection, TaskProjectionError> {
@@ -273,7 +273,7 @@ pub(super) fn project_direct_terminal(
     })
 }
 
-pub(super) fn projection_error(error: TaskProjectionError) -> ErrorData {
+pub fn projection_error(error: TaskProjectionError) -> ErrorData {
     let code = match error {
         TaskProjectionError::ResultTooLarge => "result_too_large",
         _ => "task_projection_failed",

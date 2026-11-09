@@ -64,5 +64,5 @@ fn run() {
         return;
     }
 
-    unica_daemon::interfaces::mcp::run_stdio();
+    unica_mcp::run_stdio(unica_daemon::interfaces::daemon::connect_user_daemon);
 }

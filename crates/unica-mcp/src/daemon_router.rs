@@ -5,8 +5,8 @@
 //! terminal is acknowledged only after its host-facing value exists; a lost
 //! submit response is recovered by the exact receipt key the frontend derives
 //! itself, never by a second submission.
-use super::canonical_cancellation::{CanonicalCancellation, ControlFailure};
-use super::task_projection::{self, DirectProjection};
+use crate::canonical_cancellation::{CanonicalCancellation, ControlFailure};
+use crate::task_projection::{self, DirectProjection};
 use rmcp::model::{CallToolResult, ErrorCode, ErrorData};
 use serde_json::{Map, Value};
 use std::sync::Arc;
@@ -34,7 +34,7 @@ use unica_refusal::RefusalCode;
 #[cfg(test)]
 use unica_work_control::cancellation::CancellationToken;
 
-pub(super) const TOOL_EXECUTION_ERROR: i32 = -32000;
+pub const TOOL_EXECUTION_ERROR: i32 = -32000;
 /// The acknowledgement travels after the transport budget of the invocation
 /// may already be spent; it gets a short budget of its own instead of racing
 /// an exhausted cutoff.
@@ -76,34 +76,34 @@ const RECOVERY_POLL_INTERVAL: Duration = Duration::from_millis(25);
 // origin: 45c5825e6 (#780)
 // problem: Ответ submit чаще всего теряется на cutoff, когда продвижение в задание под нагрузкой перерастает запас 125 мс (комментарий в daemon_router.rs).
 // on-reach: Восстановление прекращается; отказ как у v3 (#780).
-const RECOVERY_BUDGET: Duration = Duration::from_millis(750);
+pub const RECOVERY_BUDGET: Duration = Duration::from_millis(750);
 
 /// One absolute frontend budget per request: captured at receipt and only
 /// narrowed afterwards, never re-derived from a later `now`.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct FrontendInvocationDeadline {
+pub struct FrontendInvocationDeadline {
     received_at: Instant,
     host_remaining_at_receipt: Option<Duration>,
 }
 
 impl FrontendInvocationDeadline {
-    pub(super) fn new(received_at: Instant, host_remaining_at_receipt: Option<Duration>) -> Self {
+    pub fn new(received_at: Instant, host_remaining_at_receipt: Option<Duration>) -> Self {
         Self {
             received_at,
             host_remaining_at_receipt,
         }
     }
 
-    pub(super) fn received_at(self) -> Instant {
+    pub fn received_at(self) -> Instant {
         self.received_at
     }
 
-    pub(super) fn remaining_at(self, now: Instant) -> Duration {
+    pub fn remaining_at(self, now: Instant) -> Duration {
         remaining_invocation_budget(self.received_at, now, self.host_remaining_at_receipt)
     }
 
-    #[cfg(test)]
-    pub(super) fn remaining_transport_at(self, now: Instant) -> Duration {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn remaining_transport_at(self, now: Instant) -> Duration {
         let elapsed = now.saturating_duration_since(self.received_at);
         let own_remaining = INVOCATION_HANDOFF_WINDOW
             .saturating_add(RESPONSE_SERIALIZATION_MARGIN)
@@ -114,7 +114,7 @@ impl FrontendInvocationDeadline {
         host_remaining.map_or(own_remaining, |remaining| own_remaining.min(remaining))
     }
 
-    pub(super) fn transport_cutoff(self) -> Instant {
+    pub fn transport_cutoff(self) -> Instant {
         let own_cutoff = self
             .received_at
             .checked_add(INVOCATION_HANDOFF_WINDOW.saturating_add(RESPONSE_SERIALIZATION_MARGIN))
@@ -125,7 +125,7 @@ impl FrontendInvocationDeadline {
     }
 }
 
-pub(super) fn remaining_invocation_budget(
+pub fn remaining_invocation_budget(
     received_at: Instant,
     now: Instant,
     host_remaining_at_receipt: Option<Duration>,
@@ -140,7 +140,7 @@ pub(super) fn remaining_invocation_budget(
 /// What one canonical call produced: the final `CallToolResult` of an
 /// acknowledged Direct terminal, or the durable Task the daemon handed off to.
 #[derive(Debug)]
-pub(super) enum CanonicalCallOutcome {
+pub enum CanonicalCallOutcome {
     Direct(CallToolResult),
     /// The Task the call continues as: the daemon's handoff, or, when the
     /// submit answer was lost and could not be recovered, the queued Task
@@ -156,7 +156,7 @@ enum RecoveryEnd {
     Refused(ErrorData),
 }
 
-pub(super) type CanonicalCallHandler = dyn Fn(
+pub type CanonicalCallHandler = dyn Fn(
         V5ToolIdentity,
         &Map<String, Value>,
         &unica_bootstrap::HostRequest,
@@ -166,11 +166,11 @@ pub(super) type CanonicalCallHandler = dyn Fn(
     + Send
     + Sync;
 
-pub(super) type CanonicalTaskHandler = dyn Fn(TaskId, FrontendInvocationDeadline) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError>
+pub type CanonicalTaskHandler = dyn Fn(TaskId, FrontendInvocationDeadline) -> Result<V5DaemonTaskSnapshot, V5TaskExchangeError>
     + Send
     + Sync;
 
-pub(super) type CanonicalTaskWaitHandler = dyn Fn(
+pub type CanonicalTaskWaitHandler = dyn Fn(
         TaskId,
         u64,
         FrontendInvocationDeadline,
@@ -180,25 +180,25 @@ pub(super) type CanonicalTaskWaitHandler = dyn Fn(
     + Sync;
 
 #[derive(Clone)]
-pub(super) struct CanonicalDaemonRouter {
-    pub(super) call: Arc<CanonicalCallHandler>,
-    pub(super) get: Arc<CanonicalTaskHandler>,
-    pub(super) wait: Arc<CanonicalTaskWaitHandler>,
-    pub(super) cancel: Arc<CanonicalTaskHandler>,
+pub struct CanonicalDaemonRouter {
+    pub call: Arc<CanonicalCallHandler>,
+    pub get: Arc<CanonicalTaskHandler>,
+    pub wait: Arc<CanonicalTaskWaitHandler>,
+    pub cancel: Arc<CanonicalTaskHandler>,
 }
 
 type ReceiptObserver = Arc<dyn Fn(&ReceiptKey) + Send + Sync>;
 
 /// Build the router over a renewable protocol-v5 owner lease.
-pub(super) fn canonical_daemon_router(
+pub fn canonical_daemon_router(
     client: impl Into<V5DaemonClient>,
     workspace: impl Into<unica_bootstrap::HostWorkspaceContext>,
 ) -> CanonicalDaemonRouter {
     build_router(client.into(), workspace.into(), None)
 }
 
-#[cfg(test)]
-pub(super) fn canonical_daemon_router_observed(
+#[cfg(feature = "test-support")]
+pub fn canonical_daemon_router_observed(
     owner: V5DaemonProcessOwner,
     workspace_hint: String,
     observer: ReceiptObserver,
@@ -325,10 +325,7 @@ fn task_peer(
 /// before the daemon wait starts is never replenished. Connect and exchange
 /// are bounded by the transport cutoff, not by this one: a ready result read
 /// with `waitMs: 0` on a slow host arrives as the result.
-pub(super) fn daemon_wait_cutoff(
-    requested_wait_ms: u64,
-    deadline: FrontendInvocationDeadline,
-) -> Instant {
+pub fn daemon_wait_cutoff(requested_wait_ms: u64, deadline: FrontendInvocationDeadline) -> Instant {
     let requested_cutoff = deadline
         .received_at()
         .checked_add(
@@ -338,7 +335,7 @@ pub(super) fn daemon_wait_cutoff(
     requested_cutoff.min(deadline.transport_cutoff())
 }
 
-pub(super) fn bounded_wait_ms(requested_wait_ms: u64, cutoff: Instant, now: Instant) -> u64 {
+pub fn bounded_wait_ms(requested_wait_ms: u64, cutoff: Instant, now: Instant) -> u64 {
     let remaining = cutoff
         .saturating_duration_since(now)
         .saturating_sub(RESPONSE_SERIALIZATION_MARGIN);
@@ -524,7 +521,7 @@ fn cancel_exact_endpoint(
 
 /// The exact key the daemon derives from the same submission
 /// (`receipt_key_is_canonicalized_identically_by_client_and_server`).
-fn receipt_key_for(
+pub fn receipt_key_for(
     invocation: &V5InvocationRequest,
     client: &V5DaemonClient,
 ) -> Result<ReceiptKey, ErrorData> {
@@ -696,7 +693,7 @@ fn settle(
     }
 }
 
-fn epoch_ms_now() -> u64 {
+pub fn epoch_ms_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis().min(u128::from(u64::MAX)) as u64)
@@ -822,9 +819,6 @@ fn receipt_pending_refusal() -> ErrorData {
         Some(serde_json::json!({"code": "receipt_pending"})),
     )
 }
-
-#[cfg(test)]
-pub(in crate::interfaces) mod test_support;
 
 #[cfg(test)]
 mod medium_tests;

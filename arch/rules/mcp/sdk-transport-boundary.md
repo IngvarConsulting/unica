@@ -4,14 +4,14 @@ id: INV.WIRE.SDK-TRANSPORT
 
 # MCP SDK принадлежит транспортному слою
 
-Только Cargo-пакет `unica-daemon` прямо зависит от `rmcp` из crates.io.
+Только Cargo-пакет `unica-mcp` прямо зависит от `rmcp` из crates.io.
 Зависимость не переименовывается, отключает default features и включает
 ровно `server` и `transport-io`.
 
 Продуктивные ссылки на `rmcp` во всех отслеживаемых Git Rust-файлах `src`
-пакетов workspace находятся только в `crates/unica-daemon/src/interfaces/`.
-Комментарии, литералы и элементы с точным `#[cfg(test)]` в эту границу
-не входят.
+пакетов workspace находятся только в `crates/unica-mcp/src/`.
+Комментарии, литералы, элементы с точным `#[cfg(test)]` и файлы модулей
+с `#![cfg(test)]` в эту границу не входят.
 
 Производственная library-сборка подтверждает, что `UnicaServer` реализует
 `rmcp::ServerHandler`: соответствие SDK не должно существовать только

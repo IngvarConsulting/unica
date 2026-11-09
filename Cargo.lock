@@ -2673,7 +2673,6 @@ dependencies = [
  "quote",
  "regex",
  "regex-syntax",
- "rmcp",
  "roxmltree",
  "serde",
  "serde_json",
@@ -2703,6 +2702,7 @@ dependencies = [
  "unica-forms",
  "unica-lsp",
  "unica-lsp-contract",
+ "unica-mcp",
  "unica-metadata",
  "unica-metadata-designer",
  "unica-navigation",
@@ -2962,6 +2962,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "unica-mcp"
+version = "0.15.0-rc.1"
+dependencies = [
+ "chrono",
+ "jsonschema",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "unica-application",
+ "unica-bootstrap",
+ "unica-code-intelligence",
+ "unica-daemon-protocol",
+ "unica-diagnostics",
+ "unica-execution",
+ "unica-execution-contract",
+ "unica-metadata",
+ "unica-refusal",
+ "unica-work-control",
+ "unica-workspace",
+]
+
+[[package]]
 name = "unica-metadata"
 version = "0.15.0-rc.1"
 dependencies = [
@@ -3096,6 +3120,7 @@ dependencies = [
  "unica-daemon",
  "unica-daemon-protocol",
  "unica-execution",
+ "unica-mcp",
  "unica-metadata-designer",
  "unica-process",
  "unica-source-designer",
