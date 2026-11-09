@@ -32,8 +32,8 @@ id: INV.WIRE.V13-CAN-DICTIONARY
 Адрес `Can` читается только `view`. `check`, `resolve`, `apply` (во всех
 позициях адреса) и `search.scope` отвечают `bad_value`/`fixCall` с `next`
 к `view` того же адреса. `diff` исключает вычисляемый `can` из сравнения и
-отклоняет адрес операции с `target_kind_unsupported`. Снятый `filter` у
-`view` и `diff` получает отказ неизвестного аргумента с адресом замены в `next`.
+отклоняет адрес операции с `target_kind_unsupported`. Неизвестный аргумент
+`view` и `diff` отклоняется.
 
 Цель изменения задаёт [правило адреса операции](operation-target-address.md),
 создание — [правило родителя](operation-creation-parent.md).

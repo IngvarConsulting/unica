@@ -87,39 +87,23 @@
       </p>
     </div>
 
-    <!-- Стабильная версия и кандидат — карточки в одной сетке с плитками
-         прогонов. Кандидат появляется только пока канал next раздаёт выпуск
-         новее стабильного, плитки прогонов — только у линий с
-         отчётом: пустая плитка «нет прогонов» на первом экране читалась как
-         «проект не живёт». Действие у каждой карточки — последняя строка. -->
+    <!-- Тесты показываются по версии, а не по ветке: стабильная, кандидат
+         канала next и последние alpha. Каждая карточка — прогон, давший этот
+         тег: проверенный коммит, исходы, пропуски по ОС и отчёт Allure этого
+         прогона. Версия без сохранённого отчёта говорит это прямо. -->
     <div class="cards" id="state">
-      <div class="card card-version">
-        <h3>Стабильная версия</h3>
-        <span class="metric">{{version}}</span>
-        <div class="sub">опубликована {{version_date}}</div>
-        <div class="card-foot"><a href="{{version_url}}" target="_blank" rel="noopener noreferrer">Заметки о выпуске <span class="vh">{{version}}</span> <span aria-hidden="true">→</span></a></div>
-      </div>
-      <!-- repeat: candidates -->
-      <div class="card card-version">
-        <div class="card-head"><h3>Кандидат выпуска</h3><span class="status status-plan">канал next</span></div>
-        <span class="metric">{{candidate_tag}}</span>
-        <div class="sub">опубликован {{candidate_date}}</div>
-        <div class="card-foot">
-          <a href="next.html">Как поставить <span class="vh">{{candidate_tag}}</span> <span aria-hidden="true">→</span></a>
-          <a class="quiet" href="{{candidate_url}}" target="_blank" rel="noopener noreferrer">Заметки о выпуске <span class="vh">{{candidate_tag}}</span></a>
-        </div>
-      </div>
-      <!-- /repeat -->
-      <!-- repeat: tested_lines -->
+      <!-- repeat: versions -->
       <div class="card card-line">
-        <h3 class="ident line-head"><svg class="branch-icon" viewBox="0 0 14 14" aria-hidden="true"><circle cx="4" cy="3" r="1.7"/><circle cx="4" cy="11" r="1.7"/><circle cx="10.5" cy="3" r="1.7"/><path d="M4 4.7v4.6M10.5 4.7v1.2c0 1.7-1.4 3.1-3.1 3.1H4"/></svg>{{line}}<span class="line-run"><a href="{{build_url}}" target="_blank" rel="noopener noreferrer">{{build_sha}}</a> от {{build_date}}</span></h3>
-        <span class="metric">{{tests_total}} <small>{{tests_total_word}}</small></span>
+        <div class="card-head"><h3>{{version_kind}}</h3><span class="line-run"><a href="{{version_commit_url}}" target="_blank" rel="noopener noreferrer">{{version_commit}}</a> от {{version_published}}</span></div>
+        <span class="metric"><a href="{{version_notes_url}}" target="_blank" rel="noopener noreferrer">{{version_tag}}</a></span>
+        <div class="sub">{{tests_total}} {{tests_total_word}}</div>
         <div class="sub stats">
           <span class="stat"><span class="dot dot-ok"></span>{{tests_passed}} {{tests_passed_word}}</span>
           <span class="stat"><span class="dot dot-bad"></span>{{tests_failed}} {{tests_failed_word}}</span>
           <span class="stat"><span class="dot dot-skip"></span>{{tests_skipped}} {{tests_skipped_word}}</span>
         </div>
-        <div class="card-foot"><a href="{{report_url}}" target="_blank" rel="noopener noreferrer">Отчёт Allure <span class="vh">{{line}}</span> <span aria-hidden="true">→</span></a></div>
+        <div class="sub">пропуски по ОС: {{tests_skipped_hosts}}</div>
+        <div class="card-foot"><a href="{{report_url}}" target="_blank" rel="noopener noreferrer">{{report_label}} <span class="vh">{{version_tag}}</span> <span aria-hidden="true">→</span></a></div>
       </div>
       <!-- /repeat -->
     </div>

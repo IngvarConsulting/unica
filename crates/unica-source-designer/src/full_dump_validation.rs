@@ -255,3 +255,30 @@ impl DumpSemanticValidator for DesignerDumpValidator {
         }
     }
 }
+
+#[cfg(test)]
+mod style_root_tests {
+    use super::validate_xml_raw;
+    use std::path::Path;
+
+    fn style(version: &str) -> String {
+        format!(
+            "\u{feff}<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <Style xmlns=\"http://v8.1c.ru/8.3/xcf/extrnprops\" version=\"{version}\"/>"
+        )
+    }
+
+    /// Конфигурация со стилем выгружает `Styles/*/Ext/Style.xml`: без этого
+    /// корня полная выгрузка такой конфигурации не публикуется.
+    #[test]
+    fn a_full_dump_accepts_the_style_of_a_configuration() {
+        let path = Path::new("Styles/Main/Ext/Style.xml");
+        assert!(validate_xml_raw(path, style("2.20").as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn a_style_of_another_export_format_stays_refused() {
+        let path = Path::new("Styles/Main/Ext/Style.xml");
+        assert!(validate_xml_raw(path, style("2.19").as_bytes()).is_err());
+    }
+}

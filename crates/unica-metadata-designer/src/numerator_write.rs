@@ -1,3 +1,4 @@
+// module: private
 //! Validate the numerator's own scalar image before publication.
 use roxmltree::{Document, Node};
 use unica_metadata::document_numerator::{

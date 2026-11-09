@@ -1,0 +1,82 @@
+{
+  "id": "S369",
+  "name": "dcs-empty-clear-noop-preserves-xml",
+  "issue": 1310,
+  "area": "СКД",
+  "task": "Повтор пустой очистки не нормализует декларацию, соседние байты или переводы строк; итоговый SHA256 остаётся прежним",
+  "workspace": "tests/fixtures/acceptance/workspace-dcs",
+  "wire": [
+    {
+      "tool": "unica.view",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema"
+      },
+      "expect": [
+        "ok"
+      ],
+      "captures": {
+        "before": {
+          "file": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "at": "cf:Report.F05Report.Template.F05Schema.Setting.F05Variant",
+        "ops": [
+          {
+            "op": "filter.clear",
+            "args": {
+              "values": {}
+            }
+          }
+        ]
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ],
+      "captures": {
+        "noopToken": {
+          "pointer": "/data/executionToken"
+        }
+      }
+    },
+    {
+      "tool": "unica.apply",
+      "args": {
+        "executionToken": "$capture.noopToken"
+      },
+      "expect": [
+        "ok"
+      ],
+      "assertions": [
+        {
+          "pointer": "/data/effects",
+          "eq": 0
+        }
+      ],
+      "fileAssertions": [
+        {
+          "path": "src/cf/Reports/F05Report/Templates/F05Schema/Ext/Template.xml",
+          "kind": "sha256",
+          "eq": "$capture.before"
+        }
+      ]
+    }
+  ]
+}

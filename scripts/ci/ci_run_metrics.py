@@ -107,7 +107,7 @@ def step_phase(name: str) -> str:
         return "cache"
     if lowered.startswith("post "):
         return "setup"
-    if any(tool in lowered for tool in ("actions/checkout", "rust-toolchain", "setup-python", "install-action", "pip install")):
+    if any(tool in lowered for tool in ("actions/checkout", "rust-toolchain", "setup-python", "install-action", "install-nextest", "pip install")):
         return "setup"
     return "work"
 

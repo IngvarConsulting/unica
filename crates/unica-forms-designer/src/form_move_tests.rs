@@ -395,10 +395,8 @@ fn moving_from_no_default_namespace_does_not_rebind_unqualified_extensions() {
 /// rule: INV.SOURCE.FORM-ELEMENT-MOVE-PRESERVATION
 #[test]
 fn placement_matrix_matches_observed_platform_kinds_bindings_and_parents() {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/platform_8_3_27/form_move/cases.json"
-    ))
-    .unwrap();
+    let fixture: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/form_move/cases.json")).unwrap();
     assert_eq!(fixture["schemaVersion"], 1);
     let field_kinds = fixture["fieldKinds"].as_array().unwrap();
     let mut checked = 0;
