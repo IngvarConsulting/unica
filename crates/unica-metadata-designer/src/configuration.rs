@@ -2092,7 +2092,12 @@ pub fn validate_cf_source(
             let value = cf_validate_child_text(props_node, property, Some(MD_NS));
             if !value.is_empty() {
                 let allowed = cf_validate_enum_allowed(property);
-                if !allowed.contains(&value.as_str()) {
+                let line_mode = matches!(
+                    *property,
+                    "CompatibilityMode" | "ConfigurationExtensionCompatibilityMode"
+                ) && crate::dialect::for_version(version_literal.as_deref())
+                    .knows_line_compatibility_mode(&value);
+                if !allowed.contains(&value.as_str()) && !line_mode {
                     report.error(format!(
                         "4. Property '{property}' has invalid value '{value}'"
                     ));

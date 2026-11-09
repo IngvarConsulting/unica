@@ -494,7 +494,7 @@ mod medium_tests {
         fs::create_dir_all(root.join("src")).unwrap();
         fs::write(
             root.join("src/Configuration.xml"),
-            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.21"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
+            r#"<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" version="2.23"><Configuration><Properties><Name>Demo</Name></Properties><ChildObjects/></Configuration></MetaDataObject>"#,
         )
         .unwrap();
         let at = QualifiedAddress::parse("main:Configuration").unwrap();

@@ -119,7 +119,7 @@ fn canonical_subsystem_check_refuses_replaced_root() {
 /// rule: INV.SURFACE.CHECK-INFERS-VALIDATORS
 #[test]
 fn canonical_subsystem_check_preserves_bom_format_warning() {
-    for version in ["2.20", "2.21"] {
+    for version in ["2.20", "2.23"] {
         let fixture = nested_check_fixture();
         let path = fixture
             .source
@@ -148,7 +148,7 @@ fn canonical_subsystem_check_preserves_bom_format_warning() {
                 .diagnostics()
                 .iter()
                 .any(|diagnostic| diagnostic.code() == "formatVersionUnverified"),
-            version == "2.21"
+            version == "2.23"
         );
     }
 }

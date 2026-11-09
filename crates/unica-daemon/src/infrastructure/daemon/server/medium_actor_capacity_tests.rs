@@ -1583,7 +1583,7 @@ fn canonical_form_check_keeps_owner_format_warnings() {
             let original = std::fs::read_to_string(&path).unwrap();
             for (version, code) in [
                 ("2.17", "formatVersionUnverified"),
-                ("2.21", "formatVersionUnverified"),
+                ("2.23", "formatVersionUnverified"),
             ] {
                 std::fs::write(&path, original.replace("2.20", version)).unwrap();
                 let checked = call_dcs_check(workspace.path(), ToolIdentity::Check, &at);
@@ -1709,7 +1709,7 @@ fn canonical_dcs_check_accepts_external_report_processor_and_configuration() {
 #[test]
 fn canonical_template_read_warns_while_writes_keep_the_exact_owner_profile() {
     for kind in ["Report", "ExternalReport", "ExternalDataProcessor"] {
-        for version in [Some("2.21"), Some("2.17"), None] {
+        for version in [Some("2.23"), Some("2.17"), None] {
             let (workspace, at, body) = dcs_check_workspace(kind);
             let wrapper = body
                 .parent()

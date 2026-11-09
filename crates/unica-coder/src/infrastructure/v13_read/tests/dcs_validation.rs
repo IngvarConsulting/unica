@@ -61,7 +61,7 @@ fn canonical_dcs_validation_keeps_captured_format_evidence_after_replacement() {
 fn canonical_dcs_validation_keeps_captured_owner_format_warnings() {
     for relative in ["Configuration.xml"] {
         for (version, expected) in [
-            ("2.21", "formatVersionUnverified"),
+            ("2.23", "formatVersionUnverified"),
             ("2.17", "formatVersionUnverified"),
             ("2.16", "formatVersionUnsupported"),
             ("2.&#50;0", "formatVersionInvalid"),
@@ -248,7 +248,7 @@ fn canonical_dcs_validation_refuses_linked_format_owners_before_capture() {
 fn canonical_dcs_validation_keeps_large_configuration_owner_format_warning() {
     let fixture = RealReaderFixture::new();
     let path = fixture.source.join("Configuration.xml");
-    let xml = fs::read_to_string(&path).unwrap().replace("2.20", "2.21");
+    let xml = fs::read_to_string(&path).unwrap().replace("2.20", "2.23");
     fs::write(
         &path,
         xml.replace(
@@ -307,7 +307,7 @@ fn canonical_dcs_validation_reports_readable_template_owner_versions() {
     for (version, expected) in [
         (Some("2.17"), "formatVersionUnverified"),
         (Some("2.16"), "formatVersionUnsupported"),
-        (Some("2.21"), "formatVersionUnverified"),
+        (Some("2.23"), "formatVersionUnverified"),
         (None, "formatVersionUnsupported"),
     ] {
         let fixture = RealReaderFixture::new();

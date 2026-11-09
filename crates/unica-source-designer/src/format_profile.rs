@@ -254,15 +254,28 @@ pub fn root_version_report(raw: Option<&str>) -> RootVersionReport {
             "Export format: {}",
             ACTIVE_FORMAT_PROFILE.export_format
         )),
+        // A version with a dialect of its own is read as written.
+        Ok(_) if has_own_dialect(raw) => {
+            RootVersionReport::Ok(format!("Export format: {}", raw.unwrap_or_default()))
+        }
         Ok(compatibility) => RootVersionReport::Warn(format_compatibility_warning(&compatibility)),
         Err(error) => RootVersionReport::Error(error.to_string()),
     }
 }
 
-/// The Designer export versions with a dialect of their own. Every codec
-/// reads and writes the one writable version.
+/// Whether a root recording `raw` is read by a dialect of its own version.
+fn has_own_dialect(raw: Option<&str>) -> bool {
+    resolve_platform_xml_read(raw)
+        == unica_source_contract::format_identity::ReadResolution::Dialect
+}
+
+/// The Designer export versions with a dialect of their own: 2.20, and 2.21
+/// and 2.22, whose all_kinds corpora every codec reads (#2730).
 pub fn platform_xml_dialects() -> Vec<FormatKey> {
-    vec![FormatKey::new([ACTIVE_FORMAT_PROFILE.export_format])]
+    [ACTIVE_FORMAT_PROFILE.export_format, "2.21", "2.22"]
+        .into_iter()
+        .map(|version| FormatKey::new([version]))
+        .collect()
 }
 
 /// Which dialect reads a root recording `raw` (INV.SOURCE.WRITABLE-PROFILE);
@@ -286,6 +299,7 @@ pub fn known_platform_xml_versions() -> Vec<&'static str> {
 pub fn require_supported_root_version(raw: Option<&str>) -> Result<(), String> {
     match classify_root_version(raw).map_err(|error| error.to_string())? {
         FormatCompatibility::Supported { .. } => Ok(()),
+        _ if has_own_dialect(raw) => Ok(()),
         compatibility => Err(format_compatibility_warning(&compatibility)),
     }
 }
@@ -397,7 +411,10 @@ mod tests {
             RootVersionReport::Error(_)
         ));
         assert!(require_supported_root_version(Some(writable)).is_ok());
-        assert!(require_supported_root_version(Some("2.21")).is_err());
+        // 2.21 has a dialect of its own and is read without a finding; a
+        // newer version without one is refused.
+        assert!(require_supported_root_version(Some("2.21")).is_ok());
+        assert!(require_supported_root_version(Some("2.23")).is_err());
     }
 
     #[test]
