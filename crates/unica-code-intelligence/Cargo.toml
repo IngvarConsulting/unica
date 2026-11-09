@@ -7,7 +7,7 @@ repository.workspace = true
 
 [features]
 default = []
-test-support = []
+test-support = ["unica-configuration/test-support"]
 
 [dependencies]
 unica-workspace = { path = "../unica-workspace" }
@@ -18,11 +18,13 @@ unica-bsl-parser = { path = "../unica-bsl-parser" }
 unica-code-model = { path = "../unica-code-model" }
 unica-source-contract = { path = "../unica-source-contract" }
 unica-work-control = { path = "../unica-work-control" }
+unica-configuration = { path = "../unica-configuration" }
 serde.workspace = true
 serde_json.workspace = true
 
 
 [dev-dependencies]
+unica-configuration = { path = "../unica-configuration", features = ["test-support"] }
 uuid.workspace = true
 unica-address = { path = "../unica-address" }
 
