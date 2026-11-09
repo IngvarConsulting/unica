@@ -294,7 +294,7 @@ class LocalDevInstallerTests(unittest.TestCase):
     def test_installer_preserves_persistent_cargo_work_and_writes_metrics(self) -> None:
         installer = INSTALLER.read_text(encoding="utf-8")
         workflow = (
-            REPO_ROOT / ".github/workflows/unica-plugin-release.yml"
+            REPO_ROOT / ".github/workflows/release.yml"
         ).read_text(encoding="utf-8")
 
         self.assertIn('WORK_DIR="$BUILD_ROOT/tool-work"', installer)
@@ -371,7 +371,7 @@ class LocalDevInstallerTests(unittest.TestCase):
 
     def test_windows_ci_runs_local_installer_package_install_verify_smoke(self) -> None:
         workflow = (
-            REPO_ROOT / ".github/workflows/unica-plugin-release.yml"
+            REPO_ROOT / ".github/workflows/release.yml"
         ).read_text(encoding="utf-8")
         required = (
             "Build, install, and verify local development on Windows",

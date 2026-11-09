@@ -28,3 +28,7 @@ sha2.workspace = true
 
 [dev-dependencies]
 unica-workspace = { path = "../unica-workspace", features = ["test-support"] }
+
+[package.metadata.unica]
+component = "adapter"
+file-io = "owned"

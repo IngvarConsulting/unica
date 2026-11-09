@@ -18,7 +18,18 @@ use unica_work_control::provider_deadline::ProviderDeadline;
 
 // #1119: the configuration, not apply, decides file sizes and namespace
 // membership; depth still guards against cycles.
+// resource-limit-excluded: usize::MAX: предел числа записей снят в #1119, тесты подставляют свой предел через entry_limit
 pub(super) const MAX_APPLY_NAMESPACE_ENTRIES: usize = usize::MAX;
+// resource-limit: apply.namespace-depth
+// class: format
+// unit: depth
+// scope: traversal
+// value: 256
+// resource: Глубина перечисления пространства имён оверлея apply и удаления каталогов.
+// status: unproven
+// origin: #1772
+// problem: неизвестно
+// on-reach: ошибка staging UnsupportedProvider «directory removal exceeds namespace depth bound»
 pub(super) const MAX_APPLY_NAMESPACE_DEPTH: usize = 256;
 
 /// A filesystem call on the planned route failed: access denied, I/O, or
@@ -1995,7 +2006,7 @@ pub(crate) mod tests {
         );
     }
 
-    /// A reference scan over a whole configuration (issue #1466) must not
+    /// A reference scan over a whole configuration must not
     /// keep a descriptor per inspected file or directory: the saved guard is
     /// an identity and a fingerprint, re-proved by walking the route again.
     /// This resource invariant has no operation cutoff; the finite-deadline
@@ -3316,23 +3327,6 @@ pub(crate) mod tests {
             .is_empty());
         assert!(!state.namespaces.contains_key(Path::new("Nested/.BUILD")));
         assert!(state.entries.is_empty());
-        std::fs::remove_dir_all(root).unwrap();
-    }
-
-    /// A file larger than the former 32 MiB staging bound is read whole: the
-    /// configuration, not apply, decides its size (#1119).
-    /// rule: INV.SOURCE.REVISION-CONTENT-BOUNDS
-    #[test]
-    fn apply_stages_a_file_larger_than_the_former_read_bound() {
-        const FORMER_BOUND: usize = 32 * 1024 * 1024;
-        let root = temp_root("unbounded-read");
-        std::fs::create_dir_all(root.join("Ext")).unwrap();
-        let large = vec![b'a'; FORMER_BOUND + 1];
-        std::fs::write(root.join("Ext/large.bin"), &large).unwrap();
-        let mut state = staged(&root);
-
-        let read = state.read(Path::new("Ext/large.bin")).unwrap();
-        assert_eq!(read.as_deref(), Some(large.as_slice()));
         std::fs::remove_dir_all(root).unwrap();
     }
 

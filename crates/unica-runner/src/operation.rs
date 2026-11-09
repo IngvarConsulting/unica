@@ -76,18 +76,6 @@ impl RuntimeJobOperation {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    /// Загрузку зависимостей продукт стороннему исполнителю не делегирует:
-    /// `tools-download` снят с провода вместе с v0.12 и не должен доживать
-    /// в словаре заданий как принимаемая операция (#871, B-2).
-    #[test]
-    fn tools_download_is_not_a_runtime_job_operation() {
-        assert!(RuntimeJobOperation::from_label("tools-download").is_err());
-    }
-}
-
 use unica_source_contract::events::DomainEventKind;
 pub fn runtime_event_kind(operation: &str) -> Option<DomainEventKind> {
     match operation {

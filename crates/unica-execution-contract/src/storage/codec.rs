@@ -4,11 +4,17 @@ use std::io::{self, Write};
 
 // JSON width of the closed metadata shape, including impossible combinations
 // as a conservative upper bound. No field contains caller text or body bytes.
+// resource-limit-excluded: ширина поля кодека метаданных; слагаемое MAX_METADATA_BYTES, само ничего не ограничивает
 const HASH_BYTES: usize = 2 + 32 * 3 + 31;
+// resource-limit-excluded: ширина поля кодека метаданных; слагаемое MAX_METADATA_BYTES, само ничего не ограничивает
 const U64_BYTES: usize = 20;
+// resource-limit-excluded: ширина поля кодека метаданных; слагаемое MAX_METADATA_BYTES, само ничего не ограничивает
 const UUID_BYTES: usize = 2 + 36;
+// resource-limit-excluded: ширина поля кодека метаданных; слагаемое MAX_METADATA_BYTES, само ничего не ограничивает
 const BOOL_BYTES: usize = 5;
+// resource-limit-excluded: ширина поля кодека метаданных; слагаемое MAX_METADATA_BYTES, само ничего не ограничивает
 const KIND_BYTES: usize = object(&[("Failed", 2 + "ResumeUnsupported".len())]);
+// resource-limit-excluded: ширина поля кодека метаданных; слагаемое MAX_METADATA_BYTES, само ничего не ограничивает
 const TOOL_BYTES: usize = 2 + "Resolve".len();
 const fn object(fields: &[(&str, usize)]) -> usize {
     let mut total = 2;
@@ -22,11 +28,22 @@ const fn object(fields: &[(&str, usize)]) -> usize {
     }
     total
 }
+// resource-limit-excluded: ширина поля кодека метаданных; слагаемое MAX_METADATA_BYTES, само ничего не ограничивает
 const DESCRIPTOR_BYTES: usize = object(&[
     ("kind", KIND_BYTES),
     ("digest", HASH_BYTES),
     ("length", U64_BYTES),
 ]);
+// resource-limit: execution-store.metadata-bytes
+// class: format
+// unit: bytes
+// scope: record
+// derived: true
+// resource: Размер раздела метаданных записи хранилища операций.
+// status: unproven
+// origin: #1783
+// problem: Ширина JSON закрытой формы метаданных; ни одно поле не содержит текста вызывающего (комментарий в codec.rs).
+// on-reach: запись отвергается DecodeError::TooLarge до разбора
 pub const MAX_METADATA_BYTES: usize = object(&[
     (
         "key",

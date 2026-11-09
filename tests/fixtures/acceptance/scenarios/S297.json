@@ -1,0 +1,18 @@
+{
+  "id": "S297",
+  "area": "Документация и стандарты",
+  "task": "Пустой запрос к документации — отказ до обращения к поставщику",
+  "wire": [
+    {
+      "tool": "unica.docs",
+      "args": {
+        "query": "",
+        "source": "platform-help"
+      },
+      "expect": [
+        "refused"
+      ],
+      "refusal": "bad_value: docs query must be non-blank"
+    }
+  ]
+}

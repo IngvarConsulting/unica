@@ -169,7 +169,7 @@ fn http_service_details_preserve_templates_and_methods() {
 /// Конфигуратор 8.3.27 пишет у шаблона и метода `Synonym` и `<Comment/>`
 /// всегда, даже пустыми: так устроены все 55 шаблонов и 61 метод локальной
 /// выгрузки. Без них разбор отвечал `urlTemplates: null`, и `view` не видел
-/// ни одного шаблона настоящего сервиса (#634).
+/// ни одного шаблона настоящего сервиса.
 #[test]
 fn http_service_details_accept_the_configurator_synonym_and_comment() {
     let xml = include_str!(concat!(
@@ -1667,7 +1667,7 @@ fn http_method_projection_accepts_every_8_3_27_enum_literal() {
     }
 }
 
-/// Ссылка расширения на тип расширяемой конфигурации (`v8:TypeId`, #1361)
+/// Ссылка расширения на тип расширяемой конфигурации (`v8:TypeId`)
 /// читается как есть и закрыта для записи: имени типа у неё нет.
 /// rule: INV.SOURCE.OBSERVED-TYPE-CAPABILITY
 #[test]
@@ -1821,7 +1821,7 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
     use unica_metadata::{ObservedMetadataTypeVariant, StringLengthMode};
     let native = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/fixtures/platform_8_3_27/binary-data/native-type.xml"
+        "/tests/fixtures/binary-data/native-type.xml"
     ));
     let wrap = |fragment: &str, namespace: &str| {
         format!(
@@ -1919,7 +1919,7 @@ fn observed_binary_type_accepts_native_qnames_and_keeps_legacy_read_compatibilit
 /// Голый текст локализуемого свойства стандартного реквизита отвергается
 /// одинаково у справочника, табличной части и стандартной табличной части.
 /// Набор свойств — по выгрузке 8.3.27, где `Format` и `EditFormat` пишутся
-/// `<v8:item>` (#1910).
+/// `<v8:item>`.
 #[test]
 fn bare_text_of_a_localized_standard_attribute_property_is_refused_for_every_owner() {
     const NS: &str = r#"xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:v8="http://v8.1c.ru/8.1/data/core""#;

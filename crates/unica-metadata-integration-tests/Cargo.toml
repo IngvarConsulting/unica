@@ -20,3 +20,7 @@ unica-process = { path = "../unica-process", features = ["test-support"] }
 unica-address = { path = "../unica-address" }
 uuid.workspace = true
 tempfile.workspace = true
+
+[package.metadata.unica]
+component = "integration-tests"
+file-io = "owned"

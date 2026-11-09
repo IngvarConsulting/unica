@@ -10,17 +10,7 @@ pub const MD_CLASSES_NS: &str = "http://v8.1c.ru/8.3/MDClasses";
 const CURRENT_CONFIG_NS: &str = "http://v8.1c.ru/8.1/data/enterprise/current-config";
 const XML_SCHEMA_NS: &str = "http://www.w3.org/2001/XMLSchema";
 
-/// Заимствование объекта расширением, как его пишет платформа.
-///
-/// `extends` — `ExtendedConfigurationObject`, UUID объекта родителя как есть.
-/// `overrides` — список свойств из `xr:PropertyState`, а не флаг: платформа
-/// перечисляет перекрытые свойства поимённо, и заимствованный объект без
-/// перекрытий `PropertyState` не несёт вовсе.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct MetaBorrowing {
-    pub extends: Option<String>,
-    pub overrides: Vec<String>,
-}
+pub use unica_metadata::borrowing::MetaBorrowing;
 
 const XCF_READABLE_NS: &str = "http://v8.1c.ru/8.3/xcf/readable";
 
@@ -1522,7 +1512,7 @@ mod tests {
         emit_meta_typed_value_type(&mut lines, "\t\t\t\t\t", &metadata_type);
         let native = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/fixtures/platform_8_3_27/binary-data/native-type.xml"
+            "/tests/fixtures/binary-data/native-type.xml"
         ));
         assert_eq!(lines.join("\n"), native.replace("\r\n", "\n"));
     }
@@ -1718,7 +1708,7 @@ mod tests {
     }
 
     /// Штатная выгрузка расширения 8.3.27 пишет источник из основной
-    /// конфигурации как `v8:TypeId` после `v8:Type` (#1361).
+    /// конфигурации как `v8:TypeId` после `v8:Type`.
     #[test]
     fn event_subscription_source_keeps_extension_type_ids_verbatim() {
         let type_id = "97a5ab75-0974-4551-8659-72579c7cef1e";
