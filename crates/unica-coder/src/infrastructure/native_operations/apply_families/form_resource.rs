@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn element_enums_match_the_writer_enum_contract() {
         use unica_forms::contracts::form_element_enum;
-        use unica_forms_designer::codec::form_8_3_27_enum_values_for_test as writer;
+        use unica_forms_designer::codec::form_enum_values_for_test as writer;
         for (kind, key, xml) in [
             ("InputField", "titleLocation", "FormElementTitleLocation"),
             ("CheckBox", "checkBoxType", "CheckBoxType"),

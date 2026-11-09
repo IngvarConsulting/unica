@@ -25,7 +25,7 @@ roxmltree.workspace = true
 serde_json.workspace = true
 
 [package.metadata.unica]
-version-literal-baseline = 9
+version-literal-baseline = 2
 component = "codec"
 file-io = "none"
 inputs = [
