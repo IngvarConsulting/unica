@@ -8,6 +8,7 @@
 
 use std::path::Path;
 use unica_source_contract::compatibility::{CheckRule, CompatibilityRules, RuleState};
+use unica_source_contract::portable_path::PortablePathExt;
 use unica_source_contract::proposal::{
     ApplyPlanError, ApplyPlanErrorKind, ApplyProposal, StagedFileState,
 };
@@ -16,6 +17,7 @@ use unica_source_designer::extension_mode::source_set_compatibility_mode;
 
 const CORE: &str = "http://v8.1c.ru/8.1/data/core";
 /// The longest fixed-length string outside mode 8.1.
+// resource-limit-excluded: a value the platform allows in a descriptor, not a resource of Unica
 const FIXED_STRING_LIMIT: u32 = 100;
 
 /// One value of a descriptor the mode forbids.
@@ -91,7 +93,7 @@ pub fn check_changed_descriptors(
         if let Some(finding) = descriptor_mode_findings(bytes, rules).into_iter().next() {
             return Err(ApplyPlanError::new(
                 ApplyPlanErrorKind::BadValue,
-                format!("{}: {}", change.relative_path.display(), finding.message),
+                format!("{}: {}", change.relative_path.portable(), finding.message),
             )
             .at_path("ops"));
         }
